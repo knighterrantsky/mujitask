@@ -1,0 +1,53 @@
+# Platform-managed: these rules are the default operating instructions for Codex in business work.
+startup_read_order:
+  - ".platform/platform-manifest.yaml"
+  - ".platform/model-rules.yaml"
+  - "AGENT.MD"
+  - "docs/framework_contract/0.2.1/public-capability-status.md"
+  - "docs/framework_contract/0.2.1/business-consumption-contract.md"
+default_change_mode: "business_feature"
+environment_assumptions:
+  standard_mode:
+    description: "Assume only the current scaffold repo exists locally."
+  local_framework_override:
+    description: "A sibling ../automation-framework checkout is optional and only for platform-maintainer validation."
+change_modes:
+  business_feature:
+    description: "Default mode for normal business workflow development."
+    may_edit:
+      - "src/automation_business_scaffold/config.py"
+      - "src/automation_business_scaffold/tasks/**"
+      - "src/automation_business_scaffold/workflows/**"
+      - "src/automation_business_scaffold/flows/**"
+      - "src/automation_business_scaffold/models/**"
+      - "src/automation_business_scaffold/mappers/**"
+      - "src/automation_business_scaffold/validators/**"
+      - "docs/business/**"
+      - "tests/test_registry.py"
+      - "tests/test_workflow_demo.py"
+    must_not_edit:
+      - ".platform/**"
+      - "AGENT.MD"
+      - "docs/framework_contract/**"
+      - "src/automation_business_scaffold/agent.py"
+      - "src/automation_business_scaffold/registry.py"
+      - "tests/test_agent.py"
+      - "tests/test_contract_pack.py"
+  platform_upgrade:
+    description: "Only use when updating framework dependency, vendored contract docs, or platform-managed shell files."
+framework_rules:
+  allowed_import_modules:
+    - "automation_framework.agent.server"
+    - "automation_framework.core"
+    - "automation_framework.runtime"
+  forbidden_import_prefixes:
+    - "automation_framework.browser"
+    - "automation_framework.clients"
+    - "automation_framework.runtime.engine"
+    - "automation_framework.runtime.validators"
+    - "automation_framework.selftest"
+workflow_rules:
+  default_task_base: "BaseWorkflowTask"
+  workflow_draft_is_review_only: true
+  execute_via_workflow_spec: true
+

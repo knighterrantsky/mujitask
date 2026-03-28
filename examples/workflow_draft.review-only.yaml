@@ -1,0 +1,35 @@
+# review-only example
+# do not execute this file directly
+workflow_draft_id: source_to_target_publish_review
+source:
+  kind: raw_trace
+  trace_id: demo_trace_publish
+required_inputs:
+  - title
+  - price
+variables:
+  - name: source_item.title
+    from: extract_source_item
+  - name: publish_payload.title
+    from: map_publish_payload
+steps:
+  - step_id: extract_source_item
+    action: extract_source_item
+    emits:
+      - source_item
+  - step_id: map_publish_payload
+    action: map_publish_payload
+    emits:
+      - publish_payload
+  - step_id: fill_target_form
+    action: fill_target_form
+    emits:
+      - draft_form
+  - step_id: save_target_draft
+    action: save_target_draft
+    sink:
+      kind: target_draft
+guards:
+  - kind: popup_absent
+    mode: manual_dom_clear
+

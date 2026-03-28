@@ -1,0 +1,10 @@
+{
+  "local-chrome": {
+    "provider": "chrome_cdp",
+    "profile_id": "local-chrome",
+    "metadata": {
+      "debug_http": "http://127.0.0.1:9222"
+    }
+  }
+}
+

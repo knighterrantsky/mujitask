@@ -1,0 +1,49 @@
+# Platform-managed: keep this file aligned with the vendored framework contract pack.
+repo_role: business_scaffold
+framework_repo_url: "http://192.168.88.200:8080/work/automation-framework.git"
+framework_version: "0.2.1"
+framework_commit: "55e8223a92f562f4053006c55e66fe5491c9be61"
+scaffold_version: "0.1.0"
+public_contract_pack_version: "0.2.1"
+default_change_mode: "business_feature"
+path_assumptions:
+  sibling_framework_repo_required: false
+  sibling_framework_repo_optional_hint: "../automation-framework"
+installation_modes:
+  standard:
+    description: "Install framework from the pinned git dependency in pyproject.toml."
+  workspace_local_override:
+    description: "Optional platform-maintainer mode using pip install -e ../automation-framework."
+allowed_framework_imports:
+  - "automation_framework.agent.server"
+  - "automation_framework.core"
+  - "automation_framework.runtime"
+protected_paths:
+  - ".platform/**"
+  - "AGENT.MD"
+  - "docs/framework_contract/**"
+  - "src/automation_business_scaffold/agent.py"
+  - "src/automation_business_scaffold/registry.py"
+  - "tests/test_agent.py"
+  - "tests/test_contract_pack.py"
+business_editable_paths:
+  - "src/automation_business_scaffold/config.py"
+  - "src/automation_business_scaffold/tasks/**"
+  - "src/automation_business_scaffold/workflows/**"
+  - "src/automation_business_scaffold/flows/**"
+  - "src/automation_business_scaffold/models/**"
+  - "src/automation_business_scaffold/mappers/**"
+  - "src/automation_business_scaffold/validators/**"
+  - "docs/business/**"
+  - "tests/test_registry.py"
+  - "tests/test_workflow_demo.py"
+contract_docs:
+  - "docs/framework_contract/0.2.1/public-import-surface.md"
+  - "docs/framework_contract/0.2.1/public-capability-status.md"
+  - "docs/framework_contract/0.2.1/public-timeline.md"
+  - "docs/framework_contract/0.2.1/public-migration-guide.md"
+  - "docs/framework_contract/0.2.1/business-consumption-contract.md"
+  - "docs/framework_contract/0.2.1/workflow-runtime-contract.md"
+  - "docs/framework_contract/0.2.1/workflow-draft-contract.md"
+demo_task_name: "source_to_target_publish_demo"
+demo_workflow_id: "source_to_target_publish_demo_v1"
