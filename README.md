@@ -107,6 +107,40 @@ curl -X POST http://127.0.0.1:8110/runs \
   }'
 ```
 
+### 直接脚本执行模式
+
+如果不需要启动 agent，也可以直接执行注册好的 task。
+
+先列出可运行 task：
+
+```bash
+automation-business-scaffold-run list-tasks
+```
+
+直接运行 TikTok 商品采集 task：
+
+```bash
+automation-business-scaffold-run run \
+  --task tiktok_product_to_feishu \
+  --product-url 'https://www.tiktok.com/shop/pdp/1729440407432826887' \
+  --run-mode draft
+```
+
+或者用模块方式执行：
+
+```bash
+python -m automation_business_scaffold.cli run \
+  --task tiktok_product_to_feishu \
+  --product-url 'https://www.tiktok.com/shop/pdp/1729440407432826887'
+```
+
+这个模式会像 agent 一样写入运行记录和中间数据：
+
+- `runtime/cli_runs/*.json`
+- `runtime/cli_runs/steps/*.json`
+- `runtime/cli_runs/signals/*.json`
+- `runtime/artifacts/<run_id>/...`
+
 ## 3. 目录边界
 
 ### Platform-managed
