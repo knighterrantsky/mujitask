@@ -34,7 +34,7 @@
 
 推荐部署目录：
 
-- `~/apps/mujitask`
+- `$HOME/apps/mujitask`
 
 标准仓库地址：
 
@@ -44,6 +44,7 @@
 更详细的本机部署说明见：
 
 - [macmini-deployment.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment.md#L1)
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)
 
 ## 3. OpenClaw 正式调用能力
 
@@ -61,21 +62,21 @@
 ### 单条 URL 调用
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_single_sync \
   --params-json '{
     "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 
 ### 多 URL 批量调用
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
@@ -85,7 +86,7 @@ cd ~/apps/mujitask
     ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 
@@ -204,6 +205,10 @@ OpenClaw 建议按这个顺序判断：
 2. 查看 `steps_file`
 3. 查看 `signals_file`
 4. 查看 `artifacts_dir` 中的 `state_dump` 和下载图片
+
+部署期常见问题汇总见：
+
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)
 
 ## 9. Skill 交付建议
 

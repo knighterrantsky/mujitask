@@ -120,19 +120,21 @@ automation-business-scaffold-run list-tasks
 直接运行 TikTok 单条入表 task：
 
 ```bash
+cd "$HOME/apps/mujitask"
 automation-business-scaffold-run run \
   --task tiktok_feishu_single_sync \
   --params-json '{
     "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 
 直接运行多 URL 顺序入表 task：
 
 ```bash
+cd "$HOME/apps/mujitask"
 automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
@@ -142,7 +144,7 @@ automation-business-scaffold-run run \
     ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 

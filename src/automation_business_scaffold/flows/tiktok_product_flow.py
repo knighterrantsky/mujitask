@@ -183,7 +183,7 @@ def build_feishu_bitable_fields(
     field_mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     logical_values: dict[str, Any] = {
-        "source_url": product.source_url,
+        "source_url": _build_link_payload(product.source_url),
         "product_id": product.product_id,
         "title": product.title,
         "holiday": product.holiday,
@@ -388,6 +388,16 @@ def _build_local_file_payload(product: TikTokProductRecord) -> dict[str, str]:
         "file_name": product.main_image_file_name,
         "mime_type": product.main_image_mime_type,
         "source_url": product.main_image_url,
+    }
+
+
+def _build_link_payload(url: str) -> dict[str, str] | str:
+    normalized_url = str(url).strip()
+    if not normalized_url:
+        return ""
+    return {
+        "text": normalized_url,
+        "link": normalized_url,
     }
 
 
