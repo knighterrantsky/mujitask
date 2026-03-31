@@ -10,6 +10,7 @@ class TikTokProductRecord:
     resolved_url: str
     product_id: str
     title: str
+    holiday: str
     main_image_url: str
     price_amount: str
     price_currency: str
@@ -31,6 +32,7 @@ class TikTokProductRecord:
             resolved_url=str(data.get("resolved_url", "")),
             product_id=str(data.get("product_id", "")),
             title=str(data.get("title", "")),
+            holiday=str(data.get("holiday", "")),
             main_image_url=str(data.get("main_image_url", "")),
             price_amount=str(data.get("price_amount", "")),
             price_currency=str(data.get("price_currency", "")),

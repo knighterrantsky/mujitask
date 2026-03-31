@@ -1,42 +1,20 @@
-# TikTok → 飞书批量同步协议建议
+# TikTok → 飞书批量 URL 同步协议
 
-这份文档描述的是下一步建议新增的批量 task 协议，不代表当前已经全部实现。
+这份文档描述当前已经实现的 `tiktok_feishu_batch_sync` 正式协议。
 
-## 推荐 task 名称
+## Task 名称
 
 `tiktok_feishu_batch_sync`
 
 ## 适用场景
 
-- OpenClaw 从飞书多维表格批量读取待处理 TikTok 商品链接
-- 批量抓取商品信息
-- 下载主图到本地并上传成飞书附件
-- 回写价格、销量、店铺名称和图片
-- 需要知道本次任务哪些成功、哪些失败
+- OpenClaw 一次拿到 10 到 20 个 TikTok 商品链接
+- 需要顺序处理这些 URLs
+- 每条 URL 都走完整的“抓取 -> 下载图片 -> 上传飞书附件 -> 新建飞书记录”链路
+- 需要随机 delay，避免中间外部请求过于密集
+- 需要知道哪些插入成功、哪些被去重跳过、哪些失败
 
-## 推荐入参
-
-### 模式 A：表格驱动
-
-```json
-{
-  "table_url": "https://my.feishu.cn/base/xxx?table=tblxxx&view=vewxxx",
-  "access_token_env": "FEISHU_ACCESS_TOKEN",
-  "url_field_name": "商品链接",
-  "field_mapping": {
-    "main_image_file": "商品主图",
-    "price_text": "商品价格",
-    "sales_count": "销量",
-    "shop_name": "店铺名称"
-  },
-  "batch_size": 20,
-  "skip_if_price_exists": true,
-  "run_mode": "draft",
-  "trace_id": "batch-20260330-001"
-}
-```
-
-### 模式 B：直接传 URL 列表
+## 输入协议
 
 ```json
 {
@@ -44,80 +22,127 @@
     "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "https://www.tiktok.com/shop/pdp/1729732615040962895"
   ],
-  "run_mode": "draft",
-  "trace_id": "batch-20260330-002"
+  "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+  "access_token_env": "FEISHU_ACCESS_TOKEN",
+  "run_mode": "live",
+  "trace_id": "batch-20260331-001"
 }
 ```
 
-## 推荐返回结构
+## 必填参数
+
+- `product_urls`
+- `table_url`
+- `access_token_env`
+
+## 可选参数
+
+- `run_mode`
+- `trace_id`
+- `field_mapping`
+- `step_delay_sec`
+- `step_delay_jitter_sec`
+- `record_delay_sec`
+- `record_delay_jitter_sec`
+- `pause_every`
+- `pause_sec`
+- `continue_on_error`
+
+## 默认节流参数
+
+- `step_delay_sec = 1.0`
+- `step_delay_jitter_sec = 1.0`
+- `record_delay_sec = 2.0`
+- `record_delay_jitter_sec = 2.0`
+- `pause_every = 5`
+- `pause_sec = 8.0`
+- `continue_on_error = true`
+
+## 去重规则
+
+每条 URL 都按下面顺序执行：
+
+1. 先按 `产品链接` 查整张目标飞书表
+2. 如果没命中，再抓取商品并按 `SKU-ID` 查整张目标飞书表
+3. 命中任一条件就返回 `skipped_existing`
+4. 不更新原记录，也不重复新建
+
+## 返回结构
 
 ```json
 {
-  "status": "success",
   "summary": {
     "total": 2,
-    "success": 1,
-    "failed": 1
+    "processed": 2,
+    "inserted": 1,
+    "skipped_existing": 1,
+    "previewed": 0,
+    "failed": 0
   },
   "items": [
     {
+      "status": "inserted",
       "record_id": "recA",
       "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
-      "status": "success",
-      "data": {
-        "price_text": "$17.99",
-        "sales_count": 158536,
-        "shop_name": "Joyfy-US",
-        "main_image_local_path": "runtime/downloads/tiktok_product_images/1729440407432826887-main-image.webp"
+      "product_id": "1729440407432826887",
+      "fields": {
+        "产品链接": "https://www.tiktok.com/shop/pdp/1729440407432826887",
+        "SKU-ID": "1729440407432826887",
+        "图片": [
+          {
+            "file_token": "boxcn..."
+          }
+        ],
+        "标题": "Sample Title",
+        "节日": "情人节",
+        "价格": "17.99"
       }
     },
     {
+      "status": "skipped_existing",
       "record_id": "recB",
       "product_url": "https://www.tiktok.com/shop/pdp/1729732615040962895",
-      "status": "failed",
-      "error": "TikTok page parsing failed"
+      "product_id": "1729732615040962895",
+      "fields": {},
+      "duplicate_reason": "sku",
+      "existing_record_id": "recB"
     }
-  ]
+  ],
+  "settings": {
+    "run_mode": "live",
+    "write_back": true,
+    "step_delay_sec": 1.0,
+    "step_delay_jitter_sec": 1.0,
+    "record_delay_sec": 2.0,
+    "record_delay_jitter_sec": 2.0,
+    "pause_every": 5,
+    "pause_sec": 8.0,
+    "continue_on_error": true
+  }
 }
 ```
 
 ## OpenClaw 最关心的字段
 
-OpenClaw 最终通常只需要这三类信息：
-
-- 本次任务整体是否成功
-- 每条记录是否成功
-- 失败时的错误信息
-
-所以推荐固定返回：
-
-- `status`
-- `summary`
+- `summary.inserted`
+- `summary.skipped_existing`
+- `summary.failed`
 - `items[].status`
 - `items[].error`
 
-## 与当前单条 task 的关系
+## 与单条 task 的关系
 
-当前已经存在的单条 task：
+单条正式 task：
+
+- `tiktok_feishu_single_sync`
+
+底层字段构建 task：
 
 - `tiktok_product_to_feishu`
 
-它现在只支持单个 `product_url`，代码位置在：
+实现关系：
 
-- [tiktok_product_to_feishu.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/tasks/tiktok_product_to_feishu.py#L30)
-
-推荐实现方式不是重写一套抓取逻辑，而是：
-
-1. 批量 task 负责读飞书表格和调度多条记录
-2. 每一条记录内部复用现有单条采集逻辑
-3. 汇总成功/失败结果后统一返回
-
-## 错误处理建议
-
-批量模式不要因为一条失败就整批报废，推荐：
-
-- 单条失败写入 `items[].error`
-- 整批返回 `success` / `partial_success` / `failed`
-- 汇总里给出 `total`、`success`、`failed`
-
-这样 OpenClaw 和业务方都更容易看结果。
+1. 批量 task 不从飞书读取待处理行
+2. 批量 task 直接消费 `product_urls[]`
+3. 批量 task 内部顺序复用单条插入链路
+4. 每条记录之间继续加随机 delay

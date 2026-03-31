@@ -1,29 +1,29 @@
 # 客户交付建议与部署要求
 
-这份文档用于和客户对齐当前 TikTok → 飞书采集服务的交付方式、部署要求、调用方式和后续扩展建议。
+这份文档用于和客户对齐当前 TikTok → 飞书采集服务的交付方式、部署要求、调用方式和排障入口。
 
 ## 1. 推荐交付形态
 
 当前推荐采用：
 
 - 客户 Mac mini 本机部署
-- OpenClaw 通过 skill 直接调用本机命令
+- OpenClaw 通过 skill 直接调用本机 CLI
 - 命令同步执行并返回 JSON 结果
 
 不建议当前阶段优先采用：
 
 - 先部署成常驻 HTTP agent 服务
 - 把飞书 token 直接写进 skill 文本
-- 每新增一个业务就复制一套独立脚本目录
+- 把“飞书待处理表格回写”当成正式主链路
 
 推荐原因：
 
-- 和客户现有 OpenClaw + skill 的使用方式一致
+- 和客户现有 OpenClaw 使用方式一致
 - 部署更轻，维护更简单
-- 返回结果清晰，OpenClaw 容易判断成功或失败
+- 返回结果清晰，OpenClaw 更容易判断成功、跳过或失败
 - 所有后续自动化业务都可以继续放在同一个工程里演进
 
-## 2. 客户 Mac mini 部署要求
+## 2. 客户环境要求
 
 客户机器需要具备：
 
@@ -36,61 +36,62 @@
 
 - `~/apps/mujitask`
 
-推荐安装方式：
+标准仓库地址：
 
-```bash
-bash examples/macmini/install_local_cli.sh '<repo_url>' '~/apps/mujitask' '<release-tag>'
-```
-
-推荐更新方式：
-
-```bash
-bash examples/macmini/update_local_cli.sh '~/apps/mujitask' '<release-tag>'
-```
+- 业务仓库：`https://github.com/knighterrantsky/mujitask.git`
+- framework：`https://github.com/knighterrantsky/automation-framework.git`
 
 更详细的本机部署说明见：
 
 - [macmini-deployment.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment.md#L1)
 
-## 3. OpenClaw 调用方式建议
+## 3. OpenClaw 正式调用能力
 
-推荐由 OpenClaw skill 直接执行本机命令：
+当前对外正式说明两个 task：
+
+- `tiktok_feishu_single_sync`
+- `tiktok_feishu_batch_sync`
+
+说明：
+
+- `tiktok_feishu_single_sync`：输入 1 个 TikTok URL，抓取后新建 1 条飞书记录
+- `tiktok_feishu_batch_sync`：输入一组 TikTok URLs，顺序重复单条插入链路
+- `tiktok_product_to_feishu`：保留为底层调试 task，只负责字段构建，不作为客户 skill 主入口
+
+### 单条 URL 调用
 
 ```bash
 cd ~/apps/mujitask
-uv run automation-business-scaffold-run run \
-  --task tiktok_product_to_feishu \
-  --params-json '{"product_url":"https://www.tiktok.com/shop/pdp/1729440407432826887"}'
+.venv/bin/automation-business-scaffold-run run \
+  --task tiktok_feishu_single_sync \
+  --params-json '{
+    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
 ```
 
-当前 CLI 入口位于：
+### 多 URL 批量调用
 
-- [cli.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/cli.py#L34)
+```bash
+cd ~/apps/mujitask
+.venv/bin/automation-business-scaffold-run run \
+  --task tiktok_feishu_batch_sync \
+  --params-json '{
+    "product_urls": [
+      "https://www.tiktok.com/shop/pdp/1729440407432826887",
+      "https://www.tiktok.com/shop/pdp/1729732615040962895"
+    ],
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
+```
 
-命令返回约定：
+## 4. 返回结构约定
 
-- 成功时退出码 `0`
-- 失败时退出码 `1`
-- stdout 返回结构化 JSON
-
-这样 OpenClaw 可以直接判断：
-
-- 退出码是否为 `0`
-- JSON 里的 `status` 是否为 `success`
-- 失败时读取 `error`
-- 成功时读取 `result.data`
-
-## 4. 返回模式建议
-
-当前客户场景推荐使用同步调用。
-
-原因：
-
-- 当前主要是单条 URL 或小批量处理
-- OpenClaw 更适合同步拿结果
-- 不需要额外设计轮询和回调机制
-
-同步模式下，建议固定返回这些字段：
+CLI 顶层固定返回：
 
 - `status`
 - `run_id`
@@ -101,92 +102,120 @@ uv run automation-business-scaffold-run run \
 - `signals_file`
 - `artifacts_dir`
 
-如果以后任务变成大批量长耗时，再考虑切换成 HTTP 异步模式。
+OpenClaw 建议按这个顺序判断：
 
-## 5. 配置提供方式建议
+1. 看顶层 `status`
+2. 如果失败，读取顶层 `error`
+3. 如果成功，读取 `result.data`
+
+单条任务的 `result.data` 主结构：
+
+- `status`
+- `record_id`
+- `product_url`
+- `product_id`
+- `fields`
+
+其中 `status` 可能是：
+
+- `inserted`
+- `skipped_existing`
+- `preview`
+
+批量任务的 `result.data` 主结构：
+
+- `summary`
+- `items`
+- `settings`
+
+其中 `summary` 至少包含：
+
+- `total`
+- `processed`
+- `inserted`
+- `skipped_existing`
+- `previewed`
+- `failed`
+
+## 5. 去重策略
+
+正式链路固定按“存在则跳过”执行：
+
+1. 先按 `产品链接` 查整张飞书表
+2. URL 不存在时，抓到商品后再按 `SKU-ID` 查整张飞书表
+3. 命中后返回 `skipped_existing`
+4. 不更新原记录，也不重复新建
+
+这套策略同时适用于单条和批量 URL 模式。
+
+## 6. 延迟与节流
+
+默认节流参数：
+
+- `step_delay_sec = 1.0`
+- `step_delay_jitter_sec = 1.0`
+- `record_delay_sec = 2.0`
+- `record_delay_jitter_sec = 2.0`
+- `pause_every = 5`
+- `pause_sec = 8.0`
+- `continue_on_error = true`
+
+节流逻辑：
+
+- 单条任务内，每个外部步骤之间加随机 delay
+- 批量任务里，每条记录之间继续加随机 delay
+- 单条失败默认不影响后续条目
+
+## 7. 配置提供方式
 
 推荐分成两层：
 
 1. 机密配置：环境变量
-2. 业务配置：本地 JSON 文件
+2. 调用参数：OpenClaw 直接传参
 
 建议约定：
 
 - `FEISHU_ACCESS_TOKEN`：通过环境变量提供
-- `table_url`、字段映射、批量大小：通过本地 JSON 配置提供
+- `table_url`：每次调用显式传入
+- `field_mapping`：如需覆盖列名时显式传入
 
-示例配置文件：
+示例配置文件保留在：
 
 - [customer.local.example.json](/Users/happyzhao/Work/mujitask/examples/macmini/customer.local.example.json#L1)
 
-不建议：
+注意：
 
-- 把 token 写进 skill markdown
-- 把 token 提交到 git
-- 每次通过对话把 token 传给 OpenClaw
+- 当前 CLI 不会自动读取这个 JSON 文件
+- 这个文件适合作为客户本地样例，不是正式调用入口
+- 不要把 token 写进 git，也不要写进 skill markdown
 
-## 6. 当前能力边界
+## 8. 排障入口
 
-当前已完成：
+运行中间数据默认落在：
 
-- 单条 TikTok 商品链接抓取
-- 提取主图、价格、销量、店铺名称
-- 下载主图到本地文件
-- 生成飞书可消费的数据结构
-- 支持本地 CLI 调用
+- `runtime/cli_runs/`
+- `runtime/cli_runs/steps/`
+- `runtime/cli_runs/signals/`
+- `runtime/artifacts/<run_id>/`
 
-当前单条 task：
+推荐排障顺序：
 
-- `tiktok_product_to_feishu`
+1. 查看 `run_file`
+2. 查看 `steps_file`
+3. 查看 `signals_file`
+4. 查看 `artifacts_dir` 中的 `state_dump` 和下载图片
 
-代码位置：
+## 9. Skill 交付建议
 
-- [tiktok_product_to_feishu.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/tasks/tiktok_product_to_feishu.py#L20)
+交付给 OpenClaw 时，建议同时提供：
 
-说明文档：
+1. 一份固定安装命令
+2. 一份固定更新命令
+3. 单条 URL 的标准调用示例
+4. 多 URL 的标准调用示例
+5. 返回字段判断规则
+6. 排障路径说明
 
-- [tiktok-product-feishu-flow.md](/Users/happyzhao/Work/mujitask/docs/business/tiktok-product-feishu-flow.md#L1)
+可直接复制给 OpenClaw 的 skill 模板见：
 
-## 7. 批量 URL 支持建议
-
-当前单条 task 只支持一个 `product_url`，还没有正式实现“批量读飞书表格并回写”的成品 task。
-
-下一步建议新增：
-
-- `tiktok_feishu_batch_sync`
-
-推荐让它支持两种输入：
-
-- 从飞书多维表格读取待处理记录
-- 直接传一组 `product_urls`
-
-推荐返回：
-
-- 整体状态
-- 成功数 / 失败数
-- 每条记录的处理结果
-- 每条失败的错误信息
-
-协议草案见：
-
-- [tiktok-feishu-batch-contract.md](/Users/happyzhao/Work/mujitask/docs/business/tiktok-feishu-batch-contract.md#L1)
-
-## 8. 后续扩展建议
-
-这个工程建议继续作为统一自动化工程使用。
-
-后续如果还有别的自动化业务，建议继续在同一个工程里新增：
-
-- `tasks/`
-- `workflows/`
-- `flows/`
-- `extend_script/`
-
-而 OpenClaw 侧只需要新增对应 skill 描述和调用入口，不要把业务实现散落到多个独立脚本仓库里。
-
-推荐模式是：
-
-1. 工程内新增一个可执行 task
-2. 为 task 暴露稳定 CLI
-3. OpenClaw skill 调这个 CLI
-4. 新业务继续复用同一套运行时目录、日志和中间数据机制
+- [openclaw-skill-template.md](/Users/happyzhao/Work/mujitask/docs/business/openclaw-skill-template.md#L1)

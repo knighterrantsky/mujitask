@@ -7,6 +7,7 @@ from automation_business_scaffold.flows import (
     build_feishu_bitable_record,
     download_tiktok_product_main_image,
     extract_tiktok_product_from_html,
+    infer_tiktok_product_holiday,
 )
 from automation_business_scaffold.validators import validate_tiktok_product_url
 
@@ -108,6 +109,7 @@ def test_extract_tiktok_product_from_html_returns_expected_fields():
 
     assert product.product_id == "1729732615040962895"
     assert product.title == "Sample TikTok Product"
+    assert product.holiday == "其他"
     assert product.main_image_url == "https://example.com/main-image.webp"
     assert product.price_amount == "24.99"
     assert product.price_currency == "USD"
@@ -152,17 +154,25 @@ def test_build_feishu_bitable_record_uses_local_file_for_main_image(tmp_path):
         "1729732615040962895-main-image.webp"
     )
     assert record["fields"] == {
-        "商品主图": {
+        "产品链接": "https://shop.tiktok.com/view/product/1729732615040962895",
+        "SKU-ID": "1729732615040962895",
+        "图片": {
             "type": "local_file",
             "path": str(tmp_path / "1729732615040962895-main-image.webp"),
             "file_name": "1729732615040962895-main-image.webp",
             "mime_type": "image/webp",
             "source_url": "https://example.com/main-image.webp",
         },
-        "商品价格": "$24.99",
-        "销量": 94151,
-        "店铺名称": "Sample Shop",
+        "标题": "Sample TikTok Product",
+        "节日": "其他",
+        "价格": "24.99",
     }
+
+
+def test_infer_tiktok_product_holiday_matches_known_options_and_fallback():
+    assert infer_tiktok_product_holiday("Valentine's Day Heart Garland") == "情人节"
+    assert infer_tiktok_product_holiday("Halloween Pumpkin Lights") == "万圣节"
+    assert infer_tiktok_product_holiday("Generic Party Supplies") == "其他"
 
 
 def test_validate_tiktok_product_url_accepts_expected_product_links():

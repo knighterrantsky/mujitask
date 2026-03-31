@@ -117,16 +117,36 @@ curl -X POST http://127.0.0.1:8110/runs \
 automation-business-scaffold-run list-tasks
 ```
 
-直接运行 TikTok 商品采集 task：
+直接运行 TikTok 单条入表 task：
 
 ```bash
 automation-business-scaffold-run run \
-  --task tiktok_product_to_feishu \
-  --product-url 'https://www.tiktok.com/shop/pdp/1729440407432826887' \
-  --run-mode draft
+  --task tiktok_feishu_single_sync \
+  --params-json '{
+    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
 ```
 
-或者用模块方式执行：
+直接运行多 URL 顺序入表 task：
+
+```bash
+automation-business-scaffold-run run \
+  --task tiktok_feishu_batch_sync \
+  --params-json '{
+    "product_urls": [
+      "https://www.tiktok.com/shop/pdp/1729440407432826887",
+      "https://www.tiktok.com/shop/pdp/1729732615040962895"
+    ],
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
+```
+
+或者用底层字段构建 task 做调试：
 
 ```bash
 python -m automation_business_scaffold.cli run \

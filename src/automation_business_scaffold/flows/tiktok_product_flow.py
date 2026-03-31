@@ -6,9 +6,14 @@ import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # pragma: no cover - exercised in ad-hoc validation env.
+    requests = None
 
 from automation_business_scaffold.models import TikTokProductRecord
 
@@ -24,12 +29,22 @@ DEFAULT_TIKTOK_HEADERS = {
 }
 
 DEFAULT_FEISHU_FIELD_MAPPING = {
-    "main_image_file": "商品主图",
-    "price_text": "商品价格",
-    "sales_count": "销量",
-    "shop_name": "店铺名称",
+    "source_url": "产品链接",
+    "product_id": "SKU-ID",
+    "main_image_file": "图片",
+    "title": "标题",
+    "holiday": "节日",
+    "price_amount": "价格",
 }
 DEFAULT_IMAGE_DOWNLOAD_DIR = "runtime/downloads/tiktok_product_images"
+DEFAULT_HOLIDAY_OPTIONS = ("情人节", "复活节", "毕业季", "万圣节", "圣诞节", "其他")
+HOLIDAY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "情人节": ("情人节", "valentine", "valentines", "valentine's"),
+    "复活节": ("复活节", "easter"),
+    "毕业季": ("毕业季", "毕业", "graduation", "graduate", "grad"),
+    "万圣节": ("万圣节", "halloween"),
+    "圣诞节": ("圣诞节", "christmas", "xmas"),
+}
 
 
 class TikTokProductExtractionError(RuntimeError):
@@ -40,24 +55,18 @@ def fetch_tiktok_product_record(
     product_url: str,
     *,
     timeout: int = 30,
-    session: requests.Session | None = None,
+    session: Any | None = None,
 ) -> TikTokProductRecord:
-    owned_session = session is None
-    active_session = session or requests.Session()
-
     try:
-        response = active_session.get(
+        response = _http_get(
             product_url,
             headers=DEFAULT_TIKTOK_HEADERS,
             timeout=timeout,
             allow_redirects=True,
+            session=session,
         )
-        response.raise_for_status()
-    except requests.RequestException as exc:
+    except Exception as exc:
         raise TikTokProductExtractionError(f"failed to fetch TikTok product page: {exc}") from exc
-    finally:
-        if owned_session:
-            active_session.close()
 
     blocked_message = _extract_blocked_message(response.text, response.headers.get("Content-Type", ""))
     if blocked_message:
@@ -87,6 +96,7 @@ def extract_tiktok_product_from_html(
 
     product_id = str(product_model.get("product_id", "")).strip()
     title = str(product_model.get("name", "")).strip()
+    holiday = infer_tiktok_product_holiday(title)
     main_image_url = _pick_main_image_url(product_model)
 
     price_node = _extract_price_node(promotion_model)
@@ -114,14 +124,12 @@ def extract_tiktok_product_from_html(
         raise TikTokProductExtractionError("failed to extract TikTok product main image from page data")
     if not price_amount:
         raise TikTokProductExtractionError("failed to extract TikTok product price from page data")
-    if not shop_name:
-        raise TikTokProductExtractionError("failed to extract TikTok shop name from page data")
-
     return TikTokProductRecord(
         source_url=source_url,
         resolved_url=resolved_url or source_url,
         product_id=product_id,
         title=title,
+        holiday=holiday,
         main_image_url=main_image_url,
         price_amount=price_amount,
         price_currency=price_currency,
@@ -137,27 +145,21 @@ def download_tiktok_product_main_image(
     *,
     download_dir: str = DEFAULT_IMAGE_DOWNLOAD_DIR,
     timeout: int = 30,
-    session: requests.Session | None = None,
+    session: Any | None = None,
 ) -> TikTokProductRecord:
-    owned_session = session is None
-    active_session = session or requests.Session()
-
     try:
-        response = active_session.get(
+        response = _http_get(
             product.main_image_url,
             headers=DEFAULT_TIKTOK_HEADERS,
             timeout=timeout,
+            session=session,
         )
-        response.raise_for_status()
         image_bytes = response.content
         if not image_bytes:
             raise TikTokProductExtractionError("downloaded TikTok product image is empty")
         content_type = str(response.headers.get("Content-Type", ""))
-    except requests.RequestException as exc:
+    except Exception as exc:
         raise TikTokProductExtractionError(f"failed to download TikTok product image: {exc}") from exc
-    finally:
-        if owned_session:
-            active_session.close()
 
     file_suffix = _guess_image_suffix(product.main_image_url, content_type)
     file_name = f"{product.product_id}-main-image{file_suffix}"
@@ -181,9 +183,10 @@ def build_feishu_bitable_fields(
     field_mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     logical_values: dict[str, Any] = {
-        "source_url": product.resolved_url or product.source_url,
+        "source_url": product.source_url,
         "product_id": product.product_id,
         "title": product.title,
+        "holiday": product.holiday,
         "main_image_url": product.main_image_url,
         "main_image_local_path": product.main_image_local_path,
         "main_image_file_name": product.main_image_file_name,
@@ -236,6 +239,31 @@ def _extract_blocked_message(text: str, content_type: str) -> str | None:
             return message.strip()
 
     return None
+
+
+def infer_tiktok_product_holiday(
+    title: str,
+    *,
+    options: tuple[str, ...] = DEFAULT_HOLIDAY_OPTIONS,
+) -> str:
+    normalized_title = title.strip()
+    if not normalized_title:
+        return "其他" if "其他" in options else ""
+
+    lowered_title = normalized_title.lower()
+
+    for option in options:
+        if option != "其他" and option in normalized_title:
+            return option
+
+    for option in options:
+        if option == "其他":
+            continue
+        for keyword in HOLIDAY_KEYWORDS.get(option, ()):
+            if keyword.lower() in lowered_title:
+                return option
+
+    return "其他" if "其他" in options else ""
 
 
 def _extract_json_script(html: str, script_id: str) -> dict[str, Any]:
@@ -385,3 +413,82 @@ def _normalize_mime_type(content_type: str, file_suffix: str) -> str:
         return normalized_content_type
     guessed_type = mimetypes.guess_type(f"image{file_suffix}", strict=False)[0]
     return guessed_type or "application/octet-stream"
+
+
+class _UrllibResponse:
+    def __init__(
+        self,
+        *,
+        url: str,
+        status_code: int,
+        headers: dict[str, str],
+        content: bytes,
+    ) -> None:
+        self.url = url
+        self.status_code = status_code
+        self.headers = headers
+        self.content = content
+        content_type = headers.get("Content-Type", "")
+        charset_match = re.search(r"charset=([A-Za-z0-9._-]+)", content_type)
+        encoding = charset_match.group(1) if charset_match else "utf-8"
+        self.text = content.decode(encoding, errors="replace")
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise TikTokProductExtractionError(f"HTTP {self.status_code}")
+
+
+def _http_get(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: int,
+    allow_redirects: bool = True,
+    session: Any | None = None,
+) -> Any:
+    if session is not None:
+        response = session.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+        )
+        response.raise_for_status()
+        return response
+
+    if requests is not None:
+        with requests.Session() as active_session:
+            response = active_session.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=allow_redirects,
+            )
+            response.raise_for_status()
+            return response
+
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            status_code = int(getattr(response, "status", 200))
+            response_headers = {key: value for key, value in response.headers.items()}
+            return _UrllibResponse(
+                url=response.geturl(),
+                status_code=status_code,
+                headers=response_headers,
+                content=body,
+            )
+    except HTTPError as exc:
+        body = exc.read()
+        response_headers = {key: value for key, value in exc.headers.items()}
+        response = _UrllibResponse(
+            url=exc.geturl(),
+            status_code=exc.code,
+            headers=response_headers,
+            content=body,
+        )
+        response.raise_for_status()
+        return response
+    except URLError as exc:
+        raise TikTokProductExtractionError(str(exc.reason)) from exc

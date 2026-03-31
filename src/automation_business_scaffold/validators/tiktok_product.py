@@ -33,8 +33,6 @@ def validate_tiktok_product_record(
         raise ValueError("TikTok product main image is required")
     if not product.price_amount.strip():
         raise ValueError("TikTok product price is required")
-    if not product.shop_name.strip():
-        raise ValueError("TikTok product shop name is required")
     if product.sales_count < 0:
         raise ValueError("TikTok product sales_count must be zero or greater")
     if require_local_image:

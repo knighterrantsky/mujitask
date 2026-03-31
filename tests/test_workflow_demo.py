@@ -143,4 +143,18 @@ def test_cli_runner_lists_registered_tasks():
             "name": "tiktok_product_to_feishu",
             "description": "Fetch a TikTok Shop product page and prepare Feishu Bitable fields for the item.",
         },
+        {
+            "name": "tiktok_feishu_single_sync",
+            "description": (
+                "Fetch one TikTok Shop product URL and insert one Feishu Bitable row; "
+                "skip if the URL or SKU already exists."
+            ),
+        },
+        {
+            "name": "tiktok_feishu_batch_sync",
+            "description": (
+                "Process multiple TikTok Shop product URLs sequentially and insert Feishu "
+                "Bitable rows one by one with randomized delays."
+            ),
+        },
     ]

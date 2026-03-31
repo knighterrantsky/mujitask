@@ -47,11 +47,12 @@ def parse_table_url(table_url: str) -> Dict[str, str]:
 
     query = parse_qs(parsed.query)
     table_id = query.get("table", [""])[0]
+    view_id = query.get("view", [""])[0]
 
     if not app_token or not table_id:
         raise ValueError("Invalid table_url, missing app_token or table_id")
 
-    return {"app_token": app_token, "table_id": table_id}
+    return {"app_token": app_token, "table_id": table_id, "view_id": view_id}
 
 
 class FeishuBitableClient:
@@ -119,12 +120,15 @@ class FeishuBitableClient:
         page_size: int = 20,
         filter_expr: Optional[str] = None,
         page_token: Optional[str] = None,
+        view_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"page_size": page_size}
         if filter_expr:
             params["filter"] = filter_expr
         if page_token:
             params["page_token"] = page_token
+        if view_id:
+            params["view_id"] = view_id
         return self._request(
             "GET",
             f"/apps/{app_token}/tables/{table_id}/records",
@@ -137,6 +141,7 @@ class FeishuBitableClient:
         table_id: str,
         page_size: int = 100,
         filter_expr: Optional[str] = None,
+        view_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
@@ -148,6 +153,7 @@ class FeishuBitableClient:
                 page_size=page_size,
                 filter_expr=filter_expr,
                 page_token=page_token,
+                view_id=view_id,
             )
             payload = data.get("data", {})
             items.extend(payload.get("items", []))
@@ -164,6 +170,14 @@ class FeishuBitableClient:
         return self._request(
             "PUT",
             f"/apps/{app_token}/tables/{table_id}/records/{record_id}",
+            payload=payload,
+        )
+
+    def create_record(self, app_token: str, table_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {"fields": fields}
+        return self._request(
+            "POST",
+            f"/apps/{app_token}/tables/{table_id}/records",
             payload=payload,
         )
 
