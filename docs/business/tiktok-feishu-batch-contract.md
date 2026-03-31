@@ -24,7 +24,7 @@
   ],
   "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
   "access_token_env": "FEISHU_ACCESS_TOKEN",
-  "run_mode": "live",
+  "run_mode": "approval_required",
   "trace_id": "batch-20260331-001"
 }
 ```
@@ -109,7 +109,7 @@
     }
   ],
   "settings": {
-    "run_mode": "live",
+    "run_mode": "approval_required",
     "write_back": true,
     "step_delay_sec": 1.0,
     "step_delay_jitter_sec": 1.0,

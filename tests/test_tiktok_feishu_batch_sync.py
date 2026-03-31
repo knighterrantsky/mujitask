@@ -101,7 +101,10 @@ def test_run_tiktok_feishu_single_sync_live_mode_uploads_and_creates_record(
         "product_url": "https://www.tiktok.com/shop/pdp/4444444444444444444",
         "product_id": "4444444444444444444",
         "fields": {
-            "产品链接": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+            "产品链接": {
+                "text": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+                "link": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+            },
             "SKU-ID": "4444444444444444444",
             "图片": [{"file_token": "file-token-001"}],
             "标题": "Halloween Lights",
@@ -114,7 +117,10 @@ def test_run_tiktok_feishu_single_sync_live_mode_uploads_and_creates_record(
             "app999",
             "tbl999",
             {
-                "产品链接": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+                "产品链接": {
+                    "text": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+                    "link": "https://www.tiktok.com/shop/pdp/4444444444444444444",
+                },
                 "SKU-ID": "4444444444444444444",
                 "图片": [{"file_token": "file-token-001"}],
                 "标题": "Halloween Lights",

@@ -109,7 +109,7 @@ cd ~/apps/mujitask
     "product_url": "<tiktok_product_url>",
     "table_url": "<feishu_table_url>",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 
@@ -140,7 +140,7 @@ cd ~/apps/mujitask
     ],
     "table_url": "<feishu_table_url>",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 

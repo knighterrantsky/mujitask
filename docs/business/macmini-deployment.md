@@ -166,7 +166,7 @@ cd ~/apps/mujitask
     "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 
@@ -196,7 +196,7 @@ cd ~/apps/mujitask
     ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "live"
+    "run_mode": "approval_required"
   }'
 ```
 

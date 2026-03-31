@@ -154,7 +154,10 @@ def test_build_feishu_bitable_record_uses_local_file_for_main_image(tmp_path):
         "1729732615040962895-main-image.webp"
     )
     assert record["fields"] == {
-        "产品链接": "https://shop.tiktok.com/view/product/1729732615040962895",
+        "产品链接": {
+            "text": "https://shop.tiktok.com/view/product/1729732615040962895",
+            "link": "https://shop.tiktok.com/view/product/1729732615040962895",
+        },
         "SKU-ID": "1729732615040962895",
         "图片": {
             "type": "local_file",
