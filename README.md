@@ -107,6 +107,60 @@ curl -X POST http://127.0.0.1:8110/runs \
   }'
 ```
 
+### 直接脚本执行模式
+
+如果不需要启动 agent，也可以直接执行注册好的 task。
+
+先列出可运行 task：
+
+```bash
+automation-business-scaffold-run list-tasks
+```
+
+直接运行 TikTok 单条入表 task：
+
+```bash
+automation-business-scaffold-run run \
+  --task tiktok_feishu_single_sync \
+  --params-json '{
+    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
+```
+
+直接运行多 URL 顺序入表 task：
+
+```bash
+automation-business-scaffold-run run \
+  --task tiktok_feishu_batch_sync \
+  --params-json '{
+    "product_urls": [
+      "https://www.tiktok.com/shop/pdp/1729440407432826887",
+      "https://www.tiktok.com/shop/pdp/1729732615040962895"
+    ],
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "run_mode": "live"
+  }'
+```
+
+或者用底层字段构建 task 做调试：
+
+```bash
+python -m automation_business_scaffold.cli run \
+  --task tiktok_product_to_feishu \
+  --product-url 'https://www.tiktok.com/shop/pdp/1729440407432826887'
+```
+
+这个模式会像 agent 一样写入运行记录和中间数据：
+
+- `runtime/cli_runs/*.json`
+- `runtime/cli_runs/steps/*.json`
+- `runtime/cli_runs/signals/*.json`
+- `runtime/artifacts/<run_id>/...`
+
 ## 3. 目录边界
 
 ### Platform-managed

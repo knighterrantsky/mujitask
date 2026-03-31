@@ -5,12 +5,14 @@ description = "Business scaffold for building browser automation workflows on to
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "automation-framework @ git+http://192.168.88.200:8080/work/automation-framework.git@55e8223a92f562f4053006c55e66fe5491c9be61",
+  "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@55e8223a92f562f4053006c55e66fe5491c9be61",
+  "requests>=2.32.0",
   "uvicorn>=0.35.0",
 ]
 
 [project.scripts]
 automation-business-scaffold-agent = "automation_business_scaffold.agent:main"
+automation-business-scaffold-run = "automation_business_scaffold.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -36,4 +38,3 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

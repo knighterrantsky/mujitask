@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from automation_framework.agent.server import create_app
 from automation_framework.runtime import RunRegistry
 
+from automation_business_scaffold.cli import list_registered_tasks, run_registered_task
 from automation_business_scaffold.registry import build_task_registry
 from automation_business_scaffold.tasks import SourceToTargetPublishDemoTask
 
@@ -110,3 +111,50 @@ def test_demo_task_workflow_builder_uses_expected_workflow_id():
     assert workflow.workflow_id == "source_to_target_publish_demo_v1"
     assert workflow.run_mode == "draft"
 
+
+def test_cli_runner_executes_registered_workflow_task_and_records_outputs(tmp_path):
+    payload = run_registered_task(
+        "source_to_target_publish_demo",
+        params={
+            "title": "CLI Demo Chair",
+            "price": 128,
+            "run_mode": "draft",
+        },
+        run_dir=tmp_path / "cli_runs",
+    )
+
+    assert payload["status"] == "success"
+    assert Path(payload["run_file"]).exists()
+    assert Path(payload["steps_file"]).exists()
+    assert Path(payload["signals_file"]).exists()
+    assert Path(payload["artifacts_dir"]).exists()
+    assert payload["result"]["data"]["workflow_id"] == "source_to_target_publish_demo_v1"
+
+
+def test_cli_runner_lists_registered_tasks():
+    payload = list_registered_tasks()
+
+    assert payload == [
+        {
+            "name": "source_to_target_publish_demo",
+            "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
+        },
+        {
+            "name": "tiktok_product_to_feishu",
+            "description": "Fetch a TikTok Shop product page and prepare Feishu Bitable fields for the item.",
+        },
+        {
+            "name": "tiktok_feishu_single_sync",
+            "description": (
+                "Fetch one TikTok Shop product URL and insert one Feishu Bitable row; "
+                "skip if the URL or SKU already exists."
+            ),
+        },
+        {
+            "name": "tiktok_feishu_batch_sync",
+            "description": (
+                "Process multiple TikTok Shop product URLs sequentially and insert Feishu "
+                "Bitable rows one by one with randomized delays."
+            ),
+        },
+    ]
