@@ -24,7 +24,11 @@
 
 推荐安装目录：
 
-- `~/apps/mujitask`
+- `$HOME/apps/mujitask`
+
+常见问题排查见：
+
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)
 
 ## 安装方式
 
@@ -45,7 +49,7 @@ framework 仓库：
 ```bash
 bash examples/macmini/install_local_cli.sh \
   'https://github.com/knighterrantsky/mujitask.git' \
-  '~/apps/mujitask' \
+  "$HOME/apps/mujitask" \
   '<release-tag>'
 ```
 
@@ -56,7 +60,7 @@ curl -fsSL \
   'https://raw.githubusercontent.com/knighterrantsky/mujitask/<release-tag>/examples/macmini/install_local_cli.sh' \
   | bash -s -- \
     'https://github.com/knighterrantsky/mujitask.git' \
-    '~/apps/mujitask' \
+    "$HOME/apps/mujitask" \
     '<release-tag>'
 ```
 
@@ -75,14 +79,14 @@ FRAMEWORK_REPO_URL='https://github.com/knighterrantsky/automation-framework.git'
 FRAMEWORK_GIT_REF='<framework-tag-or-commit>' \
 bash examples/macmini/install_local_cli.sh \
   'https://github.com/knighterrantsky/mujitask.git' \
-  '~/apps/mujitask' \
+  "$HOME/apps/mujitask" \
   '<release-tag>'
 ```
 
 安装完成后建议先验证：
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run list-tasks
 ```
 
@@ -101,7 +105,7 @@ cd ~/apps/mujitask
 更新到指定版本：
 
 ```bash
-bash examples/macmini/update_local_cli.sh '~/apps/mujitask' '<release-tag>'
+bash examples/macmini/update_local_cli.sh "$HOME/apps/mujitask" '<release-tag>'
 ```
 
 或者通过 GitHub Raw 调用：
@@ -110,7 +114,7 @@ bash examples/macmini/update_local_cli.sh '~/apps/mujitask' '<release-tag>'
 curl -fsSL \
   'https://raw.githubusercontent.com/knighterrantsky/mujitask/<release-tag>/examples/macmini/update_local_cli.sh' \
   | bash -s -- \
-    '~/apps/mujitask' \
+    "$HOME/apps/mujitask" \
     '<release-tag>'
 ```
 
@@ -159,7 +163,7 @@ export FEISHU_ACCESS_TOKEN='your-feishu-access-token'
 输入 1 个 TikTok URL，执行“抓取页面 -> 下载主图 -> 上传附件 -> 新建飞书记录”。
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_single_sync \
   --params-json '{
@@ -186,7 +190,7 @@ cd ~/apps/mujitask
 输入一组 TikTok URLs，内部顺序重复单条插入链路；不是先读飞书表格待处理行，也不是批量回写已有记录。
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
@@ -287,3 +291,7 @@ CLI 调试数据默认落在：
 2. 看 `steps_file` 确认执行到了哪一步
 3. 看 `signals_file` 判断是业务失败还是运行时拦截
 4. 看 `artifacts_dir` 里的 `state_dump`，核对中间字段和落盘图片
+
+如果是部署期常见报错，优先参考：
+
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)

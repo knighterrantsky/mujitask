@@ -28,7 +28,11 @@ TikTok 商品抓取并插入飞书多维表格
 
 默认安装目录：
 
-- `~/apps/mujitask`
+- `$HOME/apps/mujitask`
+
+部署常见问题排查文档：
+
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)
 
 业务仓库：
 
@@ -47,14 +51,14 @@ curl -fsSL \
   'https://raw.githubusercontent.com/knighterrantsky/mujitask/<release-tag>/examples/macmini/install_local_cli.sh' \
   | bash -s -- \
     'https://github.com/knighterrantsky/mujitask.git' \
-    '~/apps/mujitask' \
+    "$HOME/apps/mujitask" \
     '<release-tag>'
 ```
 
 安装后可用下面命令验证：
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run list-tasks
 ```
 
@@ -69,7 +73,7 @@ cd ~/apps/mujitask
 curl -fsSL \
   'https://raw.githubusercontent.com/knighterrantsky/mujitask/<release-tag>/examples/macmini/update_local_cli.sh' \
   | bash -s -- \
-    '~/apps/mujitask' \
+    "$HOME/apps/mujitask" \
     '<release-tag>'
 ```
 
@@ -102,7 +106,7 @@ skill 不要接收真实 token 文本，也不要把 token 回显到回答里。
 命令模板：
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_single_sync \
   --params-json '{
@@ -130,7 +134,7 @@ cd ~/apps/mujitask
 命令模板：
 
 ```bash
-cd ~/apps/mujitask
+cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
@@ -238,6 +242,10 @@ CLI 顶层固定返回：
 2. 再看 `steps_file`
 3. 再看 `signals_file`
 4. 最后看 `artifacts_dir` 中的 `state_dump` 和下载图片
+
+部署期常见错误与修复方法见：
+
+- [macmini-deployment-troubleshooting.md](/Users/happyzhao/Work/mujitask/docs/business/macmini-deployment-troubleshooting.md)
 
 ## 调用约束
 
