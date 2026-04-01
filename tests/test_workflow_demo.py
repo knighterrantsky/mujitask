@@ -141,7 +141,10 @@ def test_cli_runner_lists_registered_tasks():
         },
         {
             "name": "tiktok_feishu_batch_sync",
-            "description": "Read TikTok product rows from Feishu, collect stage-1 product data via browser, and write results back to the same rows.",
+            "description": (
+                "Read pre-cleaned TikTok product rows from Feishu, skip rows whose stage-1 fields are already filled, "
+                "and process each incomplete row one-by-one via browser collection, attachment upload, and direct write-back."
+            ),
         },
         {
             "name": "tiktok_feishu_single_sync",
@@ -153,8 +156,8 @@ def test_cli_runner_lists_registered_tasks():
         {
             "name": "tiktok_product_link_cleanup",
             "description": (
-                "Normalize TikTok product links from Feishu, delete duplicate rows by normalized URL, "
-                "and write cleanup status back to the kept rows."
+                "Normalize TikTok product links from Feishu, write the normalized URL back to 产品链接, "
+                "and delete duplicate rows."
             ),
         },
         {

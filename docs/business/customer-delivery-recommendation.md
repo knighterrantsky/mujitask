@@ -50,43 +50,41 @@
 
 当前对外正式说明两个 task：
 
-- `tiktok_feishu_single_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
 
 说明：
 
-- `tiktok_feishu_single_sync`：输入 1 个 TikTok URL，抓取后新建 1 条飞书记录
-- `tiktok_feishu_batch_sync`：输入一组 TikTok URLs，顺序重复单条插入链路
+- `tiktok_product_link_cleanup`：读取飞书表里的 `产品链接`，格式化后回写，并删除重复整行
+- `tiktok_feishu_batch_sync`：读取飞书表里的现有记录，只补齐阶段一缺失字段
 - `tiktok_product_to_feishu`：保留为底层调试 task，只负责字段构建，不作为客户 skill 主入口
 
-### 单条 URL 调用
+### cleanup 调用
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "run_mode": "canary"
   }'
 ```
 
-### 多 URL 批量调用
+### 阶段一表驱动调用
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_urls": [
-      "https://www.tiktok.com/shop/pdp/1729440407432826887",
-      "https://www.tiktok.com/shop/pdp/1729732615040962895"
-    ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
+    "run_mode": "canary"
   }'
 ```
 
@@ -109,43 +107,29 @@ OpenClaw 建议按这个顺序判断：
 2. 如果失败，读取顶层 `error`
 3. 如果成功，读取 `result.data`
 
-单条任务的 `result.data` 主结构：
-
-- `status`
-- `record_id`
-- `product_url`
-- `product_id`
-- `fields`
-
-其中 `status` 可能是：
-
-- `inserted`
-- `skipped_existing`
-- `preview`
-
 批量任务的 `result.data` 主结构：
 
 - `summary`
 - `items`
+- `failed_items`
 - `settings`
 
 其中 `summary` 至少包含：
 
 - `total`
-- `processed`
-- `inserted`
-- `skipped_existing`
-- `previewed`
+- `updated`
+- `skipped_completed`
 - `failed`
 
-## 5. 去重策略
+## 5. 执行策略
 
-正式链路固定按“存在则跳过”执行：
+正式链路固定按下面顺序执行：
 
-1. 先按 `产品链接` 查整张飞书表
-2. URL 不存在时，抓到商品后再按 `SKU-ID` 查整张飞书表
-3. 命中后返回 `skipped_existing`
-4. 不更新原记录，也不重复新建
+1. 先执行 cleanup，整理并去重 `产品链接`
+2. 阶段一读取当前飞书表 / 视图
+3. 阶段一字段全部有值时，返回 `skipped_completed`
+4. 阶段一字段存在空缺时，逐条执行“抓取 -> 上传附件 -> 写回当前行”
+5. 只补缺失字段，但只要写回就会刷新 `记录日期`
 
 这套策略同时适用于单条和批量 URL 模式。
 
@@ -216,8 +200,8 @@ OpenClaw 建议按这个顺序判断：
 
 1. 一份固定安装命令
 2. 一份固定更新命令
-3. 单条 URL 的标准调用示例
-4. 多 URL 的标准调用示例
+3. cleanup 的标准调用示例
+4. 阶段一表驱动的标准调用示例
 5. 返回字段判断规则
 6. 排障路径说明
 

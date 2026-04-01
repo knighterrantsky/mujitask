@@ -154,7 +154,7 @@ Input should be 'observe', 'draft', 'approval_required', 'canary' or 'full_auto'
 
 ### 解决方法
 
-- 真实写入飞书时使用 `approval_required`
+- 真实写入飞书时使用 `canary`
 - 只预览字段时使用 `draft`
 
 ### 正确命令
@@ -164,12 +164,12 @@ Input should be 'observe', 'draft', 'approval_required', 'canary' or 'full_auto'
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "run_mode": "canary"
   }'
 ```
 
@@ -178,83 +178,17 @@ cd "$HOME/apps/mujitask"
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
     "run_mode": "draft"
   }'
 ```
 
-## 5. 飞书报错 `URLFieldConvFail`
-
-### 问题现象
-
-任务已经抓到 TikTok 数据，但在飞书新建记录时报错：
-
-```bash
-FeishuAPIError: URLFieldConvFail
-```
-
-### 原因
-
-- `产品链接` 在飞书中是 URL 字段
-- 飞书 URL 字段不能写普通字符串
-- 需要写成对象结构：`{"text": "...", "link": "..."}`
-
-### 解决方法
-
-代码层已经修复，`source_url` 会输出为飞书 URL 字段对象。  
-如果客户本地代码比较旧，需要先更新到包含该修复的版本。
-
-### 正确结构
-
-```json
-{
-  "产品链接": {
-    "text": "https://www.tiktok.com/shop/pdp/1729440407432826887",
-    "link": "https://www.tiktok.com/shop/pdp/1729440407432826887"
-  }
-}
-```
-
-## 6. 返回 `skipped_existing`
-
-### 问题现象
-
-命令顶层 `status` 是 `success`，但业务结果里看到：
-
-```json
-{
-  "status": "skipped_existing"
-}
-```
-
-### 原因
-
-这不是失败，而是命中了去重逻辑。
-
-系统会按下面顺序检查：
-
-1. 先按 `产品链接` 查整张飞书表
-2. URL 未命中时，再按 `SKU-ID` 查整张飞书表
-
-命中任一条件就不会重复新建。
-
-### 解决方法
-
-- 如果只是验证链路，说明任务已经跑通到去重阶段
-- 如果确实要再次插入，需要换一个表里没有的 TikTok URL
-- 或者先手动删除飞书中已有记录后再重试
-
-### 如何判断
-
-- `inserted`：本次已真实新建飞书记录
-- `skipped_existing`：表里已有相同 URL 或 SKU，已跳过
-- `preview`：只预览，不写入
-
-## 部署后最小验证流程
+## 5. 部署后最小验证流程
 
 建议部署完成后按这个顺序验证：
 
@@ -265,35 +199,51 @@ cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run list-tasks
 ```
 
-2. 单条 `draft` 预览
+2. cleanup `draft` 预览
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "url_field_name": "产品链接",
     "run_mode": "draft"
   }'
 ```
 
-3. 单条 `approval_required` 真实写入
+3. 阶段一 `draft` 预览
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
+    "run_mode": "draft"
   }'
 ```
 
-4. 查看中间数据
+4. 阶段一 `canary` 真实写回
+
+```bash
+cd "$HOME/apps/mujitask"
+.venv/bin/automation-business-scaffold-run run \
+  --task tiktok_feishu_batch_sync \
+  --params-json '{
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
+    "run_mode": "canary"
+  }'
+```
+
+5. 查看中间数据
 
 - `run_file`
 - `steps_file`

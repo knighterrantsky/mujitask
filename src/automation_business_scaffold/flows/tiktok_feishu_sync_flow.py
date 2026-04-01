@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import random
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,27 +31,30 @@ DEFAULT_RECORD_DELAY_SEC = 2.0
 DEFAULT_RECORD_DELAY_JITTER_SEC = 2.0
 DEFAULT_PAUSE_EVERY = 5
 DEFAULT_PAUSE_SEC = 8.0
-DEFAULT_CONTINUE_ON_ERROR = True
-DEFAULT_CLEANUP_NORMALIZED_URL_FIELD_NAME = "标准产品链接"
-DEFAULT_CLEANUP_STATUS_FIELD_NAME = "链接整理状态"
-DEFAULT_CLEANUP_DUPLICATE_COUNT_FIELD_NAME = "删除重复数"
-RUN_MODES_WITH_MUTATIONS = {"canary", "full_auto"}
-DEFAULT_SYNC_FIELD_MAPPING = {
-    "source_url": "产品链接",
-    "normalized_url": "标准产品链接",
+DEFAULT_STAGE1_RETRY_ATTEMPTS = 3
+DEFAULT_STAGE1_RETRY_DELAY_SEC = 3.0
+DEFAULT_URL_FIELD_NAME = "产品链接"
+DEFAULT_STAGE1_FIELD_MAPPING = {
     "product_id": "SKU-ID",
+    "main_image_file": "图片",
     "title": "标题",
     "holiday": "节日",
     "shop_name": "卖家",
+    "product_page_screenshot_file": "前台截图",
     "price_amount": "价格",
-    "main_image_file": "商品主图",
-    "product_page_screenshot_file": "商品页截图",
-    "cleanup_status": "链接整理状态",
-    "cleanup_deleted_duplicates": "删除重复数",
-    "synced_at": "采集时间",
-    "sync_status": "采集状态",
-    "sync_error": "采集错误",
 }
+DEFAULT_RECORD_DATE_FIELD_NAME = "记录日期"
+RUN_MODES_WITH_MUTATIONS = {"canary", "full_auto"}
+STAGE1_COMPLETION_FIELD_NAMES = (
+    "SKU-ID",
+    "图片",
+    "标题",
+    "节日",
+    "卖家",
+    "前台截图",
+    "价格",
+    "记录日期",
+)
 
 
 class ExistingRecordIndex:
@@ -93,7 +97,11 @@ def run_tiktok_product_link_cleanup(params: dict[str, Any]) -> dict[str, Any]:
     records_payload = load_cleanup_records(params)
     normalized_payload = normalize_cleanup_records(records_payload["records"], params)
     deletion_payload = delete_cleanup_duplicates(normalized_payload["items"], params)
-    write_payload = write_back_cleanup_records(normalized_payload["items"], deletion_payload["deletion_results"], params)
+    write_payload = write_back_cleanup_records(
+        normalized_payload["items"],
+        deletion_payload["deletion_results"],
+        params,
+    )
     return build_cleanup_summary(
         normalized_payload["items"],
         deletion_payload["deletion_results"],
@@ -105,12 +113,10 @@ def run_tiktok_product_link_cleanup(params: dict[str, Any]) -> dict[str, Any]:
 def run_tiktok_feishu_batch_sync(params: dict[str, Any]) -> dict[str, Any]:
     records_payload = load_batch_sync_records(params)
     filter_payload = filter_batch_sync_rows(records_payload["records"], params)
-    collected_payload = collect_batch_sync_products(filter_payload["target_rows"], params)
-    upload_payload = upload_batch_sync_artifacts(collected_payload["items"], params)
-    write_payload = write_back_batch_sync_rows(upload_payload["items"], params)
+    process_payload = process_batch_sync_rows(filter_payload["target_rows"], params)
     return build_batch_sync_summary(
         filter_payload["items"],
-        write_payload["items"],
+        process_payload["items"],
         params,
     )
 
@@ -148,9 +154,7 @@ def normalize_cleanup_records(records: list[dict[str, Any]], params: dict[str, A
                     "status": "skipped_empty",
                     "error": "",
                     "deleted_record_ids": [],
-                    "update_fields": {
-                        settings["cleanup_status_field_name"]: "empty_url",
-                    },
+                    "update_fields": {},
                 }
             )
             continue
@@ -166,9 +170,7 @@ def normalize_cleanup_records(records: list[dict[str, Any]], params: dict[str, A
                     "status": "invalid_url",
                     "error": str(exc),
                     "deleted_record_ids": [],
-                    "update_fields": {
-                        settings["cleanup_status_field_name"]: "invalid_url",
-                    },
+                    "update_fields": {},
                 }
             )
             continue
@@ -182,7 +184,10 @@ def normalize_cleanup_records(records: list[dict[str, Any]], params: dict[str, A
                 "status": "keep",
                 "error": "",
                 "deleted_record_ids": [],
-                "update_fields": {},
+                "update_fields": _build_cleanup_update_fields(
+                    normalized_url=normalized_url,
+                    url_field_name=settings["url_field_name"],
+                ),
             }
             keepers_by_normalized_url[normalized_url] = item
             items.append(item)
@@ -201,20 +206,6 @@ def normalize_cleanup_records(records: list[dict[str, Any]], params: dict[str, A
                 "update_fields": {},
             }
         )
-
-    for item in items:
-        if item["status"] == "keep":
-            deleted_count = len(item["deleted_record_ids"])
-            item["update_fields"] = _build_cleanup_update_fields(
-                source_url=item["normalized_url"],
-                normalized_url=item["normalized_url"],
-                cleanup_status="deduplicated" if deleted_count else "normalized",
-                normalized_url_field_name=settings["normalized_url_field_name"],
-                cleanup_status_field_name=settings["cleanup_status_field_name"],
-                cleanup_duplicate_count_field_name=settings["cleanup_duplicate_count_field_name"],
-                url_field_name=settings["url_field_name"],
-                deleted_count=deleted_count,
-            )
 
     return {"items": items}
 
@@ -276,7 +267,7 @@ def write_back_cleanup_records(
 
     if not settings["apply_mutations"]:
         for item in items:
-            if item["status"] == "delete_duplicate":
+            if item["status"] != "keep" or not item["update_fields"]:
                 continue
             update_results.append(
                 {
@@ -289,36 +280,33 @@ def write_back_cleanup_records(
         return {"update_results": update_results}
 
     target = _build_table_target(settings["table_url"], settings["access_token"])
-    successful_deletions_by_keeper: dict[str, int] = {}
     for item in items:
-        if item["status"] != "delete_duplicate":
-            continue
-        deletion = deletion_by_id.get(item["record_id"], {})
-        if deletion.get("status") == "deleted":
-            keeper_record_id = str(item.get("keeper_record_id", "")).strip()
-            successful_deletions_by_keeper[keeper_record_id] = successful_deletions_by_keeper.get(keeper_record_id, 0) + 1
-
-    for item in items:
-        if item["status"] == "delete_duplicate":
+        if item["status"] != "keep" or not item["update_fields"]:
             continue
 
-        fields = dict(item["update_fields"])
-        if item["status"] == "keep":
-            fields[settings["cleanup_duplicate_count_field_name"]] = successful_deletions_by_keeper.get(
-                item["record_id"], 0
+        duplicate_delete_failed = any(
+            deletion_by_id.get(record_id, {}).get("status") == "delete_failed"
+            for record_id in item["deleted_record_ids"]
+        )
+        if duplicate_delete_failed:
+            update_results.append(
+                {
+                    "record_id": item["record_id"],
+                    "status": "skipped_due_to_delete_failure",
+                    "error": "duplicate deletion failed",
+                    "fields": item["update_fields"],
+                }
             )
-            fields[settings["cleanup_status_field_name"]] = (
-                "deduplicated" if fields[settings["cleanup_duplicate_count_field_name"]] else "normalized"
-            )
+            continue
 
         try:
-            target.client.update_record(target.app_token, target.table_id, item["record_id"], fields)
+            target.client.update_record(target.app_token, target.table_id, item["record_id"], item["update_fields"])
             update_results.append(
                 {
                     "record_id": item["record_id"],
                     "status": "updated",
                     "error": "",
-                    "fields": fields,
+                    "fields": item["update_fields"],
                 }
             )
         except Exception as exc:
@@ -327,7 +315,7 @@ def write_back_cleanup_records(
                     "record_id": item["record_id"],
                     "status": "update_failed",
                     "error": str(exc),
-                    "fields": fields,
+                    "fields": item["update_fields"],
                 }
             )
 
@@ -361,17 +349,26 @@ def build_cleanup_summary(
             )
             continue
 
-        update = update_by_id.get(record_id, {})
-        final_status = update.get("status") or item["status"]
-        if item["status"] in {"invalid_url", "skipped_empty"} and not settings["apply_mutations"]:
-            final_status = item["status"]
+        if item["status"] in {"invalid_url", "skipped_empty"}:
+            final_items.append(
+                {
+                    "record_id": record_id,
+                    "source_url": item["source_url"],
+                    "normalized_url": item["normalized_url"],
+                    "status": item["status"],
+                    "error": item.get("error", ""),
+                    "deleted_record_ids": item["deleted_record_ids"],
+                }
+            )
+            continue
 
+        update = update_by_id.get(record_id, {})
         final_items.append(
             {
                 "record_id": record_id,
                 "source_url": item["source_url"],
                 "normalized_url": item["normalized_url"],
-                "status": final_status,
+                "status": update.get("status", item["status"]),
                 "error": update.get("error", item.get("error", "")),
                 "deleted_record_ids": item["deleted_record_ids"],
             }
@@ -384,8 +381,6 @@ def build_cleanup_summary(
             "run_mode": settings["run_mode"],
             "apply_mutations": settings["apply_mutations"],
             "url_field_name": settings["url_field_name"],
-            "normalized_url_field_name": settings["normalized_url_field_name"],
-            "cleanup_status_field_name": settings["cleanup_status_field_name"],
         },
     }
 
@@ -404,10 +399,8 @@ def load_batch_sync_records(params: dict[str, Any]) -> dict[str, Any]:
 
 def filter_batch_sync_rows(records: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     settings = _build_batch_settings(params)
-    field_mapping = _effective_sync_field_mapping(settings["field_mapping"])
-    seen_normalized_urls: dict[str, str] = {}
     items: list[dict[str, Any]] = []
-    target_rows: list[dict[str, Any]] = []
+    clean_candidates: list[dict[str, Any]] = []
 
     for raw_row in records:
         record_id = str(raw_row.get("record_id", "")).strip()
@@ -428,47 +421,77 @@ def filter_batch_sync_rows(records: list[dict[str, Any]], params: dict[str, Any]
             items.append({**base_item, "status": "skipped_empty"})
             continue
 
-        cleanup_status = str(fields.get(field_mapping["cleanup_status"], "") or "").strip().lower()
-        if cleanup_status in {"invalid_url", "empty_url", "update_failed"}:
-            items.append({**base_item, "status": "skipped_cleanup_error"})
-            continue
-
         try:
             normalized_url = normalize_tiktok_product_url(source_url)
         except ValueError as exc:
             items.append({**base_item, "status": "invalid_url", "error": str(exc)})
             continue
 
-        base_item["normalized_url"] = normalized_url
-        keeper_record_id = seen_normalized_urls.get(normalized_url)
-        if keeper_record_id:
+        if source_url != normalized_url:
             items.append(
                 {
                     **base_item,
-                    "status": "duplicate_blocked",
-                    "error": "",
-                    "keeper_record_id": keeper_record_id,
+                    "normalized_url": normalized_url,
+                    "status": "skipped_not_cleaned",
                 }
             )
             continue
 
-        seen_normalized_urls[normalized_url] = record_id
-        if settings["skip_completed_rows"] and _is_stage1_completed(fields, field_mapping):
-            items.append({**base_item, "status": "skipped_completed"})
-            continue
-
-        target_rows.append(
+        clean_candidates.append(
             {
-                "record_id": record_id,
-                "source_url": source_url,
+                **base_item,
                 "normalized_url": normalized_url,
+                "fields": fields,
             }
         )
 
-    if settings["max_records"] > 0 and len(target_rows) > settings["max_records"]:
-        kept = target_rows[: settings["max_records"]]
-        skipped = target_rows[settings["max_records"] :]
-        target_rows = kept
+    candidate_counts: dict[str, int] = {}
+    for candidate in clean_candidates:
+        normalized_url = candidate["normalized_url"]
+        candidate_counts[normalized_url] = candidate_counts.get(normalized_url, 0) + 1
+
+    target_rows: list[dict[str, Any]] = []
+    deferred_rows: list[dict[str, Any]] = []
+    for candidate in clean_candidates:
+        normalized_url = candidate["normalized_url"]
+        if candidate_counts[normalized_url] > 1:
+            items.append(
+                {
+                    "record_id": candidate["record_id"],
+                    "source_url": candidate["source_url"],
+                    "normalized_url": normalized_url,
+                    "status": "skipped_duplicate_needs_cleanup",
+                    "error": "",
+                }
+            )
+            continue
+
+        missing_fields = _missing_stage1_field_names(candidate["fields"])
+        if not missing_fields:
+            items.append(
+                {
+                    "record_id": candidate["record_id"],
+                    "source_url": candidate["source_url"],
+                    "normalized_url": normalized_url,
+                    "status": "skipped_completed",
+                    "error": "",
+                    "missing_fields": [],
+                }
+            )
+            continue
+
+        deferred_rows.append(
+            {
+                "record_id": candidate["record_id"],
+                "source_url": candidate["source_url"],
+                "normalized_url": normalized_url,
+                "missing_fields": missing_fields,
+            }
+        )
+
+    if settings["max_records"] > 0 and len(deferred_rows) > settings["max_records"]:
+        target_rows = deferred_rows[: settings["max_records"]]
+        skipped = deferred_rows[settings["max_records"] :]
         items.extend(
             {
                 "record_id": row["record_id"],
@@ -476,56 +499,38 @@ def filter_batch_sync_rows(records: list[dict[str, Any]], params: dict[str, Any]
                 "normalized_url": row["normalized_url"],
                 "status": "skipped_max_records",
                 "error": "",
+                "missing_fields": row.get("missing_fields", []),
             }
             for row in skipped
         )
+    else:
+        target_rows = deferred_rows
 
     return {"items": items, "target_rows": target_rows}
 
 
-def collect_batch_sync_products(target_rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+def process_batch_sync_rows(target_rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     settings = _build_batch_settings(params)
-    field_mapping = _effective_sync_field_mapping(settings["field_mapping"])
+    target = _build_table_target(settings["table_url"], settings["access_token"]) if settings["apply_mutations"] else None
     items: list[dict[str, Any]] = []
 
     for index, row in enumerate(target_rows, start=1):
-        try:
-            product = fetch_tiktok_product_record_via_browser(
-                row["source_url"],
-                profile_ref=settings["profile_ref"],
-                capture_page_screenshot=settings["capture_page_screenshot"],
-            )
-            product = TikTokProductRecord.from_dict(
-                {
-                    **product.to_dict(),
-                    "normalized_url": row["normalized_url"],
-                }
-            )
-            validate_tiktok_product_record(product, require_local_image=True)
-            preview_fields = _build_sync_success_fields(product, field_mapping)
-            items.append(
-                {
-                    "record_id": row["record_id"],
-                    "source_url": row["source_url"],
-                    "normalized_url": row["normalized_url"],
-                    "status": "collected",
-                    "error": "",
-                    "logical_fields": product.to_dict(),
-                    "preview_fields": preview_fields,
-                }
-            )
-        except Exception as exc:
-            items.append(
-                {
-                    "record_id": row["record_id"],
-                    "source_url": row["source_url"],
-                    "normalized_url": row["normalized_url"],
-                    "status": "failed",
-                    "error": str(exc),
-                    "logical_fields": {},
-                    "preview_fields": _build_sync_error_fields(str(exc), field_mapping),
-                }
-            )
+        items.append(_process_batch_sync_row(row=row, settings=settings, target=target))
+
+        if index < len(target_rows):
+            _sleep_with_jitter(settings["record_delay_sec"], settings["record_delay_jitter_sec"])
+            if settings["pause_every"] > 0 and index % settings["pause_every"] == 0:
+                time.sleep(settings["pause_sec"])
+
+    return {"items": items}
+
+
+def collect_batch_sync_products(target_rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    settings = _build_batch_settings(params)
+    items: list[dict[str, Any]] = []
+
+    for index, row in enumerate(target_rows, start=1):
+        items.append(_collect_batch_sync_product(row=row, settings=settings))
 
         if index < len(target_rows):
             _sleep_with_jitter(settings["record_delay_sec"], settings["record_delay_jitter_sec"])
@@ -578,8 +583,8 @@ def upload_batch_sync_artifacts(items: list[dict[str, Any]], params: dict[str, A
                     **item,
                     "status": "failed",
                     "error": str(exc),
-                    "preview_fields": _build_sync_error_fields(str(exc), _effective_sync_field_mapping(settings["field_mapping"])),
-                    "writable_fields": _build_sync_error_fields(str(exc), _effective_sync_field_mapping(settings["field_mapping"])),
+                    "preview_fields": {},
+                    "writable_fields": {},
                 }
             )
     return {"items": uploaded_items}
@@ -597,6 +602,8 @@ def write_back_batch_sync_rows(items: list[dict[str, Any]], params: dict[str, An
                     "status": "preview" if item["status"] != "failed" else "failed",
                     "error": item["error"],
                     "fields": item["writable_fields"],
+                    "attempt_count": item.get("attempt_count", 1),
+                    "retry_errors": item.get("retry_errors", []),
                 }
                 for item in items
             ]
@@ -605,6 +612,21 @@ def write_back_batch_sync_rows(items: list[dict[str, Any]], params: dict[str, An
     target = _build_table_target(settings["table_url"], settings["access_token"])
     final_items: list[dict[str, Any]] = []
     for item in items:
+        if item["status"] == "failed" or not item["writable_fields"]:
+            final_items.append(
+                {
+                    "record_id": item["record_id"],
+                    "source_url": item["source_url"],
+                    "normalized_url": item["normalized_url"],
+                    "status": "failed",
+                    "error": item["error"],
+                    "fields": item["writable_fields"],
+                    "attempt_count": item.get("attempt_count", 1),
+                    "retry_errors": item.get("retry_errors", []),
+                }
+            )
+            continue
+
         try:
             target.client.update_record(
                 target.app_token,
@@ -617,12 +639,34 @@ def write_back_batch_sync_rows(items: list[dict[str, Any]], params: dict[str, An
                     "record_id": item["record_id"],
                     "source_url": item["source_url"],
                     "normalized_url": item["normalized_url"],
-                    "status": "updated" if item["status"] != "failed" else "failed",
-                    "error": item["error"],
+                    "status": "updated",
+                    "error": "",
                     "fields": item["writable_fields"],
+                    "attempt_count": item.get("attempt_count", 1),
+                    "retry_errors": item.get("retry_errors", []),
                 }
             )
         except Exception as exc:
+            retry_fields = _retry_datetime_write_back(
+                target=target,
+                record_id=item["record_id"],
+                writable_fields=item["writable_fields"],
+                error=exc,
+            )
+            if retry_fields is not None:
+                final_items.append(
+                    {
+                        "record_id": item["record_id"],
+                        "source_url": item["source_url"],
+                        "normalized_url": item["normalized_url"],
+                        "status": "updated",
+                        "error": "",
+                        "fields": retry_fields,
+                        "attempt_count": item.get("attempt_count", 1),
+                        "retry_errors": item.get("retry_errors", []),
+                    }
+                )
+                continue
             final_items.append(
                 {
                     "record_id": item["record_id"],
@@ -631,6 +675,8 @@ def write_back_batch_sync_rows(items: list[dict[str, Any]], params: dict[str, An
                     "status": "update_failed",
                     "error": str(exc),
                     "fields": item["writable_fields"],
+                    "attempt_count": item.get("attempt_count", 1),
+                    "retry_errors": item.get("retry_errors", []),
                 }
             )
     return {"items": final_items}
@@ -643,17 +689,32 @@ def build_batch_sync_summary(
 ) -> dict[str, Any]:
     settings = _build_batch_settings(params)
     final_items = list(filtered_items) + list(processed_items)
+    failed_items = [
+        {
+            "record_id": item["record_id"],
+            "source_url": item.get("source_url", ""),
+            "normalized_url": item.get("normalized_url", ""),
+            "error": item.get("error", ""),
+            "attempt_count": item.get("attempt_count", 1),
+            "retry_errors": item.get("retry_errors", []),
+        }
+        for item in processed_items
+        if item.get("status") in {"failed", "update_failed"}
+    ]
     return {
         "summary": _summarize_status_counts(final_items),
         "items": final_items,
+        "failed_items": failed_items,
         "settings": {
             "run_mode": settings["run_mode"],
             "apply_mutations": settings["apply_mutations"],
             "profile_ref": settings["profile_ref"],
             "url_field_name": settings["url_field_name"],
-            "capture_page_screenshot": settings["capture_page_screenshot"],
             "skip_completed_rows": settings["skip_completed_rows"],
             "max_records": settings["max_records"],
+            "retry_attempts": settings["retry_attempts"],
+            "retry_delay_sec": settings["retry_delay_sec"],
+            "requires_clean_links": True,
         },
     }
 
@@ -768,7 +829,7 @@ def _build_cleanup_settings(params: dict[str, Any]) -> dict[str, Any]:
     if not table_url:
         raise ValueError("table_url is required")
 
-    url_field_name = str(params.get("url_field_name", DEFAULT_SYNC_FIELD_MAPPING["source_url"])).strip()
+    url_field_name = str(params.get("url_field_name", DEFAULT_URL_FIELD_NAME)).strip()
     if not url_field_name:
         raise ValueError("url_field_name is required")
 
@@ -779,18 +840,6 @@ def _build_cleanup_settings(params: dict[str, Any]) -> dict[str, Any]:
         "run_mode": run_mode,
         "apply_mutations": _should_apply_mutations(run_mode),
         "url_field_name": url_field_name,
-        "normalized_url_field_name": str(
-            params.get("normalized_url_field_name", DEFAULT_CLEANUP_NORMALIZED_URL_FIELD_NAME)
-        ).strip(),
-        "cleanup_status_field_name": str(
-            params.get("cleanup_status_field_name", DEFAULT_CLEANUP_STATUS_FIELD_NAME)
-        ).strip(),
-        "cleanup_duplicate_count_field_name": str(
-            params.get(
-                "cleanup_duplicate_count_field_name",
-                DEFAULT_CLEANUP_DUPLICATE_COUNT_FIELD_NAME,
-            )
-        ).strip(),
     }
 
 
@@ -805,12 +854,10 @@ def _build_batch_settings(params: dict[str, Any]) -> dict[str, Any]:
         "access_token": _resolve_access_token(params),
         "run_mode": run_mode,
         "apply_mutations": _should_apply_mutations(run_mode),
-        "url_field_name": str(params.get("url_field_name", DEFAULT_SYNC_FIELD_MAPPING["source_url"])).strip(),
-        "field_mapping": _parse_field_mapping(params.get("field_mapping")),
+        "url_field_name": str(params.get("url_field_name", DEFAULT_URL_FIELD_NAME)).strip(),
         "profile_ref": str(params.get("profile_ref") or "").strip() or None,
         "max_records": max(0, _coerce_int(params.get("max_records"), 0)),
         "skip_completed_rows": _coerce_bool(params.get("skip_completed_rows"), default=True),
-        "capture_page_screenshot": _coerce_bool(params.get("capture_page_screenshot"), default=True),
         "record_delay_sec": max(0.0, _coerce_float(params.get("record_delay_sec"), DEFAULT_RECORD_DELAY_SEC)),
         "record_delay_jitter_sec": max(
             0.0,
@@ -818,6 +865,8 @@ def _build_batch_settings(params: dict[str, Any]) -> dict[str, Any]:
         ),
         "pause_every": max(0, _coerce_int(params.get("pause_every"), DEFAULT_PAUSE_EVERY)),
         "pause_sec": max(0.0, _coerce_float(params.get("pause_sec"), DEFAULT_PAUSE_SEC)),
+        "retry_attempts": max(0, _coerce_int(params.get("retry_attempts"), DEFAULT_STAGE1_RETRY_ATTEMPTS)),
+        "retry_delay_sec": max(0.0, _coerce_float(params.get("retry_delay_sec"), DEFAULT_STAGE1_RETRY_DELAY_SEC)),
     }
 
 
@@ -892,55 +941,222 @@ def _prepare_writable_fields(
 
 def _build_cleanup_update_fields(
     *,
-    source_url: str,
     normalized_url: str,
-    cleanup_status: str,
-    normalized_url_field_name: str,
-    cleanup_status_field_name: str,
-    cleanup_duplicate_count_field_name: str,
     url_field_name: str,
-    deleted_count: int,
 ) -> dict[str, Any]:
-    fields: dict[str, Any] = {
-        url_field_name: _build_link_value(source_url),
-        cleanup_status_field_name: cleanup_status,
-        cleanup_duplicate_count_field_name: deleted_count,
-    }
-    if normalized_url_field_name and normalized_url_field_name != url_field_name:
-        fields[normalized_url_field_name] = _build_link_value(normalized_url)
-    return fields
-
-
-def _build_sync_success_fields(
-    product: TikTokProductRecord,
-    field_mapping: dict[str, str],
-) -> dict[str, Any]:
-    fields = build_feishu_bitable_record(product, field_mapping=field_mapping)["fields"]
-    fields[field_mapping["sync_status"]] = "success"
-    fields[field_mapping["sync_error"]] = ""
-    fields[field_mapping["synced_at"]] = _utc_now_iso()
-    return fields
-
-
-def _build_sync_error_fields(error: str, field_mapping: dict[str, str]) -> dict[str, Any]:
     return {
-        field_mapping["sync_status"]: "failed",
-        field_mapping["sync_error"]: error,
+        url_field_name: _build_link_value(normalized_url),
     }
 
 
-def _is_stage1_completed(fields: dict[str, Any], field_mapping: dict[str, str]) -> bool:
-    sync_status = str(fields.get(field_mapping["sync_status"], "") or "").strip().lower()
-    if sync_status == "success":
-        return True
+def _build_stage1_success_fields(product: TikTokProductRecord) -> dict[str, Any]:
+    fields = build_feishu_bitable_record(product, field_mapping=DEFAULT_STAGE1_FIELD_MAPPING)["fields"]
+    fields.pop(DEFAULT_FEISHU_FIELD_MAPPING["source_url"], None)
+    fields[DEFAULT_RECORD_DATE_FIELD_NAME] = _current_record_date()
+    return fields
 
-    required_columns = (
-        field_mapping["product_id"],
-        field_mapping["title"],
-        field_mapping["price_amount"],
-        field_mapping["main_image_file"],
+
+def _process_batch_sync_row(
+    *,
+    row: dict[str, Any],
+    settings: dict[str, Any],
+    target: TableTarget | None,
+) -> dict[str, Any]:
+    collected_item = _collect_batch_sync_product(row=row, settings=settings)
+    if collected_item["status"] == "failed":
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "failed",
+            "error": collected_item["error"],
+            "fields": {},
+            "missing_fields": row.get("missing_fields", []),
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+
+    preview_fields = _select_stage1_write_fields(
+        collected_item["preview_fields"],
+        missing_fields=row.get("missing_fields", []),
     )
-    return all(_field_has_value(fields.get(column_name)) for column_name in required_columns)
+    if not preview_fields:
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "skipped_completed",
+            "error": "",
+            "fields": {},
+            "missing_fields": [],
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+
+    if not settings["apply_mutations"]:
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "preview",
+            "error": "",
+            "fields": preview_fields,
+            "missing_fields": row.get("missing_fields", []),
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+
+    if target is None:
+        raise RuntimeError("table target is required when batch sync mutations are enabled")
+
+    try:
+        writable_fields = _prepare_writable_fields(
+            client=target.client,
+            app_token=target.app_token,
+            preview_fields=preview_fields,
+        )
+    except Exception as exc:
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "failed",
+            "error": str(exc),
+            "fields": {},
+            "missing_fields": row.get("missing_fields", []),
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+
+    try:
+        target.client.update_record(
+            target.app_token,
+            target.table_id,
+            row["record_id"],
+            writable_fields,
+        )
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "updated",
+            "error": "",
+            "fields": writable_fields,
+            "missing_fields": row.get("missing_fields", []),
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+    except Exception as exc:
+        retry_fields = _retry_datetime_write_back(
+            target=target,
+            record_id=row["record_id"],
+            writable_fields=writable_fields,
+            error=exc,
+        )
+        if retry_fields is not None:
+            return {
+                "record_id": row["record_id"],
+                "source_url": row["source_url"],
+                "normalized_url": row["normalized_url"],
+                "status": "updated",
+                "error": "",
+                "fields": retry_fields,
+                "missing_fields": row.get("missing_fields", []),
+                "attempt_count": collected_item.get("attempt_count", 1),
+                "retry_errors": collected_item.get("retry_errors", []),
+            }
+        return {
+            "record_id": row["record_id"],
+            "source_url": row["source_url"],
+            "normalized_url": row["normalized_url"],
+            "status": "update_failed",
+            "error": str(exc),
+            "fields": writable_fields,
+            "missing_fields": row.get("missing_fields", []),
+            "attempt_count": collected_item.get("attempt_count", 1),
+            "retry_errors": collected_item.get("retry_errors", []),
+        }
+
+
+def _collect_batch_sync_product(*, row: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    retry_errors: list[dict[str, Any]] = []
+    total_attempts = settings["retry_attempts"] + 1
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            product = _fetch_stage1_product_via_browser(
+                row["source_url"],
+                profile_ref=settings["profile_ref"],
+            )
+            product = TikTokProductRecord.from_dict(
+                {
+                    **product.to_dict(),
+                    "normalized_url": row["normalized_url"],
+                }
+            )
+            _validate_stage1_product(product)
+            preview_fields = _build_stage1_success_fields(product)
+            return {
+                "record_id": row["record_id"],
+                "source_url": row["source_url"],
+                "normalized_url": row["normalized_url"],
+                "status": "collected",
+                "error": "",
+                "logical_fields": product.to_dict(),
+                "preview_fields": preview_fields,
+                "attempt_count": attempt,
+                "retry_errors": retry_errors,
+            }
+        except Exception as exc:
+            retry_errors.append({"attempt": attempt, "error": str(exc)})
+            if attempt >= total_attempts:
+                return {
+                    "record_id": row["record_id"],
+                    "source_url": row["source_url"],
+                    "normalized_url": row["normalized_url"],
+                    "status": "failed",
+                    "error": str(exc),
+                    "logical_fields": {},
+                    "preview_fields": {},
+                    "attempt_count": attempt,
+                    "retry_errors": retry_errors,
+                }
+            _sleep_with_jitter(settings["retry_delay_sec"], 0.0)
+
+    raise RuntimeError("unreachable")
+
+
+def _validate_stage1_product(product: TikTokProductRecord) -> None:
+    validate_tiktok_product_record(product, require_local_image=True)
+    if not product.shop_name.strip():
+        raise ValueError("TikTok product seller name is required")
+    if not product.product_page_screenshot_local_path.strip():
+        raise ValueError("TikTok product page screenshot is required")
+    if not Path(product.product_page_screenshot_local_path).exists():
+        raise ValueError("TikTok product page screenshot file does not exist")
+
+
+def _is_stage1_completed(fields: dict[str, Any]) -> bool:
+    return all(_field_has_value(fields.get(column_name)) for column_name in STAGE1_COMPLETION_FIELD_NAMES)
+
+
+def _missing_stage1_field_names(fields: dict[str, Any]) -> list[str]:
+    return [
+        column_name
+        for column_name in STAGE1_COMPLETION_FIELD_NAMES
+        if not _field_has_value(fields.get(column_name))
+    ]
+
+
+def _select_stage1_write_fields(preview_fields: dict[str, Any], *, missing_fields: list[str]) -> dict[str, Any]:
+    allowed = set(missing_fields)
+    if allowed:
+        allowed.add(DEFAULT_RECORD_DATE_FIELD_NAME)
+    return {
+        column_name: value
+        for column_name, value in preview_fields.items()
+        if column_name in allowed
+    }
 
 
 def _field_has_value(value: Any) -> bool:
@@ -988,10 +1204,6 @@ def _extract_record_id(response: dict[str, Any]) -> str:
 
 def _effective_single_field_mapping(field_mapping: dict[str, str] | None) -> dict[str, str]:
     return DEFAULT_FEISHU_FIELD_MAPPING | (field_mapping or {})
-
-
-def _effective_sync_field_mapping(field_mapping: dict[str, str] | None) -> dict[str, str]:
-    return DEFAULT_SYNC_FIELD_MAPPING | (field_mapping or {})
 
 
 def _parse_field_mapping(raw_mapping: Any) -> dict[str, str] | None:
@@ -1070,5 +1282,53 @@ def _should_apply_mutations(run_mode: str) -> bool:
     return run_mode in RUN_MODES_WITH_MUTATIONS
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _current_record_date() -> str:
+    return datetime.now().strftime("%Y/%m/%d")
+
+
+def _fetch_stage1_product_via_browser(
+    source_url: str,
+    *,
+    profile_ref: str | None,
+) -> TikTokProductRecord:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            fetch_tiktok_product_record_via_browser,
+            source_url,
+            profile_ref=profile_ref,
+            capture_page_screenshot=True,
+        )
+        return future.result()
+
+
+def _retry_datetime_write_back(
+    *,
+    target: TableTarget,
+    record_id: str,
+    writable_fields: dict[str, Any],
+    error: Exception,
+) -> dict[str, Any] | None:
+    if not _is_datetime_field_conversion_error(error):
+        return None
+    if DEFAULT_RECORD_DATE_FIELD_NAME not in writable_fields:
+        return None
+
+    retry_fields = dict(writable_fields)
+    retry_fields[DEFAULT_RECORD_DATE_FIELD_NAME] = _current_record_date_timestamp_ms()
+    target.client.update_record(
+        target.app_token,
+        target.table_id,
+        record_id,
+        retry_fields,
+    )
+    return retry_fields
+
+
+def _is_datetime_field_conversion_error(error: Exception) -> bool:
+    return "DatetimeFieldConvFail" in str(error)
+
+
+def _current_record_date_timestamp_ms() -> int:
+    now = datetime.now()
+    local_midnight = datetime(now.year, now.month, now.day)
+    return int(local_midnight.timestamp() * 1000)

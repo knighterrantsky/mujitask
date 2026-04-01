@@ -127,13 +127,11 @@ automation-business-scaffold-run run \
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
     "url_field_name": "产品链接",
-    "normalized_url_field_name": "标准产品链接",
-    "cleanup_status_field_name": "链接整理状态",
-    "run_mode": "approval_required"
+    "run_mode": "canary"
   }'
 ```
 
-直接运行 TikTok 表格驱动批量同步 task：
+直接运行 TikTok 阶段一表格驱动同步 task：
 
 ```bash
 cd "$HOME/apps/mujitask"
@@ -144,9 +142,17 @@ automation-business-scaffold-run run \
     "access_token_env": "FEISHU_ACCESS_TOKEN",
     "url_field_name": "产品链接",
     "profile_ref": "local-chrome",
-    "run_mode": "approval_required"
+    "run_mode": "canary"
   }'
 ```
+
+说明：
+
+- `tiktok_product_link_cleanup` 只会回写 `产品链接`，并删除重复整行
+- `tiktok_feishu_batch_sync` 会读取当前飞书视图，逐条判断阶段一字段是否缺失
+- 只有存在空缺字段的记录才会被抓取
+- 单条记录按“抓取 -> 上传附件 -> 直接更新当前行”执行
+- 只要发生写回，就会同步刷新 `记录日期`
 
 如果只是单条 URL 调试底层字段构建，可以继续使用：
 

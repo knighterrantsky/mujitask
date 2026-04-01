@@ -72,6 +72,7 @@ MAIN_IMAGE_CANDIDATE_SELECTORS = (
     "figure img",
     "img",
 )
+DEFAULT_LOGIN_TOAST_SETTLE_MS = 4000
 
 
 class TikTokProductExtractionError(RuntimeError):
@@ -151,6 +152,7 @@ def fetch_tiktok_product_record_via_browser(
     with open_automation_page(profile_ref=profile_ref) as browser_page:
         page = browser_page.page
         _page_goto(page, product_url)
+        _wait_for_login_toast_to_settle(page)
         dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=timeout_ms)
         html = _safe_page_content(page)
         resolved_url = str(getattr(page, "url", "") or product_url)
@@ -391,7 +393,7 @@ def _build_record_from_browser_state(
     price_text = str(dom_snapshot.get("price_text", "")).strip() or (router_record.price_text if router_record else "")
     price_amount = _normalize_price_amount(price_text) or (router_record.price_amount if router_record else "")
     price_currency = (router_record.price_currency if router_record else "") or _infer_currency_from_price_text(price_text)
-    shop_name = str(dom_snapshot.get("shop_name", "")).strip() or (router_record.shop_name if router_record else "")
+    shop_name = (router_record.shop_name if router_record else "") or str(dom_snapshot.get("shop_name", "")).strip()
     shop_url = router_record.shop_url if router_record else ""
     sales_count = router_record.sales_count if router_record else 0
 
@@ -429,20 +431,11 @@ def _capture_browser_product_artifacts(
     capture_page_screenshot: bool,
     timeout_ms: int,
 ) -> TikTokProductRecord:
-    main_image_selector = str(dom_snapshot.get("main_image_selector", "")).strip()
-    _wait_for_main_image_loaded(page, selector=main_image_selector, timeout_ms=timeout_ms)
-
-    image_dir = Path(DEFAULT_IMAGE_DOWNLOAD_DIR)
-    image_dir.mkdir(parents=True, exist_ok=True)
-    main_image_file_name = f"{product.product_id}-main-image.png"
-    main_image_path = image_dir / main_image_file_name
-    _capture_locator_screenshot(page, main_image_path, selector=main_image_selector)
-
-    updated = replace(
+    updated = _materialize_browser_main_image(
+        page,
         product,
-        main_image_local_path=str(main_image_path),
-        main_image_file_name=main_image_file_name,
-        main_image_mime_type="image/png",
+        dom_snapshot=dom_snapshot,
+        timeout_ms=timeout_ms,
     )
 
     if not capture_page_screenshot:
@@ -459,6 +452,36 @@ def _capture_browser_product_artifacts(
         product_page_screenshot_file_name=screenshot_file_name,
         product_page_screenshot_mime_type="image/png",
     )
+
+
+def _materialize_browser_main_image(
+    page: Any,
+    product: TikTokProductRecord,
+    *,
+    dom_snapshot: dict[str, Any],
+    timeout_ms: int,
+) -> TikTokProductRecord:
+    main_image_selector = str(dom_snapshot.get("main_image_selector", "")).strip()
+    if main_image_selector:
+        try:
+            _wait_for_main_image_loaded(page, selector=main_image_selector, timeout_ms=timeout_ms)
+
+            image_dir = Path(DEFAULT_IMAGE_DOWNLOAD_DIR)
+            image_dir.mkdir(parents=True, exist_ok=True)
+            main_image_file_name = f"{product.product_id}-main-image.png"
+            main_image_path = image_dir / main_image_file_name
+            _capture_locator_screenshot(page, main_image_path, selector=main_image_selector)
+
+            return replace(
+                product,
+                main_image_local_path=str(main_image_path),
+                main_image_file_name=main_image_file_name,
+                main_image_mime_type="image/png",
+            )
+        except Exception:
+            pass
+
+    return download_tiktok_product_main_image(product, download_dir=DEFAULT_IMAGE_DOWNLOAD_DIR)
 
 
 def _wait_for_main_image_loaded(page: Any, *, selector: str, timeout_ms: int) -> None:
@@ -831,6 +854,10 @@ def _safe_wait_for_timeout(page: Any, timeout_ms: int) -> None:
         wait_for_timeout(timeout_ms)
         return
     time.sleep(timeout_ms / 1000.0)
+
+
+def _wait_for_login_toast_to_settle(page: Any, *, settle_ms: int = DEFAULT_LOGIN_TOAST_SETTLE_MS) -> None:
+    _safe_wait_for_timeout(page, settle_ms)
 
 
 def _safe_page_content(page: Any) -> str:
