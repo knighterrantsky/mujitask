@@ -39,9 +39,7 @@ automation-business-scaffold-run run \
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
     "url_field_name": "产品链接",
-    "normalized_url_field_name": "标准产品链接",
-    "cleanup_status_field_name": "链接整理状态",
-    "run_mode": "approval_required"
+    "run_mode": "canary"
   }'
 ```
 
@@ -55,7 +53,7 @@ automation-business-scaffold-run run \
     "access_token_env": "FEISHU_ACCESS_TOKEN",
     "url_field_name": "产品链接",
     "profile_ref": "local-chrome",
-    "run_mode": "approval_required"
+    "run_mode": "canary"
   }'
 ```
 
@@ -80,7 +78,7 @@ payload = run_registered_task(
         "access_token_env": "FEISHU_ACCESS_TOKEN",
         "url_field_name": "产品链接",
         "profile_ref": "local-chrome",
-        "run_mode": "approval_required",
+        "run_mode": "canary",
     },
 )
 
@@ -111,8 +109,6 @@ cleanup task 的关键入参：
 - `table_url`
 - `access_token_env`
 - `url_field_name`
-- `normalized_url_field_name`
-- `cleanup_status_field_name`
 - `run_mode`
 
 批量正式 task 的关键入参：
@@ -123,12 +119,13 @@ cleanup task 的关键入参：
 - `profile_ref`
 - `run_mode`
 - `trace_id`
-- `field_mapping`
 - `record_delay_sec`
 - `record_delay_jitter_sec`
 - `pause_every`
 - `pause_sec`
-- `continue_on_error`
+- `max_records`
+- `retry_attempts`
+- `retry_delay_sec`
 
 ## 4. 返回字段
 
@@ -149,11 +146,26 @@ cleanup 任务的 `result.data` 重点字段：
 - `items`
 - `settings`
 
+cleanup 说明：
+
+- 只回写 `产品链接`
+- 只删除重复整行
+- 不写 `标准产品链接 / 链接整理状态 / 删除重复数`
+
 批量任务的 `result.data` 重点字段：
 
 - `summary`
 - `items`
+- `failed_items`
 - `settings`
+
+批量任务说明：
+
+- 不是 `product_urls[]` 批量插入接口
+- 是飞书表驱动的阶段一补录入口
+- 逐条执行“抓取 -> 上传附件 -> 写回当前行”
+- 只补空缺字段
+- 只要发生写回，就同步更新 `记录日期`
 
 ## 5. 什么时候选哪一种
 

@@ -13,7 +13,7 @@
 
 - 它不负责真正写入飞书
 - 它保留为底层字段构建和调试能力
-- OpenClaw 正式主入口应该使用 `tiktok_feishu_single_sync` 或 `tiktok_feishu_batch_sync`
+- OpenClaw 正式主入口应该使用 `tiktok_product_link_cleanup` 或 `tiktok_feishu_batch_sync`
 
 ## Task 名称
 
@@ -99,7 +99,7 @@ automation-business-scaffold-run run \
 {
   "source_url": "商品链接",
   "product_id": "SKU",
-  "main_image_file": "商品主图",
+  "main_image_file": "图片",
   "title": "商品标题",
   "holiday": "节日",
   "price_amount": "价格"

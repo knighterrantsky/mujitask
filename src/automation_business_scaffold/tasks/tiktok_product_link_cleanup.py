@@ -17,8 +17,8 @@ from automation_business_scaffold.workflows import build_tiktok_product_link_cle
 class TikTokProductLinkCleanupTask(BaseWorkflowTask):
     name = "tiktok_product_link_cleanup"
     description = (
-        "Normalize TikTok product links from Feishu, delete duplicate rows by normalized URL, "
-        "and write cleanup status back to the kept rows."
+        "Normalize TikTok product links from Feishu, write the normalized URL back to 产品链接, "
+        "and delete duplicate rows."
     )
 
     def build_workflow(self, params: dict[str, Any]):

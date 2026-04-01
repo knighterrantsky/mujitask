@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from automation_business_scaffold.flows import (
@@ -156,6 +157,24 @@ class _FakePage:
         Path(path).write_bytes(b"page-screenshot")
 
 
+class _FakeFallbackPage(_FakePage):
+    def evaluate(self, script: str, arg=None):
+        if "visible_signal_count" in script:
+            return {
+                "title_text": "Sample TikTok Product",
+                "title_selector": "h1",
+                "price_text": "$24.99",
+                "price_selector": "[data-e2e='pdp-product-price']",
+                "shop_name": "玩具和爱好",
+                "shop_selector": "a[href*='/shop/']",
+                "main_image_url": "",
+                "main_image_selector": "",
+                "main_image_loaded": False,
+                "visible_signal_count": 2,
+            }
+        raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+
 def test_extract_tiktok_product_from_html_returns_expected_fields():
     product = extract_tiktok_product_from_html(
         SAMPLE_HTML,
@@ -269,6 +288,59 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
     assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
     assert Path(product.main_image_local_path).read_bytes() == b"main-image"
     assert Path(product.product_page_screenshot_local_path).read_bytes() == b"page-screenshot"
+
+
+def test_fetch_tiktok_product_record_via_browser_falls_back_to_html_data_and_downloaded_main_image(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakeFallbackPage(),
+            },
+        )()
+
+    def fake_download(product, *, download_dir, timeout=30, session=None):
+        image_dir = Path(download_dir)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = image_dir / f"{product.product_id}-main-image.webp"
+        image_path.write_bytes(b"downloaded-main-image")
+        return replace(
+            product,
+            main_image_local_path=str(image_path),
+            main_image_file_name=image_path.name,
+            main_image_mime_type="image/webp",
+        )
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "download_tiktok_product_main_image", fake_download)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+
+    product = fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    assert product.shop_name == "Sample Shop"
+    assert product.price_amount == "24.99"
+    assert product.main_image_url == "https://example.com/main-image.webp"
+    assert product.main_image_local_path.endswith("1729732615040962895-main-image.webp")
+    assert Path(product.main_image_local_path).read_bytes() == b"downloaded-main-image"
+    assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
 
 
 def test_normalize_tiktok_product_url_strips_parameters():

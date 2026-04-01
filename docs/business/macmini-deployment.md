@@ -93,7 +93,7 @@ cd "$HOME/apps/mujitask"
 预期至少能看到：
 
 - `tiktok_product_to_feishu`
-- `tiktok_feishu_single_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
 
 ## 更新方式
@@ -153,54 +153,49 @@ export FEISHU_ACCESS_TOKEN='your-feishu-access-token'
 
 当前对 OpenClaw 正式交付两个 task：
 
-- `tiktok_feishu_single_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
 
 `tiktok_product_to_feishu` 保留为底层调试能力，只负责抓取并组装飞书字段，不作为正式 skill 主入口。
 
-### 单条 URL 插入
+### 链接整理 / 去重
 
-输入 1 个 TikTok URL，执行“抓取页面 -> 下载主图 -> 上传附件 -> 新建飞书记录”。
+读取飞书表中的 `产品链接`，执行“格式化 -> 回写 `产品链接` -> 删除重复整行”。
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "run_mode": "canary"
   }'
 ```
 
-单条任务支持的关键参数：
+cleanup 任务支持的关键参数：
 
-- `product_url`
 - `table_url`
 - `access_token_env`
+- `url_field_name`
 - `run_mode`
 - `trace_id`
-- `field_mapping`
-- `step_delay_sec`
-- `step_delay_jitter_sec`
 
-### 多 URL 顺序插入
+### 阶段一表驱动补录
 
-输入一组 TikTok URLs，内部顺序重复单条插入链路；不是先读飞书表格待处理行，也不是批量回写已有记录。
+读取飞书表中现有记录；如果阶段一字段存在空缺，就逐条执行“抓取 -> 上传附件 -> 写回当前行”。
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_urls": [
-      "https://www.tiktok.com/shop/pdp/1729440407432826887",
-      "https://www.tiktok.com/shop/pdp/1729732615040962895"
-    ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
+    "run_mode": "canary"
   }'
 ```
 
@@ -212,7 +207,8 @@ cd "$HOME/apps/mujitask"
 - `record_delay_jitter_sec = 2.0`
 - `pause_every = 5`
 - `pause_sec = 8.0`
-- `continue_on_error = true`
+- `retry_attempts = 3`
+- `retry_delay_sec = 3.0`
 
 节流位置：
 
@@ -240,43 +236,28 @@ OpenClaw 读取建议：
 - 失败时读取顶层 `error`
 - 成功时继续读取 `result.data`
 
-单条任务的 `result.data` 重点字段：
-
-- `status`
-- `record_id`
-- `product_url`
-- `product_id`
-- `fields`
-
-其中 `status` 可能是：
-
-- `inserted`
-- `skipped_existing`
-- `preview`
-
 批量任务的 `result.data` 重点字段：
 
 - `summary`
 - `items`
+- `failed_items`
 - `settings`
 
 其中 `summary` 至少包含：
 
 - `total`
-- `processed`
-- `inserted`
-- `skipped_existing`
-- `previewed`
+- `updated`
+- `skipped_completed`
 - `failed`
 
 ## 去重与中间数据
 
-飞书去重策略固定为“存在则跳过”：
+正式链路建议固定为：
 
-1. 先按 `产品链接` 查整张表
-2. URL 未命中时，抓取出 `SKU-ID` 后再按 SKU 查整张表
-3. 命中任一条件就返回 `skipped_existing`
-4. 不更新原记录，也不重复新建
+1. 先跑 `tiktok_product_link_cleanup`
+2. 再跑 `tiktok_feishu_batch_sync`
+3. 阶段一只补缺失字段
+4. 只要发生写回，就同步刷新 `记录日期`
 
 CLI 调试数据默认落在：
 

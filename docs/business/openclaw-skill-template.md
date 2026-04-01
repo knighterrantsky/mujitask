@@ -6,14 +6,14 @@
 
 ## Skill 名称
 
-TikTok 商品抓取并插入飞书多维表格
+TikTok 飞书表格清洗与阶段一补录
 
 ## Skill 目标
 
-这个 skill 用于在客户本机调用 `mujitask` CLI，完成两类操作：
+这个 skill 用于在客户本机调用 `mujitask` CLI，完成两类表驱动操作：
 
-- 单条 URL：抓取 1 个 TikTok 商品链接并插入飞书 1 条记录
-- 多 URL 批量：顺序处理一组 TikTok 商品链接，逐条插入飞书记录
+- `tiktok_product_link_cleanup`：读取飞书表中的 `产品链接`，格式化后回写，并删除重复整行
+- `tiktok_feishu_batch_sync`：读取飞书表中的现有记录，只对阶段一字段存在空缺的记录执行浏览器抓取和回写
 
 不要把真实的飞书 token 写进 skill 文本，token 只能通过客户机器的环境变量提供。
 
@@ -64,7 +64,7 @@ cd "$HOME/apps/mujitask"
 
 预期至少能看到：
 
-- `tiktok_feishu_single_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
 
 ## 更新命令
@@ -91,45 +91,46 @@ skill 不要接收真实 token 文本，也不要把 token 回显到回答里。
 
 正式只使用下面两个 task：
 
-- `tiktok_feishu_single_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
 
 `tiktok_product_to_feishu` 只是底层调试 task，不作为主入口。
 
-### 1. 单条 URL 调用
+### 1. 链接整理 / 去重
 
 适用场景：
 
-- 用户给出 1 个 TikTok 商品链接
-- 需要抓取后插入飞书 1 条记录
+- 飞书表中已有一批原始 TikTok 商品链接
+- 需要统一格式化 `产品链接`
+- 需要基于规范 URL 去重并删除重复整行
 
 命令模板：
 
 ```bash
 cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "<tiktok_product_url>",
     "table_url": "<feishu_table_url>",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "run_mode": "canary"
   }'
 ```
 
 可选参数：
 
 - `trace_id`
-- `field_mapping`
-- `step_delay_sec`
-- `step_delay_jitter_sec`
+- `url_field_name`
 
-### 2. 多 URL 批量调用
+### 2. 阶段一表格补录
 
 适用场景：
 
-- 用户一次给出 10 到 20 个 TikTok 商品链接
-- 需要顺序处理，并且每条记录之间带随机 delay
+- 飞书表中已经有经过 cleanup 的记录
+- 需要补齐阶段一字段：`SKU-ID / 图片 / 标题 / 节日 / 卖家 / 前台截图 / 价格 / 记录日期`
+- 只补写当前空缺字段
+- 只要发生写回，就同步刷新 `记录日期`
 
 命令模板：
 
@@ -138,27 +139,24 @@ cd "$HOME/apps/mujitask"
 .venv/bin/automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_urls": [
-      "<url_1>",
-      "<url_2>"
-    ],
     "table_url": "<feishu_table_url>",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "approval_required"
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
+    "run_mode": "canary"
   }'
 ```
 
 可选参数：
 
 - `trace_id`
-- `field_mapping`
-- `step_delay_sec`
-- `step_delay_jitter_sec`
 - `record_delay_sec`
 - `record_delay_jitter_sec`
 - `pause_every`
 - `pause_sec`
-- `continue_on_error`
+- `max_records`
+- `retry_attempts`
+- `retry_delay_sec`
 
 默认节流值：
 
@@ -168,8 +166,6 @@ cd "$HOME/apps/mujitask"
 - `record_delay_jitter_sec = 2.0`
 - `pause_every = 5`
 - `pause_sec = 8.0`
-- `continue_on_error = true`
-
 ## 返回字段说明
 
 CLI 顶层固定返回：
@@ -189,43 +185,45 @@ CLI 顶层固定返回：
 - 顶层 `status = failed` 时读取顶层 `error`
 - 顶层成功后，再看 `result.data`
 
-单条任务 `result.data` 重点字段：
-
-- `status`
-- `record_id`
-- `product_url`
-- `product_id`
-- `fields`
-
-单条任务 `result.data.status` 可能取值：
-
-- `inserted`：已新建飞书记录
-- `skipped_existing`：飞书表中已存在相同 URL 或 SKU，已跳过
-- `preview`：只预览字段，没有真正写入
-
-批量任务 `result.data` 重点字段：
+cleanup 任务 `result.data` 重点字段：
 
 - `summary`
 - `items`
 - `settings`
 
-批量任务 `summary` 重点字段：
+cleanup 典型状态：
+
+- `preview`
+- `updated`
+- `delete_preview`
+- `deleted`
+- `invalid_url`
+- `skipped_empty`
+
+阶段一任务 `result.data` 重点字段：
+
+- `summary`
+- `items`
+- `failed_items`
+- `settings`
+
+阶段一任务 `summary` 重点字段：
 
 - `total`
-- `processed`
-- `inserted`
-- `skipped_existing`
-- `previewed`
+- `updated`
+- `skipped_completed`
+- `skipped_not_cleaned`
+- `skipped_duplicate_needs_cleanup`
 - `failed`
 
-## 去重规则
+阶段一处理规则：
 
-固定按下面顺序去重：
-
-1. 先按 `产品链接` 查整张飞书表
-2. 如果 URL 没命中，再抓取商品并按 `SKU-ID` 查整张飞书表
-3. 命中任一条件就返回 `skipped_existing`
-4. 不更新旧记录，也不重复新建
+1. 只读取当前飞书表 / 视图中的记录
+2. 只有 `产品链接` 已经规范化，才允许进入阶段一
+3. 如果同一规范 URL 还有重复记录，返回 `skipped_duplicate_needs_cleanup`
+4. 阶段一字段全部有值时，返回 `skipped_completed`
+5. 只要阶段一字段存在空缺，就执行“读一条、抓一条、写一条”
+6. 只补当前缺失字段，但只要写回就必须同时更新 `记录日期`
 
 ## 排障入口
 
@@ -252,9 +250,9 @@ CLI 顶层固定返回：
 - 不要臆造 token
 - 不要把 token 传到 `params-json`
 - 不要调用 `tiktok_product_to_feishu` 作为正式业务入口
-- 如果用户只给 1 个 URL，用单条 task
-- 如果用户给多个 URL，用批量 task，并把它们放入 `product_urls` 数组
 - 如果没有 `table_url`，先提示缺少飞书表格地址
+- 正式顺序是先 `tiktok_product_link_cleanup`，再 `tiktok_feishu_batch_sync`
+- `tiktok_feishu_batch_sync` 不是吃 `product_urls[]` 的接口，而是飞书表驱动入口
 
 ---
 

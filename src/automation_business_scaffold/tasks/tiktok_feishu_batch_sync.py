@@ -6,11 +6,9 @@ from automation_framework.core import BaseWorkflowTask, FrameworkResult
 
 from automation_business_scaffold.flows import (
     build_batch_sync_summary,
-    collect_batch_sync_products,
     filter_batch_sync_rows,
     load_batch_sync_records,
-    upload_batch_sync_artifacts,
-    write_back_batch_sync_rows,
+    process_batch_sync_rows,
 )
 from automation_business_scaffold.workflows import build_tiktok_feishu_batch_sync_workflow
 
@@ -18,8 +16,8 @@ from automation_business_scaffold.workflows import build_tiktok_feishu_batch_syn
 class TikTokFeishuBatchSyncTask(BaseWorkflowTask):
     name = "tiktok_feishu_batch_sync"
     description = (
-        "Read TikTok product rows from Feishu, collect stage-1 product data via browser, "
-        "and write results back to the same rows."
+        "Read pre-cleaned TikTok product rows from Feishu, skip rows whose stage-1 fields are already filled, "
+        "and process each incomplete row one-by-one via browser collection, attachment upload, and direct write-back."
     )
 
     def build_workflow(self, params: dict[str, Any]):
@@ -46,36 +44,18 @@ class TikTokFeishuBatchSyncTask(BaseWorkflowTask):
                 metadata={"artifacts_payload": {"state_dump": {"trace_id": trace_id, **payload}}},
             )
 
-        if context.step.step_id == "collect_tiktok_stage1":
+        if context.step.step_id == "process_target_rows":
             rows = context.get_step_output("filter_target_rows").get("target_rows", [])
-            payload = collect_batch_sync_products(rows, context.params)
+            payload = process_batch_sync_rows(rows, context.params)
             return FrameworkResult.ok(
-                message="Collected TikTok stage-1 product data via browser.",
-                data=payload,
-                metadata={"artifacts_payload": {"state_dump": {"trace_id": trace_id, **payload}}},
-            )
-
-        if context.step.step_id == "upload_artifacts":
-            items = context.get_step_output("collect_tiktok_stage1").get("items", [])
-            payload = upload_batch_sync_artifacts(items, context.params)
-            return FrameworkResult.ok(
-                message="Prepared or uploaded TikTok sync artifacts.",
-                data=payload,
-                metadata={"artifacts_payload": {"state_dump": {"trace_id": trace_id, **payload}}},
-            )
-
-        if context.step.step_id == "write_back_rows":
-            items = context.get_step_output("upload_artifacts").get("items", [])
-            payload = write_back_batch_sync_rows(items, context.params)
-            return FrameworkResult.ok(
-                message="Prepared or executed Feishu row updates.",
+                message="Processed TikTok stage-1 rows one-by-one.",
                 data=payload,
                 metadata={"artifacts_payload": {"state_dump": {"trace_id": trace_id, **payload}}},
             )
 
         if context.step.step_id == "emit_summary":
             filtered_items = context.get_step_output("filter_target_rows").get("items", [])
-            written_items = context.get_step_output("write_back_rows").get("items", [])
+            written_items = context.get_step_output("process_target_rows").get("items", [])
             payload = build_batch_sync_summary(filtered_items, written_items, context.params)
             return FrameworkResult.ok(
                 message="Built TikTok batch sync summary.",

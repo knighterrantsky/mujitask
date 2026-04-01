@@ -1,6 +1,6 @@
-# TikTok → 飞书表格驱动同步协议
+# TikTok -> 飞书双入口协议
 
-这份文档描述当前已经实现的阶段一正式入口：
+这份文档描述当前已经实现并准备 release 的两个正式入口：
 
 1. `tiktok_product_link_cleanup`
 2. `tiktok_feishu_batch_sync`
@@ -8,7 +8,7 @@
 推荐顺序固定为：
 
 1. 先执行 cleanup，整理并去重 TikTok 商品链接
-2. 再执行 batch sync，逐行通过浏览器完成采集和回写
+2. 再执行 stage-1 sync，逐条通过浏览器补齐飞书现有字段
 
 ## `tiktok_product_link_cleanup`
 
@@ -16,8 +16,8 @@
 
 - 飞书表格里已经有一批原始 TikTok 商品链接
 - 需要去掉 query 参数，统一成标准 PDP URL
-- 需要以标准化 URL 为唯一键去重
-- 重复记录保留最早一行，删除其余重复整行
+- 需要以规范 URL 为唯一键去重
+- 重复记录保留首条，删除其余重复整行
 
 ### 输入协议
 
@@ -26,11 +26,17 @@
   "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX&view=vewXXX",
   "access_token_env": "FEISHU_ACCESS_TOKEN",
   "url_field_name": "产品链接",
-  "normalized_url_field_name": "标准产品链接",
-  "cleanup_status_field_name": "链接整理状态",
-  "run_mode": "approval_required"
+  "run_mode": "canary"
 }
 ```
+
+### 写入规则
+
+- keeper 行只回写 `产品链接`
+- duplicate 行只删除
+- 不写 `标准产品链接`
+- 不写 `链接整理状态`
+- 不写 `删除重复数`
 
 ### 返回结构
 
@@ -57,22 +63,29 @@
   "settings": {
     "run_mode": "canary",
     "apply_mutations": true,
-    "url_field_name": "产品链接",
-    "normalized_url_field_name": "标准产品链接",
-    "cleanup_status_field_name": "链接整理状态"
+    "url_field_name": "产品链接"
   }
 }
 ```
+
+### 典型状态
+
+- `preview`
+- `updated`
+- `delete_preview`
+- `deleted`
+- `invalid_url`
+- `skipped_empty`
 
 ## `tiktok_feishu_batch_sync`
 
 ### 适用场景
 
 - 飞书表格已经存在待处理记录
+- 链接已经过 cleanup
 - 需要读取每行 TikTok 链接
 - 通过浏览器打开商品页并完成字段提取
-- 截图商品页和主图
-- 上传附件并回写到同一条记录
+- 只补齐阶段一空缺字段，并写回到同一条记录
 
 ### 输入协议
 
@@ -82,33 +95,51 @@
   "access_token_env": "FEISHU_ACCESS_TOKEN",
   "url_field_name": "产品链接",
   "profile_ref": "local-chrome",
-  "run_mode": "approval_required",
-  "field_mapping": {
-    "source_url": "产品链接",
-    "normalized_url": "标准产品链接",
-    "product_id": "SKU-ID",
-    "title": "标题",
-    "holiday": "节日",
-    "shop_name": "卖家",
-    "price_amount": "价格",
-    "main_image_file": "商品主图",
-    "product_page_screenshot_file": "商品页截图",
-    "cleanup_status": "链接整理状态",
-    "cleanup_deleted_duplicates": "删除重复数",
-    "synced_at": "采集时间",
-    "sync_status": "采集状态",
-    "sync_error": "采集错误"
-  }
+  "run_mode": "canary",
+  "max_records": 0,
+  "retry_attempts": 3,
+  "retry_delay_sec": 3.0
 }
 ```
 
 ### 处理规则
 
-- 只读取当前表格/视图中的记录，不再以 `product_urls[]` 为主输入
-- 只处理 URL 非空且未完成阶段一的记录
-- 如果同一张表里仍有重复标准化 URL，只处理最早一行，其余记录返回 `duplicate_blocked`
+- 只读取当前表格 / 视图中的记录，不再以 `product_urls[]` 为输入
+- 只处理 URL 非空且已规范化的记录
+- 如果同一张表里仍有重复规范 URL，返回 `skipped_duplicate_needs_cleanup`
+- 阶段一只检查这些字段：
+  - `SKU-ID`
+  - `图片`
+  - `标题`
+  - `节日`
+  - `卖家`
+  - `前台截图`
+  - `价格`
+  - `记录日期`
+- 如果上述字段全部已有值，返回 `skipped_completed`
+- 如果上述字段存在一个或多个空缺，则执行抓取
+- 执行方式固定为“读一条、抓一条、写一条”
+- 只补当前缺失字段
+- 只要发生写回，就必须同步刷新 `记录日期`
 - `draft` / `approval_required` 只产 preview，不执行上传和回写
 - `canary` / `full_auto` 才会真正上传附件和更新行
+
+### 写入规则
+
+- 只允许写入现有字段：
+  - `SKU-ID`
+  - `图片`
+  - `标题`
+  - `节日`
+  - `卖家`
+  - `前台截图`
+  - `价格`
+  - `记录日期`
+- 不写 `商品主图`
+- 不写 `商品页截图`
+- 不写 `采集状态`
+- 不写 `采集错误`
+- 不写 `采集时间`
 
 ### 返回结构
 
@@ -118,8 +149,7 @@
     "total": 4,
     "counts": {
       "updated": 1,
-      "duplicate_blocked": 1,
-      "skipped_completed": 1,
+      "skipped_completed": 2,
       "failed": 1
     }
   },
@@ -131,21 +161,27 @@
       "status": "updated",
       "error": "",
       "fields": {
-        "SKU-ID": "111",
         "标题": "Sample Title",
-        "价格": "17.99",
-        "商品主图": [
-          {
-            "file_token": "boxcn-main"
-          }
-        ],
-        "商品页截图": [
-          {
-            "file_token": "boxcn-page"
-          }
-        ],
-        "采集状态": "success"
-      }
+        "记录日期": 1774972800000
+      },
+      "missing_fields": ["标题"],
+      "attempt_count": 1,
+      "retry_errors": []
+    }
+  ],
+  "failed_items": [
+    {
+      "record_id": "recB",
+      "source_url": "https://www.tiktok.com/shop/pdp/222",
+      "normalized_url": "https://www.tiktok.com/shop/pdp/222",
+      "error": "browser failed",
+      "attempt_count": 4,
+      "retry_errors": [
+        {
+          "attempt": 1,
+          "error": "browser failed"
+        }
+      ]
     }
   ],
   "settings": {
@@ -153,15 +189,28 @@
     "apply_mutations": true,
     "profile_ref": "local-chrome",
     "url_field_name": "产品链接",
-    "capture_page_screenshot": true,
     "skip_completed_rows": true,
-    "max_records": 0
+    "max_records": 0,
+    "retry_attempts": 3,
+    "retry_delay_sec": 3.0,
+    "requires_clean_links": true
   }
 }
 ```
+
+### 典型状态
+
+- `preview`
+- `updated`
+- `failed`
+- `skipped_not_cleaned`
+- `skipped_duplicate_needs_cleanup`
+- `skipped_completed`
+- `skipped_empty`
+- `invalid_url`
 
 ## 浏览器约束
 
 - 当前阶段直接复用 `automation_framework.browser`
 - 默认执行环境是 `chrome_cdp`
-- 如果后续迁移到 `roxy`，任务参数和返回结构不变，只切换 `profile_ref` / provider 配置
+- 推荐通过 `profile_ref=local-chrome` 使用本机 Chrome 调试端口
