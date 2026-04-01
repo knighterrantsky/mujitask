@@ -181,6 +181,12 @@ class FeishuBitableClient:
             payload=payload,
         )
 
+    def delete_record(self, app_token: str, table_id: str, record_id: str) -> Dict[str, Any]:
+        return self._request(
+            "DELETE",
+            f"/apps/{app_token}/tables/{table_id}/records/{record_id}",
+        )
+
     def upload_media(
         self,
         file_name: str,

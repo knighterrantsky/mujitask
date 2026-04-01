@@ -1,199 +1,190 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from pathlib import Path
 
 from automation_business_scaffold.flows.tiktok_feishu_sync_flow import (
     run_tiktok_feishu_batch_sync,
-    run_tiktok_feishu_single_sync,
+    run_tiktok_product_link_cleanup,
 )
 from automation_business_scaffold.models import TikTokProductRecord
 
 
-def test_run_tiktok_feishu_single_sync_live_mode_uploads_and_creates_record(
-    monkeypatch,
-    tmp_path,
-):
+def _sample_browser_product(*, source_url: str, normalized_url: str, tmp_path: Path) -> TikTokProductRecord:
+    main_image = tmp_path / "main-image.png"
+    page_image = tmp_path / "page.png"
+    main_image.write_bytes(b"main-image")
+    page_image.write_bytes(b"page-image")
+    return TikTokProductRecord(
+        source_url=source_url,
+        resolved_url=normalized_url,
+        normalized_url=normalized_url,
+        product_id="4444444444444444444",
+        title="Halloween Lights",
+        holiday="万圣节",
+        main_image_url="https://example.com/main-image.png",
+        price_amount="45.67",
+        price_currency="USD",
+        price_text="$45.67",
+        sales_count=0,
+        shop_name="Sample Shop",
+        shop_url="https://shop.tiktok.com/us/store/sample-shop/123",
+        main_image_local_path=str(main_image),
+        main_image_file_name=main_image.name,
+        main_image_mime_type="image/png",
+        product_page_screenshot_local_path=str(page_image),
+        product_page_screenshot_file_name=page_image.name,
+        product_page_screenshot_mime_type="image/png",
+    )
+
+
+def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
-        fromlist=["run_tiktok_feishu_single_sync"],
+        fromlist=["run_tiktok_product_link_cleanup"],
     )
 
     class FakeClient:
         def __init__(self, access_token: str) -> None:
             self.access_token = access_token
-            self.created: list[tuple[str, str, dict[str, object]]] = []
 
-        def list_all_records(
-            self,
-            *,
-            app_token,
-            table_id,
-            page_size=100,
-            filter_expr=None,
-            view_id=None,
-        ):
+        def list_all_records(self, *, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
             assert app_token == "app999"
             assert table_id == "tbl999"
-            assert view_id is None
-            return []
-
-        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
-            assert file_name == "4444444444444444444.jpg"
-            assert file_data == b"image"
-            assert parent_node == "app999"
-            return "file-token-001"
-
-        def create_record(self, *, app_token, table_id, fields):
-            self.created.append((app_token, table_id, fields))
-            return {"data": {"record": {"record_id": "rec-created-001"}}}
-
-    fake_client = FakeClient("ignored")
-
-    def fake_client_factory(_access_token: str):
-        return fake_client
-
-    def fake_fetch(product_url: str):
-        return TikTokProductRecord(
-            source_url=product_url,
-            resolved_url=product_url,
-            product_id="4444444444444444444",
-            title="Halloween Lights",
-            holiday="万圣节",
-            main_image_url="https://example.com/4444444444444444444.jpg",
-            price_amount="45.67",
-            price_currency="USD",
-            price_text="$45.67",
-            sales_count=0,
-            shop_name="",
-            shop_url="",
-        )
-
-    def fake_download(product: TikTokProductRecord):
-        local_path = tmp_path / "4444444444444444444.jpg"
-        local_path.write_bytes(b"image")
-        return replace(
-            product,
-            main_image_local_path=str(local_path),
-            main_image_file_name=local_path.name,
-            main_image_mime_type="image/jpeg",
-        )
-
-    sleep_calls: list[float] = []
-
-    monkeypatch.setattr(module, "FeishuBitableClient", fake_client_factory)
-    monkeypatch.setattr(module, "fetch_tiktok_product_record", fake_fetch)
-    monkeypatch.setattr(module, "download_tiktok_product_main_image", fake_download)
-    monkeypatch.setattr(module.random, "uniform", lambda _start, _end: 0.0)
-    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
-
-    payload = run_tiktok_feishu_single_sync(
-        {
-            "product_url": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-            "table_url": "https://my.feishu.cn/base/app999?table=tbl999&view=vew999",
-            "access_token_env": "TOKEN_DIRECT_VALUE",
-            "run_mode": "live",
-        }
-    )
-
-    assert payload == {
-        "status": "inserted",
-        "record_id": "rec-created-001",
-        "product_url": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-        "product_id": "4444444444444444444",
-        "fields": {
-            "产品链接": {
-                "text": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-                "link": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-            },
-            "SKU-ID": "4444444444444444444",
-            "图片": [{"file_token": "file-token-001"}],
-            "标题": "Halloween Lights",
-            "节日": "万圣节",
-            "价格": "45.67",
-        },
-    }
-    assert fake_client.created == [
-        (
-            "app999",
-            "tbl999",
-            {
-                "产品链接": {
-                    "text": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-                    "link": "https://www.tiktok.com/shop/pdp/4444444444444444444",
-                },
-                "SKU-ID": "4444444444444444444",
-                "图片": [{"file_token": "file-token-001"}],
-                "标题": "Halloween Lights",
-                "节日": "万圣节",
-                "价格": "45.67",
-            },
-        )
-    ]
-    assert sleep_calls == [1.0, 1.0, 1.0]
-
-
-def test_run_tiktok_feishu_single_sync_skips_existing_url_before_fetch(monkeypatch):
-    module = __import__(
-        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
-        fromlist=["run_tiktok_feishu_single_sync"],
-    )
-
-    class FakeClient:
-        def __init__(self, access_token: str) -> None:
-            self.access_token = access_token
-
-        def list_all_records(
-            self,
-            *,
-            app_token,
-            table_id,
-            page_size=100,
-            filter_expr=None,
-            view_id=None,
-        ):
+            assert view_id == "vew999"
             return [
                 {
-                    "record_id": "rec-existing-url",
+                    "record_id": "rec-1",
                     "fields": {
                         "产品链接": {
-                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111",
-                        },
-                        "SKU-ID": "sku-existing",
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?source=product_detail"
+                        }
                     },
-                }
+                },
+                {
+                    "record_id": "rec-2",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?foo=bar"
+                        }
+                    },
+                },
+                {
+                    "record_id": "rec-3",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/2222222222222222222"
+                        }
+                    },
+                },
+                {
+                    "record_id": "rec-4",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/not-a-product"
+                        }
+                    },
+                },
             ]
 
     monkeypatch.setattr(module, "FeishuBitableClient", FakeClient)
-    monkeypatch.setattr(
-        module,
-        "fetch_tiktok_product_record",
-        lambda _product_url: (_ for _ in ()).throw(AssertionError("fetch should not be called")),
-    )
 
-    payload = run_tiktok_feishu_single_sync(
+    payload = run_tiktok_product_link_cleanup(
         {
-            "product_url": "https://www.tiktok.com/shop/pdp/1111111111111111111",
-            "table_url": "https://my.feishu.cn/base/app123?table=tbl123",
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999&view=vew999",
             "access_token_env": "TOKEN_DIRECT_VALUE",
-            "run_mode": "live",
+            "url_field_name": "产品链接",
+            "normalized_url_field_name": "标准产品链接",
+            "cleanup_status_field_name": "链接整理状态",
+            "run_mode": "draft",
         }
     )
 
-    assert payload == {
-        "status": "skipped_existing",
-        "record_id": "rec-existing-url",
-        "product_url": "https://www.tiktok.com/shop/pdp/1111111111111111111",
-        "product_id": "",
-        "fields": {},
-        "duplicate_reason": "url",
-        "existing_record_id": "rec-existing-url",
+    assert payload["summary"]["counts"] == {
+        "preview": 2,
+        "delete_preview": 1,
+        "invalid_url": 1,
     }
+    assert payload["items"][0]["deleted_record_ids"] == ["rec-2"]
+    assert payload["items"][1]["status"] == "delete_preview"
+    assert payload["items"][3]["status"] == "invalid_url"
 
 
-def test_run_tiktok_feishu_batch_sync_processes_urls_sequentially_and_keeps_summary(
-    monkeypatch,
-    tmp_path,
-):
+def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_kept_rows(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
+        fromlist=["run_tiktok_product_link_cleanup"],
+    )
+
+    class FakeClient:
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+            self.deleted: list[str] = []
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_all_records(self, *, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            return [
+                {
+                    "record_id": "rec-1",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?source=product_detail"
+                        }
+                    },
+                },
+                {
+                    "record_id": "rec-2",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?foo=bar"
+                        }
+                    },
+                },
+            ]
+
+        def delete_record(self, app_token: str, table_id: str, record_id: str):
+            self.deleted.append(record_id)
+            return {"code": 0}
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient("ignored")
+    monkeypatch.setattr(module, "FeishuBitableClient", lambda _access_token: fake_client)
+
+    payload = run_tiktok_product_link_cleanup(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "url_field_name": "产品链接",
+            "normalized_url_field_name": "标准产品链接",
+            "cleanup_status_field_name": "链接整理状态",
+            "run_mode": "canary",
+        }
+    )
+
+    assert fake_client.deleted == ["rec-2"]
+    assert fake_client.updated == [
+        (
+            "rec-1",
+            {
+                "产品链接": {
+                    "text": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+                    "link": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+                },
+                "链接整理状态": "deduplicated",
+                "删除重复数": 1,
+                "标准产品链接": {
+                    "text": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+                    "link": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+                },
+            },
+        )
+    ]
+    assert payload["summary"]["counts"] == {"updated": 1, "deleted": 1}
+
+
+def test_run_tiktok_feishu_batch_sync_draft_previews_updates_and_skips_rows(monkeypatch, tmp_path):
     module = __import__(
         "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
         fromlist=["run_tiktok_feishu_batch_sync"],
@@ -202,118 +193,190 @@ def test_run_tiktok_feishu_batch_sync_processes_urls_sequentially_and_keeps_summ
     class FakeClient:
         def __init__(self, access_token: str) -> None:
             self.access_token = access_token
-            self.created: list[tuple[str, str, dict[str, object]]] = []
 
-        def list_all_records(
-            self,
-            *,
-            app_token,
-            table_id,
-            page_size=100,
-            filter_expr=None,
-            view_id=None,
-        ):
-            return []
+        def list_all_records(self, *, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            return [
+                {
+                    "record_id": "rec-1",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?source=product_detail"
+                        }
+                    },
+                },
+                {
+                    "record_id": "rec-2",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111?foo=bar"
+                        }
+                    },
+                },
+                {
+                    "record_id": "rec-3",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/2222222222222222222"
+                        },
+                        "采集状态": "success",
+                    },
+                },
+                {
+                    "record_id": "rec-4",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/3333333333333333333"
+                        },
+                        "链接整理状态": "invalid_url",
+                    },
+                },
+            ]
 
-        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
-            return f"file-token-{file_name}"
-
-        def create_record(self, *, app_token, table_id, fields):
-            record_id = f"rec-{len(self.created) + 1}"
-            self.created.append((app_token, table_id, fields))
-            return {"data": {"item": {"record_id": record_id}}}
-
-    fake_client = FakeClient("ignored")
-    call_order: list[str] = []
-    sleep_calls: list[float] = []
-
-    def fake_client_factory(_access_token: str):
-        return fake_client
-
-    def fake_fetch(product_url: str):
-        call_order.append(f"fetch:{product_url}")
-        if product_url.endswith("/5005"):
-            raise RuntimeError("fetch failed")
-        product_id = product_url.rsplit("/", 1)[-1]
-        return TikTokProductRecord(
-            source_url=product_url,
-            resolved_url=product_url,
-            product_id=product_id,
-            title=f"title-{product_id}",
-            holiday="其他",
-            main_image_url=f"https://example.com/{product_id}.jpg",
-            price_amount="12.34",
-            price_currency="USD",
-            price_text="$12.34",
-            sales_count=0,
-            shop_name="",
-            shop_url="",
-        )
-
-    def fake_download(product: TikTokProductRecord):
-        call_order.append(f"download:{product.product_id}")
-        local_path = tmp_path / f"{product.product_id}.jpg"
-        local_path.write_bytes(product.product_id.encode("utf-8"))
-        return replace(
-            product,
-            main_image_local_path=str(local_path),
-            main_image_file_name=local_path.name,
-            main_image_mime_type="image/jpeg",
-        )
-
-    monkeypatch.setattr(module, "FeishuBitableClient", fake_client_factory)
-    monkeypatch.setattr(module, "fetch_tiktok_product_record", fake_fetch)
-    monkeypatch.setattr(module, "download_tiktok_product_main_image", fake_download)
-    monkeypatch.setattr(module.random, "uniform", lambda _start, _end: 0.0)
-    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(module, "FeishuBitableClient", FakeClient)
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_browser_product(
+            source_url=source_url,
+            normalized_url="https://www.tiktok.com/shop/pdp/1111111111111111111",
+            tmp_path=tmp_path,
+        ),
+    )
 
     payload = run_tiktok_feishu_batch_sync(
         {
-            "product_urls": [
-                "https://www.tiktok.com/shop/pdp/1001",
-                "https://www.tiktok.com/shop/pdp/2002",
-                "https://www.tiktok.com/shop/pdp/1001",
-                "https://www.tiktok.com/shop/pdp/5005",
-            ],
-            "table_url": "https://my.feishu.cn/base/app555?table=tbl555",
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
             "access_token_env": "TOKEN_DIRECT_VALUE",
-            "run_mode": "live",
-            "pause_every": 2,
+            "url_field_name": "产品链接",
+            "run_mode": "draft",
+            "profile_ref": "local-chrome",
         }
     )
 
-    assert payload["summary"] == {
-        "total": 4,
-        "processed": 4,
-        "inserted": 2,
-        "skipped_existing": 1,
-        "previewed": 0,
-        "failed": 1,
+    assert payload["summary"]["counts"] == {
+        "duplicate_blocked": 1,
+        "skipped_completed": 1,
+        "skipped_cleanup_error": 1,
+        "preview": 1,
     }
-    assert [item["status"] for item in payload["items"]] == [
-        "inserted",
-        "inserted",
-        "skipped_existing",
-        "failed",
+    preview_item = next(item for item in payload["items"] if item["record_id"] == "rec-1")
+    assert preview_item["status"] == "preview"
+    assert preview_item["fields"]["采集状态"] == "success"
+
+
+def test_run_tiktok_feishu_batch_sync_canary_uploads_and_updates_rows(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
+        fromlist=["run_tiktok_feishu_batch_sync"],
+    )
+
+    class FakeClient:
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+            self.uploads: list[str] = []
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_all_records(self, *, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            return [
+                {
+                    "record_id": "rec-1",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111"
+                        }
+                    },
+                }
+            ]
+
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            self.uploads.append(file_name)
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient("ignored")
+    monkeypatch.setattr(module, "FeishuBitableClient", lambda _access_token: fake_client)
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_browser_product(
+            source_url=source_url,
+            normalized_url="https://www.tiktok.com/shop/pdp/1111111111111111111",
+            tmp_path=tmp_path,
+        ),
+    )
+
+    payload = run_tiktok_feishu_batch_sync(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "url_field_name": "产品链接",
+            "run_mode": "canary",
+            "profile_ref": "local-chrome",
+        }
+    )
+
+    assert fake_client.uploads == ["main-image.png", "page.png"]
+    assert fake_client.updated[0][0] == "rec-1"
+    assert fake_client.updated[0][1]["商品主图"] == [{"file_token": "file-token-main-image.png"}]
+    assert fake_client.updated[0][1]["商品页截图"] == [{"file_token": "file-token-page.png"}]
+    assert fake_client.updated[0][1]["采集状态"] == "success"
+    assert payload["summary"]["counts"] == {"updated": 1}
+
+
+def test_run_tiktok_feishu_batch_sync_canary_writes_failed_status_on_browser_error(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
+        fromlist=["run_tiktok_feishu_batch_sync"],
+    )
+
+    class FakeClient:
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_all_records(self, *, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            return [
+                {
+                    "record_id": "rec-1",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1111111111111111111"
+                        }
+                    },
+                }
+            ]
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient("ignored")
+    monkeypatch.setattr(module, "FeishuBitableClient", lambda _access_token: fake_client)
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("browser failed")),
+    )
+
+    payload = run_tiktok_feishu_batch_sync(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "url_field_name": "产品链接",
+            "run_mode": "canary",
+        }
+    )
+
+    assert fake_client.updated == [
+        (
+            "rec-1",
+            {
+                "采集状态": "failed",
+                "采集错误": "browser failed",
+            },
+        )
     ]
-    assert payload["items"][2]["duplicate_reason"] == "url"
-    assert payload["items"][3]["error"] == "fetch failed"
-    assert payload["settings"] == {
-        "run_mode": "live",
-        "write_back": True,
-        "step_delay_sec": 1.0,
-        "step_delay_jitter_sec": 1.0,
-        "record_delay_sec": 2.0,
-        "record_delay_jitter_sec": 2.0,
-        "pause_every": 2,
-        "pause_sec": 8.0,
-        "continue_on_error": True,
-    }
-    assert call_order == [
-        "fetch:https://www.tiktok.com/shop/pdp/1001",
-        "download:1001",
-        "fetch:https://www.tiktok.com/shop/pdp/2002",
-        "download:2002",
-        "fetch:https://www.tiktok.com/shop/pdp/5005",
-    ]
-    assert sleep_calls == [1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 8.0, 2.0]
+    assert payload["summary"]["counts"] == {"failed": 1}

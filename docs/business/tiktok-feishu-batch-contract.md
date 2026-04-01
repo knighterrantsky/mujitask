@@ -1,148 +1,167 @@
-# TikTok → 飞书批量 URL 同步协议
+# TikTok → 飞书表格驱动同步协议
 
-这份文档描述当前已经实现的 `tiktok_feishu_batch_sync` 正式协议。
+这份文档描述当前已经实现的阶段一正式入口：
 
-## Task 名称
+1. `tiktok_product_link_cleanup`
+2. `tiktok_feishu_batch_sync`
 
-`tiktok_feishu_batch_sync`
+推荐顺序固定为：
 
-## 适用场景
+1. 先执行 cleanup，整理并去重 TikTok 商品链接
+2. 再执行 batch sync，逐行通过浏览器完成采集和回写
 
-- OpenClaw 一次拿到 10 到 20 个 TikTok 商品链接
-- 需要顺序处理这些 URLs
-- 每条 URL 都走完整的“抓取 -> 下载图片 -> 上传飞书附件 -> 新建飞书记录”链路
-- 需要随机 delay，避免中间外部请求过于密集
-- 需要知道哪些插入成功、哪些被去重跳过、哪些失败
+## `tiktok_product_link_cleanup`
 
-## 输入协议
+### 适用场景
+
+- 飞书表格里已经有一批原始 TikTok 商品链接
+- 需要去掉 query 参数，统一成标准 PDP URL
+- 需要以标准化 URL 为唯一键去重
+- 重复记录保留最早一行，删除其余重复整行
+
+### 输入协议
 
 ```json
 {
-  "product_urls": [
-    "https://www.tiktok.com/shop/pdp/1729440407432826887",
-    "https://www.tiktok.com/shop/pdp/1729732615040962895"
-  ],
-  "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+  "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX&view=vewXXX",
   "access_token_env": "FEISHU_ACCESS_TOKEN",
-  "run_mode": "approval_required",
-  "trace_id": "batch-20260331-001"
+  "url_field_name": "产品链接",
+  "normalized_url_field_name": "标准产品链接",
+  "cleanup_status_field_name": "链接整理状态",
+  "run_mode": "approval_required"
 }
 ```
 
-## 必填参数
-
-- `product_urls`
-- `table_url`
-- `access_token_env`
-
-## 可选参数
-
-- `run_mode`
-- `trace_id`
-- `field_mapping`
-- `step_delay_sec`
-- `step_delay_jitter_sec`
-- `record_delay_sec`
-- `record_delay_jitter_sec`
-- `pause_every`
-- `pause_sec`
-- `continue_on_error`
-
-## 默认节流参数
-
-- `step_delay_sec = 1.0`
-- `step_delay_jitter_sec = 1.0`
-- `record_delay_sec = 2.0`
-- `record_delay_jitter_sec = 2.0`
-- `pause_every = 5`
-- `pause_sec = 8.0`
-- `continue_on_error = true`
-
-## 去重规则
-
-每条 URL 都按下面顺序执行：
-
-1. 先按 `产品链接` 查整张目标飞书表
-2. 如果没命中，再抓取商品并按 `SKU-ID` 查整张目标飞书表
-3. 命中任一条件就返回 `skipped_existing`
-4. 不更新原记录，也不重复新建
-
-## 返回结构
+### 返回结构
 
 ```json
 {
   "summary": {
-    "total": 2,
-    "processed": 2,
-    "inserted": 1,
-    "skipped_existing": 1,
-    "previewed": 0,
-    "failed": 0
+    "total": 3,
+    "counts": {
+      "updated": 1,
+      "deleted": 1,
+      "invalid_url": 1
+    }
   },
   "items": [
     {
-      "status": "inserted",
       "record_id": "recA",
-      "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
-      "product_id": "1729440407432826887",
-      "fields": {
-        "产品链接": "https://www.tiktok.com/shop/pdp/1729440407432826887",
-        "SKU-ID": "1729440407432826887",
-        "图片": [
-          {
-            "file_token": "boxcn..."
-          }
-        ],
-        "标题": "Sample Title",
-        "节日": "情人节",
-        "价格": "17.99"
-      }
-    },
-    {
-      "status": "skipped_existing",
-      "record_id": "recB",
-      "product_url": "https://www.tiktok.com/shop/pdp/1729732615040962895",
-      "product_id": "1729732615040962895",
-      "fields": {},
-      "duplicate_reason": "sku",
-      "existing_record_id": "recB"
+      "source_url": "https://www.tiktok.com/shop/pdp/111?source=product_detail",
+      "normalized_url": "https://www.tiktok.com/shop/pdp/111",
+      "status": "updated",
+      "error": "",
+      "deleted_record_ids": ["recB"]
     }
   ],
   "settings": {
-    "run_mode": "approval_required",
-    "write_back": true,
-    "step_delay_sec": 1.0,
-    "step_delay_jitter_sec": 1.0,
-    "record_delay_sec": 2.0,
-    "record_delay_jitter_sec": 2.0,
-    "pause_every": 5,
-    "pause_sec": 8.0,
-    "continue_on_error": true
+    "run_mode": "canary",
+    "apply_mutations": true,
+    "url_field_name": "产品链接",
+    "normalized_url_field_name": "标准产品链接",
+    "cleanup_status_field_name": "链接整理状态"
   }
 }
 ```
 
-## OpenClaw 最关心的字段
+## `tiktok_feishu_batch_sync`
 
-- `summary.inserted`
-- `summary.skipped_existing`
-- `summary.failed`
-- `items[].status`
-- `items[].error`
+### 适用场景
 
-## 与单条 task 的关系
+- 飞书表格已经存在待处理记录
+- 需要读取每行 TikTok 链接
+- 通过浏览器打开商品页并完成字段提取
+- 截图商品页和主图
+- 上传附件并回写到同一条记录
 
-单条正式 task：
+### 输入协议
 
-- `tiktok_feishu_single_sync`
+```json
+{
+  "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX&view=vewXXX",
+  "access_token_env": "FEISHU_ACCESS_TOKEN",
+  "url_field_name": "产品链接",
+  "profile_ref": "local-chrome",
+  "run_mode": "approval_required",
+  "field_mapping": {
+    "source_url": "产品链接",
+    "normalized_url": "标准产品链接",
+    "product_id": "SKU-ID",
+    "title": "标题",
+    "holiday": "节日",
+    "shop_name": "卖家",
+    "price_amount": "价格",
+    "main_image_file": "商品主图",
+    "product_page_screenshot_file": "商品页截图",
+    "cleanup_status": "链接整理状态",
+    "cleanup_deleted_duplicates": "删除重复数",
+    "synced_at": "采集时间",
+    "sync_status": "采集状态",
+    "sync_error": "采集错误"
+  }
+}
+```
 
-底层字段构建 task：
+### 处理规则
 
-- `tiktok_product_to_feishu`
+- 只读取当前表格/视图中的记录，不再以 `product_urls[]` 为主输入
+- 只处理 URL 非空且未完成阶段一的记录
+- 如果同一张表里仍有重复标准化 URL，只处理最早一行，其余记录返回 `duplicate_blocked`
+- `draft` / `approval_required` 只产 preview，不执行上传和回写
+- `canary` / `full_auto` 才会真正上传附件和更新行
 
-实现关系：
+### 返回结构
 
-1. 批量 task 不从飞书读取待处理行
-2. 批量 task 直接消费 `product_urls[]`
-3. 批量 task 内部顺序复用单条插入链路
-4. 每条记录之间继续加随机 delay
+```json
+{
+  "summary": {
+    "total": 4,
+    "counts": {
+      "updated": 1,
+      "duplicate_blocked": 1,
+      "skipped_completed": 1,
+      "failed": 1
+    }
+  },
+  "items": [
+    {
+      "record_id": "recA",
+      "source_url": "https://www.tiktok.com/shop/pdp/111",
+      "normalized_url": "https://www.tiktok.com/shop/pdp/111",
+      "status": "updated",
+      "error": "",
+      "fields": {
+        "SKU-ID": "111",
+        "标题": "Sample Title",
+        "价格": "17.99",
+        "商品主图": [
+          {
+            "file_token": "boxcn-main"
+          }
+        ],
+        "商品页截图": [
+          {
+            "file_token": "boxcn-page"
+          }
+        ],
+        "采集状态": "success"
+      }
+    }
+  ],
+  "settings": {
+    "run_mode": "canary",
+    "apply_mutations": true,
+    "profile_ref": "local-chrome",
+    "url_field_name": "产品链接",
+    "capture_page_screenshot": true,
+    "skip_completed_rows": true,
+    "max_records": 0
+  }
+}
+```
+
+## 浏览器约束
+
+- 当前阶段直接复用 `automation_framework.browser`
+- 默认执行环境是 `chrome_cdp`
+- 如果后续迁移到 `roxy`，任务参数和返回结构不变，只切换 `profile_ref` / provider 配置

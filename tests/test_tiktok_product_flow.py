@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 from automation_business_scaffold.flows import (
     build_feishu_bitable_record,
     download_tiktok_product_main_image,
     extract_tiktok_product_from_html,
+    fetch_tiktok_product_record_via_browser,
     infer_tiktok_product_holiday,
+    normalize_tiktok_product_url,
 )
 from automation_business_scaffold.validators import validate_tiktok_product_url
 
@@ -98,6 +101,61 @@ class _FakeImageSession:
         return None
 
 
+class _FakeLocator:
+    def __init__(self, screenshot_bytes: bytes) -> None:
+        self._screenshot_bytes = screenshot_bytes
+        self.first = self
+
+    def wait_for(self, *, state=None, timeout=None) -> None:
+        return None
+
+    def screenshot(self, *, path: str) -> None:
+        Path(path).write_bytes(self._screenshot_bytes)
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.url = "https://www.tiktok.com/shop/pdp/1729732615040962895"
+
+    def goto(self, url: str, wait_until: str | None = None) -> None:
+        self.url = url
+
+    def wait_for_load_state(self, state: str) -> None:
+        assert state == "domcontentloaded"
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        assert timeout_ms > 0
+
+    def content(self) -> str:
+        return SAMPLE_HTML
+
+    def evaluate(self, script: str, arg=None):
+        if "visible_signal_count" in script:
+            return {
+                "title_text": "Sample TikTok Product",
+                "title_selector": "h1",
+                "price_text": "$24.99",
+                "price_selector": "[data-e2e='pdp-product-price']",
+                "shop_name": "Sample Shop",
+                "shop_selector": "[data-e2e='shop-name']",
+                "main_image_url": "https://example.com/main-image.webp",
+                "main_image_selector": "figure img",
+                "main_image_loaded": True,
+                "visible_signal_count": 3,
+            }
+        if "loaded" in script:
+            return {"selector": "figure img", "loaded": True}
+        raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+    def locator(self, selector: str) -> _FakeLocator:
+        assert selector
+        return _FakeLocator(b"main-image")
+
+    def screenshot(self, *, path: str, full_page: bool = False) -> None:
+        assert full_page is True
+        Path(path).write_bytes(b"page-screenshot")
+
+
 def test_extract_tiktok_product_from_html_returns_expected_fields():
     product = extract_tiktok_product_from_html(
         SAMPLE_HTML,
@@ -107,6 +165,7 @@ def test_extract_tiktok_product_from_html_returns_expected_fields():
         ),
     )
 
+    assert product.normalized_url == "https://www.tiktok.com/shop/pdp/1729732615040962895"
     assert product.product_id == "1729732615040962895"
     assert product.title == "Sample TikTok Product"
     assert product.holiday == "其他"
@@ -150,6 +209,7 @@ def test_build_feishu_bitable_record_uses_local_file_for_main_image(tmp_path):
     record = build_feishu_bitable_record(downloaded)
 
     assert record["logical_fields"]["title"] == "Sample TikTok Product"
+    assert record["logical_fields"]["normalized_url"] == "https://www.tiktok.com/shop/pdp/1729732615040962895"
     assert record["logical_fields"]["main_image_local_path"].endswith(
         "1729732615040962895-main-image.webp"
     )
@@ -170,6 +230,54 @@ def test_build_feishu_bitable_record_uses_local_file_for_main_image(tmp_path):
         "节日": "其他",
         "价格": "24.99",
     }
+
+
+def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_screenshot(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakePage(),
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+
+    product = fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    assert product.normalized_url == "https://www.tiktok.com/shop/pdp/1729732615040962895"
+    assert product.main_image_local_path.endswith("1729732615040962895-main-image.png")
+    assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
+    assert Path(product.main_image_local_path).read_bytes() == b"main-image"
+    assert Path(product.product_page_screenshot_local_path).read_bytes() == b"page-screenshot"
+
+
+def test_normalize_tiktok_product_url_strips_parameters():
+    assert (
+        normalize_tiktok_product_url(
+            "https://www.tiktok.com/shop/pdp/1730573078867972103?source=product_detail"
+        )
+        == "https://www.tiktok.com/shop/pdp/1730573078867972103"
+    )
 
 
 def test_infer_tiktok_product_holiday_matches_known_options_and_fallback():

@@ -31,11 +31,12 @@ def test_pyproject_pins_framework_dependency_and_example_files_exist():
     dependencies = pyproject["project"]["dependencies"]
 
     assert any(
-        dependency.startswith("automation-framework @ git+http://192.168.88.200:8080/work/automation-framework.git@55e8223")
+        dependency.startswith(
+            "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@55e8223"
+        )
         for dependency in dependencies
     )
 
     profiles = json.loads((ROOT / "config" / "browser_profiles.example.json").read_text(encoding="utf-8"))
     assert "local-chrome" in profiles
     assert (ROOT / "examples" / "workflow_draft.review-only.yaml").exists()
-

@@ -30,31 +30,31 @@ uvicorn automation_business_scaffold.agent:app --app-dir src --host 127.0.0.1 --
 
 适合 OpenClaw、本地调试、定时任务和单机脚本集成。
 
-### 单条 URL
+### 先做链接清洗
 
 ```bash
 automation-business-scaffold-run run \
-  --task tiktok_feishu_single_sync \
+  --task tiktok_product_link_cleanup \
   --params-json '{
-    "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "url_field_name": "产品链接",
+    "normalized_url_field_name": "标准产品链接",
+    "cleanup_status_field_name": "链接整理状态",
     "run_mode": "approval_required"
   }'
 ```
 
-### 多 URL 顺序处理
+### 再做表格驱动批量同步
 
 ```bash
 automation-business-scaffold-run run \
   --task tiktok_feishu_batch_sync \
   --params-json '{
-    "product_urls": [
-      "https://www.tiktok.com/shop/pdp/1729440407432826887",
-      "https://www.tiktok.com/shop/pdp/1729732615040962895"
-    ],
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "url_field_name": "产品链接",
+    "profile_ref": "local-chrome",
     "run_mode": "approval_required"
   }'
 ```
@@ -74,11 +74,12 @@ Python 脚本内直接调用：
 from automation_business_scaffold.cli import run_registered_task
 
 payload = run_registered_task(
-    task_name="tiktok_feishu_single_sync",
+    task_name="tiktok_feishu_batch_sync",
     params={
-        "product_url": "https://www.tiktok.com/shop/pdp/1729440407432826887",
         "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
         "access_token_env": "FEISHU_ACCESS_TOKEN",
+        "url_field_name": "产品链接",
+        "profile_ref": "local-chrome",
         "run_mode": "approval_required",
     },
 )
@@ -102,28 +103,27 @@ CLI 产物位置：
 1. 一份 Mac mini 安装/更新说明
 2. 一份 OpenClaw skill 模板
 3. 单条 URL 的标准调用示例
-4. 多 URL 的标准调用示例
+4. 表格 cleanup + batch sync 的标准调用示例
 5. 返回字段和排障路径说明
 
-单条正式 task 的关键入参：
+cleanup task 的关键入参：
 
-- `product_url`
 - `table_url`
 - `access_token_env`
+- `url_field_name`
+- `normalized_url_field_name`
+- `cleanup_status_field_name`
 - `run_mode`
-- `trace_id`
-- `field_mapping`
 
 批量正式 task 的关键入参：
 
-- `product_urls`
 - `table_url`
 - `access_token_env`
+- `url_field_name`
+- `profile_ref`
 - `run_mode`
 - `trace_id`
 - `field_mapping`
-- `step_delay_sec`
-- `step_delay_jitter_sec`
 - `record_delay_sec`
 - `record_delay_jitter_sec`
 - `pause_every`
@@ -143,13 +143,11 @@ CLI 顶层固定返回：
 - `signals_file`
 - `artifacts_dir`
 
-单条任务的 `result.data` 重点字段：
+cleanup 任务的 `result.data` 重点字段：
 
-- `status`
-- `record_id`
-- `product_url`
-- `product_id`
-- `fields`
+- `summary`
+- `items`
+- `settings`
 
 批量任务的 `result.data` 重点字段：
 

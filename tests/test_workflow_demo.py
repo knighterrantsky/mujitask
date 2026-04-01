@@ -140,8 +140,8 @@ def test_cli_runner_lists_registered_tasks():
             "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
         },
         {
-            "name": "tiktok_product_to_feishu",
-            "description": "Fetch a TikTok Shop product page and prepare Feishu Bitable fields for the item.",
+            "name": "tiktok_feishu_batch_sync",
+            "description": "Read TikTok product rows from Feishu, collect stage-1 product data via browser, and write results back to the same rows.",
         },
         {
             "name": "tiktok_feishu_single_sync",
@@ -151,10 +151,14 @@ def test_cli_runner_lists_registered_tasks():
             ),
         },
         {
-            "name": "tiktok_feishu_batch_sync",
+            "name": "tiktok_product_link_cleanup",
             "description": (
-                "Process multiple TikTok Shop product URLs sequentially and insert Feishu "
-                "Bitable rows one by one with randomized delays."
+                "Normalize TikTok product links from Feishu, delete duplicate rows by normalized URL, "
+                "and write cleanup status back to the kept rows."
             ),
+        },
+        {
+            "name": "tiktok_product_to_feishu",
+            "description": "Fetch a TikTok Shop product page and prepare Feishu Bitable fields for the item.",
         },
     ]

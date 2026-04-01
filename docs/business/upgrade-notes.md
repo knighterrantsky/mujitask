@@ -13,6 +13,12 @@
 - 是否替换了 demo task 与 demo workflow
 - 是否修改了 platform-managed 区域
 
+## 当前业务额外假设
+
+- TikTok 一期实现直接依赖 `automation_framework.browser`
+- 当前默认浏览器 provider 为 `chrome_cdp`
+- 如果后续切换到 `roxy`，优先保持 task contract 和返回结构不变
+
 ## 后续升级建议模板
 
 ### Current Baseline
@@ -50,4 +56,3 @@
 - `/tasks`:
 - demo/smoke run:
 - `draft` blocks `submit`:
-

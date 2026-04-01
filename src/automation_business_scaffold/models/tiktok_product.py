@@ -8,6 +8,7 @@ from typing import Any
 class TikTokProductRecord:
     source_url: str
     resolved_url: str
+    normalized_url: str
     product_id: str
     title: str
     holiday: str
@@ -21,6 +22,9 @@ class TikTokProductRecord:
     main_image_local_path: str = ""
     main_image_file_name: str = ""
     main_image_mime_type: str = ""
+    product_page_screenshot_local_path: str = ""
+    product_page_screenshot_file_name: str = ""
+    product_page_screenshot_mime_type: str = ""
 
     def to_dict(self) -> dict[str, str | int]:
         return asdict(self)
@@ -30,6 +34,7 @@ class TikTokProductRecord:
         return cls(
             source_url=str(data.get("source_url", "")),
             resolved_url=str(data.get("resolved_url", "")),
+            normalized_url=str(data.get("normalized_url", "")),
             product_id=str(data.get("product_id", "")),
             title=str(data.get("title", "")),
             holiday=str(data.get("holiday", "")),
@@ -43,4 +48,7 @@ class TikTokProductRecord:
             main_image_local_path=str(data.get("main_image_local_path", "")),
             main_image_file_name=str(data.get("main_image_file_name", "")),
             main_image_mime_type=str(data.get("main_image_mime_type", "")),
+            product_page_screenshot_local_path=str(data.get("product_page_screenshot_local_path", "")),
+            product_page_screenshot_file_name=str(data.get("product_page_screenshot_file_name", "")),
+            product_page_screenshot_mime_type=str(data.get("product_page_screenshot_mime_type", "")),
         )

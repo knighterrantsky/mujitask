@@ -7,6 +7,9 @@ from automation_business_scaffold.tasks.tiktok_feishu_batch_sync import (
 from automation_business_scaffold.tasks.tiktok_feishu_single_sync import (
     TikTokFeishuSingleSyncTask,
 )
+from automation_business_scaffold.tasks.tiktok_product_link_cleanup import (
+    TikTokProductLinkCleanupTask,
+)
 from automation_business_scaffold.tasks.tiktok_product_to_feishu import (
     TikTokProductToFeishuTask,
 )
@@ -16,6 +19,7 @@ DEFAULT_TASKS = [
     TikTokProductToFeishuTask(),
     TikTokFeishuSingleSyncTask(),
     TikTokFeishuBatchSyncTask(),
+    TikTokProductLinkCleanupTask(),
 ]
 
 __all__ = [
@@ -24,4 +28,5 @@ __all__ = [
     "TikTokProductToFeishuTask",
     "TikTokFeishuSingleSyncTask",
     "TikTokFeishuBatchSyncTask",
+    "TikTokProductLinkCleanupTask",
 ]
