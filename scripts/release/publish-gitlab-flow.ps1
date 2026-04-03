@@ -34,23 +34,26 @@ function Invoke-Git {
         [string[]]$Args
     )
 
-    $previousNativeErrorPreference = $null
-    $hasNativeErrorPreference = $false
-    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
-        $hasNativeErrorPreference = $true
-        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-        $global:PSNativeCommandUseErrorActionPreference = $false
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "git"
+    foreach ($arg in $Args) {
+        [void]$psi.ArgumentList.Add($arg)
     }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = (Get-Location).Path
 
-    try {
-        $output = & git @Args 2>&1
-    } finally {
-        if ($hasNativeErrorPreference) {
-            $global:PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
-        }
-    }
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
 
-    if ($LASTEXITCODE -ne 0) {
+    $output = (($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine
+    if ($process.ExitCode -ne 0) {
         $joined = $Args -join " "
         Fail "git $joined failed: $output"
     }
