@@ -34,7 +34,22 @@ function Invoke-Git {
         [string[]]$Args
     )
 
-    $output = & git @Args 2>&1
+    $previousNativeErrorPreference = $null
+    $hasNativeErrorPreference = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+        $hasNativeErrorPreference = $true
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $global:PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $output = & git @Args 2>&1
+    } finally {
+        if ($hasNativeErrorPreference) {
+            $global:PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+
     if ($LASTEXITCODE -ne 0) {
         $joined = $Args -join " "
         Fail "git $joined failed: $output"
