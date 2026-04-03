@@ -293,6 +293,16 @@ prepare_target_dir() {
   mkdir -p "$target_dir"
 }
 
+replace_target_dir() {
+  local target_dir="$1"
+  if [[ -e "$target_dir" ]]; then
+    log "Existing directory detected, removing it before replacement: $target_dir"
+    rm -rf "$target_dir"
+  fi
+  mkdir -p "$(dirname "$target_dir")"
+  mkdir -p "$target_dir"
+}
+
 read_manifest_value() {
   local manifest_path="$1"
   local key="$2"
@@ -444,6 +454,8 @@ PY
     "SKILL.md"
     "skill.local.env"
     "skill.local.env.example"
+    "run_feishu_tiktok_sync.sh"
+    "run_feishu_tiktok_sync.ps1"
     "run_cleanup.sh"
     "run_cleanup.ps1"
     "run_batch_sync.sh"
@@ -630,7 +642,7 @@ main() {
 
   [[ -d "$source_skill_dir" ]] || fail "Missing skill bundle at $source_skill_dir."
 
-  prepare_target_dir "$target_skill_dir"
+  replace_target_dir "$target_skill_dir"
   cp -R "$source_skill_dir"/. "$target_skill_dir"/
   write_skill_local_env "$target_skill_dir" "$install_dir" "$table_url" "$token"
   write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${framework_archive_url:-}"

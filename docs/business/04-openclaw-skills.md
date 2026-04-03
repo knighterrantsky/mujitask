@@ -8,15 +8,19 @@
 
 当前 skill 的定位是：
 
-- 以飞书多维表格为主入口。
-- 读取表中的 TikTok 竞品记录。
-- 基于 `产品链接` 抓取阶段一商品信息。
-- 把抓取结果直接回写当前飞书记录。
+- 以飞书多维表格为主入口
+- 读取表中的 TikTok 竞品链接记录
+- 自动完成链接规范化、格式化、去重
+- 抓取 TikTok 竞品数据并回写当前飞书记录
 
-当前正式入口有两个：
+对 OpenClaw 而言，当前 skill 只定义一个主业务入口：
 
-- `tiktok_product_link_cleanup`
-- `tiktok_feishu_batch_sync`
+- 处理飞书表中的 TikTok 竞品链接，并将抓取结果回写飞书
+
+说明：
+
+- 链接清洗属于主流程中的自动前置步骤
+- OpenClaw 不需要感知内部开发 task 名、workflow 名或运行模式名
 
 ## 2. Skill 包结构
 
@@ -25,6 +29,8 @@
 - `SKILL.md`
 - `skill.local.env`
 - `skill.local.env.example`
+- `run_feishu_tiktok_sync.sh`
+- `run_feishu_tiktok_sync.ps1`
 - `run_cleanup.sh`
 - `run_cleanup.ps1`
 - `run_batch_sync.sh`
@@ -49,44 +55,40 @@ Skill 本地持久化配置文件固定为：
 - OpenClaw workspace 路径
 - `url_field_name`
 - `profile_ref`
-- 默认 `run_mode`
+- 内部运行模式
 
 这些值由部署脚本或包装脚本固定：
 
 - `url_field_name = 产品链接`
 - `profile_ref = local-chrome`
 
-## 4. Skill 调用方式
+## 4. OpenClaw 调用方式
 
-### 4.1 cleanup
+OpenClaw 侧只保留一个业务语义：
 
-- macOS:
-  - `bash run_cleanup.sh draft`
-  - `bash run_cleanup.sh canary`
-- Windows:
-  - `powershell -ExecutionPolicy Bypass -File .\run_cleanup.ps1 -RunMode draft`
-  - `powershell -ExecutionPolicy Bypass -File .\run_cleanup.ps1 -RunMode canary`
+- 读取飞书表中的 TikTok 竞品链接
+- 自动完成链接规范化与去重
+- 批量抓取竞品信息
+- 将结果回写飞书表格
 
-### 4.2 batch sync
+推荐对 OpenClaw 使用的自然语言句式：
 
-- macOS:
-  - `bash run_batch_sync.sh draft 0`
-  - `bash run_batch_sync.sh canary 0`
-- Windows:
-  - `powershell -ExecutionPolicy Bypass -File .\run_batch_sync.ps1 -RunMode draft -MaxRecords 0`
-  - `powershell -ExecutionPolicy Bypass -File .\run_batch_sync.ps1 -RunMode canary -MaxRecords 0`
+- 读取飞书表中的 TikTok 竞品链接，抓取竞品信息并回写结果
+- 对当前飞书 TikTok 竞品表执行链接规范化后再批量抓取
+- 使用当前飞书表数据做 TikTok 竞品采集和写回
+- 处理这张飞书竞品表里的 TikTok 链接，并把抓取结果更新回表格
 
 说明：
 
-- 包装脚本会自动读取 `skill.local.env`。
-- 包装脚本会自动设置 `FEISHU_ACCESS_TOKEN`。
-- 包装脚本固定传入 `url_field_name=产品链接` 和 `profile_ref=local-chrome`。
-- `MaxRecords=0` 表示不限制条数。
-- batch sync 会先检查 `http://127.0.0.1:9222`，未就绪时自动尝试启动 Chrome CDP。
+- 当前 skill 只暴露一个主入口脚本：
+  - macOS: `bash run_feishu_tiktok_sync.sh`
+  - Windows: `powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1`
+- 主入口脚本会自动完成“先整理链接，再抓取并回写”
+- OpenClaw 不需要知道 cleanup 与 batch sync 的内部拆分
 
 ## 5. 浏览器启动方式
 
-batch sync 使用 `chrome_cdp`。  
+当前抓取流程使用 `chrome_cdp`。  
 为便于宿主机运行，skill 包中同时提供：
 
 - `start_browser_cdp.sh`
@@ -126,7 +128,7 @@ batch sync 使用 `chrome_cdp`。
 
 ### 6.5 缺少 Chrome
 
-- `batch sync` 无法进入 TikTok 页面抓取
+- 无法进入 TikTok 页面抓取
 - 处理方式：先安装 Chrome，再重新执行部署脚本或启动浏览器脚本
 
 ## 7. 可运行判定
@@ -134,12 +136,12 @@ batch sync 使用 `chrome_cdp`。
 只有同时满足下面条件，才能认为这份 skill 已经可运行：
 
 - OpenClaw workspace 中存在 `mujitask-tiktok-feishu-sync`
+- OpenClaw workspace 中不存在旧的 `mujitask-tiktok-feishu-sync.backup-*`
 - skill 目录中存在 `SKILL.md` 和包装脚本
+- skill 目录中存在统一主入口脚本
 - `skill.local.env` 已生成
 - 本地项目 `.venv` 已存在
-- `list-tasks` 能看到：
-  - `tiktok_product_link_cleanup`
-  - `tiktok_feishu_batch_sync`
+- 项目内部任务检查通过
 
 ## 8. 关联文档
 
