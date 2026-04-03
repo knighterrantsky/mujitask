@@ -215,9 +215,8 @@ print(root)
 
     function Prepare-TargetDir([string]$TargetDir) {
         if (Test-Path -LiteralPath $TargetDir) {
-            $backupDir = "$TargetDir.backup-$(Get-Date -Format yyyyMMddHHmmss)"
-            Log "Existing directory detected, moving it to $backupDir"
-            Move-Item -LiteralPath $TargetDir -Destination $backupDir
+            Log "Existing directory detected, removing it before replacement: $TargetDir"
+            Remove-Item -LiteralPath $TargetDir -Recurse -Force
         }
         New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     }
@@ -306,6 +305,26 @@ FEISHU_ACCESS_TOKEN=$Token
 "@ | Set-Content -LiteralPath (Join-Path $SkillDir "skill.local.env") -Encoding UTF8
     }
 
+    function Normalize-KeyValueEntry([string]$Value) {
+        $normalized = $Value.Trim()
+        if ($normalized.StartsWith([char]0xFEFF)) {
+            $normalized = $normalized.TrimStart([char]0xFEFF)
+        }
+        if ($normalized.StartsWith("export ")) {
+            $normalized = $normalized.Substring(7).Trim()
+        }
+        if (
+            $normalized.Length -ge 2 -and
+            (
+                ($normalized.StartsWith('"') -and $normalized.EndsWith('"')) -or
+                ($normalized.StartsWith("'") -and $normalized.EndsWith("'"))
+            )
+        ) {
+            $normalized = $normalized.Substring(1, $normalized.Length - 2)
+        }
+        return $normalized
+    }
+
     function Read-KeyValueFile([string]$Path) {
         $map = @{}
         if (-not (Test-Path -LiteralPath $Path)) {
@@ -318,7 +337,10 @@ FEISHU_ACCESS_TOKEN=$Token
             if ($trimmed.StartsWith("#")) { continue }
             $parts = $line.Split("=", 2)
             if ($parts.Count -ne 2) { continue }
-            $map[$parts[0].Trim()] = $parts[1].Trim()
+            $key = Normalize-KeyValueEntry $parts[0]
+            $value = Normalize-KeyValueEntry $parts[1]
+            if ([string]::IsNullOrWhiteSpace($key)) { continue }
+            $map[$key] = $value
         }
         return $map
     }
@@ -388,15 +410,6 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
     $tag = PromptOptional "Tag (leave blank to auto-resolve latest)" ""
     $installDir = Prompt "Install directory" $defaultInstallDir
 
-    $reuseSkillConfig = $false
-    if ($existingSkillConfig["INSTALL_DIR"]) {
-        $existingInstallFullPath = [System.IO.Path]::GetFullPath([string]$existingSkillConfig["INSTALL_DIR"])
-        $selectedInstallFullPath = [System.IO.Path]::GetFullPath($installDir)
-        if ($existingInstallFullPath.Equals($selectedInstallFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $reuseSkillConfig = $true
-        }
-    }
-
     $deployStatePath = Join-Path $installDir "runtime\deployment\openclaw-deploy.env"
     $deployState = Read-KeyValueFile -Path $deployStatePath
 
@@ -411,14 +424,14 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
         Log "Current installed ref: $($deployState["LAST_RESOLVED_REF"])"
     }
 
-    if ($reuseSkillConfig -and $existingSkillConfig["TABLE_URL"]) {
+    if ($existingSkillConfig["TABLE_URL"]) {
         $tableUrl = [string]$existingSkillConfig["TABLE_URL"]
         Log "Reusing existing Feishu table URL from $existingSkillEnvPath"
     } else {
         $tableUrl = Prompt "Feishu table URL"
     }
 
-    if ($reuseSkillConfig -and $existingSkillConfig["FEISHU_ACCESS_TOKEN"]) {
+    if ($existingSkillConfig["FEISHU_ACCESS_TOKEN"]) {
         $token = [string]$existingSkillConfig["FEISHU_ACCESS_TOKEN"]
         Log "Reusing existing Feishu access token from $existingSkillEnvPath"
     } else {

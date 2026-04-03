@@ -25,6 +25,23 @@ trim() {
   printf '%s' "$value"
 }
 
+normalize_env_entry() {
+  local value
+  value="$(trim "$1")"
+  value="${value#$'\ufeff'}"
+  if [[ "$value" == export\ * ]]; then
+    value="$(trim "${value#export }")"
+  fi
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
 load_skill_env() {
   [[ -f "$ENV_FILE" ]] || fail "Missing $ENV_FILE. Copy skill.local.env.example and fill it first."
 
@@ -36,8 +53,8 @@ load_skill_env() {
 
     local key="${raw_line%%=*}"
     local value="${raw_line#*=}"
-    key="$(trim "$key")"
-    value="$(trim "$value")"
+    key="$(normalize_env_entry "$key")"
+    value="$(normalize_env_entry "$value")"
 
     case "$key" in
       INSTALL_DIR) INSTALL_DIR="$value" ;;
