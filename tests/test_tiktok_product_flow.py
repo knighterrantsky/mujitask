@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from automation_business_scaffold.flows import (
     build_feishu_bitable_record,
     download_tiktok_product_main_image,
@@ -117,6 +119,7 @@ class _FakeLocator:
 class _FakePage:
     def __init__(self) -> None:
         self.url = "https://www.tiktok.com/shop/pdp/1729732615040962895"
+        self.waited_timeouts: list[int] = []
 
     def goto(self, url: str, wait_until: str | None = None) -> None:
         self.url = url
@@ -126,11 +129,19 @@ class _FakePage:
 
     def wait_for_timeout(self, timeout_ms: int) -> None:
         assert timeout_ms > 0
+        self.waited_timeouts.append(timeout_ms)
 
     def content(self) -> str:
         return SAMPLE_HTML
 
     def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            return {
+                "visible": False,
+                "text": "",
+                "selector": "",
+                "matched_keyword": "",
+            }
         if "visible_signal_count" in script:
             return {
                 "title_text": "Sample TikTok Product",
@@ -159,6 +170,13 @@ class _FakePage:
 
 class _FakeFallbackPage(_FakePage):
     def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            return {
+                "visible": False,
+                "text": "",
+                "selector": "",
+                "matched_keyword": "",
+            }
         if "visible_signal_count" in script:
             return {
                 "title_text": "Sample TikTok Product",
@@ -173,6 +191,26 @@ class _FakeFallbackPage(_FakePage):
                 "visible_signal_count": 2,
             }
         raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+
+class _FakeLoginToastPage(_FakePage):
+    def __init__(self, visibility_sequence: list[bool]) -> None:
+        super().__init__()
+        self.visibility_sequence = visibility_sequence
+        self.login_toast_checks = 0
+
+    def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            index = min(self.login_toast_checks, len(self.visibility_sequence) - 1)
+            visible = self.visibility_sequence[index] if self.visibility_sequence else False
+            self.login_toast_checks += 1
+            return {
+                "visible": visible,
+                "text": "Please login to continue" if visible else "",
+                "selector": "[data-e2e='toast-container']",
+                "matched_keyword": "login" if visible else "",
+            }
+        return super().evaluate(script, arg)
 
 
 def test_extract_tiktok_product_from_html_returns_expected_fields():
@@ -341,6 +379,61 @@ def test_fetch_tiktok_product_record_via_browser_falls_back_to_html_data_and_dow
     assert product.main_image_local_path.endswith("1729732615040962895-main-image.webp")
     assert Path(product.main_image_local_path).read_bytes() == b"downloaded-main-image"
     assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
+
+
+def test_fetch_tiktok_product_record_via_browser_waits_for_login_toast_to_clear(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+    page = _FakeLoginToastPage([True, True, False, False])
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": page,
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+
+    product = fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    assert product.product_id == "1729732615040962895"
+    assert page.login_toast_checks == 4
+    assert page.waited_timeouts[:3] == [250, 250, 250]
+
+
+def test_wait_for_login_toast_to_settle_raises_when_toast_never_disappears():
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["_wait_for_login_toast_to_settle"],
+    )
+    page = _FakeLoginToastPage([True, True, True, True, True])
+
+    with pytest.raises(module.TikTokProductExtractionError, match="login toast"):
+        module._wait_for_login_toast_to_settle(
+            page,
+            settle_ms=250,
+            timeout_ms=750,
+            poll_ms=250,
+            stable_absent_polls=2,
+        )
 
 
 def test_normalize_tiktok_product_url_strips_parameters():

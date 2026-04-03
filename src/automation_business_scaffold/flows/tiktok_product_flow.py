@@ -72,7 +72,30 @@ MAIN_IMAGE_CANDIDATE_SELECTORS = (
     "figure img",
     "img",
 )
+LOGIN_TOAST_CANDIDATE_SELECTORS = (
+    "[data-e2e='toast-container']",
+    "[data-e2e*='toast']",
+    "[data-testid*='toast']",
+    "[class*='toast']",
+    "[class*='Toast']",
+    "[role='status']",
+    "[role='alert']",
+)
+LOGIN_TOAST_KEYWORDS = (
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "登录",
+    "登入",
+    "扫码",
+    "scan",
+    "qr code",
+)
 DEFAULT_LOGIN_TOAST_SETTLE_MS = 4000
+DEFAULT_LOGIN_TOAST_TIMEOUT_MS = 10000
+DEFAULT_LOGIN_TOAST_POLL_MS = 250
+DEFAULT_LOGIN_TOAST_STABLE_POLLS = 2
 
 
 class TikTokProductExtractionError(RuntimeError):
@@ -152,7 +175,15 @@ def fetch_tiktok_product_record_via_browser(
     with open_automation_page(profile_ref=profile_ref) as browser_page:
         page = browser_page.page
         _page_goto(page, product_url)
-        _wait_for_login_toast_to_settle(page)
+        login_toast_timeout_ms = min(
+            max(timeout_ms, DEFAULT_LOGIN_TOAST_POLL_MS),
+            DEFAULT_LOGIN_TOAST_TIMEOUT_MS,
+        )
+        _wait_for_login_toast_to_settle(
+            page,
+            settle_ms=min(DEFAULT_LOGIN_TOAST_SETTLE_MS, login_toast_timeout_ms),
+            timeout_ms=login_toast_timeout_ms,
+        )
         dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=timeout_ms)
         html = _safe_page_content(page)
         resolved_url = str(getattr(page, "url", "") or product_url)
@@ -856,8 +887,129 @@ def _safe_wait_for_timeout(page: Any, timeout_ms: int) -> None:
     time.sleep(timeout_ms / 1000.0)
 
 
-def _wait_for_login_toast_to_settle(page: Any, *, settle_ms: int = DEFAULT_LOGIN_TOAST_SETTLE_MS) -> None:
-    _safe_wait_for_timeout(page, settle_ms)
+def _wait_for_login_toast_to_settle(
+    page: Any,
+    *,
+    settle_ms: int = DEFAULT_LOGIN_TOAST_SETTLE_MS,
+    timeout_ms: int = DEFAULT_LOGIN_TOAST_TIMEOUT_MS,
+    poll_ms: int = DEFAULT_LOGIN_TOAST_POLL_MS,
+    stable_absent_polls: int = DEFAULT_LOGIN_TOAST_STABLE_POLLS,
+) -> None:
+    effective_poll_ms = max(int(poll_ms), 1)
+    effective_settle_ms = max(int(settle_ms), effective_poll_ms)
+    effective_timeout_ms = max(int(timeout_ms), effective_settle_ms)
+    required_absent_polls = max(int(stable_absent_polls), 1)
+
+    seen_toast = False
+    absent_polls = 0
+    elapsed_ms = 0
+    latest_state: dict[str, Any] = {}
+
+    while True:
+        latest_state = _read_login_toast_state(page)
+        if latest_state.get("visible"):
+            seen_toast = True
+            absent_polls = 0
+        elif seen_toast:
+            absent_polls += 1
+            if absent_polls >= required_absent_polls:
+                return
+        elif elapsed_ms >= effective_settle_ms:
+            return
+
+        if elapsed_ms >= effective_timeout_ms:
+            break
+
+        _safe_wait_for_timeout(page, effective_poll_ms)
+        elapsed_ms += effective_poll_ms
+
+    if not seen_toast:
+        return
+
+    toast_text = str(latest_state.get("text", "")).strip()
+    detail = f": {toast_text}" if toast_text else ""
+    raise TikTokProductExtractionError(
+        f"TikTok login toast did not disappear before timeout{detail}"
+    )
+
+
+def _read_login_toast_state(page: Any) -> dict[str, Any]:
+    try:
+        payload = page.evaluate(
+            """(args) => {
+                const selectors = args.toastSelectors || [];
+                const keywords = (args.toastKeywords || [])
+                  .map((item) => String(item || "").trim().toLowerCase())
+                  .filter(Boolean);
+
+                const normalizeText = (value) => String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const rect = element.getBoundingClientRect();
+                  const style = window.getComputedStyle(element);
+                  return rect.width > 0 && rect.height > 0 &&
+                    style.visibility !== "hidden" &&
+                    style.display !== "none";
+                };
+
+                for (const selector of selectors) {
+                  for (const element of document.querySelectorAll(selector)) {
+                    if (!isVisible(element)) continue;
+
+                    const text = normalizeText(element.textContent);
+                    const loweredText = text.toLowerCase();
+                    const className = normalizeText(
+                      typeof element.className === "string" ? element.className : ""
+                    ).toLowerCase();
+                    const dataTestId = normalizeText(element.getAttribute("data-testid"));
+                    const dataE2e = normalizeText(element.getAttribute("data-e2e"));
+                    const role = normalizeText(element.getAttribute("role")).toLowerCase();
+                    const signature = [selector, className, dataTestId, dataE2e, role]
+                      .join(" ")
+                      .toLowerCase();
+                    const matchedKeyword = keywords.find((item) => loweredText.includes(item)) || "";
+                    const loginLike = Boolean(matchedKeyword) ||
+                      signature.includes("login") ||
+                      signature.includes("sign-in") ||
+                      signature.includes("signin");
+                    const toastLike = signature.includes("toast") ||
+                      role === "status" ||
+                      role === "alert";
+
+                    if (!loginLike || !toastLike) continue;
+
+                    return {
+                      visible: true,
+                      text,
+                      selector,
+                      matched_keyword: matchedKeyword,
+                    };
+                  }
+                }
+
+                return {
+                  visible: false,
+                  text: "",
+                  selector: "",
+                  matched_keyword: "",
+                };
+            }""",
+            {
+                "toastSelectors": list(LOGIN_TOAST_CANDIDATE_SELECTORS),
+                "toastKeywords": list(LOGIN_TOAST_KEYWORDS),
+            },
+        )
+    except Exception:
+        return {
+            "visible": False,
+            "text": "",
+            "selector": "",
+            "matched_keyword": "",
+        }
+    return payload if isinstance(payload, dict) else {}
 
 
 def _safe_page_content(page: Any) -> str:
