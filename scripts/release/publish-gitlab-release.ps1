@@ -17,13 +17,24 @@ function Fail([string]$Message) {
     throw "[publish-gitlab-release] $Message"
 }
 
+function Read-TokenInteractive {
+    $secure = Read-Host "GitLab token" -AsSecureString
+    if (-not $secure) {
+        return ""
+    }
+    return [System.Net.NetworkCredential]::new("", $secure).Password.Trim()
+}
+
 if (-not (Test-Path -LiteralPath $ReleaseNotesFile)) {
     Fail "Missing release notes file: $ReleaseNotesFile"
 }
 
 $token = if ($env:GITLAB_TOKEN) { $env:GITLAB_TOKEN } elseif ($env:GITLAB_API_TOKEN) { $env:GITLAB_API_TOKEN } else { "" }
 if ([string]::IsNullOrWhiteSpace($token)) {
-    Fail "Set GITLAB_TOKEN or GITLAB_API_TOKEN before publishing a release."
+    $token = Read-TokenInteractive
+}
+if ([string]::IsNullOrWhiteSpace($token)) {
+    Fail "Set GITLAB_TOKEN or GITLAB_API_TOKEN, or provide a token when prompted."
 }
 
 $notes = Get-Content -Raw -LiteralPath $ReleaseNotesFile
