@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/skill.local.env"
+RESULT_HELPER="$SCRIPT_DIR/openclaw_result.py"
 
 INSTALL_DIR=""
 TABLE_URL=""
@@ -210,19 +211,28 @@ main() {
 
   local run_id
   local run_dir="$INSTALL_DIR/runtime/cli_runs"
+  local stdout_dir="$run_dir/stdout"
   local run_file
   local steps_file
+  local signals_file
+  local stdout_file
   local cli_pid
   local monitor_pid
   local cli_status=0
+  local result_json=""
+  local summary_text=""
 
+  mkdir -p "$stdout_dir"
   run_id="$(generate_run_id)"
   run_file="$run_dir/$run_id.json"
   steps_file="$run_dir/steps/$run_id.json"
+  signals_file="$run_dir/signals/$run_id.json"
+  stdout_file="$stdout_dir/$run_id.log"
 
   cd "$INSTALL_DIR"
   log "Running tiktok_feishu_batch_sync with run_mode=$run_mode max_records=$max_records run_id=$run_id"
   log "Progress files: run_file=$run_file steps_file=$steps_file"
+  log "CLI output: stdout_file=$stdout_file"
 
   "$cli_bin" run \
     --task tiktok_feishu_batch_sync \
@@ -232,7 +242,8 @@ main() {
     --param "url_field_name=产品链接" \
     --param "profile_ref=local-chrome" \
     --param "max_records=$max_records" \
-    --run-id "$run_id" &
+    --run-id "$run_id" \
+    >"$stdout_file" 2>&1 &
   cli_pid=$!
 
   monitor_cli_progress "$cli_pid" "$python_bin" "$steps_file" "$run_file" &
@@ -246,11 +257,44 @@ main() {
 
   wait "$monitor_pid" 2>/dev/null || true
 
-  if (( cli_status != 0 )); then
-    fail "tiktok_feishu_batch_sync failed with exit code $cli_status. Inspect $run_file and $steps_file for details."
+  result_json="$("$python_bin" "$RESULT_HELPER" run-summary \
+    --run-file "$run_file" \
+    --steps-file "$steps_file" \
+    --signals-file "$signals_file" \
+    --stdout-file "$stdout_file" \
+    --run-id "$run_id" \
+    --fallback-task "tiktok_feishu_batch_sync" \
+    --status "$([[ $cli_status -eq 0 ]] && printf 'success' || printf 'failed')" \
+    --error-message "$([[ $cli_status -eq 0 ]] && printf '' || printf 'tiktok_feishu_batch_sync exited with code %s' "$cli_status")")"
+
+  if [[ -n "${MUJITASK_RESULT_FILE:-}" ]]; then
+    printf '%s\n' "$result_json" > "$MUJITASK_RESULT_FILE"
   fi
 
-  log "Completed run_id=$run_id"
+  summary_text="$("$python_bin" - "$result_json" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+print(payload.get("summary_text", ""))
+PY
+)"
+
+  if [[ -n "$summary_text" ]]; then
+    log "Summary: $summary_text"
+  fi
+
+  if (( cli_status == 0 )); then
+    log "Completed run_id=$run_id"
+  else
+    log "Failed run_id=$run_id. Inspect $run_file, $steps_file, $signals_file, and $stdout_file for details."
+  fi
+
+  if [[ "${MUJITASK_SUPPRESS_RESULT_MARKER:-0}" != "1" ]]; then
+    printf '__OPENCLAW_RESULT__ %s\n' "$result_json"
+  fi
+
+  return "$cli_status"
 }
 
 main "$@"
