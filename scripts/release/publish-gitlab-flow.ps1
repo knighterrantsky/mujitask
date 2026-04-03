@@ -34,11 +34,22 @@ function Invoke-Git {
         [string[]]$Args
     )
 
+    function Quote-ProcessArgument([string]$Value) {
+        if ([string]::IsNullOrEmpty($Value)) {
+            return '""'
+        }
+        if ($Value -notmatch '[\s"]') {
+            return $Value
+        }
+
+        $escaped = $Value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        return '"' + $escaped + '"'
+    }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "git"
-    foreach ($arg in $Args) {
-        [void]$psi.ArgumentList.Add($arg)
-    }
+    $psi.Arguments = (($Args | ForEach-Object { Quote-ProcessArgument $_ }) -join " ")
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
