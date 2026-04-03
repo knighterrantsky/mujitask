@@ -31,6 +31,26 @@ function Read-TokenInteractive {
     return [System.Net.NetworkCredential]::new("", $secure).Password.Trim()
 }
 
+function Get-GitLabToken {
+    $token = if ($env:GITLAB_TOKEN) { $env:GITLAB_TOKEN } elseif ($env:GITLAB_API_TOKEN) { $env:GITLAB_API_TOKEN } else { "" }
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        return $token.Trim()
+    }
+
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        foreach ($scope in @("User", "Machine")) {
+            foreach ($name in @("GITLAB_TOKEN", "GITLAB_API_TOKEN")) {
+                $scopedToken = [Environment]::GetEnvironmentVariable($name, $scope)
+                if (-not [string]::IsNullOrWhiteSpace($scopedToken)) {
+                    return $scopedToken.Trim()
+                }
+            }
+        }
+    }
+
+    return ""
+}
+
 function Invoke-Git {
     param(
         [Parameter(Mandatory = $true)]
@@ -487,12 +507,12 @@ function Resolve-ReleaseNotesFile([string]$Path, [string]$MainCommitShort) {
 $origin = Get-OriginInfo
 Info "Detected GitLab repository: $($origin.Project)"
 
-$token = if ($env:GITLAB_TOKEN) { $env:GITLAB_TOKEN } elseif ($env:GITLAB_API_TOKEN) { $env:GITLAB_API_TOKEN } else { "" }
+$token = Get-GitLabToken
 if ([string]::IsNullOrWhiteSpace($token)) {
     $token = Read-TokenInteractive
 }
 if ([string]::IsNullOrWhiteSpace($token)) {
-    Fail "Set GITLAB_TOKEN or GITLAB_API_TOKEN, or provide a token when prompted."
+    Fail "Set GITLAB_TOKEN or GITLAB_API_TOKEN in the current shell or Windows user/machine environment, or provide a token when prompted."
 }
 
 $headers = Get-AuthHeaders -Token $token

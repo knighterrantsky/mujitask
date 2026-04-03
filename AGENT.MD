@@ -136,6 +136,7 @@ Token 规则：
 - GitLab 流程优先读取：
   - `GITLAB_TOKEN`
   - `GITLAB_API_TOKEN`
+- 在 Windows 上，如果当前 shell 没有这些变量，发布脚本会继续尝试读取用户级和机器级环境变量中的同名 token
 - GitHub 流程优先读取：
   - `GITHUB_TOKEN`
   - `GH_TOKEN`
