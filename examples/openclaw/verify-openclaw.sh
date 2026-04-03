@@ -118,8 +118,11 @@ main() {
 
   log "Checking list-tasks output"
   local tasks_json
+  local cleanup_cmd
   tasks_json="$(mktemp)"
-  trap 'rm -f "$tasks_json"' EXIT
+  # Expand the temp file path into the trap now; EXIT runs after local vars are gone.
+  printf -v cleanup_cmd 'rm -f %q' "$tasks_json"
+  trap "$cleanup_cmd" EXIT
   "$cli_bin" list-tasks > "$tasks_json"
 
   "$python_bin" - "$tasks_json" <<'PY'
