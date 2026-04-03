@@ -17,12 +17,46 @@ function Fail([string]$Message) {
     throw "[publish-gitlab-release] $Message"
 }
 
+function Normalize-MarkdownText([string]$Text) {
+    if ($null -eq $Text) {
+        return ""
+    }
+
+    return ($Text -replace "`r`n", "`n" -replace "`r", "`n").Trim()
+}
+
 function Read-TokenInteractive {
     $secure = Read-Host "GitLab token" -AsSecureString
     if (-not $secure) {
         return ""
     }
     return [System.Net.NetworkCredential]::new("", $secure).Password.Trim()
+}
+
+function Invoke-GitLabJsonApi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Method,
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Headers,
+        [object]$Payload
+    )
+
+    $params = @{
+        Method  = $Method
+        Uri     = $Uri
+        Headers = $Headers
+    }
+
+    if ($null -ne $Payload) {
+        $json = $Payload | ConvertTo-Json -Depth 10 -Compress
+        $params.ContentType = "application/json; charset=utf-8"
+        $params.Body = [System.Text.Encoding]::UTF8.GetBytes($json)
+    }
+
+    return Invoke-RestMethod @params
 }
 
 if (-not (Test-Path -LiteralPath $ReleaseNotesFile)) {
@@ -37,29 +71,29 @@ if ([string]::IsNullOrWhiteSpace($token)) {
     Fail "Set GITLAB_TOKEN or GITLAB_API_TOKEN, or provide a token when prompted."
 }
 
-$notes = Get-Content -Raw -LiteralPath $ReleaseNotesFile
+$notes = Normalize-MarkdownText (Get-Content -Raw -LiteralPath $ReleaseNotesFile)
 if ([string]::IsNullOrWhiteSpace($notes)) {
     Fail "Release notes file is empty: $ReleaseNotesFile"
 }
 
 $headers = @{
     "PRIVATE-TOKEN" = $token
-    "Content-Type"  = "application/json"
 }
-
-$payload = @{
-    name        = $TagName
-    tag_name    = $TagName
-    description = $notes
-} | ConvertTo-Json -Compress
 
 $releaseUrl = "$GitLabBaseUrl/api/v4/projects/$ProjectId/releases"
 $targetUrl = "$releaseUrl/$TagName"
 
 if ($UpdateExisting) {
-    Invoke-RestMethod -Method Put -Uri $targetUrl -Headers $headers -Body $payload | Out-Null
+    Invoke-GitLabJsonApi -Method Put -Uri $targetUrl -Headers $headers -Payload @{
+        name        = $TagName
+        description = $notes
+    } | Out-Null
     Write-Host "[publish-gitlab-release] Updated release $TagName"
 } else {
-    Invoke-RestMethod -Method Post -Uri $releaseUrl -Headers $headers -Body $payload | Out-Null
+    Invoke-GitLabJsonApi -Method Post -Uri $releaseUrl -Headers $headers -Payload @{
+        name        = $TagName
+        tag_name    = $TagName
+        description = $notes
+    } | Out-Null
     Write-Host "[publish-gitlab-release] Created release $TagName"
 }
