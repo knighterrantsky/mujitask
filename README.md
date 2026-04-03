@@ -131,7 +131,7 @@ automation-business-scaffold-run run \
   }'
 ```
 
-直接运行 TikTok 阶段一表格驱动同步 task：
+直接运行 TikTok 飞书表驱动抓取与回写 task：
 
 ```bash
 cd "$HOME/apps/mujitask"
@@ -148,11 +148,12 @@ automation-business-scaffold-run run \
 
 说明：
 
-- `tiktok_product_link_cleanup` 只会回写 `产品链接`，并删除重复整行
-- `tiktok_feishu_batch_sync` 会读取当前飞书视图，逐条判断阶段一字段是否缺失
+- `tiktok_feishu_batch_sync` 是当前 TikTok 飞书竞品分析的主入口
+- 它会从当前飞书视图读取现有记录，逐条判断阶段一字段是否缺失
 - 只有存在空缺字段的记录才会被抓取
 - 单条记录按“抓取 -> 上传附件 -> 直接更新当前行”执行
 - 只要发生写回，就会同步刷新 `记录日期`
+- `tiktok_product_link_cleanup` 只是前置辅助能力，用来规范 `产品链接` 并删除重复整行
 
 如果只是单条 URL 调试底层字段构建，可以继续使用：
 
@@ -210,10 +211,10 @@ python -m automation_business_scaffold.cli run \
 - task name: `source_to_target_publish_demo`
 - workflow builder: `build_source_to_target_publish_workflow(run_mode="draft")`
 
-当前 TikTok 业务主入口：
+当前 TikTok 业务入口：
 
-- `tiktok_product_link_cleanup`
 - `tiktok_feishu_batch_sync`
+- `tiktok_product_link_cleanup`
 - `tiktok_product_to_feishu`
 
 ## 5. 新业务怎么从这里开始
@@ -287,10 +288,9 @@ python -m automation_business_scaffold.cli run \
 3. 再更新 pinned framework 依赖
 4. 最后按需迁移 platform-managed 区域
 
-更完整的业务升级手册见：
+当前业务文档入口见：
 
-- `docs/business/platform-upgrade-playbook.md`
-- `docs/business/upgrade-notes.md`
+- `docs/business/README.md`
 
 ## 9. 验证
 
