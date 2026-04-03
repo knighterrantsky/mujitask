@@ -36,8 +36,10 @@
 - OpenClaw 只应调用主入口脚本，不要自行拼接内部 task 名、workflow 名或额外参数
 - 不要直接调用 `run_cleanup.*`、`run_batch_sync.*` 或 `start_browser_cdp.*`，除非用户明确要求只做单步排查
 - 不依赖 stdin 传参；业务配置只从当前 skill 目录下的 `skill.local.env` 读取
+- macOS/bash 主入口使用“同步流式输出 + 固定结果尾行”协议
 - 主入口脚本启动后，应先看到阶段日志，再看到批量抓取阶段输出的 `run_id`、进度文件路径和心跳日志
-- 如果长时间没有最终 JSON，不代表 bash 没有转发输出；更常见原因是底层抓取仍在运行，或被外部超时机制提前终止
+- 底层 CLI 原始输出会保存到 `runtime/cli_runs/stdout/<run_id>.log`
+- 主入口脚本结束前会输出一行：`__OPENCLAW_RESULT__ <json>`
 
 ## 调用实例
 
@@ -69,12 +71,14 @@ powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1
 
 ```text
 [feishu-tiktok-sync] Step 1/2: normalizing and deduplicating TikTok links in Feishu
-[cleanup] Running tiktok_product_link_cleanup with run_mode=canary
+[cleanup] Running tiktok_product_link_cleanup with run_mode=canary run_id=openclaw-cleanup-...
+[cleanup] Progress files: run_file=... steps_file=...
 [feishu-tiktok-sync] Step 2/2: crawling TikTok competitor data and writing results back to Feishu
 [batch-sync] Running tiktok_feishu_batch_sync with run_mode=canary max_records=0 run_id=...
 [batch-sync] Progress files: run_file=... steps_file=...
 [batch-sync] Progress: run_status=running completed_steps=1 last_step=load_records last_status=success
 [batch-sync] Heartbeat: run is still active; waiting for the next workflow update
+__OPENCLAW_RESULT__ {"status":"success","task_name":"feishu_tiktok_sync",...}
 ```
 
 如果最终进程被杀掉，可以优先根据 `run_id` 去查看：
@@ -82,6 +86,7 @@ powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1
 - `runtime/cli_runs/<run_id>.json`
 - `runtime/cli_runs/steps/<run_id>.json`
 - `runtime/cli_runs/signals/<run_id>.json`
+- `runtime/cli_runs/stdout/<run_id>.log`
 
 ## 返回结果
 

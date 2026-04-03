@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/skill.local.env"
+RESULT_HELPER="$SCRIPT_DIR/openclaw_result.py"
 
 INSTALL_DIR=""
 TABLE_URL=""
@@ -73,15 +74,69 @@ main() {
 
   local cleanup_script="$SCRIPT_DIR/run_cleanup.sh"
   local batch_script="$SCRIPT_DIR/run_batch_sync.sh"
+  local python_bin="$INSTALL_DIR/.venv/bin/python"
+  local cleanup_result_file=""
+  local batch_result_file=""
+  local cleanup_status=0
+  local batch_status=0
+  local overall_json=""
+
+  cleanup_result_file="$(mktemp)"
+  batch_result_file="$(mktemp)"
+  trap 'rm -f "$cleanup_result_file" "$batch_result_file"' EXIT
 
   [[ -x "$cleanup_script" || -f "$cleanup_script" ]] || fail "Missing $cleanup_script."
   [[ -x "$batch_script" || -f "$batch_script" ]] || fail "Missing $batch_script."
+  [[ -x "$python_bin" ]] || fail "Cannot find Python at $python_bin. Re-run the deployment script."
+  [[ -f "$RESULT_HELPER" ]] || fail "Missing $RESULT_HELPER."
 
   log "Step 1/2: normalizing and deduplicating TikTok links in Feishu"
-  bash "$cleanup_script" canary
+  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$cleanup_result_file" bash "$cleanup_script" canary; then
+    cleanup_status=0
+  else
+    cleanup_status=$?
+  fi
+
+  if (( cleanup_status != 0 )); then
+    overall_json="$("$python_bin" "$RESULT_HELPER" combine \
+      --cleanup-result-file "$cleanup_result_file" \
+      --task-name "feishu_tiktok_sync" \
+      --status "failed" \
+      --message "TikTok Feishu sync stopped during cleanup." \
+      --error-message "Cleanup stage failed.")"
+    log "Step 1/2 failed. Final result marker follows."
+    printf '__OPENCLAW_RESULT__ %s\n' "$overall_json"
+    return "$cleanup_status"
+  fi
 
   log "Step 2/2: crawling TikTok competitor data and writing results back to Feishu"
-  bash "$batch_script" canary 0
+  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$batch_result_file" bash "$batch_script" canary 0; then
+    batch_status=0
+  else
+    batch_status=$?
+  fi
+
+  if (( batch_status != 0 )); then
+    overall_json="$("$python_bin" "$RESULT_HELPER" combine \
+      --cleanup-result-file "$cleanup_result_file" \
+      --batch-result-file "$batch_result_file" \
+      --task-name "feishu_tiktok_sync" \
+      --status "failed" \
+      --message "TikTok Feishu sync stopped during batch sync." \
+      --error-message "Batch sync stage failed.")"
+    log "Step 2/2 failed. Final result marker follows."
+    printf '__OPENCLAW_RESULT__ %s\n' "$overall_json"
+    return "$batch_status"
+  fi
+
+  overall_json="$("$python_bin" "$RESULT_HELPER" combine \
+    --cleanup-result-file "$cleanup_result_file" \
+    --batch-result-file "$batch_result_file" \
+    --task-name "feishu_tiktok_sync" \
+    --status "success" \
+    --message "TikTok Feishu sync completed.")"
+  log "Finished end-to-end sync. Final result marker follows."
+  printf '__OPENCLAW_RESULT__ %s\n' "$overall_json"
 }
 
 main "$@"

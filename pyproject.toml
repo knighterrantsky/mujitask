@@ -1,6 +1,6 @@
 [project]
 name = "automation-business-scaffold"
-version = "2.0.8"
+version = "2.0.9"
 description = "Business scaffold for building browser automation workflows on top of automation-framework."
 readme = "README.md"
 requires-python = ">=3.11"

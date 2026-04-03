@@ -2,7 +2,7 @@
 
 更新时间：`2026-04-03`
 
-`docs/business` 当前只保留 4 个主文档和 1 个总览入口。
+`docs/business` 当前只保留 5 个主文档和 1 个总览入口。
 
 ## 主文档
 
@@ -10,6 +10,7 @@
 2. [02-设计文档.md](./02-设计文档.md)
 3. [03-部署文档.md](./03-部署文档.md)
 4. [04-openclaw-skills.md](./04-openclaw-skills.md)
+5. [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md)
 
 ## 实际可用的 Skill 文件
 
