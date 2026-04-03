@@ -168,6 +168,8 @@ release notes 规则：
 GitLab 仓库的执行要求：
 
 - 创建 MR 是必做步骤
+- 不允许在本地通过 `git merge`、`git pull` 合并功能分支来代替服务器 MR 合并
+- 必须在 GitLab 服务器上的 MR 页面或 GitLab 服务端 API 完成合并
 - MR 合并到 `main` 后才能打正式 tag
 - release 必须在 `main` 最新提交上创建
 - 如果当前会话缺少 GitLab token，先提示用户输入，再继续后续步骤
