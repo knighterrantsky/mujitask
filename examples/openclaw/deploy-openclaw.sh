@@ -12,6 +12,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 UV_BIN=""
 PYTHON_BIN=""
+GITHUB_AUTH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 log() {
   printf '[deploy-openclaw] %s\n' "$*"
@@ -56,6 +57,25 @@ prompt() {
   printf '%s' "$result"
 }
 
+prompt_optional() {
+  local label="$1"
+  local default_value="${2:-}"
+  local result=""
+
+  if [[ -n "$default_value" ]]; then
+    read -r -p "$label [$default_value]: " result
+    result="$(trim "$result")"
+    if [[ -z "$result" ]]; then
+      result="$default_value"
+    fi
+  else
+    read -r -p "$label: " result
+    result="$(trim "$result")"
+  fi
+
+  printf '%s' "$result"
+}
+
 prompt_secret() {
   local label="$1"
   local result=""
@@ -64,6 +84,15 @@ prompt_secret() {
     printf '\n'
     result="$(trim "$result")"
   done
+  printf '%s' "$result"
+}
+
+prompt_secret_optional() {
+  local label="$1"
+  local result=""
+  read -r -s -p "$label: " result
+  printf '\n'
+  result="$(trim "$result")"
   printf '%s' "$result"
 }
 
@@ -163,7 +192,7 @@ resolve_latest_github_ref() {
   local latest_json="$TMP_ROOT/github-latest.json"
   local tags_json="$TMP_ROOT/github-tags.json"
 
-  if curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$slug/releases/latest" -o "$latest_json"; then
+  if github_api_download "https://api.github.com/repos/$slug/releases/latest" "$latest_json"; then
     local tag_name
     tag_name="$(python_json_get "tag_name" "$latest_json" | tr -d '\r')"
     if [[ -n "$tag_name" && "$tag_name" != "null" ]]; then
@@ -172,18 +201,53 @@ resolve_latest_github_ref() {
     fi
   fi
 
-  curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$slug/tags?per_page=1" -o "$tags_json" \
-    || fail "Could not resolve latest tag for $slug."
+  github_api_download "https://api.github.com/repos/$slug/tags?per_page=1" "$tags_json" \
+    || fail_github_download "Could not resolve latest tag for $slug."
   local tag_name
   tag_name="$(python_json_get "0.name" "$tags_json" | tr -d '\r')"
   [[ -n "$tag_name" && "$tag_name" != "null" ]] || fail "The repository $slug does not expose a latest release or tag."
   printf '%s' "$tag_name"
 }
 
+github_api_download() {
+  local url="$1"
+  local target="$2"
+
+  local curl_args=(
+    -fsSL
+    -H "Accept: application/vnd.github+json"
+  )
+
+  if [[ -n "$GITHUB_AUTH_TOKEN" ]]; then
+    curl_args+=(
+      -H "Authorization: Bearer $GITHUB_AUTH_TOKEN"
+      -H "X-GitHub-Api-Version: 2022-11-28"
+    )
+  fi
+
+  curl "${curl_args[@]}" "$url" -o "$target"
+}
+
+fail_github_download() {
+  local base_message="$1"
+
+  if [[ -z "$GITHUB_AUTH_TOKEN" ]]; then
+    fail "$base_message If the GitHub repository is private, rerun and provide a GitHub PAT, or set GITHUB_TOKEN / GH_TOKEN."
+  fi
+
+  fail "$base_message GitHub PAT was provided, so verify that the token can read the target repository."
+}
+
 download_file() {
   local url="$1"
   local target="$2"
-  curl -fsSL "$url" -o "$target"
+
+  if [[ "$url" == https://api.github.com/* ]]; then
+    github_api_download "$url" "$target" || fail_github_download "Failed to download GitHub archive from $url."
+    return 0
+  fi
+
+  curl -fsSL "$url" -o "$target" || fail "Failed to download archive from $url."
 }
 
 extract_archive() {
@@ -308,6 +372,50 @@ FEISHU_ACCESS_TOKEN=$token
 EOF
 }
 
+read_kv_value() {
+  local file_path="$1"
+  local target_key="$2"
+
+  [[ -f "$file_path" ]] || return 1
+
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    raw_line="${raw_line%$'\r'}"
+    [[ -z "$(trim "$raw_line")" ]] && continue
+    [[ "$(trim "$raw_line")" == \#* ]] && continue
+    [[ "$raw_line" == *=* ]] || continue
+
+    local key="${raw_line%%=*}"
+    local value="${raw_line#*=}"
+    key="$(trim "$key")"
+    value="$(trim "$value")"
+
+    if [[ "$key" == "$target_key" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done < "$file_path"
+
+  return 1
+}
+
+write_deploy_state() {
+  local install_dir="$1"
+  local repo_url="$2"
+  local resolved_ref="$3"
+  local repo_archive_url="$4"
+  local framework_archive_url="$5"
+
+  local deploy_dir="$install_dir/runtime/deployment"
+  mkdir -p "$deploy_dir"
+
+  cat > "$deploy_dir/openclaw-deploy.env" <<EOF
+REPO_URL=$repo_url
+LAST_RESOLVED_REF=$resolved_ref
+REPO_ARCHIVE_URL=$repo_archive_url
+FRAMEWORK_ARCHIVE_URL=$framework_archive_url
+EOF
+}
+
 smoke_check() {
   local install_dir="$1"
   local target_skill_dir="$2"
@@ -354,12 +462,65 @@ main() {
   ensure_uv
   ensure_python_311
 
-  local repo_url tag install_dir table_url token archive_url github_slug resolved_ref
-  repo_url="$(prompt "Repo URL")"
-  tag="$(prompt "Tag (leave blank to auto-resolve latest)" "")"
-  install_dir="$(prompt "Install directory" "$HOME/apps/mujitask")"
-  table_url="$(prompt "Feishu table URL")"
-  token="$(prompt_secret "Feishu access token")"
+  local openclaw_skills_dir="$HOME/.openclaw/workspace/skills"
+  local existing_skill_env="$openclaw_skills_dir/mujitask-tiktok-feishu-sync/skill.local.env"
+  local existing_install_dir=""
+  existing_install_dir="$(read_kv_value "$existing_skill_env" "INSTALL_DIR" 2>/dev/null || true)"
+
+  local repo_url="" tag="" install_dir="" table_url="" token="" archive_url="" github_slug="" resolved_ref="" github_token_input=""
+  local default_install_dir="$HOME/apps/mujitask"
+  if [[ -n "$existing_install_dir" ]]; then
+    default_install_dir="$existing_install_dir"
+  fi
+
+  if [[ -z "$GITHUB_AUTH_TOKEN" ]]; then
+    github_token_input="$(prompt_secret_optional "GitHub PAT for private GitHub repos (optional, press Enter to skip)")"
+    if [[ -n "$github_token_input" ]]; then
+      GITHUB_AUTH_TOKEN="$github_token_input"
+    fi
+  fi
+  tag="$(prompt_optional "Tag (leave blank to auto-resolve latest)" "")"
+  install_dir="$(prompt "Install directory" "$default_install_dir")"
+
+  local reuse_skill_env="false"
+  if [[ -n "$existing_install_dir" && "$install_dir" == "$existing_install_dir" && -f "$existing_skill_env" ]]; then
+    reuse_skill_env="true"
+  fi
+
+  local deploy_state_path="$install_dir/runtime/deployment/openclaw-deploy.env"
+  local existing_repo_url="" existing_repo_archive_url="" existing_last_ref="" existing_framework_archive_url=""
+  existing_repo_url="$(read_kv_value "$deploy_state_path" "REPO_URL" 2>/dev/null || true)"
+  existing_repo_archive_url="$(read_kv_value "$deploy_state_path" "REPO_ARCHIVE_URL" 2>/dev/null || true)"
+  existing_last_ref="$(read_kv_value "$deploy_state_path" "LAST_RESOLVED_REF" 2>/dev/null || true)"
+  existing_framework_archive_url="$(read_kv_value "$deploy_state_path" "FRAMEWORK_ARCHIVE_URL" 2>/dev/null || true)"
+
+  if [[ -n "$existing_repo_url" ]]; then
+    repo_url="$existing_repo_url"
+    log "Reusing existing repo_url from $deploy_state_path"
+  else
+    repo_url="$(prompt "Repo URL")"
+  fi
+
+  if [[ -n "$existing_last_ref" ]]; then
+    log "Current installed ref: $existing_last_ref"
+  fi
+
+  if [[ "$reuse_skill_env" == "true" ]]; then
+    table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
+    token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$table_url" ]]; then
+    log "Reusing existing Feishu table URL from $existing_skill_env"
+  else
+    table_url="$(prompt "Feishu table URL")"
+  fi
+
+  if [[ -n "$token" ]]; then
+    log "Reusing existing Feishu access token from $existing_skill_env"
+  else
+    token="$(prompt_secret "Feishu access token")"
+  fi
 
   local repo_archive="$TMP_ROOT/project-archive"
   local project_root
@@ -373,7 +534,12 @@ main() {
     archive_url="https://api.github.com/repos/$github_slug/zipball/$resolved_ref"
     repo_archive="$repo_archive.zip"
   else
-    archive_url="$(prompt "Archive URL for the repository source package")"
+    archive_url="$existing_repo_archive_url"
+    if [[ -n "$archive_url" ]]; then
+      log "Reusing existing repository archive URL from $deploy_state_path"
+    else
+      archive_url="$(prompt "Archive URL for the repository source package")"
+    fi
     local lowered_archive
     lowered_archive="$(to_lower "$archive_url")"
     if [[ "$lowered_archive" == *.tar.gz || "$lowered_archive" == *.tgz || "$lowered_archive" == *.tar ]]; then
@@ -393,18 +559,25 @@ main() {
   prepare_target_dir "$install_dir"
   cp -R "$project_root"/. "$install_dir"/
 
-  local manifest_path="$install_dir/.platform/platform-manifest.yaml"
-  [[ -f "$manifest_path" ]] || fail "Missing $manifest_path after extraction."
+  local pyproject_path="$install_dir/pyproject.toml"
+  [[ -f "$pyproject_path" ]] || fail "Missing $pyproject_path after extraction."
 
+  local manifest_path="$install_dir/.platform/platform-manifest.yaml"
   local framework_repo_url framework_ref framework_archive_url framework_archive framework_root framework_slug
+  framework_archive="$TMP_ROOT/framework-archive.zip"
+  [[ -f "$manifest_path" ]] || fail "Missing $manifest_path after extraction."
   framework_repo_url="$(read_manifest_value "$manifest_path" "framework_repo_url" | tr -d '\r')"
   framework_ref="$(read_manifest_value "$manifest_path" "framework_commit" | tr -d '\r')"
-  framework_archive="$TMP_ROOT/framework-archive.zip"
 
   if framework_slug="$(parse_github_slug "$framework_repo_url" 2>/dev/null)"; then
     framework_archive_url="https://api.github.com/repos/$framework_slug/zipball/$framework_ref"
   else
-    framework_archive_url="$(prompt "Framework archive URL for automation-framework")"
+    framework_archive_url="$existing_framework_archive_url"
+    if [[ -n "$framework_archive_url" ]]; then
+      log "Reusing existing framework archive URL from $deploy_state_path"
+    else
+      framework_archive_url="$(prompt "Framework archive URL for automation-framework")"
+    fi
     local lowered_framework
     lowered_framework="$(to_lower "$framework_archive_url")"
     if [[ "$lowered_framework" == *.tar.gz || "$lowered_framework" == *.tgz || "$lowered_framework" == *.tar ]]; then
@@ -452,7 +625,6 @@ main() {
     exit 2
   fi
 
-  local openclaw_skills_dir="$HOME/.openclaw/workspace/skills"
   local source_skill_dir="$install_dir/skills/mujitask-tiktok-feishu-sync"
   local target_skill_dir="$openclaw_skills_dir/mujitask-tiktok-feishu-sync"
 
@@ -461,6 +633,7 @@ main() {
   prepare_target_dir "$target_skill_dir"
   cp -R "$source_skill_dir"/. "$target_skill_dir"/
   write_skill_local_env "$target_skill_dir" "$install_dir" "$table_url" "$token"
+  write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${framework_archive_url:-}"
 
   smoke_check "$install_dir" "$target_skill_dir"
 
