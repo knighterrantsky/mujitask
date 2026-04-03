@@ -31,13 +31,20 @@ function Read-TokenInteractive {
     return [System.Net.NetworkCredential]::new("", $secure).Password.Trim()
 }
 
+function Test-IsWindowsHost {
+    if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
+        return [bool]$IsWindows
+    }
+    return $env:OS -eq "Windows_NT"
+}
+
 function Get-GitLabToken {
     $token = if ($env:GITLAB_TOKEN) { $env:GITLAB_TOKEN } elseif ($env:GITLAB_API_TOKEN) { $env:GITLAB_API_TOKEN } else { "" }
     if (-not [string]::IsNullOrWhiteSpace($token)) {
         return $token.Trim()
     }
 
-    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    if (Test-IsWindowsHost) {
         foreach ($scope in @("User", "Machine")) {
             foreach ($name in @("GITLAB_TOKEN", "GITLAB_API_TOKEN")) {
                 $scopedToken = [Environment]::GetEnvironmentVariable($name, $scope)
