@@ -285,9 +285,8 @@ PY
 prepare_target_dir() {
   local target_dir="$1"
   if [[ -d "$target_dir" ]]; then
-    local backup_dir="${target_dir}.backup-$(date +%Y%m%d%H%M%S)"
-    log "Existing directory detected, moving it to $backup_dir"
-    mv "$target_dir" "$backup_dir"
+    log "Existing directory detected, removing it before replacement: $target_dir"
+    rm -rf "$target_dir"
   fi
   mkdir -p "$(dirname "$target_dir")"
   mkdir -p "$target_dir"
@@ -382,6 +381,23 @@ FEISHU_ACCESS_TOKEN=$token
 EOF
 }
 
+normalize_kv_entry() {
+  local value
+  value="$(trim "$1")"
+  value="${value#$'\ufeff'}"
+  if [[ "$value" == export\ * ]]; then
+    value="$(trim "${value#export }")"
+  fi
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  printf '%s' "$value"
+}
+
 read_kv_value() {
   local file_path="$1"
   local target_key="$2"
@@ -396,8 +412,8 @@ read_kv_value() {
 
     local key="${raw_line%%=*}"
     local value="${raw_line#*=}"
-    key="$(trim "$key")"
-    value="$(trim "$value")"
+    key="$(normalize_kv_entry "$key")"
+    value="$(normalize_kv_entry "$value")"
 
     if [[ "$key" == "$target_key" ]]; then
       printf '%s' "$value"
@@ -494,11 +510,6 @@ main() {
   tag="$(prompt_optional "Tag (leave blank to auto-resolve latest)" "")"
   install_dir="$(prompt "Install directory" "$default_install_dir")"
 
-  local reuse_skill_env="false"
-  if [[ -n "$existing_install_dir" && "$install_dir" == "$existing_install_dir" && -f "$existing_skill_env" ]]; then
-    reuse_skill_env="true"
-  fi
-
   local deploy_state_path="$install_dir/runtime/deployment/openclaw-deploy.env"
   local existing_repo_url="" existing_repo_archive_url="" existing_last_ref="" existing_framework_archive_url=""
   existing_repo_url="$(read_kv_value "$deploy_state_path" "REPO_URL" 2>/dev/null || true)"
@@ -517,7 +528,7 @@ main() {
     log "Current installed ref: $existing_last_ref"
   fi
 
-  if [[ "$reuse_skill_env" == "true" ]]; then
+  if [[ -f "$existing_skill_env" ]]; then
     table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
     token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
   fi
