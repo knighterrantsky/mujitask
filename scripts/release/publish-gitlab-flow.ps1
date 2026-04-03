@@ -403,7 +403,7 @@ function Wait-ForMergeRequestMerged {
         }
 
         if (-not [string]::IsNullOrWhiteSpace([string]$mergeRequest.merge_error)) {
-            Fail "GitLab reported a merge error for MR !$MergeRequestIid: $($mergeRequest.merge_error)"
+            Fail "GitLab reported a merge error for MR !${MergeRequestIid}: $($mergeRequest.merge_error)"
         }
 
         if ($null -ne $mergeRequest.head_pipeline -and $mergeRequest.head_pipeline.status -in $pipelineFailureStates) {
