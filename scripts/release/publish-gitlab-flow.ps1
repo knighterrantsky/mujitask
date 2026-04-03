@@ -160,7 +160,7 @@ Invoke-Git -Args @("push", "-u", "origin", $sourceBranch) | Out-Null
 $mergeRequestsUrl = "$($origin.BaseUrl)/api/v4/projects/$($origin.ProjectId)/merge_requests"
 $encodedSourceBranch = [System.Uri]::EscapeDataString($sourceBranch)
 $encodedTargetBranch = [System.Uri]::EscapeDataString($TargetBranch)
-$existingMr = Invoke-GitLabApi -Method Get -Uri "$mergeRequestsUrl?state=opened&source_branch=$encodedSourceBranch&target_branch=$encodedTargetBranch" -Headers $headers -Body $null
+$existingMr = Invoke-GitLabApi -Method Get -Uri "${mergeRequestsUrl}?state=opened&source_branch=$encodedSourceBranch&target_branch=$encodedTargetBranch" -Headers $headers -Body $null
 
 if ($existingMr -and $existingMr.Count -gt 0) {
     $mr = $existingMr[0]
