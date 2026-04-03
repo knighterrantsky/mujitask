@@ -222,6 +222,14 @@ print(root)
         New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     }
 
+    function Replace-TargetDir([string]$TargetDir) {
+        if (Test-Path -LiteralPath $TargetDir) {
+            Log "Existing directory detected, removing it before replacement: $TargetDir"
+            Remove-Item -LiteralPath $TargetDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    }
+
     function Copy-DirectoryContents([string]$SourceDir, [string]$DestinationDir) {
         Get-ChildItem -Force -LiteralPath $SourceDir | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination $DestinationDir -Recurse -Force
@@ -348,6 +356,8 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
             "SKILL.md",
             "skill.local.env",
             "skill.local.env.example",
+            "run_feishu_tiktok_sync.sh",
+            "run_feishu_tiktok_sync.ps1",
             "run_cleanup.sh",
             "run_cleanup.ps1",
             "run_batch_sync.sh",
@@ -528,7 +538,7 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
         Fail "Missing skill bundle at $sourceSkillDir."
     }
 
-    Prepare-TargetDir -TargetDir $targetSkillDir
+    Replace-TargetDir -TargetDir $targetSkillDir
     Copy-DirectoryContents -SourceDir $sourceSkillDir -DestinationDir $targetSkillDir
     Write-SkillLocalEnv -SkillDir $targetSkillDir -InstallDir $installDir -TableUrl $tableUrl -Token $token
     Write-DeployState -InstallDir $installDir -RepoUrl $repoUrl -ResolvedRef $resolvedRef -RepoArchiveUrl $archiveUrl -FrameworkArchiveUrl $frameworkArchiveUrl

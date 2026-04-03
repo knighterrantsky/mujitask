@@ -1,108 +1,94 @@
 # mujitask-tiktok-feishu-sync
 
-这个 skill 是可运行实例，不是说明模板。
+读取飞书表中的 TikTok 竞品链接，自动整理链接后抓取竞品数据，并把结果回写到飞书表格。
 
-## 作用
+## 适用场景
 
-- 从飞书多维表格读取 TikTok 竞品记录
-- 执行 `tiktok_product_link_cleanup` 做 `产品链接` 规范化和去重
-- 执行 `tiktok_feishu_batch_sync` 抓取阶段一字段并回写飞书
+- 飞书多维表格中已经维护了 TikTok 竞品链接
+- 需要对表中的 TikTok 链接统一整理、去重、规范化
+- 需要批量抓取 TikTok 竞品信息并更新回飞书
+- 需要持续重复执行同一张飞书竞品表的数据更新
 
-## 本地前置
+## 执行规则
 
-调用前必须已经完成部署，并满足：
+- 每次执行主流程时，先自动整理飞书表中的 TikTok 链接
+- 链接整理完成后，再执行 TikTok 竞品数据抓取
+- 抓取完成后，把结果更新回当前飞书表格记录
+- 如果浏览器未启动、token 缺失、表格地址错误或本地部署不完整，直接返回阻塞原因
 
-- 当前 skill 目录下存在 `skill.local.env`
-- `INSTALL_DIR` 指向已安装完成的项目目录
-- 项目目录下存在 `.venv`
-- 项目目录下存在 `config/browser_profiles.json`
+## 主脚本入口
 
-固定规则：
+只使用一个主入口脚本：
 
-- `url_field_name` 固定为 `产品链接`
-- `profile_ref` 固定为 `local-chrome`
+- macOS: `bash run_feishu_tiktok_sync.sh`
+- Windows: `powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1`
 
-## 配置文件
+这个主入口会自动完成：
 
-本地配置文件固定为：
+1. 链接整理和去重
+2. TikTok 竞品数据抓取
+3. 飞书结果回写
 
-- `skill.local.env`
+其他脚本属于本地实现细节，不作为主入口说明。
 
-配置项只允许：
+## 调用实例
 
-- `INSTALL_DIR`
-- `TABLE_URL`
-- `FEISHU_ACCESS_TOKEN`
+下面这些表达可以直接作为调用句式：
 
-如果缺少该文件，先从 `skill.local.env.example` 复制并填写。
+- 读取飞书表中的 TikTok 竞品链接，抓取竞品信息并回写结果
+- 处理这张飞书 TikTok 竞品表里的链接，并把抓取结果更新回表格
+- 对当前飞书 TikTok 竞品表执行链接整理后再批量抓取
+- 使用当前飞书表数据做 TikTok 竞品采集和写回
+- 读取当前飞书表中的竞品链接，规范化后抓取并更新结果
+- 对这张飞书竞品表执行 TikTok 竞品链接清理、抓取和回写
+- 根据当前飞书表里的 TikTok 竞品链接批量更新竞品信息
 
-## 调用入口
+## 返回结果
 
-### 1. 链接清洗
+成功时：
 
-优先在以下场景执行：
+- 会更新飞书表中可正常抓取的 TikTok 竞品记录
+- 会返回本次处理的摘要信息
+- 会说明成功写回、跳过或失败的记录数量
 
-- 新表第一次接入
-- 发现重复链接
-- batch sync 返回 `skipped_duplicate_needs_cleanup`
+部分失败时：
 
-macOS:
+- 会返回失败记录或未处理记录的说明
+- 会提示哪些记录因为链接异常、页面不可访问、浏览器不可用或权限问题未能完成
 
-```bash
-bash run_cleanup.sh draft
-bash run_cleanup.sh canary
-```
+完全失败时：
 
-Windows:
+- 会明确返回阻塞原因
+- 常见原因包括：浏览器未启动、token 缺失、表格地址错误、本地部署不完整
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_cleanup.ps1 -RunMode draft
-powershell -ExecutionPolicy Bypass -File .\run_cleanup.ps1 -RunMode canary
-```
+## 常见错误
 
-### 2. 批量补录
+### 缺少 `skill.local.env`
 
-如果需要真正抓取并写回飞书，使用 `canary`。
+- 无法读取本地业务配置
+- 处理方式：重新执行部署脚本，或补充当前 skill 目录下的 `skill.local.env`
 
-macOS:
+### 缺少 `INSTALL_DIR`
 
-```bash
-bash run_batch_sync.sh draft 0
-bash run_batch_sync.sh canary 0
-```
+- 无法定位本地项目安装目录
+- 处理方式：修复 `skill.local.env`，或重新执行部署脚本
 
-Windows:
+### 缺少 `TABLE_URL`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_batch_sync.ps1 -RunMode draft -MaxRecords 0
-powershell -ExecutionPolicy Bypass -File .\run_batch_sync.ps1 -RunMode canary -MaxRecords 0
-```
+- 无法定位目标飞书表
+- 处理方式：补充正确的飞书表格地址
 
-说明：
+### 缺少 `FEISHU_ACCESS_TOKEN`
 
-- `MaxRecords=0` 表示不限制条数
-- batch sync 会自动检查 `http://127.0.0.1:9222`
-- 如果本机 Chrome 已安装但 CDP 未启动，会先尝试调用 `start_browser_cdp.*`
+- 无法读取或回写飞书数据
+- 处理方式：补充有效的飞书 token
 
-## 常见阻塞
+### 缺少 Chrome 或浏览器未就绪
 
-- 缺少 `skill.local.env`
-  - 先补配置文件
-- 缺少 `.venv`
-  - 重新执行部署脚本
-- 缺少 Chrome
-  - 安装 Chrome 后重新执行部署脚本或浏览器启动脚本
-- `list-tasks` 看不到正式入口
-  - 部署未完成，重新执行部署脚本
+- 无法进入 TikTok 页面抓取
+- 处理方式：先安装 Chrome，并启动本地浏览器调试环境
 
-## 期望返回
+### 本地部署不完整
 
-包装脚本直接透传 CLI JSON 输出。
-
-重点关注：
-
-- `status`
-- `result.summary`
-- `result.failed_items`
-- `run_file`
-- `artifacts_dir`
+- 可能无法找到 CLI、Python 环境或浏览器配置
+- 处理方式：重新执行部署脚本，并重新跑部署后验证脚本
