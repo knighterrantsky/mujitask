@@ -11,6 +11,7 @@ New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 try {
     $script:UvBin = $null
     $script:PythonBin = $null
+    $script:GitHubToken = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { "" }
 
     function Log([string]$Message) {
         Write-Host "[deploy-openclaw] $Message"
@@ -37,6 +38,34 @@ try {
             return $DefaultValue
         }
         return $raw.Trim()
+    }
+
+    function PromptOptional([string]$Label, [string]$DefaultValue = "") {
+        if ([string]::IsNullOrWhiteSpace($DefaultValue)) {
+            $value = Read-Host $Label
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                return ""
+            }
+            return $value.Trim()
+        }
+
+        $raw = Read-Host "$Label [$DefaultValue]"
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $DefaultValue
+        }
+        return $raw.Trim()
+    }
+
+    function PromptOptionalSecret([string]$Label) {
+        $value = Read-Host $Label -AsSecureString
+        if (-not $value) {
+            return ""
+        }
+        $plain = [System.Net.NetworkCredential]::new("", $value).Password
+        if ([string]::IsNullOrWhiteSpace($plain)) {
+            return ""
+        }
+        return $plain.Trim()
     }
 
     function Resolve-UvBin {
@@ -81,8 +110,29 @@ try {
         $script:PythonBin = $candidate
     }
 
+    function Get-GitHubHeaders {
+        $headers = @{ Accept = "application/vnd.github+json" }
+        if (-not [string]::IsNullOrWhiteSpace($script:GitHubToken)) {
+            $headers["Authorization"] = "Bearer $script:GitHubToken"
+            $headers["X-GitHub-Api-Version"] = "2022-11-28"
+        }
+        return $headers
+    }
+
+    function Fail-GitHubDownload([string]$BaseMessage) {
+        if ([string]::IsNullOrWhiteSpace($script:GitHubToken)) {
+            Fail "$BaseMessage If the GitHub repository is private, rerun and provide a GitHub PAT, or set GITHUB_TOKEN / GH_TOKEN."
+        }
+
+        Fail "$BaseMessage GitHub PAT was provided, so verify that the token can read the target repository."
+    }
+
     function Invoke-JsonApi([string]$Url, [string]$OutFile) {
-        Invoke-WebRequest -Uri $Url -Headers @{ Accept = "application/vnd.github+json" } -OutFile $OutFile
+        try {
+            Invoke-WebRequest -Uri $Url -Headers (Get-GitHubHeaders) -OutFile $OutFile
+        } catch {
+            Fail-GitHubDownload "Failed to call GitHub API at $Url."
+        }
     }
 
     function Parse-GitHubSlug([string]$RepoUrl) {
@@ -121,6 +171,15 @@ try {
     }
 
     function Download-File([string]$Url, [string]$TargetPath) {
+        if ($Url.StartsWith("https://api.github.com/")) {
+            try {
+                Invoke-WebRequest -Uri $Url -Headers (Get-GitHubHeaders) -OutFile $TargetPath
+            } catch {
+                Fail-GitHubDownload "Failed to download GitHub archive from $Url."
+            }
+            return
+        }
+
         Invoke-WebRequest -Uri $Url -OutFile $TargetPath
     }
 
@@ -239,6 +298,35 @@ FEISHU_ACCESS_TOKEN=$Token
 "@ | Set-Content -LiteralPath (Join-Path $SkillDir "skill.local.env") -Encoding UTF8
     }
 
+    function Read-KeyValueFile([string]$Path) {
+        $map = @{}
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return $map
+        }
+
+        foreach ($line in Get-Content -LiteralPath $Path) {
+            $trimmed = $line.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+            if ($trimmed.StartsWith("#")) { continue }
+            $parts = $line.Split("=", 2)
+            if ($parts.Count -ne 2) { continue }
+            $map[$parts[0].Trim()] = $parts[1].Trim()
+        }
+        return $map
+    }
+
+    function Write-DeployState([string]$InstallDir, [string]$RepoUrl, [string]$ResolvedRef, [string]$RepoArchiveUrl, [string]$FrameworkArchiveUrl) {
+        $deployDir = Join-Path $InstallDir "runtime\deployment"
+        New-Item -ItemType Directory -Force -Path $deployDir | Out-Null
+
+        @"
+REPO_URL=$RepoUrl
+LAST_RESOLVED_REF=$ResolvedRef
+REPO_ARCHIVE_URL=$RepoArchiveUrl
+FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
+"@ | Set-Content -LiteralPath (Join-Path $deployDir "openclaw-deploy.env") -Encoding UTF8
+    }
+
     function Smoke-Check([string]$InstallDir, [string]$TargetSkillDir) {
         $cliPath = Join-Path $InstallDir ".venv\Scripts\automation-business-scaffold-run.exe"
         if (-not (Test-Path -LiteralPath $cliPath)) {
@@ -276,14 +364,59 @@ FEISHU_ACCESS_TOKEN=$Token
     Ensure-Uv
     Ensure-Python311
 
-    $repoUrl = Prompt "Repo URL"
-    $tag = Prompt "Tag (leave blank to auto-resolve latest)" ""
-    $installDir = Prompt "Install directory" (Join-Path $env:USERPROFILE "apps\mujitask")
-    $tableUrl = Prompt "Feishu table URL"
-    $tokenSecure = Read-Host "Feishu access token" -AsSecureString
-    $token = [System.Net.NetworkCredential]::new("", $tokenSecure).Password
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        Fail "Feishu access token is required."
+    $openClawSkillsDir = Join-Path $env:USERPROFILE ".openclaw\workspace\skills"
+    $existingSkillEnvPath = Join-Path $openClawSkillsDir "mujitask-tiktok-feishu-sync\skill.local.env"
+    $existingSkillConfig = Read-KeyValueFile -Path $existingSkillEnvPath
+    $defaultInstallDir = if ($existingSkillConfig["INSTALL_DIR"]) { [string]$existingSkillConfig["INSTALL_DIR"] } else { Join-Path $env:USERPROFILE "apps\mujitask" }
+
+    if ([string]::IsNullOrWhiteSpace($script:GitHubToken)) {
+        $gitHubTokenInput = PromptOptionalSecret "GitHub PAT for private GitHub repos (optional, press Enter to skip)"
+        if (-not [string]::IsNullOrWhiteSpace($gitHubTokenInput)) {
+            $script:GitHubToken = $gitHubTokenInput
+        }
+    }
+    $tag = PromptOptional "Tag (leave blank to auto-resolve latest)" ""
+    $installDir = Prompt "Install directory" $defaultInstallDir
+
+    $reuseSkillConfig = $false
+    if ($existingSkillConfig["INSTALL_DIR"]) {
+        $existingInstallFullPath = [System.IO.Path]::GetFullPath([string]$existingSkillConfig["INSTALL_DIR"])
+        $selectedInstallFullPath = [System.IO.Path]::GetFullPath($installDir)
+        if ($existingInstallFullPath.Equals($selectedInstallFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $reuseSkillConfig = $true
+        }
+    }
+
+    $deployStatePath = Join-Path $installDir "runtime\deployment\openclaw-deploy.env"
+    $deployState = Read-KeyValueFile -Path $deployStatePath
+
+    if ($deployState["REPO_URL"]) {
+        $repoUrl = [string]$deployState["REPO_URL"]
+        Log "Reusing existing repo_url from $deployStatePath"
+    } else {
+        $repoUrl = Prompt "Repo URL"
+    }
+
+    if ($deployState["LAST_RESOLVED_REF"]) {
+        Log "Current installed ref: $($deployState["LAST_RESOLVED_REF"])"
+    }
+
+    if ($reuseSkillConfig -and $existingSkillConfig["TABLE_URL"]) {
+        $tableUrl = [string]$existingSkillConfig["TABLE_URL"]
+        Log "Reusing existing Feishu table URL from $existingSkillEnvPath"
+    } else {
+        $tableUrl = Prompt "Feishu table URL"
+    }
+
+    if ($reuseSkillConfig -and $existingSkillConfig["FEISHU_ACCESS_TOKEN"]) {
+        $token = [string]$existingSkillConfig["FEISHU_ACCESS_TOKEN"]
+        Log "Reusing existing Feishu access token from $existingSkillEnvPath"
+    } else {
+        $tokenSecure = Read-Host "Feishu access token" -AsSecureString
+        $token = [System.Net.NetworkCredential]::new("", $tokenSecure).Password
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            Fail "Feishu access token is required."
+        }
     }
 
     $repoArchive = Join-Path $TempRoot "project-archive.zip"
@@ -298,7 +431,12 @@ FEISHU_ACCESS_TOKEN=$Token
         }
         $archiveUrl = "https://api.github.com/repos/$githubSlug/zipball/$resolvedRef"
     } else {
-        $archiveUrl = Prompt "Archive URL for the repository source package"
+        if ($deployState["REPO_ARCHIVE_URL"]) {
+            $archiveUrl = [string]$deployState["REPO_ARCHIVE_URL"]
+            Log "Reusing existing repository archive URL from $deployStatePath"
+        } else {
+            $archiveUrl = Prompt "Archive URL for the repository source package"
+        }
         if ($archiveUrl.ToLower().EndsWith(".tar.gz") -or $archiveUrl.ToLower().EndsWith(".tgz") -or $archiveUrl.ToLower().EndsWith(".tar")) {
             $repoArchive = Join-Path $TempRoot "project-archive.tar.gz"
         }
@@ -314,13 +452,18 @@ FEISHU_ACCESS_TOKEN=$Token
     Prepare-TargetDir -TargetDir $installDir
     Copy-DirectoryContents -SourceDir $projectRoot -DestinationDir $installDir
 
+    $pyprojectPath = Join-Path $installDir "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $pyprojectPath)) {
+        Fail "Missing $pyprojectPath after extraction."
+    }
+
     $manifestPath = Join-Path $installDir ".platform\platform-manifest.yaml"
     if (-not (Test-Path -LiteralPath $manifestPath)) {
         Fail "Missing $manifestPath after extraction."
     }
-
     $frameworkRepoUrl = Read-ManifestValue -ManifestPath $manifestPath -Key "framework_repo_url"
     $frameworkRef = Read-ManifestValue -ManifestPath $manifestPath -Key "framework_commit"
+
     $frameworkArchive = Join-Path $TempRoot "framework-archive.zip"
     $frameworkArchiveUrl = $null
     $frameworkSlug = Parse-GitHubSlug $frameworkRepoUrl
@@ -328,7 +471,12 @@ FEISHU_ACCESS_TOKEN=$Token
     if ($frameworkSlug) {
         $frameworkArchiveUrl = "https://api.github.com/repos/$frameworkSlug/zipball/$frameworkRef"
     } else {
-        $frameworkArchiveUrl = Prompt "Framework archive URL for automation-framework"
+        if ($deployState["FRAMEWORK_ARCHIVE_URL"]) {
+            $frameworkArchiveUrl = [string]$deployState["FRAMEWORK_ARCHIVE_URL"]
+            Log "Reusing existing framework archive URL from $deployStatePath"
+        } else {
+            $frameworkArchiveUrl = Prompt "Framework archive URL for automation-framework"
+        }
         if ($frameworkArchiveUrl.ToLower().EndsWith(".tar.gz") -or $frameworkArchiveUrl.ToLower().EndsWith(".tgz") -or $frameworkArchiveUrl.ToLower().EndsWith(".tar")) {
             $frameworkArchive = Join-Path $TempRoot "framework-archive.tar.gz"
         }
@@ -373,7 +521,6 @@ FEISHU_ACCESS_TOKEN=$Token
         exit 2
     }
 
-    $openClawSkillsDir = Join-Path $env:USERPROFILE ".openclaw\workspace\skills"
     $sourceSkillDir = Join-Path $installDir "skills\mujitask-tiktok-feishu-sync"
     $targetSkillDir = Join-Path $openClawSkillsDir "mujitask-tiktok-feishu-sync"
 
@@ -384,6 +531,7 @@ FEISHU_ACCESS_TOKEN=$Token
     Prepare-TargetDir -TargetDir $targetSkillDir
     Copy-DirectoryContents -SourceDir $sourceSkillDir -DestinationDir $targetSkillDir
     Write-SkillLocalEnv -SkillDir $targetSkillDir -InstallDir $installDir -TableUrl $tableUrl -Token $token
+    Write-DeployState -InstallDir $installDir -RepoUrl $repoUrl -ResolvedRef $resolvedRef -RepoArchiveUrl $archiveUrl -FrameworkArchiveUrl $frameworkArchiveUrl
 
     Smoke-Check -InstallDir $installDir -TargetSkillDir $targetSkillDir
 
