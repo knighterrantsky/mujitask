@@ -101,3 +101,57 @@
 ## Escalation
 
 如果需求必须修改 platform-managed 区域，先停止直接实现，再把任务明确标记为 `platform_upgrade`。
+
+## Release Rules
+
+当用户说“提交代码并发布”时，固定按下面顺序执行：
+
+1. 如果当前分支是 `main`，先创建并切换到新的功能分支
+2. 在功能分支提交代码
+3. 推送分支
+4. 创建 MR
+5. 合并到 `main`
+6. `git switch main`
+7. `git pull --ff-only origin main`
+8. 只在 `main` 最新提交上打 tag
+9. 推送 tag
+10. 使用 Markdown 文件创建或更新 release
+
+功能分支规则：
+
+- 不要直接在 `main` 上提交功能代码
+- 默认使用新分支承载当前改动
+- 分支命名优先使用 `codex/<topic>`
+
+禁止做法：
+
+- 不要在功能分支上打正式 release tag
+- 不要在 MR 未合并前先发正式 release
+- 不要用带字面量 `\n` 的单行字符串拼 release notes
+
+release notes 规则：
+
+- 必须使用 Markdown 文件作为输入
+- 至少包含：
+  - `## Summary`
+  - `## Source`
+  - `## Testing`
+- release 页面必须正常渲染 Markdown 标题、列表和代码样式
+- release 页面中不能出现字面量 `\n`
+
+仓库内发布脚本：
+
+- `scripts/release/publish-gitlab-release.ps1`
+- `scripts/release/release-notes.template.md`
+
+标准调用方式：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\publish-gitlab-release.ps1 -TagName vX.Y.Z -ReleaseNotesFile .\scripts\release\release-notes.template.md
+```
+
+更新已有 release 时：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\publish-gitlab-release.ps1 -TagName vX.Y.Z -ReleaseNotesFile .\scripts\release\release-notes.template.md -UpdateExisting
+```
