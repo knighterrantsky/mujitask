@@ -173,6 +173,12 @@ class FeishuBitableClient:
             payload=payload,
         )
 
+    def get_record(self, app_token: str, table_id: str, record_id: str) -> Dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/apps/{app_token}/tables/{table_id}/records/{record_id}",
+        )
+
     def create_record(self, app_token: str, table_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         payload = {"fields": fields}
         return self._request(

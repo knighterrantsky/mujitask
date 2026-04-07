@@ -136,6 +136,36 @@ def test_cli_runner_lists_registered_tasks():
 
     assert payload == [
         {
+            "name": "fastmoss_keyword_candidate_discovery",
+            "description": (
+                "Search FastMoss by keyword, keep products whose 7-day sales exceed the threshold, "
+                "and skip existing Feishu items."
+            ),
+        },
+        {
+            "name": "fastmoss_product_sales_snapshot",
+            "description": (
+                "Log into FastMoss if needed, search a product_id, open the detail page, and collect "
+                "yesterday/7d/28d/90d sales metrics."
+            ),
+        },
+        {
+            "name": "feishu_pending_rows_scan",
+            "description": "Scan the Feishu table and return rows whose auto-maintained fields are still incomplete.",
+        },
+        {
+            "name": "feishu_seed_row_insert",
+            "description": (
+                "Insert one new Feishu seed row for a discovered SKU and mark its source keyword in the remark field."
+            ),
+        },
+        {
+            "name": "feishu_single_row_update",
+            "description": (
+                "Update one Feishu competitor row by fetching TikTok fields plus FastMoss screenshot and sales metrics."
+            ),
+        },
+        {
             "name": "source_to_target_publish_demo",
             "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
         },

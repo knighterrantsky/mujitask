@@ -5,10 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/skill.local.env"
 RESULT_HELPER="$SCRIPT_DIR/openclaw_result.py"
+BROWSER_TARGET_HELPER="$SCRIPT_DIR/resolve_browser_target.py"
 
 INSTALL_DIR=""
 TABLE_URL=""
 FEISHU_ACCESS_TOKEN=""
+BROWSER_PROFILE_REF=""
 
 log() {
   printf '[batch-sync] %s\n' "$*"
@@ -61,6 +63,7 @@ load_skill_env() {
       INSTALL_DIR) INSTALL_DIR="$value" ;;
       TABLE_URL) TABLE_URL="$value" ;;
       FEISHU_ACCESS_TOKEN) FEISHU_ACCESS_TOKEN="$value" ;;
+      BROWSER_PROFILE_REF) BROWSER_PROFILE_REF="$value" ;;
     esac
   done < "$ENV_FILE"
 
@@ -69,15 +72,60 @@ load_skill_env() {
   [[ -n "$FEISHU_ACCESS_TOKEN" ]] || fail "FEISHU_ACCESS_TOKEN is required in $ENV_FILE."
 }
 
+resolve_browser_target() {
+  local python_bin="$1"
+  local requested_profile_ref="${2:-}"
+
+  local cmd=(
+    "$python_bin" "$BROWSER_TARGET_HELPER" resolve
+    --install-dir "$INSTALL_DIR"
+  )
+
+  if [[ -n "$requested_profile_ref" ]]; then
+    cmd+=(--profile-ref "$requested_profile_ref")
+  fi
+  if [[ -n "$BROWSER_PROFILE_REF" ]]; then
+    cmd+=(--fallback-profile-ref "$BROWSER_PROFILE_REF")
+  fi
+
+  "${cmd[@]}"
+}
+
+extract_browser_target_fields() {
+  local python_bin="$1"
+  local target_json="$2"
+
+  "$python_bin" - "$target_json" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+metadata = payload.get("metadata")
+if not isinstance(metadata, dict):
+    metadata = {}
+
+fields = [
+    str(payload.get("profile_ref", "") or ""),
+    str(payload.get("provider", "") or ""),
+    str(metadata.get("debug_http", "") or ""),
+]
+print("\t".join(fields))
+PY
+}
+
 check_cdp_ready() {
   local python_bin="$1"
-  "$python_bin" - <<'PY'
+  local debug_http="$2"
+  "$python_bin" - "$debug_http" <<'PY'
 import json
 import sys
 import urllib.request
 
+debug_http = sys.argv[1].rstrip("/")
+version_url = f"{debug_http}/json/version"
+
 try:
-    with urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2) as response:
+    with urllib.request.urlopen(version_url, timeout=2) as response:
         payload = json.loads(response.read().decode("utf-8"))
     sys.exit(0 if payload.get("Browser") else 1)
 except Exception:
@@ -87,23 +135,47 @@ PY
 
 ensure_browser_ready() {
   local python_bin="$1"
+  local browser_provider="$2"
+  local browser_profile_ref="$3"
+  local debug_http="${4:-}"
 
-  if check_cdp_ready "$python_bin"; then
+  case "$browser_provider" in
+    roxy)
+      log "Using browser profile_ref=$browser_profile_ref provider=roxy. Skipping local Chrome CDP checks."
+      return 0
+      ;;
+    chrome_cdp)
+      ;;
+    *)
+      fail "Unsupported browser provider '$browser_provider' for profile_ref=$browser_profile_ref."
+      ;;
+  esac
+
+  local resolved_debug_http="$debug_http"
+  if [[ -z "$resolved_debug_http" ]]; then
+    resolved_debug_http="http://127.0.0.1:9222"
+  fi
+
+  if check_cdp_ready "$python_bin" "$resolved_debug_http"; then
     return 0
   fi
 
-  log "Chrome CDP is not ready. Trying to start Chrome on port 9222."
+  if [[ "$resolved_debug_http" != "http://127.0.0.1:9222" ]]; then
+    fail "Chrome CDP is not ready at $resolved_debug_http for profile_ref=$browser_profile_ref."
+  fi
+
+  log "Chrome CDP is not ready at $resolved_debug_http. Trying to start Chrome on port 9222."
   bash "$SCRIPT_DIR/start_browser_cdp.sh"
 
   local attempt
   for attempt in $(seq 1 15); do
-    if check_cdp_ready "$python_bin"; then
+    if check_cdp_ready "$python_bin" "$resolved_debug_http"; then
       return 0
     fi
     sleep 1
   done
 
-  fail "Chrome CDP did not become ready on http://127.0.0.1:9222."
+  fail "Chrome CDP did not become ready on $resolved_debug_http."
 }
 
 generate_run_id() {
@@ -196,18 +268,30 @@ monitor_cli_progress() {
 main() {
   local run_mode="${1:-draft}"
   local max_records="${2:-0}"
+  local requested_profile_ref="${3:-}"
 
   load_skill_env
 
   local cli_bin="$INSTALL_DIR/.venv/bin/automation-business-scaffold-run"
   local python_bin="$INSTALL_DIR/.venv/bin/python"
+  local browser_target_json=""
+  local browser_target_fields=""
+  local browser_profile_ref=""
+  local browser_provider=""
+  local browser_debug_http=""
 
   [[ -x "$cli_bin" ]] || fail "Cannot find CLI at $cli_bin. Re-run the deployment script."
   [[ -x "$python_bin" ]] || fail "Cannot find Python at $python_bin. Re-run the deployment script."
+  [[ -f "$BROWSER_TARGET_HELPER" ]] || fail "Missing $BROWSER_TARGET_HELPER."
 
   export FEISHU_ACCESS_TOKEN
 
-  ensure_browser_ready "$python_bin"
+  browser_target_json="$(resolve_browser_target "$python_bin" "$requested_profile_ref")"
+  browser_target_fields="$(extract_browser_target_fields "$python_bin" "$browser_target_json")"
+  IFS=$'\t' read -r browser_profile_ref browser_provider browser_debug_http <<<"$browser_target_fields"
+
+  log "Using browser profile_ref=$browser_profile_ref provider=$browser_provider"
+  ensure_browser_ready "$python_bin" "$browser_provider" "$browser_profile_ref" "$browser_debug_http"
 
   local run_id
   local run_dir="$INSTALL_DIR/runtime/cli_runs"
@@ -240,7 +324,7 @@ main() {
     --param "table_url=$TABLE_URL" \
     --param "access_token_env=FEISHU_ACCESS_TOKEN" \
     --param "url_field_name=产品链接" \
-    --param "profile_ref=local-chrome" \
+    --param "profile_ref=$browser_profile_ref" \
     --param "max_records=$max_records" \
     --run-id "$run_id" \
     >"$stdout_file" 2>&1 &

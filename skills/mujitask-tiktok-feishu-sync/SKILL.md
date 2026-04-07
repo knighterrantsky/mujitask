@@ -1,139 +1,193 @@
 # mujitask-tiktok-feishu-sync
 
-读取飞书表中的 TikTok 竞品链接，自动整理链接后抓取竞品数据，并把结果回写到飞书表格。
+TK 竞品采集与更新 skill。
+
+本文件描述 v3.0 的 skill 目标设计，并说明当前实现基线。  
+它的目的不是暴露底层 task，而是让 OpenClaw 用一个 skill 同时触发“定时更新”和“关键词搜索”两类业务。
+
+## Skill 定位
+
+这个 skill 的目标定位是：
+
+- 使用当前飞书竞品表做定时更新
+- 通过 FastMoss 关键词搜索发现新竞品
+- 统一回写飞书表中的自动维护字段
+
+对 OpenClaw 暴露两类业务入口：
+
+1. 定时更新当前飞书竞品表
+2. 按关键词搜索 FastMoss 竞品并写入飞书
 
 ## 适用场景
 
-- 飞书多维表格中已经维护了 TikTok 竞品链接
-- 需要对表中的 TikTok 链接统一整理、去重、规范化
-- 需要批量抓取 TikTok 竞品信息并更新回飞书
-- 需要持续重复执行同一张飞书竞品表的数据更新
+- 飞书多维表格中已经维护了部分竞品链接
+- 需要每天定时更新表中竞品数据
+- 需要通过关键词搜索批量发现新商品
+- 需要把 TikTok 信息、FastMoss 截图和销量数据统一写回飞书
 
-## 执行规则
+## 本地配置
 
-- 每次执行主流程时，先自动整理飞书表中的 TikTok 链接
-- 链接整理完成后，再执行 TikTok 竞品数据抓取
-- 抓取完成后，把结果更新回当前飞书表格记录
-- 如果浏览器未启动、token 缺失、表格地址错误或本地部署不完整，直接返回阻塞原因
+skill 默认从当前目录下的 `skill.local.env` 读取本地配置。
 
-## 主脚本入口
+v3.0 目标配置包括：
 
-只使用一个主入口脚本：
+- `INSTALL_DIR`
+- `TABLE_URL`
+- `FEISHU_ACCESS_TOKEN`
+- `BROWSER_PROFILE_REF`
+- `FASTMOSS_PHONE`
+- `FASTMOSS_PASSWORD`
 
-- macOS: `bash run_feishu_tiktok_sync.sh`
-- Windows: `powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1`
+配置边界：
 
-这个主入口会自动完成：
+- `TABLE_URL` 不从用户对话输入
+- `FEISHU_ACCESS_TOKEN` 不从用户对话输入
+- `FASTMOSS_PHONE` 和 `FASTMOSS_PASSWORD` 不从用户对话输入
+- `关键词` 和 `7日销量阈值` 只来自用户输入或调度参数
 
-1. 链接整理和去重
-2. TikTok 竞品数据抓取
-3. 飞书结果回写
+## 对外业务语义
 
-其他脚本属于本地实现细节，不作为主入口说明。
+### 1. 定时更新入口
 
-## 固定调用约束
+适合下面这类触发：
 
-- OpenClaw 只应调用主入口脚本，不要自行拼接内部 task 名、workflow 名或额外参数
-- 不要直接调用 `run_cleanup.*`、`run_batch_sync.*` 或 `start_browser_cdp.*`，除非用户明确要求只做单步排查
-- 不依赖 stdin 传参；业务配置只从当前 skill 目录下的 `skill.local.env` 读取
-- macOS/bash 主入口使用“同步流式输出 + 固定结果尾行”协议
-- 主入口脚本启动后，应先看到阶段日志，再看到批量抓取阶段输出的 `run_id`、进度文件路径和心跳日志
-- 底层 CLI 原始输出会保存到 `runtime/cli_runs/stdout/<run_id>.log`
-- 主入口脚本结束前会输出一行：`__OPENCLAW_RESULT__ <json>`
+- 更新当前飞书竞品表
+- 执行每日竞品数据同步
+- 对当前飞书表做定时刷新
 
-## 调用实例
+这个入口的目标执行顺序是：
 
-下面这些表达可以直接作为调用句式：
+1. 标准化并去重 `产品链接`
+2. 识别待更新行
+3. 对待更新行逐条执行商品详情更新
 
-- 读取飞书表中的 TikTok 竞品链接，抓取竞品信息并回写结果
-- 处理这张飞书 TikTok 竞品表里的链接，并把抓取结果更新回表格
-- 对当前飞书 TikTok 竞品表执行链接整理后再批量抓取
-- 使用当前飞书表数据做 TikTok 竞品采集和写回
-- 读取当前飞书表中的竞品链接，规范化后抓取并更新结果
-- 对这张飞书竞品表执行 TikTok 竞品链接清理、抓取和回写
-- 根据当前飞书表里的 TikTok 竞品链接批量更新竞品信息
+### 2. 关键词搜索入口
 
-## 命令示例
+适合下面这类触发：
 
-OpenClaw 在宿主机上应执行固定命令：
+- 帮我查询关键字为 `east egg` 的 7 日内销量大于 200 的 TK 商品数据
+- 搜索 FastMoss 中关键词为 `easter egg` 的商品并写入飞书
+- 收集关键词为 `graduation gifts` 的 TK 竞品
 
-```bash
-bash run_feishu_tiktok_sync.sh
-```
+这个入口的目标执行顺序是：
 
-或：
+1. 从用户输入中提取 `关键词`
+2. 从用户输入中提取 `7日销量阈值`
+3. 通过 FastMoss 搜索候选商品
+4. 固定按 `近7天销量` 排序并翻页穷举
+5. 先按 `SKU-ID` 判重，再按标准化后的 `产品链接` 判重
+6. 已存在商品直接跳过
+7. 新商品先写入 `SKU-ID`
+8. 再补全其他自动维护字段
+9. 对新商品在 `备注` 中写 `通过搜索关键字：{关键词}`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_feishu_tiktok_sync.ps1
-```
+## 入口分发规则
 
-期望先看到类似输出：
+主入口分发遵循以下规则：
 
-```text
-[feishu-tiktok-sync] Step 1/2: normalizing and deduplicating TikTok links in Feishu
-[cleanup] Running tiktok_product_link_cleanup with run_mode=canary run_id=openclaw-cleanup-...
-[cleanup] Progress files: run_file=... steps_file=...
-[feishu-tiktok-sync] Step 2/2: crawling TikTok competitor data and writing results back to Feishu
-[batch-sync] Running tiktok_feishu_batch_sync with run_mode=canary max_records=0 run_id=...
-[batch-sync] Progress files: run_file=... steps_file=...
-[batch-sync] Progress: run_status=running completed_steps=1 last_step=load_records last_status=success
-[batch-sync] Heartbeat: run is still active; waiting for the next workflow update
-__OPENCLAW_RESULT__ {"status":"success","task_name":"feishu_tiktok_sync",...}
-```
+1. OpenClaw 定时任务固定进入定时更新入口。
+2. 用户输入中如果同时包含关键词搜索意图和销量阈值，则进入关键词搜索入口。
+3. 用户输入如果表达的是“更新当前表”“同步当前竞品表”，则进入定时更新入口。
 
-如果最终进程被杀掉，可以优先根据 `run_id` 去查看：
+## 固定执行规则
 
-- `runtime/cli_runs/<run_id>.json`
-- `runtime/cli_runs/steps/<run_id>.json`
-- `runtime/cli_runs/signals/<run_id>.json`
-- `runtime/cli_runs/stdout/<run_id>.log`
+- OpenClaw 负责顶层编排，skill 对外优先暴露确定性 step 脚本。
+- `TABLE_URL` 固定来自 `skill.local.env`。
+- 所有业务数据最终都写回同一张飞书表。
+- 定时更新入口必须先执行链接标准化与去重。
+- 商品详情更新时，必须先抓 TikTok 信息，再进入 FastMoss 详情页。
+- 打开 FastMoss 商品详情页后必须先截图，再抓取销量信息。
+- 关键词搜索入口必须固定使用 FastMoss 作为数据源。
+- 关键词搜索结果必须固定按 `近7天销量` 排序并翻页穷举。
+- 关键词候选商品必须执行两级判重：
+  - 先按 `SKU-ID`
+  - 再按标准化后的 `产品链接`
 
-## 返回结果
+## 输出协议
 
-成功时：
+主入口继续复用当前同步输出协议：
 
-- 会更新飞书表中可正常抓取的 TikTok 竞品记录
-- 会返回本次处理的摘要信息
-- 会说明成功写回、跳过或失败的记录数量
+- 运行中输出阶段日志、`run_id`、进度文件路径和心跳日志
+- 结束前输出固定尾行：`__OPENCLAW_RESULT__ <json>`
 
-部分失败时：
+v3.0 的目标结果摘要应包含：
 
-- 会返回失败记录或未处理记录的说明
-- 会提示哪些记录因为链接异常、页面不可访问、浏览器不可用或权限问题未能完成
+- `status`
+- `task_name`
+- `entry_type`
+- `message`
+- `summary`
+- `detail`
+- `error`
 
-完全失败时：
+其中：
 
-- 会明确返回阻塞原因
-- 常见原因包括：浏览器未启动、token 缺失、表格地址错误、本地部署不完整
+- `entry_type = scheduled_update`
+- `entry_type = keyword_search`
+
+说明：
+
+- 当前 [docs/business/05-openclaw-output-protocol.md](/Users/happyzhao/Work/mujitask/docs/business/05-openclaw-output-protocol.md#L1) 仍以 cleanup / batch 结果为基线
+- v3.0 这里描述的是目标 skill 设计，不等于当前 helper 已经完整支持该结构
+
+## 当前实现
+
+当前 skill 已经提供面向 OpenClaw 编排的确定性 step 脚本：
+
+- `run_cleanup_step.sh`
+- `run_pending_rows_step.sh`
+- `run_single_row_update_step.sh`
+- `run_keyword_candidate_step.sh`
+- `run_insert_seed_row_step.sh`
+
+这些 step 脚本统一通过 `run_skill_step.py` 调 framework task，并复用：
+
+- `chrome_cdp` 与 `roxy` 两类浏览器 profile 解析
+- `__OPENCLAW_RESULT__ <json>` 尾行协议
+- 进度日志、心跳日志和运行文件输出
+
+仍保留但不再建议作为 v3.0 主路径使用的旧脚本：
+
+- `run_feishu_tiktok_sync.sh`
+- `run_batch_sync.sh`
+- `run_cleanup.sh`
 
 ## 常见错误
 
 ### 缺少 `skill.local.env`
 
 - 无法读取本地业务配置
-- 处理方式：重新执行部署脚本，或补充当前 skill 目录下的 `skill.local.env`
-
-### 缺少 `INSTALL_DIR`
-
-- 无法定位本地项目安装目录
-- 处理方式：修复 `skill.local.env`，或重新执行部署脚本
+- 处理方式：从 `skill.local.env.example` 复制并填写
 
 ### 缺少 `TABLE_URL`
 
-- 无法定位目标飞书表
-- 处理方式：补充正确的飞书表格地址
+- 无法定位飞书目标表
+- 处理方式：补充正确的飞书表地址
 
 ### 缺少 `FEISHU_ACCESS_TOKEN`
 
 - 无法读取或回写飞书数据
 - 处理方式：补充有效的飞书 token
 
-### 缺少 Chrome 或浏览器未就绪
+### 缺少 `FASTMOSS_PHONE` 或 `FASTMOSS_PASSWORD`
 
-- 无法进入 TikTok 页面抓取
-- 处理方式：先安装 Chrome，并启动本地浏览器调试环境
+- 无法执行关键词搜索或 FastMoss 明细抓取
+- 处理方式：在 `skill.local.env` 中补充 FastMoss 登录信息
 
-### 本地部署不完整
+### 浏览器 profile 未就绪
 
-- 可能无法找到 CLI、Python 环境或浏览器配置
-- 处理方式：重新执行部署脚本，并重新跑部署后验证脚本
+- 无法进入 TikTok 或 FastMoss 页面
+- 处理方式：`chrome_cdp` 模式下先启动对应 CDP 端点；`roxy` 模式下检查 `ROXY_HOST`、`ROXY_TOKEN` 与 profile 配置
+
+## 推荐调用方式
+
+在 v3.0 下，推荐由 OpenClaw 按步骤调用：
+
+- 定时任务：
+  - `bash run_cleanup_step.sh`
+  - `bash run_pending_rows_step.sh`
+  - `bash run_single_row_update_step.sh --record-id <record_id>`
+- 关键词搜索：
+  - `bash run_keyword_candidate_step.sh --search-keyword "<keyword>" --sales-7d-threshold <number>`
+  - `bash run_insert_seed_row_step.sh --sku-id <sku_id> --search-keyword "<keyword>"`
+  - `bash run_single_row_update_step.sh --record-id <record_id>`

@@ -1,3 +1,14 @@
+from .fastmoss_product_flow import (
+    FastMossStage2Error,
+    discover_fastmoss_keyword_candidates_via_browser,
+    fetch_fastmoss_product_sales_via_browser,
+)
+from .feishu_competitor_flow import (
+    run_fastmoss_keyword_candidate_discovery,
+    run_feishu_pending_rows_scan,
+    run_feishu_seed_row_insert,
+    run_feishu_single_row_update,
+)
 from .source_to_target_publish_flow import build_draft_form, build_publish_result
 from .tiktok_feishu_sync_flow import (
     build_batch_sync_summary,
@@ -31,6 +42,7 @@ from .tiktok_product_flow import (
 )
 
 __all__ = [
+    "FastMossStage2Error",
     "TikTokProductExtractionError",
     "build_batch_sync_summary",
     "build_cleanup_summary",
@@ -40,9 +52,11 @@ __all__ = [
     "build_publish_result",
     "collect_batch_sync_products",
     "delete_cleanup_duplicates",
+    "discover_fastmoss_keyword_candidates_via_browser",
     "download_tiktok_product_main_image",
     "extract_tiktok_product_id",
     "extract_tiktok_product_from_html",
+    "fetch_fastmoss_product_sales_via_browser",
     "fetch_tiktok_product_record",
     "fetch_tiktok_product_record_via_browser",
     "filter_batch_sync_rows",
@@ -52,9 +66,13 @@ __all__ = [
     "normalize_cleanup_records",
     "normalize_tiktok_product_url",
     "process_batch_sync_rows",
+    "run_fastmoss_keyword_candidate_discovery",
     "run_tiktok_feishu_batch_sync",
     "run_tiktok_product_link_cleanup",
     "run_tiktok_feishu_single_sync",
+    "run_feishu_pending_rows_scan",
+    "run_feishu_seed_row_insert",
+    "run_feishu_single_row_update",
     "sync_single_tiktok_product_url",
     "upload_batch_sync_artifacts",
     "write_back_batch_sync_rows",

@@ -1,3 +1,10 @@
+param(
+    [ValidateSet("draft", "canary", "full_auto", "live")]
+    [string]$RunMode = "canary",
+    [int]$MaxRecords = 0,
+    [string]$ProfileRef = ""
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -68,7 +75,7 @@ if (-not (Test-Path -LiteralPath $batchScript)) {
 }
 
 Write-Host "[feishu-tiktok-sync] Step 1/2: normalizing and deduplicating TikTok links in Feishu"
-& $cleanupScript -RunMode canary
+& $cleanupScript -RunMode $RunMode
 
 Write-Host "[feishu-tiktok-sync] Step 2/2: crawling TikTok competitor data and writing results back to Feishu"
-& $batchScript -RunMode canary -MaxRecords 0
+& $batchScript -RunMode $RunMode -MaxRecords $MaxRecords -ProfileRef $ProfileRef

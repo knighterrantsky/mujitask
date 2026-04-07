@@ -70,6 +70,10 @@ load_skill_env() {
 }
 
 main() {
+  local run_mode="${1:-canary}"
+  local max_records="${2:-0}"
+  local profile_ref="${3:-}"
+
   load_skill_env
 
   local cleanup_script="$SCRIPT_DIR/run_cleanup.sh"
@@ -91,7 +95,7 @@ main() {
   [[ -f "$RESULT_HELPER" ]] || fail "Missing $RESULT_HELPER."
 
   log "Step 1/2: normalizing and deduplicating TikTok links in Feishu"
-  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$cleanup_result_file" bash "$cleanup_script" canary; then
+  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$cleanup_result_file" bash "$cleanup_script" "$run_mode"; then
     cleanup_status=0
   else
     cleanup_status=$?
@@ -110,7 +114,7 @@ main() {
   fi
 
   log "Step 2/2: crawling TikTok competitor data and writing results back to Feishu"
-  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$batch_result_file" bash "$batch_script" canary 0; then
+  if MUJITASK_SUPPRESS_RESULT_MARKER=1 MUJITASK_RESULT_FILE="$batch_result_file" bash "$batch_script" "$run_mode" "$max_records" "$profile_ref"; then
     batch_status=0
   else
     batch_status=$?

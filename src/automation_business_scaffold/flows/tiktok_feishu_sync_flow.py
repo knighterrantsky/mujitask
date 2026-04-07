@@ -906,6 +906,11 @@ def _load_existing_record_index(
             continue
 
         existing_url = _normalize_link_value(fields.get(url_field_name))
+        if existing_url:
+            try:
+                existing_url = normalize_tiktok_product_url(existing_url)
+            except ValueError:
+                existing_url = ""
         if existing_url and existing_url not in by_url:
             by_url[existing_url] = record_id
 
