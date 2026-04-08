@@ -27,6 +27,34 @@ fail() {
   exit 1
 }
 
+check_skill_frontmatter() {
+  local skill_md="$1"
+
+  "$PYTHON_BIN" - "$skill_md" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+skill_md = Path(sys.argv[1])
+text = skill_md.read_text(encoding="utf-8")
+
+match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, flags=re.DOTALL)
+if not match:
+    raise SystemExit(f"{skill_md} is missing YAML frontmatter.")
+
+frontmatter = match.group(1)
+name_match = re.search(r"(?m)^\s*name:\s*(\S.*?)\s*$", frontmatter)
+description_match = re.search(r"(?m)^\s*description:\s*.+$", frontmatter)
+
+if not name_match:
+    raise SystemExit(f"{skill_md} frontmatter is missing name.")
+if name_match.group(1).strip() != "mujitask-tiktok-feishu-sync":
+    raise SystemExit(f"{skill_md} frontmatter name must be mujitask-tiktok-feishu-sync.")
+if not description_match:
+    raise SystemExit(f"{skill_md} frontmatter is missing description.")
+PY
+}
+
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -470,12 +498,12 @@ PY
     "SKILL.md"
     "skill.local.env"
     "skill.local.env.example"
-    "run_feishu_tiktok_sync.sh"
-    "run_feishu_tiktok_sync.ps1"
-    "run_cleanup.sh"
-    "run_cleanup.ps1"
-    "run_batch_sync.sh"
-    "run_batch_sync.ps1"
+    "run_cleanup_step.sh"
+    "run_pending_rows_step.sh"
+    "run_single_row_update_step.sh"
+    "run_keyword_candidate_step.sh"
+    "run_insert_seed_row_step.sh"
+    "run_fastmoss_login_check_step.sh"
     "start_browser_cdp.sh"
     "start_browser_cdp.ps1"
   )
@@ -484,6 +512,9 @@ PY
   for file_name in "${required_files[@]}"; do
     [[ -f "$target_skill_dir/$file_name" ]] || fail "Smoke check failed: $target_skill_dir/$file_name is missing."
   done
+
+  check_skill_frontmatter "$target_skill_dir/SKILL.md" \
+    || fail "Smoke check failed: $target_skill_dir/SKILL.md frontmatter is invalid."
 }
 
 main() {

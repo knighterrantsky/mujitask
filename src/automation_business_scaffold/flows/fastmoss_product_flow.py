@@ -34,6 +34,7 @@ def fetch_fastmoss_product_sales_via_browser(
     step_delay_sec: float = DEFAULT_FASTMOSS_STEP_DELAY_SEC,
     login_settle_sec: float = DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC,
     capture_detail_screenshot: bool = True,
+    verify_login: bool = True,
 ) -> FastMossProductSalesSnapshot:
     normalized_product_id = _normalize_fastmoss_product_id(product_id)
     phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
@@ -43,12 +44,13 @@ def fetch_fastmoss_product_sales_via_browser(
 
     with open_automation_page(profile_ref=profile_ref) as browser_page:
         page = browser_page.page
-        login_state = _ensure_fastmoss_logged_in(
+        login_state = _resolve_fastmoss_login_state(
             page,
             phone=phone,
             password=password,
             step_delay_sec=step_delay_sec,
             login_settle_sec=login_settle_sec,
+            verify_login=verify_login,
         )
         _open_fastmoss_detail_page(page, detail_url, step_delay_sec=step_delay_sec)
 
@@ -65,9 +67,11 @@ def fetch_fastmoss_product_sales_via_browser(
         sales_7d = _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec)
         sales_28d = _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec)
         sales_90d = _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec)
+        preferred_yesterday_date, fallback_yesterday_date = _preferred_fastmoss_yesterday_dates()
         yesterday_sales = _extract_fastmoss_yesterday_sales(
             page,
-            target_date=_yesterday_date_string(),
+            target_date=preferred_yesterday_date,
+            fallback_target_date=fallback_yesterday_date,
             step_delay_sec=step_delay_sec,
         )
 
@@ -99,6 +103,7 @@ def discover_fastmoss_keyword_candidates_via_browser(
     step_delay_sec: float = DEFAULT_FASTMOSS_STEP_DELAY_SEC,
     login_settle_sec: float = DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC,
     max_pages: int = 0,
+    verify_login: bool = True,
 ) -> dict[str, Any]:
     normalized_keyword = str(search_keyword or "").strip()
     if not normalized_keyword:
@@ -109,12 +114,13 @@ def discover_fastmoss_keyword_candidates_via_browser(
 
     with open_automation_page(profile_ref=profile_ref) as browser_page:
         page = browser_page.page
-        login_state = _ensure_fastmoss_logged_in(
+        login_state = _resolve_fastmoss_login_state(
             page,
             phone=phone,
             password=password,
             step_delay_sec=step_delay_sec,
             login_settle_sec=login_settle_sec,
+            verify_login=verify_login,
         )
         search_url = _execute_fastmoss_keyword_search(
             page,
@@ -166,6 +172,36 @@ def discover_fastmoss_keyword_candidates_via_browser(
         }
 
 
+def validate_fastmoss_login_via_browser(
+    *,
+    profile_ref: str | None = None,
+    fastmoss_phone: str | None = None,
+    fastmoss_password: str | None = None,
+    fastmoss_phone_env: str | None = None,
+    fastmoss_password_env: str | None = None,
+    step_delay_sec: float = DEFAULT_FASTMOSS_STEP_DELAY_SEC,
+    login_settle_sec: float = DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC,
+) -> dict[str, Any]:
+    phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
+    password = _resolve_fastmoss_secret(fastmoss_password, fastmoss_password_env)
+
+    with open_automation_page(profile_ref=profile_ref) as browser_page:
+        page = browser_page.page
+        login_state = _ensure_fastmoss_logged_in(
+            page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+        )
+        return {
+            "login_state": login_state,
+            "profile_ref": str(getattr(browser_page, "profile_ref", "") or profile_ref or "").strip(),
+            "provider_name": str(getattr(browser_page, "provider_name", "") or "").strip(),
+            "target_key": str(getattr(browser_page, "target_key", "") or "").strip(),
+        }
+
+
 def _ensure_fastmoss_logged_in(
     page: Any,
     *,
@@ -174,7 +210,7 @@ def _ensure_fastmoss_logged_in(
     step_delay_sec: float,
     login_settle_sec: float,
 ) -> str:
-    page.goto(DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL, wait_until="domcontentloaded", timeout=60000)
+    _page_navigate(page, DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL)
     _sleep(step_delay_sec)
     if _is_fastmoss_account_logged_in(page):
         return "already_logged_in"
@@ -184,7 +220,7 @@ def _ensure_fastmoss_logged_in(
 
     guest_modal = page.locator(".ant-modal-wrap").first
     if guest_modal.count():
-        guest_modal.get_by_text("登录/注册", exact=True).click()
+        _page_click(page, guest_modal.get_by_text("登录/注册", exact=True).first)
         _sleep(step_delay_sec)
 
     login_modal = page.locator(".ant-modal-wrap").nth(1)
@@ -192,10 +228,10 @@ def _ensure_fastmoss_logged_in(
         raise FastMossStage2Error("FastMoss login modal did not appear")
 
     if login_modal.get_by_text("手机号登录/注册", exact=True).count():
-        login_modal.get_by_text("手机号登录/注册", exact=True).click()
+        _page_click(page, login_modal.get_by_text("手机号登录/注册", exact=True).first)
         _sleep(step_delay_sec)
     if login_modal.get_by_text("密码登录", exact=True).count():
-        login_modal.get_by_text("密码登录", exact=True).click()
+        _page_click(page, login_modal.get_by_text("密码登录", exact=True).first)
         _sleep(step_delay_sec)
 
     phone_input = login_modal.locator("input[placeholder='输入您的手机号码']").first
@@ -203,18 +239,38 @@ def _ensure_fastmoss_logged_in(
     if not phone_input.count() or not password_input.count():
         raise FastMossStage2Error("FastMoss phone/password login inputs were not found")
 
-    phone_input.fill(phone)
+    _page_type_text(page, phone_input, phone)
     _sleep(step_delay_sec)
-    password_input.fill(password)
+    _page_type_text(page, password_input, password)
     _sleep(step_delay_sec)
-    login_modal.get_by_text("注册/登录", exact=True).click()
+    _page_click(page, login_modal.get_by_text("注册/登录", exact=True).first)
     _sleep(login_settle_sec)
 
-    page.goto(DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL, wait_until="domcontentloaded", timeout=60000)
+    _page_navigate(page, DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL)
     _sleep(step_delay_sec)
     if not _is_fastmoss_account_logged_in(page):
         raise FastMossStage2Error("FastMoss login did not reach the account center")
     return "logged_in"
+
+
+def _resolve_fastmoss_login_state(
+    page: Any,
+    *,
+    phone: str,
+    password: str,
+    step_delay_sec: float,
+    login_settle_sec: float,
+    verify_login: bool,
+) -> str:
+    if not verify_login:
+        return "skipped_login_verification"
+    return _ensure_fastmoss_logged_in(
+        page,
+        phone=phone,
+        password=password,
+        step_delay_sec=step_delay_sec,
+        login_settle_sec=login_settle_sec,
+    )
 
 
 def _is_fastmoss_account_logged_in(page: Any) -> bool:
@@ -232,14 +288,14 @@ def _search_fastmoss_product_detail_url(
     *,
     step_delay_sec: float,
 ) -> tuple[str, str]:
-    page.goto(DEFAULT_FASTMOSS_SEARCH_URL, wait_until="domcontentloaded", timeout=60000)
+    _page_navigate(page, DEFAULT_FASTMOSS_SEARCH_URL)
     _sleep(step_delay_sec)
 
     search_input = page.locator("input[placeholder='商品搜索']").first
     if not search_input.count():
         raise FastMossStage2Error("FastMoss search input was not found")
 
-    search_input.fill(product_id)
+    _page_type_text(page, search_input, product_id)
     _sleep(step_delay_sec)
     search_input.press("Enter")
     page.wait_for_url(re.compile(rf".*words={re.escape(product_id)}"), timeout=30000)
@@ -262,7 +318,7 @@ def _search_fastmoss_product_detail_url(
 
 
 def _open_fastmoss_detail_page(page: Any, detail_url: str, *, step_delay_sec: float) -> None:
-    page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
+    _page_navigate(page, detail_url)
     _fastmoss_overview_locator(page).wait_for(state="visible", timeout=30000)
     _sleep(step_delay_sec)
 
@@ -281,14 +337,14 @@ def _execute_fastmoss_keyword_search(
     *,
     step_delay_sec: float,
 ) -> str:
-    page.goto(DEFAULT_FASTMOSS_SEARCH_URL, wait_until="domcontentloaded", timeout=60000)
+    _page_navigate(page, DEFAULT_FASTMOSS_SEARCH_URL)
     _sleep(step_delay_sec)
 
     search_input = page.locator("input[placeholder='商品搜索']").first
     if not search_input.count():
         raise FastMossStage2Error("FastMoss search input was not found")
 
-    search_input.fill(search_keyword)
+    _page_type_text(page, search_input, search_keyword)
     _sleep(step_delay_sec)
     search_input.press("Enter")
     _sleep(step_delay_sec * 2)
@@ -305,7 +361,7 @@ def _ensure_fastmoss_sales_7d_sort_desc(page: Any, *, step_delay_sec: float) -> 
         sort_state = str(sort_header.get_attribute("aria-sort") or "").strip().lower()
         if sort_state == "descending":
             return
-        sort_header.click()
+        _page_click(page, sort_header)
         _sleep(step_delay_sec)
         _wait_for_fastmoss_search_table(page)
 
@@ -417,7 +473,7 @@ def _click_fastmoss_next_page(page: Any, *, step_delay_sec: float) -> bool:
     if rows.count():
         previous_first_key = str(rows.nth(0).get_attribute("data-row-key") or "").strip()
 
-    next_button.click()
+    _page_click(page, next_button)
     _sleep(step_delay_sec)
     if previous_first_key:
         try:
@@ -443,31 +499,286 @@ def _extract_fastmoss_period_sales(page: Any, *, days: str, step_delay_sec: floa
     range_label = overview.locator(f"label:has-text('{label_text}')").first
     if not range_label.count():
         raise FastMossStage2Error(f"FastMoss overview range label '{label_text}' was not found")
-    range_label.click()
-    _sleep(step_delay_sec)
-    return _extract_sales_value_from_overview_text(overview.inner_text(timeout=5000))
+    previous_overview_text = _safe_fastmoss_overview_text(overview)
+    require_refresh = not _is_fastmoss_range_label_selected(range_label)
+    selected_after_click = False
+    if require_refresh:
+        _page_click(page, range_label)
+        _sleep(step_delay_sec)
+        selected_after_click = _wait_for_fastmoss_range_label_selected(
+            range_label,
+            timeout_sec=max(step_delay_sec, 0.4) + 2.0,
+        )
+    return _wait_for_fastmoss_overview_sales_refresh(
+        overview,
+        previous_text=previous_overview_text,
+        min_wait_sec=max(step_delay_sec, 0.4),
+        require_change=require_refresh and not selected_after_click,
+    )
 
 
-def _extract_fastmoss_yesterday_sales(page: Any, *, target_date: str, step_delay_sec: float) -> str:
+def _extract_fastmoss_yesterday_sales(
+    page: Any,
+    *,
+    target_date: str,
+    fallback_target_date: str | None = None,
+    step_delay_sec: float,
+) -> str:
     overview = _fastmoss_overview_locator(page)
     start_input = overview.locator("input[placeholder='开始日期']").first
     end_input = overview.locator("input[placeholder='结束日期']").first
     if not start_input.count() or not end_input.count():
         raise FastMossStage2Error("FastMoss overview date-range inputs were not found")
+    previous_overview_text = _safe_fastmoss_overview_text(overview)
 
-    start_input.click()
-    _sleep(step_delay_sec)
-    start_input.fill(target_date)
-    start_input.press("Enter")
+    candidate_dates = [target_date]
+    normalized_fallback_date = str(fallback_target_date or "").strip()
+    if normalized_fallback_date and normalized_fallback_date != target_date:
+        candidate_dates.append(normalized_fallback_date)
+
+    for candidate_date in candidate_dates:
+        start_selected = _select_fastmoss_overview_date(
+            page,
+            overview,
+            input_locator=start_input,
+            target_date=candidate_date,
+            step_delay_sec=step_delay_sec,
+        )
+        if not start_selected:
+            continue
+
+        end_selected = _select_fastmoss_overview_date(
+            page,
+            overview,
+            input_locator=end_input,
+            target_date=candidate_date,
+            step_delay_sec=step_delay_sec,
+        )
+        if not end_selected:
+            continue
+
+        return _wait_for_fastmoss_overview_sales_refresh(
+            overview,
+            previous_text=previous_overview_text,
+            min_wait_sec=max(step_delay_sec * 2, 0.8),
+            require_change=True,
+        )
+
+    return "-1"
+
+
+def _select_fastmoss_overview_date(
+    page: Any,
+    overview: Any,
+    *,
+    input_locator: Any,
+    target_date: str,
+    step_delay_sec: float,
+) -> bool:
+    _page_click(page, input_locator)
     _sleep(step_delay_sec)
 
-    end_input.click()
-    _sleep(step_delay_sec)
-    end_input.fill(target_date)
-    end_input.press("Enter")
-    _sleep(step_delay_sec * 2)
+    picker = _visible_fastmoss_datepicker(page, overview=overview)
+    if not _navigate_fastmoss_datepicker_to_month(
+        page,
+        picker,
+        target_date=target_date,
+        step_delay_sec=step_delay_sec,
+    ):
+        return False
+    cell = _find_fastmoss_date_cell(picker, target_date=target_date)
+    if cell is None:
+        return False
 
-    return _extract_sales_value_from_overview_text(overview.inner_text(timeout=5000))
+    cell_inner = cell.locator(".ant-picker-cell-inner").first
+    _page_click(page, cell_inner if cell_inner.count() else cell)
+    _sleep(step_delay_sec)
+    _wait_for_fastmoss_date_value(input_locator, target_date)
+    return True
+
+
+def _find_fastmoss_date_cell(picker: Any, *, target_date: str) -> Any | None:
+    candidate_groups = [
+        picker.locator(f".ant-picker-cell.ant-picker-cell-in-view[title='{target_date}']"),
+        picker.locator(f".ant-picker-cell[title='{target_date}']"),
+    ]
+    for group in candidate_groups:
+        for index in range(group.count()):
+            cell = group.nth(index)
+            class_name = str(cell.get_attribute("class") or "")
+            if "ant-picker-cell-disabled" in class_name:
+                continue
+            return cell
+    return None
+
+
+def _navigate_fastmoss_datepicker_to_month(
+    page: Any,
+    picker: Any,
+    *,
+    target_date: str,
+    step_delay_sec: float,
+    max_steps: int = 12,
+) -> bool:
+    target_month_key = _fastmoss_month_key_from_date(target_date)
+    for _ in range(max_steps):
+        visible_month_keys = _visible_fastmoss_datepicker_month_keys(picker)
+        if not visible_month_keys:
+            return False
+        if target_month_key in visible_month_keys:
+            return True
+
+        if target_month_key > max(visible_month_keys):
+            button = _fastmoss_datepicker_nav_button(picker, direction="next")
+        else:
+            button = _fastmoss_datepicker_nav_button(picker, direction="prev")
+        if button is None:
+            return False
+        _page_click(page, button)
+        _sleep(step_delay_sec)
+    return False
+
+
+def _visible_fastmoss_datepicker_month_keys(picker: Any) -> list[int]:
+    header_views = picker.locator(".ant-picker-header-view")
+    month_keys: list[int] = []
+    for index in range(header_views.count()):
+        header_view = header_views.nth(index)
+        header_text = str(header_view.inner_text(timeout=1000) or "").strip()
+        month_key = _fastmoss_month_key_from_header_text(header_text)
+        if month_key is not None:
+            month_keys.append(month_key)
+    return month_keys
+
+
+def _fastmoss_month_key_from_date(date_value: str) -> int:
+    normalized_value = str(date_value or "").strip()
+    target = datetime.strptime(normalized_value, "%Y-%m-%d")
+    return target.year * 12 + target.month
+
+
+def _fastmoss_month_key_from_header_text(header_text: str) -> int | None:
+    text = "".join(str(header_text or "").split())
+    for pattern in (
+        r"(?P<year>\d{4})年(?P<month>\d{1,2})月",
+        r"(?P<year>\d{4})[-/.](?P<month>\d{1,2})",
+    ):
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        return int(match.group("year")) * 12 + int(match.group("month"))
+    return None
+
+
+def _fastmoss_datepicker_nav_button(picker: Any, *, direction: str) -> Any | None:
+    selector = ".ant-picker-header-next-btn" if direction == "next" else ".ant-picker-header-prev-btn"
+    locator = picker.locator(selector)
+    if not locator.count():
+        return None
+    return locator.last if direction == "next" else locator.first
+
+
+def _visible_fastmoss_datepicker(page: Any, *, overview: Any) -> Any:
+    pickers = [
+        page.locator(".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)").last,
+        overview.locator(".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)").last,
+        page.locator(".ant-picker-dropdown").last,
+        overview.locator(".ant-picker-dropdown").last,
+    ]
+    for picker in pickers:
+        if not picker.count():
+            continue
+        try:
+            picker.wait_for(state="visible", timeout=3000)
+        except Exception:
+            continue
+        return picker
+    raise FastMossStage2Error("FastMoss date picker dropdown did not appear")
+
+
+def _wait_for_fastmoss_date_value(input_locator: Any, expected_value: str) -> None:
+    deadline = time.time() + 5.0
+    last_value = ""
+    while time.time() < deadline:
+        try:
+            last_value = str(input_locator.input_value(timeout=500) or "").strip()
+        except Exception:
+            last_value = ""
+        if last_value == expected_value:
+            return
+        time.sleep(0.1)
+    raise FastMossStage2Error(
+        f"FastMoss date input did not update to '{expected_value}' (current='{last_value}')"
+    )
+
+
+def _wait_for_fastmoss_overview_sales_refresh(
+    overview: Any,
+    *,
+    previous_text: str,
+    min_wait_sec: float,
+    require_change: bool,
+    timeout_sec: float = 12.0,
+) -> str:
+    start_time = time.time()
+    deadline = start_time + timeout_sec
+    stable_value = ""
+    stable_count = 0
+    last_text = previous_text
+
+    while time.time() < deadline:
+        current_text = _safe_fastmoss_overview_text(overview)
+        try:
+            current_value = _extract_sales_value_from_overview_text(current_text)
+        except FastMossStage2Error:
+            time.sleep(0.2)
+            continue
+
+        if current_value == stable_value:
+            stable_count += 1
+        else:
+            stable_value = current_value
+            stable_count = 1
+
+        waited_long_enough = (time.time() - start_time) >= min_wait_sec
+        text_changed = bool(current_text) and current_text != previous_text
+        if waited_long_enough and stable_count >= 2 and (text_changed or not require_change):
+            return current_value
+
+        last_text = current_text
+        time.sleep(0.2)
+
+    if not require_change and stable_value:
+        return stable_value
+
+    raise FastMossStage2Error(
+        "FastMoss overview sales metric did not refresh after the range/date switch "
+        f"(text_changed={last_text != previous_text})"
+    )
+
+
+def _safe_fastmoss_overview_text(overview: Any) -> str:
+    try:
+        return str(overview.inner_text(timeout=5000) or "").strip()
+    except Exception:
+        return ""
+
+
+def _is_fastmoss_range_label_selected(range_label: Any) -> bool:
+    aria_checked = str(range_label.get_attribute("aria-checked") or "").strip().lower()
+    if aria_checked == "true":
+        return True
+    class_name = str(range_label.get_attribute("class") or "").strip().lower()
+    return any(token in class_name for token in ("checked", "active", "selected"))
+
+
+def _wait_for_fastmoss_range_label_selected(range_label: Any, *, timeout_sec: float = 4.0) -> bool:
+    deadline = time.time() + max(timeout_sec, 0.2)
+    while time.time() < deadline:
+        if _is_fastmoss_range_label_selected(range_label):
+            return True
+        time.sleep(0.2)
+    return _is_fastmoss_range_label_selected(range_label)
 
 
 def _fastmoss_overview_locator(page: Any):
@@ -554,7 +865,45 @@ def _yesterday_date_string(now: datetime | None = None) -> str:
     return (reference.date() - timedelta(days=1)).isoformat()
 
 
+def _day_before_yesterday_date_string(now: datetime | None = None) -> str:
+    reference = now or datetime.now()
+    return (reference.date() - timedelta(days=2)).isoformat()
+
+
+def _preferred_fastmoss_yesterday_dates(now: datetime | None = None) -> tuple[str, str]:
+    reference = now or datetime.now()
+    return (
+        _yesterday_date_string(reference),
+        _day_before_yesterday_date_string(reference),
+    )
+
+
 def _sleep(seconds: float) -> None:
     if seconds <= 0:
         return
     time.sleep(seconds)
+
+
+def _is_automation_page(page: Any) -> bool:
+    return bool(getattr(page, "humanize", False)) and hasattr(page, "raw_page")
+
+
+def _page_navigate(page: Any, url: str) -> None:
+    if _is_automation_page(page):
+        page.navigate(url)
+        return
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+
+def _page_click(page: Any, target: Any) -> None:
+    if _is_automation_page(page):
+        page.click(target)
+        return
+    target.click()
+
+
+def _page_type_text(page: Any, target: Any, text: str) -> None:
+    if _is_automation_page(page):
+        page.type_text(target, text)
+        return
+    target.fill(text)

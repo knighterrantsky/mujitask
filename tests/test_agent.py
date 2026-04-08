@@ -14,6 +14,7 @@ def test_agent_lists_demo_task():
     assert response.json() == {
         "tasks": [
             "fastmoss_keyword_candidate_discovery",
+            "fastmoss_login_check",
             "fastmoss_product_sales_snapshot",
             "feishu_pending_rows_scan",
             "feishu_seed_row_insert",

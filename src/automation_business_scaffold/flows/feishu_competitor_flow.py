@@ -7,8 +7,10 @@ from automation_business_scaffold.extend_script.feishu_api import FeishuBitableC
 from automation_business_scaffold.flows.fastmoss_product_flow import (
     discover_fastmoss_keyword_candidates_via_browser,
     fetch_fastmoss_product_sales_via_browser,
+    validate_fastmoss_login_via_browser,
 )
 from automation_business_scaffold.flows.tiktok_product_flow import (
+    TikTokSecurityCheckError,
     build_feishu_bitable_record,
     fetch_tiktok_product_record_via_browser,
     normalize_tiktok_product_url,
@@ -110,16 +112,56 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
     fields = raw_record.get("fields", {})
     if not isinstance(fields, dict):
         fields = {}
+    missing_fields = _missing_auto_update_field_names(fields)
 
     source_url = str(settings["source_url"] or _normalize_link_value(fields.get(DEFAULT_URL_FIELD_NAME))).strip()
     sku_id = str(settings["sku_id"] or fields.get(DEFAULT_SKU_FIELD_NAME) or "").strip()
+
+    if not missing_fields:
+        result_item = {
+            "record_id": settings["record_id"],
+            "source_url": source_url,
+            "normalized_url": _normalize_existing_product_url(source_url),
+            "product_id": sku_id,
+            "status": "skipped_completed",
+            "error": "",
+            "fields": {},
+            "logical_fields": {},
+            "fastmoss_snapshot": {},
+            "missing_fields": [],
+        }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+
     resolved_product_url = _resolve_tiktok_product_url(source_url=source_url, sku_id=sku_id)
 
-    product = fetch_tiktok_product_record_via_browser(
-        resolved_product_url,
-        profile_ref=settings["profile_ref"],
-        capture_page_screenshot=True,
-    )
+    try:
+        product = fetch_tiktok_product_record_via_browser(
+            resolved_product_url,
+            profile_ref=settings["profile_ref"],
+            capture_page_screenshot=True,
+        )
+    except TikTokSecurityCheckError as exc:
+        result_item = {
+            "record_id": settings["record_id"],
+            "source_url": source_url,
+            "normalized_url": _normalize_existing_product_url(source_url),
+            "product_id": sku_id,
+            "status": "skipped_security_check",
+            "error": str(exc),
+            "fields": {},
+            "logical_fields": {},
+            "fastmoss_snapshot": {},
+            "missing_fields": missing_fields,
+        }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
     product = TikTokProductRecord.from_dict(
         {
             **product.to_dict(),
@@ -139,10 +181,15 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         step_delay_sec=settings["step_delay_sec"],
         login_settle_sec=settings["login_settle_sec"],
         capture_detail_screenshot=True,
+        verify_login=settings["verify_fastmoss_login"],
     )
     preview_fields = _build_single_row_write_fields(
         product=product,
         fastmoss_snapshot=fastmoss_snapshot,
+    )
+    selected_preview_fields = _select_single_row_write_fields(
+        preview_fields,
+        existing_fields=fields,
     )
 
     result_item: dict[str, Any] = {
@@ -150,12 +197,12 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         "source_url": source_url,
         "normalized_url": product.normalized_url,
         "product_id": product.product_id,
-        "status": "preview",
+        "status": "preview" if selected_preview_fields else "skipped_completed",
         "error": "",
-        "fields": preview_fields,
+        "fields": selected_preview_fields,
         "logical_fields": product.to_dict(),
         "fastmoss_snapshot": fastmoss_snapshot.to_dict(),
-        "missing_fields": _missing_auto_update_field_names(fields),
+        "missing_fields": missing_fields,
     }
 
     if not settings["apply_mutations"]:
@@ -165,10 +212,17 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
             "items": [result_item],
         }
 
+    if not selected_preview_fields:
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+
     writable_fields = _prepare_writable_fields(
         client=target.client,
         app_token=target.app_token,
-        preview_fields=preview_fields,
+        preview_fields=selected_preview_fields,
     )
     try:
         target.client.update_record(
@@ -216,6 +270,7 @@ def run_fastmoss_keyword_candidate_discovery(params: dict[str, Any]) -> dict[str
         fastmoss_password_env=settings["fastmoss_password_env"],
         step_delay_sec=settings["step_delay_sec"],
         login_settle_sec=settings["login_settle_sec"],
+        verify_login=settings["verify_fastmoss_login"],
     )
 
     items: list[dict[str, Any]] = []
@@ -249,6 +304,27 @@ def run_fastmoss_keyword_candidate_discovery(params: dict[str, Any]) -> dict[str
         "search_url": discovery.get("search_url", ""),
         "pages_scanned": discovery.get("pages_scanned", 0),
         "rows_scanned": discovery.get("rows_scanned", 0),
+    }
+
+
+def run_fastmoss_login_check(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _build_fastmoss_login_settings(params)
+    payload = validate_fastmoss_login_via_browser(
+        profile_ref=settings["profile_ref"],
+        fastmoss_phone=settings["fastmoss_phone"],
+        fastmoss_password=settings["fastmoss_password"],
+        fastmoss_phone_env=settings["fastmoss_phone_env"],
+        fastmoss_password_env=settings["fastmoss_password_env"],
+        step_delay_sec=settings["step_delay_sec"],
+        login_settle_sec=settings["login_settle_sec"],
+    )
+    return {
+        "summary": {
+            "total": 1,
+            "counts": {"validated": 1},
+        },
+        "item": payload,
+        "items": [payload],
     }
 
 
@@ -394,6 +470,10 @@ def _build_single_row_settings(params: dict[str, Any]) -> dict[str, Any]:
         "fastmoss_password_env": str(params.get("fastmoss_password_env") or "").strip() or None,
         "step_delay_sec": max(0.0, _coerce_float(params.get("step_delay_sec"), 2.0)),
         "login_settle_sec": max(0.0, _coerce_float(params.get("login_settle_sec"), 8.0)),
+        "verify_fastmoss_login": _coerce_bool(
+            params.get("verify_fastmoss_login", params.get("fastmoss_verify_login")),
+            default=True,
+        ),
         "apply_mutations": _should_apply_mutations(run_mode),
     }
 
@@ -409,6 +489,22 @@ def _build_keyword_settings(params: dict[str, Any]) -> dict[str, Any]:
         **settings,
         "search_keyword": search_keyword,
         "sales_7d_threshold": sales_7d_threshold,
+        "profile_ref": str(params.get("profile_ref") or "").strip() or None,
+        "fastmoss_phone": str(params.get("fastmoss_phone") or "").strip() or None,
+        "fastmoss_password": str(params.get("fastmoss_password") or "").strip() or None,
+        "fastmoss_phone_env": str(params.get("fastmoss_phone_env") or "").strip() or None,
+        "fastmoss_password_env": str(params.get("fastmoss_password_env") or "").strip() or None,
+        "step_delay_sec": max(0.0, _coerce_float(params.get("step_delay_sec"), 2.0)),
+        "login_settle_sec": max(0.0, _coerce_float(params.get("login_settle_sec"), 8.0)),
+        "verify_fastmoss_login": _coerce_bool(
+            params.get("verify_fastmoss_login", params.get("fastmoss_verify_login")),
+            default=True,
+        ),
+    }
+
+
+def _build_fastmoss_login_settings(params: dict[str, Any]) -> dict[str, Any]:
+    return {
         "profile_ref": str(params.get("profile_ref") or "").strip() or None,
         "fastmoss_phone": str(params.get("fastmoss_phone") or "").strip() or None,
         "fastmoss_password": str(params.get("fastmoss_password") or "").strip() or None,
@@ -480,6 +576,22 @@ def _build_single_row_write_fields(
         **stage1_fields,
         **fastmoss_fields,
     }
+
+
+def _select_single_row_write_fields(
+    preview_fields: dict[str, Any],
+    *,
+    existing_fields: dict[str, Any],
+) -> dict[str, Any]:
+    selected_fields: dict[str, Any] = {}
+    for field_name, value in preview_fields.items():
+        if field_name == DEFAULT_RECORD_DATE_FIELD_NAME:
+            continue
+        if not _field_has_value(existing_fields.get(field_name)):
+            selected_fields[field_name] = value
+    if selected_fields and DEFAULT_RECORD_DATE_FIELD_NAME in preview_fields:
+        selected_fields[DEFAULT_RECORD_DATE_FIELD_NAME] = preview_fields[DEFAULT_RECORD_DATE_FIELD_NAME]
+    return selected_fields
 
 
 def _build_fastmoss_write_fields(snapshot: FastMossProductSalesSnapshot) -> dict[str, Any]:

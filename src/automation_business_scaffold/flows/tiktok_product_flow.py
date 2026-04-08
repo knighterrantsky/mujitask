@@ -96,9 +96,15 @@ DEFAULT_LOGIN_TOAST_SETTLE_MS = 4000
 DEFAULT_LOGIN_TOAST_TIMEOUT_MS = 10000
 DEFAULT_LOGIN_TOAST_POLL_MS = 250
 DEFAULT_LOGIN_TOAST_STABLE_POLLS = 2
+DEFAULT_SECURITY_CHECK_GRACE_MS = 10000
+DEFAULT_SECURITY_CHECK_POLL_MS = 500
 
 
 class TikTokProductExtractionError(RuntimeError):
+    pass
+
+
+class TikTokSecurityCheckError(TikTokProductExtractionError):
     pass
 
 
@@ -171,6 +177,7 @@ def fetch_tiktok_product_record_via_browser(
     profile_ref: str | None = None,
     timeout_ms: int = 30000,
     capture_page_screenshot: bool = True,
+    security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
 ) -> TikTokProductRecord:
     with open_automation_page(profile_ref=profile_ref) as browser_page:
         page = browser_page.page
@@ -187,6 +194,20 @@ def fetch_tiktok_product_record_via_browser(
         dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=timeout_ms)
         html = _safe_page_content(page)
         resolved_url = str(getattr(page, "url", "") or product_url)
+        security_check_message = _detect_browser_security_check(
+            page,
+            html=html,
+            resolved_url=resolved_url,
+            dom_snapshot=dom_snapshot,
+        )
+        if security_check_message:
+            html, resolved_url, dom_snapshot, security_check_message = _wait_for_security_check_intervention(
+                page,
+                product_url=product_url,
+                timeout_ms=security_check_grace_ms,
+            )
+        if security_check_message:
+            raise TikTokSecurityCheckError(security_check_message)
         product = _build_record_from_browser_state(
             html=html,
             dom_snapshot=dom_snapshot,
@@ -418,8 +439,8 @@ def _build_record_from_browser_state(
     )
     title = str(dom_snapshot.get("title_text", "")).strip() or (router_record.title if router_record else "")
     main_image_url = (
-        str(dom_snapshot.get("main_image_url", "")).strip()
-        or (router_record.main_image_url if router_record else "")
+        (router_record.main_image_url if router_record else "")
+        or str(dom_snapshot.get("main_image_url", "")).strip()
     )
     price_text = str(dom_snapshot.get("price_text", "")).strip() or (router_record.price_text if router_record else "")
     price_amount = _normalize_price_amount(price_text) or (router_record.price_amount if router_record else "")
@@ -493,15 +514,28 @@ def _materialize_browser_main_image(
     timeout_ms: int,
 ) -> TikTokProductRecord:
     main_image_selector = str(dom_snapshot.get("main_image_selector", "")).strip()
-    if main_image_selector:
+    try:
+        return download_tiktok_product_main_image(product, download_dir=DEFAULT_IMAGE_DOWNLOAD_DIR)
+    except Exception:
+        pass
+
+    screenshot_selector = main_image_selector if main_image_selector and main_image_selector != "img" else ""
+    if not screenshot_selector and product.main_image_url:
+        screenshot_selector = _mark_matching_main_image_element(
+            page,
+            expected_url=product.main_image_url,
+            selectors=[main_image_selector, *MAIN_IMAGE_CANDIDATE_SELECTORS],
+        )
+
+    if screenshot_selector:
         try:
-            _wait_for_main_image_loaded(page, selector=main_image_selector, timeout_ms=timeout_ms)
+            _wait_for_main_image_loaded(page, selector=screenshot_selector, timeout_ms=timeout_ms)
 
             image_dir = Path(DEFAULT_IMAGE_DOWNLOAD_DIR)
             image_dir.mkdir(parents=True, exist_ok=True)
             main_image_file_name = f"{product.product_id}-main-image.png"
             main_image_path = image_dir / main_image_file_name
-            _capture_locator_screenshot(page, main_image_path, selector=main_image_selector)
+            _capture_locator_screenshot(page, main_image_path, selector=screenshot_selector)
 
             return replace(
                 product,
@@ -512,7 +546,106 @@ def _materialize_browser_main_image(
         except Exception:
             pass
 
-    return download_tiktok_product_main_image(product, download_dir=DEFAULT_IMAGE_DOWNLOAD_DIR)
+    raise TikTokProductExtractionError("failed to materialize TikTok product main image")
+
+
+def _mark_matching_main_image_element(
+    page: Any,
+    *,
+    expected_url: str,
+    selectors: list[str],
+) -> str:
+    payload = page.evaluate(
+        """(args) => {
+            const expectedUrl = String(args.expectedUrl || "").trim();
+            const candidateSelectors = Array.isArray(args.selectors) ? args.selectors : [];
+            const markerAttr = "data-mujitask-main-image-target";
+
+            const isVisible = (element) => {
+              if (!element) return false;
+              const rect = element.getBoundingClientRect();
+              const style = window.getComputedStyle(element);
+              return rect.width > 0 && rect.height > 0 &&
+                style.visibility !== "hidden" &&
+                style.display !== "none";
+            };
+
+            const normalizeUrl = (value) => {
+              const raw = String(value || "").trim();
+              if (!raw) return "";
+              try {
+                const url = new URL(raw, window.location.href);
+                url.hash = "";
+                url.search = "";
+                return url.toString();
+              } catch (_error) {
+                return raw.split("#")[0].split("?")[0];
+              }
+            };
+
+            const collectImages = () => {
+              const seen = new Set();
+              const images = [];
+              for (const selector of candidateSelectors) {
+                if (!selector) continue;
+                const nodes = document.querySelectorAll(selector);
+                for (const node of nodes) {
+                  if (!(node instanceof HTMLImageElement) || !isVisible(node)) continue;
+                  if (seen.has(node)) continue;
+                  seen.add(node);
+                  images.push(node);
+                }
+              }
+              return images;
+            };
+
+            for (const node of document.querySelectorAll(`[${markerAttr}]`)) {
+              node.removeAttribute(markerAttr);
+            }
+
+            const normalizedExpected = normalizeUrl(expectedUrl);
+            if (!normalizedExpected) {
+              return { selector: "" };
+            }
+
+            const expectedPath = (() => {
+              try {
+                return new URL(normalizedExpected).pathname || "";
+              } catch (_error) {
+                return "";
+              }
+            })();
+
+            for (const image of collectImages()) {
+              const current = normalizeUrl(image.currentSrc || image.src || "");
+              if (!current) continue;
+              if (current === normalizedExpected) {
+                image.setAttribute(markerAttr, "1");
+                return { selector: `img[${markerAttr}="1"]` };
+              }
+              if (expectedPath) {
+                try {
+                  const currentPath = new URL(current).pathname || "";
+                  if (currentPath && currentPath === expectedPath) {
+                    image.setAttribute(markerAttr, "1");
+                    return { selector: `img[${markerAttr}="1"]` };
+                  }
+                } catch (_error) {
+                  // Ignore malformed current URLs and continue.
+                }
+              }
+            }
+
+            return { selector: "" };
+        }""",
+        {
+            "expectedUrl": expected_url,
+            "selectors": [item for item in selectors if item],
+        },
+    )
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("selector", "")).strip()
 
 
 def _wait_for_main_image_loaded(page: Any, *, selector: str, timeout_ms: int) -> None:
@@ -867,6 +1000,10 @@ def _coerce_normalized_url(value: str) -> str:
 
 
 def _page_goto(page: Any, url: str) -> None:
+    navigate = getattr(page, "navigate", None)
+    if callable(navigate):
+        navigate(url)
+        return
     try:
         page.goto(url, wait_until="domcontentloaded")
     except TypeError:
@@ -1017,6 +1154,111 @@ def _safe_page_content(page: Any) -> str:
     if callable(content):
         return str(content())
     return ""
+
+
+def _safe_body_text(page: Any) -> str:
+    try:
+        locator = page.locator("body")
+        inner_text = getattr(locator, "inner_text", None)
+        if callable(inner_text):
+            return str(inner_text(timeout=3000) or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _wait_for_security_check_intervention(
+    page: Any,
+    *,
+    product_url: str,
+    timeout_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
+    poll_ms: int = DEFAULT_SECURITY_CHECK_POLL_MS,
+) -> tuple[str, str, dict[str, Any], str | None]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    deadline = time.monotonic() + effective_timeout_ms / 1000.0
+
+    latest_html = ""
+    latest_resolved_url = str(getattr(page, "url", "") or product_url)
+    latest_dom_snapshot: dict[str, Any] = {}
+    latest_security_message: str | None = None
+
+    while True:
+        latest_dom_snapshot = _read_dom_product_snapshot(page)
+        latest_html = _safe_page_content(page)
+        latest_resolved_url = str(getattr(page, "url", "") or product_url)
+        latest_security_message = _detect_browser_security_check(
+            page,
+            html=latest_html,
+            resolved_url=latest_resolved_url,
+            dom_snapshot=latest_dom_snapshot,
+        )
+        if not latest_security_message:
+            if int(latest_dom_snapshot.get("visible_signal_count", 0)) < 2:
+                remaining_ms = max(int((deadline - time.monotonic()) * 1000), 0)
+                if remaining_ms > 0:
+                    latest_dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=remaining_ms)
+                    latest_html = _safe_page_content(page)
+                    latest_resolved_url = str(getattr(page, "url", "") or product_url)
+                    latest_security_message = _detect_browser_security_check(
+                        page,
+                        html=latest_html,
+                        resolved_url=latest_resolved_url,
+                        dom_snapshot=latest_dom_snapshot,
+                    )
+            return latest_html, latest_resolved_url, latest_dom_snapshot, latest_security_message
+
+        if time.monotonic() >= deadline:
+            return latest_html, latest_resolved_url, latest_dom_snapshot, latest_security_message
+
+        _safe_wait_for_timeout(page, effective_poll_ms)
+
+
+def _detect_browser_security_check(
+    page: Any,
+    *,
+    html: str,
+    resolved_url: str,
+    dom_snapshot: dict[str, Any],
+) -> str | None:
+    if int(dom_snapshot.get("visible_signal_count", 0)) >= 2 and html and "__MODERN_ROUTER_DATA__" in html:
+        return None
+
+    haystack = "\n".join(
+        part
+        for part in (
+            str(resolved_url or ""),
+            _safe_body_text(page),
+            str(html or ""),
+        )
+        if part
+    ).lower()
+    if not haystack:
+        return None
+
+    security_signals = (
+        "captcha",
+        "security check",
+        "security verification",
+        "verify to continue",
+        "verify you are human",
+        "are you human",
+        "unusual traffic",
+        "slide to verify",
+        "drag the slider",
+        "complete the verification",
+        "请完成安全验证",
+        "安全验证",
+        "完成验证",
+        "人机验证",
+        "验证以继续",
+        "secsdk-captcha",
+        "/challenge",
+    )
+    for signal in security_signals:
+        if signal in haystack:
+            return f"TikTok security check detected: {signal}"
+    return None
 
 
 class _UrllibResponse:

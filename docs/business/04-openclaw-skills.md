@@ -2,9 +2,48 @@
 
 更新时间：`2026-04-07`
 
-本文件面向 OpenClaw skill 配置与运行，描述 v3.0 的 skill 设计方案，并明确当前 skill 基线与目标形态之间的差距。
+本文件面向 OpenClaw skill 配置与运行，描述 skill 的设计原则、编排边界与运行约束。
 
-## 1. Skill 定位
+## 1. Skill 设计原则
+
+OpenClaw skill 的目标不是解释内部设计，而是提高执行时的 prompt 遵从性与流程稳定性。
+
+原则如下：
+
+1. 流程编排尽量在 skill 中完成
+   - skill 负责把用户业务语义映射成可执行步骤顺序
+   - skill 负责定义“什么算完成”“什么时候继续下一步”“什么时候报告部分完成”
+
+2. 脚本尽量保持单一、原子、可重试
+   - 一个脚本只做一个明确步骤
+   - 避免把长链路硬编码成单个超长脚本
+   - 原子脚本应便于重跑、跳过、续跑与排障
+
+3. 交付给 OpenClaw 的 `SKILL.md` 只保留执行必要信息
+   - 保留触发语义
+   - 保留参数提取规则
+   - 保留步骤编排规则
+   - 保留批次/时长/续跑规则
+   - 不保留版本目标、历史演进、差距分析等设计意图
+
+4. 优先使用可恢复的小批次编排
+   - 单次 run 过长会显著提升失败概率
+   - skill 应优先定义“分批推进”的执行策略，而不是要求一次 run 必须覆盖全部记录
+   - 推荐把批次大小、续跑条件、失败恢复策略作为 skill 设计约束，而不是直接暴露给最终用户
+   - 这些约束用于指导 skill 的内部执行方式，不应成为常规用户可见输出
+   - 如果需要分批，OpenClaw 默认仍应自动继续后续批次，除非遇到明确的停止条件
+
+5. 完成口径必须对齐用户语义
+   - 如果用户说“写入当前飞书表”，则不能只停在候选发现或种子行插入
+   - 如果只完成了前半段，skill 必须要求 OpenClaw 报告“部分完成”，而不是“已完成”
+
+6. 默认追求单次用户输入下的端到端完成
+   - 用户给出一次业务指令后，skill 应尽量自动推进完整流程
+   - 不应把内部编排步骤转嫁给用户逐步确认
+   - 中间过程信息应尽量压缩，只在必要时暴露失败原因或恢复建议
+   - 即使内部为了稳定性拆成多个子任务，也应默认自动衔接完成，而不是要求用户重复输入
+
+## 2. Skill 定位
 
 v3.0 的 skill 采用单 skill、多入口设计。
 
@@ -27,7 +66,7 @@ skill 名称继续沿用：
 - 一个 skill 同时覆盖“表单更新”和“关键词找品”两类入口。
 - skill 对外暴露业务语义，对内复用已有内部流程。
 
-## 2. Skill 包结构设计
+## 3. Skill 包结构设计
 
 ### 2.1 当前包结构基线
 
@@ -36,12 +75,12 @@ skill 名称继续沿用：
 - `SKILL.md`
 - `skill.local.env`
 - `skill.local.env.example`
-- `run_feishu_tiktok_sync.sh`
-- `run_feishu_tiktok_sync.ps1`
-- `run_cleanup.sh`
-- `run_cleanup.ps1`
-- `run_batch_sync.sh`
-- `run_batch_sync.ps1`
+- `run_cleanup_step.sh`
+- `run_pending_rows_step.sh`
+- `run_single_row_update_step.sh`
+- `run_keyword_candidate_step.sh`
+- `run_insert_seed_row_step.sh`
+- `run_fastmoss_login_check_step.sh`
 - `resolve_browser_target.py`
 - `openclaw_result.py`
 - `start_browser_cdp.sh`
@@ -67,10 +106,10 @@ v3.0 的 skill 结构逻辑上分为三层：
 
 说明：
 
-- 当前已存在的 `run_cleanup.*`、`run_batch_sync.*`、`run_feishu_tiktok_sync.*` 属于现有基线脚本。
+- 当前仓库基线已经切换为 step 脚本编排。
 - v3.0 目标设计要求新增关键词入口包装能力，但本文件只描述设计，不代表当前脚本已经全部实现。
 
-## 3. Skill 本地配置设计
+## 4. Skill 本地配置设计
 
 skill 本地持久化配置文件固定为：
 
@@ -98,7 +137,7 @@ v3.0 的本地配置项应包含：
 - 若未配置，则继续回退到项目 `.env` 中的 `DEFAULT_PROFILE_REF`。
 - skill 不直接绑定 `chrome_cdp` 或 `roxy`，而是由浏览器 profile 配置决定。
 
-## 4. OpenClaw 调用语义与分发
+## 5. OpenClaw 调用语义与分发
 
 ### 4.1 定时更新入口
 
@@ -155,7 +194,7 @@ v3.0 的本地配置项应包含：
 2. 如果用户输入中包含明确的关键词搜索意图和销量阈值，则进入关键词搜索入口。
 3. 如果用户表达的是“更新当前飞书表”“同步当前表单”“执行每日抓取”等语义，则进入定时更新入口。
 
-## 5. Skill 运行时与输出协议
+## 6. Skill 运行时与输出协议
 
 ### 5.1 运行中输出
 
@@ -217,7 +256,7 @@ __OPENCLAW_RESULT__ <json>
 - 当前 [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md) 仍以 cleanup/batch 结果为基线。
 - v3.0 这里描述的是 skill 设计目标，用于后续扩展协议字段，而不是声明当前 helper 已经支持这些字段。
 
-## 6. Skill 执行规则
+## 7. Skill 执行规则
 
 ### 6.1 定时更新模式
 
@@ -244,7 +283,7 @@ skill 执行关键词搜索模式时，规则固定为：
 6. 只要命中任一判重条件，都视为已存在商品并直接跳过。
 7. 只对新商品执行写入与补全。
 
-## 7. 当前基线与目标差距
+## 8. 当前基线与目标差距
 
 当前基线：
 
@@ -266,7 +305,7 @@ v3.0 目标：
 - 本文件描述的是 v3.0 skill 设计目标。
 - 当前代码基线并不代表这些能力已经全部落地。
 
-## 8. 常见错误
+## 9. 常见错误
 
 ### 8.1 缺少 `skill.local.env`
 
@@ -293,7 +332,7 @@ v3.0 目标：
 - 无法进入 TikTok 或 FastMoss 页面抓取
 - 处理方式：`chrome_cdp` 模式下先启动对应 CDP 端点；`roxy` 模式下检查 `ROXY_HOST`、`ROXY_TOKEN` 与 profile 配置
 
-## 9. 可运行判定
+## 10. 可运行判定
 
 只有同时满足下面条件，才能认为 v3.0 skill 已具备运行基础：
 
@@ -305,7 +344,7 @@ v3.0 目标：
 - 浏览器 profile 已配置
 - 如果需要 FastMoss 能力，则 `FASTMOSS_PHONE` 和 `FASTMOSS_PASSWORD` 已配置
 
-## 10. 关联文档
+## 11. 关联文档
 
 - [01-需求文档.md](./01-需求文档.md)
 - [02-设计文档.md](./02-设计文档.md)

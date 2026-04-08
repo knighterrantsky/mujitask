@@ -1,3 +1,4 @@
+from .fastmoss_login_check_v1 import build_fastmoss_login_check_workflow
 from .fastmoss_keyword_candidate_discovery_v1 import build_fastmoss_keyword_candidate_discovery_workflow
 from .fastmoss_product_sales_snapshot_v1 import build_fastmoss_product_sales_snapshot_workflow
 from .feishu_pending_rows_scan_v1 import build_feishu_pending_rows_scan_workflow
@@ -10,6 +11,7 @@ from .tiktok_product_link_cleanup_v1 import build_tiktok_product_link_cleanup_wo
 from .tiktok_product_to_feishu_v1 import build_tiktok_product_to_feishu_workflow
 
 __all__ = [
+    "build_fastmoss_login_check_workflow",
     "build_fastmoss_keyword_candidate_discovery_workflow",
     "build_fastmoss_product_sales_snapshot_workflow",
     "build_feishu_pending_rows_scan_workflow",

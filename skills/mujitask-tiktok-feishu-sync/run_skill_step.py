@@ -9,8 +9,10 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "skill.local.env"
@@ -68,14 +70,19 @@ def _resolve_browser_target(*, python_bin: Path, install_dir: Path, requested_pr
     return json.loads(result.stdout)
 
 
-def _check_cdp_ready(debug_http: str) -> bool:
+def _probe_cdp_status(debug_http: str) -> tuple[bool, str]:
     version_url = f"{debug_http.rstrip('/')}/json/version"
     try:
         with urllib.request.urlopen(version_url, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return bool(payload.get("Browser"))
-    except Exception:
-        return False
+        browser = str(payload.get("Browser", "") or "").strip()
+        if browser:
+            return True, f"Browser={browser}"
+        return False, "missing Browser field in /json/version response"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code} from {version_url}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def _ensure_browser_ready(*, python_bin: Path, script_dir: Path, browser_target: dict[str, Any]) -> None:
@@ -91,18 +98,32 @@ def _ensure_browser_ready(*, python_bin: Path, script_dir: Path, browser_target:
         return
     if provider != "chrome_cdp":
         raise ValueError(f"Unsupported browser provider '{provider}' for profile_ref={profile_ref}.")
-    if _check_cdp_ready(debug_http):
+    ready, detail = _probe_cdp_status(debug_http)
+    if ready:
         return
-    if debug_http != "http://127.0.0.1:9222":
-        raise ValueError(f"Chrome CDP is not ready at {debug_http} for profile_ref={profile_ref}.")
+    parsed_debug = urlparse(debug_http)
+    debug_host = (parsed_debug.hostname or "").strip().lower()
+    debug_port = parsed_debug.port or (443 if parsed_debug.scheme == "https" else 80)
+    if debug_host not in {"127.0.0.1", "localhost"}:
+        raise ValueError(
+            f"Chrome CDP is not ready at {debug_http} for profile_ref={profile_ref}. "
+            f"Probe detail: {detail}."
+        )
 
-    print(f"[skill-step] Chrome CDP is not ready at {debug_http}. Trying to start Chrome on port 9222.")
-    subprocess.run(["bash", str(script_dir / "start_browser_cdp.sh")], check=True)
-    for _ in range(15):
-        if _check_cdp_ready(debug_http):
+    print(
+        f"[skill-step] Chrome CDP is not ready at {debug_http} "
+        f"(probe={detail}). Trying to start Chrome on port {debug_port}."
+    )
+    startup_env = os.environ.copy()
+    startup_env["MUJITASK_CHROME_CDP_PORT"] = str(debug_port)
+    subprocess.run(["bash", str(script_dir / "start_browser_cdp.sh")], check=True, env=startup_env)
+    last_detail = detail
+    for _ in range(30):
+        ready, last_detail = _probe_cdp_status(debug_http)
+        if ready:
             return
         time.sleep(1)
-    raise ValueError(f"Chrome CDP did not become ready on {debug_http}.")
+    raise ValueError(f"Chrome CDP did not become ready on {debug_http}. Last probe detail: {last_detail}.")
 
 
 def _generate_run_id(task_name: str) -> str:
@@ -297,18 +318,24 @@ def _build_parser() -> argparse.ArgumentParser:
     pending_parser = subparsers.add_parser("pending-rows")
     pending_parser.add_argument("--run-mode", default="draft")
 
+    login_parser = subparsers.add_parser("fastmoss-login-check")
+    login_parser.add_argument("--run-mode", default="draft")
+    login_parser.add_argument("--profile-ref", default="")
+
     update_parser = subparsers.add_parser("single-row-update")
     update_parser.add_argument("--run-mode", default="canary")
     update_parser.add_argument("--record-id", required=True)
     update_parser.add_argument("--profile-ref", default="")
     update_parser.add_argument("--product-url", default="")
     update_parser.add_argument("--sku-id", default="")
+    update_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
     keyword_parser = subparsers.add_parser("keyword-candidates")
     keyword_parser.add_argument("--run-mode", default="draft")
     keyword_parser.add_argument("--profile-ref", default="")
     keyword_parser.add_argument("--search-keyword", required=True)
-    keyword_parser.add_argument("--sales-7d-threshold", required=True)
+    keyword_parser.add_argument("--sales-7d-threshold", default="200")
+    keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
     seed_parser = subparsers.add_parser("insert-seed-row")
     seed_parser.add_argument("--run-mode", default="canary")
@@ -359,6 +386,21 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "pending-rows":
         task_name = "feishu_pending_rows_scan"
         prefix = "pending-rows-step"
+    elif args.command == "fastmoss-login-check":
+        task_name = "fastmoss_login_check"
+        prefix = "fastmoss-login-check-step"
+        browser_target = _resolve_browser_target(
+            python_bin=python_bin,
+            install_dir=install_dir,
+            requested_profile_ref=args.profile_ref,
+            fallback_profile_ref=browser_profile_ref,
+        )
+        _ensure_browser_ready(python_bin=python_bin, script_dir=SCRIPT_DIR, browser_target=browser_target)
+        params = [
+            f"profile_ref={browser_target['profile_ref']}",
+            "fastmoss_phone_env=FASTMOSS_PHONE",
+            "fastmoss_password_env=FASTMOSS_PASSWORD",
+        ]
     elif args.command == "single-row-update":
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-step"
@@ -381,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
                 "fastmoss_password_env=FASTMOSS_PASSWORD",
             ]
         )
+        if args.skip_fastmoss_login_validation:
+            params.append("verify_fastmoss_login=false")
     elif args.command == "keyword-candidates":
         task_name = "fastmoss_keyword_candidate_discovery"
         prefix = "keyword-candidates-step"
@@ -400,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         _ensure_browser_ready(python_bin=python_bin, script_dir=SCRIPT_DIR, browser_target=browser_target)
         params.append(f"profile_ref={browser_target['profile_ref']}")
+        if args.skip_fastmoss_login_validation:
+            params.append("verify_fastmoss_login=false")
     elif args.command == "insert-seed-row":
         task_name = "feishu_seed_row_insert"
         prefix = "insert-seed-row-step"

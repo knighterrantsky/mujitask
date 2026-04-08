@@ -17,6 +17,26 @@ function Fail([string]$Message) {
     throw "[verify-openclaw] $Message"
 }
 
+function Test-SkillFrontmatter([string]$SkillMdPath) {
+    $content = Get-Content -Raw -LiteralPath $SkillMdPath
+    $frontmatterMatch = [regex]::Match($content, '(?s)\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)')
+    if (-not $frontmatterMatch.Success) {
+        Fail "$SkillMdPath is missing YAML frontmatter."
+    }
+
+    $frontmatter = $frontmatterMatch.Groups[1].Value
+    $nameMatch = [regex]::Match($frontmatter, '(?m)^\s*name:\s*(\S.*?)\s*$')
+    if (-not $nameMatch.Success) {
+        Fail "$SkillMdPath frontmatter is missing name."
+    }
+    if ($nameMatch.Groups[1].Value.Trim() -ne "mujitask-tiktok-feishu-sync") {
+        Fail "$SkillMdPath frontmatter name must be mujitask-tiktok-feishu-sync."
+    }
+    if (-not [regex]::IsMatch($frontmatter, '(?m)^\s*description:\s*.+$')) {
+        Fail "$SkillMdPath frontmatter is missing description."
+    }
+}
+
 function Read-KeyValueFile([string]$Path) {
     $map = @{}
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -72,10 +92,12 @@ Check-Path $SkillDir
 Check-Path (Join-Path $SkillDir "SKILL.md")
 Check-Path (Join-Path $SkillDir "skill.local.env")
 Check-Path (Join-Path $SkillDir "skill.local.env.example")
-Check-Path (Join-Path $SkillDir "run_feishu_tiktok_sync.sh")
-Check-Path (Join-Path $SkillDir "run_feishu_tiktok_sync.ps1")
-Check-Path (Join-Path $SkillDir "run_cleanup.ps1")
-Check-Path (Join-Path $SkillDir "run_batch_sync.ps1")
+Check-Path (Join-Path $SkillDir "run_cleanup_step.sh")
+Check-Path (Join-Path $SkillDir "run_pending_rows_step.sh")
+Check-Path (Join-Path $SkillDir "run_single_row_update_step.sh")
+Check-Path (Join-Path $SkillDir "run_keyword_candidate_step.sh")
+Check-Path (Join-Path $SkillDir "run_insert_seed_row_step.sh")
+Check-Path (Join-Path $SkillDir "run_fastmoss_login_check_step.sh")
 Check-Path (Join-Path $SkillDir "start_browser_cdp.ps1")
 
 Log "Checking installed project directory"
@@ -84,6 +106,10 @@ Check-Path $cliPath
 Check-Path $pythonPath
 Check-Path $browserProfiles
 Check-Path $deployState
+
+Log "Checking SKILL.md frontmatter"
+Test-SkillFrontmatter (Join-Path $SkillDir "SKILL.md")
+Log "OK: SKILL.md frontmatter contains the required OpenClaw metadata"
 
 Log "Checking OpenClaw workspace for obsolete skill backups"
 if ($skillBackupDirs.Count -gt 0) {

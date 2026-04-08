@@ -1,11 +1,11 @@
 [project]
 name = "automation-business-scaffold"
-version = "2.0.9"
+version = "3.0.0"
 description = "Business scaffold for building browser automation workflows on top of automation-framework."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@55e8223a92f562f4053006c55e66fe5491c9be61",
+  "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.1",
   "requests>=2.32.0",
   "uvicorn>=0.35.0",
 ]

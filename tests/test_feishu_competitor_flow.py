@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from automation_business_scaffold.flows.feishu_competitor_flow import (
+    run_fastmoss_login_check,
     run_fastmoss_keyword_candidate_discovery,
     run_feishu_pending_rows_scan,
     run_feishu_seed_row_insert,
@@ -223,6 +224,324 @@ def test_run_feishu_single_row_update_canary_writes_tiktok_and_fastmoss_fields(m
     assert updated_fields["Fastmoss截图"] == [{"file_token": "file-token-fastmoss-detail.png"}]
 
 
+def test_run_feishu_single_row_update_can_skip_fastmoss_login_validation(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {"产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"}},
+                    }
+                }
+            }
+
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            return {"code": 0}
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+    monkeypatch.setattr(module, "_current_record_date", lambda: "2026/04/07")
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_product(
+            url="https://www.tiktok.com/shop/pdp/1732268173492064949",
+            tmp_path=tmp_path,
+        ),
+    )
+
+    def fake_fetch_snapshot(product_id, **kwargs):
+        captured.update(kwargs)
+        return _sample_snapshot(product_id=product_id, tmp_path=tmp_path)
+
+    monkeypatch.setattr(module, "fetch_fastmoss_product_sales_via_browser", fake_fetch_snapshot)
+
+    run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-1",
+            "verify_fastmoss_login": False,
+        }
+    )
+
+    assert captured["verify_login"] is False
+
+
+def test_run_feishu_single_row_update_skips_follow_up_when_tiktok_security_check_detected(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"},
+                        },
+                    }
+                }
+            }
+
+    fastmoss_called = {"value": False}
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            module.TikTokSecurityCheckError("TikTok security check detected: captcha")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_fastmoss_product_sales_via_browser",
+        lambda *args, **kwargs: fastmoss_called.__setitem__("value", True),
+    )
+
+    payload = run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-1",
+            "profile_ref": "roxy-united-states",
+            "fastmoss_phone_env": "FASTMOSS_PHONE",
+            "fastmoss_password_env": "FASTMOSS_PASSWORD",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"skipped_security_check": 1}
+    assert payload["item"]["status"] == "skipped_security_check"
+    assert "security check" in payload["item"]["error"].lower()
+    assert fastmoss_called["value"] is False
+
+
+def test_run_feishu_single_row_update_preserves_existing_non_exempt_fields(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.uploads: list[str] = []
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949?foo=bar"},
+                            "SKU-ID": "1732268173492064949",
+                            "图片": [{"file_token": "existing-image"}],
+                            "标题": "Manual Title",
+                            "节日": "手工节日",
+                            "卖家": "Manual Seller",
+                            "前台截图": [{"file_token": "existing-page"}],
+                            "价格": "99",
+                            "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
+                            "昨日销量": "3",
+                            "近7天销量": "",
+                            "近90天销量": "88",
+                            "记录日期": "2026/04/01",
+                            "备注": "manual note",
+                        },
+                    }
+                }
+            }
+
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            self.uploads.append(file_name)
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(fake_client))
+    monkeypatch.setattr(module, "_current_record_date", lambda: "2026/04/07")
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_product(
+            url="https://www.tiktok.com/shop/pdp/1732268173492064949",
+            tmp_path=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_fastmoss_product_sales_via_browser",
+        lambda product_id, **kwargs: _sample_snapshot(product_id=product_id, tmp_path=tmp_path),
+    )
+
+    payload = run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-keep-existing",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"updated": 1}
+    assert fake_client.uploads == []
+    assert fake_client.updated == [
+        (
+            "rec-keep-existing",
+            {
+                "近7天销量": "222",
+                "记录日期": "2026/04/07",
+            },
+        )
+    ]
+
+
+def test_run_feishu_single_row_update_does_not_write_when_no_fields_are_missing(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.uploads: list[str] = []
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"},
+                            "SKU-ID": "1732268173492064949",
+                            "图片": [{"file_token": "existing-image"}],
+                            "标题": "Manual Title",
+                            "节日": "复活节",
+                            "卖家": "Manual Seller",
+                            "前台截图": [{"file_token": "existing-page"}],
+                            "价格": "99",
+                            "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
+                            "昨日销量": "3",
+                            "近7天销量": "22",
+                            "近90天销量": "88",
+                            "记录日期": "2026/04/01",
+                        },
+                    }
+                }
+            }
+
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            self.uploads.append(file_name)
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(fake_client))
+    monkeypatch.setattr(module, "_current_record_date", lambda: "2026/04/07")
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_product(
+            url="https://www.tiktok.com/shop/pdp/1732268173492064949",
+            tmp_path=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_fastmoss_product_sales_via_browser",
+        lambda product_id, **kwargs: _sample_snapshot(product_id=product_id, tmp_path=tmp_path),
+    )
+
+    payload = run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-complete",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"skipped_completed": 1}
+    assert payload["item"]["fields"] == {}
+    assert fake_client.uploads == []
+    assert fake_client.updated == []
+
+
+def test_run_feishu_single_row_update_skips_completed_row_before_fetch(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"},
+                            "SKU-ID": "1732268173492064949",
+                            "图片": [{"file_token": "existing-image"}],
+                            "标题": "Done",
+                            "节日": "复活节",
+                            "卖家": "Manual Seller",
+                            "前台截图": [{"file_token": "existing-page"}],
+                            "价格": "99",
+                            "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
+                            "昨日销量": "3",
+                            "近7天销量": "22",
+                            "近90天销量": "88",
+                            "记录日期": "2026/04/01",
+                        },
+                    }
+                }
+            }
+
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("completed rows should not trigger browser fetching")
+
+    monkeypatch.setattr(module, "fetch_tiktok_product_record_via_browser", fail_fetch)
+    monkeypatch.setattr(module, "fetch_fastmoss_product_sales_via_browser", fail_fetch)
+
+    payload = run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-complete",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"skipped_completed": 1}
+    assert payload["item"]["fields"] == {}
+    assert payload["item"]["logical_fields"] == {}
+    assert payload["item"]["fastmoss_snapshot"] == {}
+
+
 def test_run_fastmoss_keyword_candidate_discovery_applies_two_level_dedup(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.feishu_competitor_flow",
@@ -294,6 +613,72 @@ def test_run_fastmoss_keyword_candidate_discovery_applies_two_level_dedup(monkey
 
     assert payload["summary"]["counts"] == {"skipped_existing": 2, "candidate_new": 1}
     assert [item["product_id"] for item in payload["target_items"]] == ["3333333333333333333"]
+
+
+def test_run_fastmoss_keyword_candidate_discovery_can_skip_fastmoss_login_validation(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_fastmoss_keyword_candidate_discovery"],
+    )
+
+    class FakeClient:
+        def list_all_records(self, *, app_token, table_id, page_size=100, view_id=None):
+            return []
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+
+    def fake_discovery(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "search_url": "https://www.fastmoss.com/zh/e-commerce/search?words=test",
+            "pages_scanned": 1,
+            "rows_scanned": 0,
+            "items": [],
+        }
+
+    monkeypatch.setattr(module, "discover_fastmoss_keyword_candidates_via_browser", fake_discovery)
+
+    run_fastmoss_keyword_candidate_discovery(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "search_keyword": "test",
+            "sales_7d_threshold": 200,
+            "verify_fastmoss_login": False,
+        }
+    )
+
+    assert captured["verify_login"] is False
+
+
+def test_run_fastmoss_login_check_returns_validated_payload(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_fastmoss_login_check"],
+    )
+
+    monkeypatch.setattr(
+        module,
+        "validate_fastmoss_login_via_browser",
+        lambda **kwargs: {
+            "login_state": "already_logged_in",
+            "profile_ref": "roxy-united-states",
+            "provider_name": "roxy",
+            "target_key": "roxy:84278:sample",
+        },
+    )
+
+    payload = run_fastmoss_login_check(
+        {
+            "profile_ref": "roxy-united-states",
+            "fastmoss_phone_env": "FASTMOSS_PHONE",
+            "fastmoss_password_env": "FASTMOSS_PASSWORD",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"validated": 1}
+    assert payload["item"]["login_state"] == "already_logged_in"
 
 
 def test_run_feishu_seed_row_insert_creates_seed_fields(monkeypatch):

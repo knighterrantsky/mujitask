@@ -1,3 +1,4 @@
+from automation_business_scaffold.tasks.fastmoss_login_check import FastMossLoginCheckTask
 from automation_business_scaffold.tasks.fastmoss_keyword_candidate_discovery import (
     FastMossKeywordCandidateDiscoveryTask,
 )
@@ -25,6 +26,7 @@ from automation_business_scaffold.tasks.tiktok_product_to_feishu import (
 
 DEFAULT_TASKS = [
     SourceToTargetPublishDemoTask(),
+    FastMossLoginCheckTask(),
     FeishuPendingRowsScanTask(),
     FeishuSeedRowInsertTask(),
     FeishuSingleRowUpdateTask(),
@@ -38,6 +40,7 @@ DEFAULT_TASKS = [
 
 __all__ = [
     "DEFAULT_TASKS",
+    "FastMossLoginCheckTask",
     "FastMossKeywordCandidateDiscoveryTask",
     "FastMossProductSalesSnapshotTask",
     "FeishuPendingRowsScanTask",

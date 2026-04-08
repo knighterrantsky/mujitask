@@ -193,6 +193,35 @@ class _FakeFallbackPage(_FakePage):
         raise AssertionError(f"Unexpected evaluate payload: {script}")
 
 
+class _FakeGenericImageSelectorPage(_FakePage):
+    def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            return {
+                "visible": False,
+                "text": "",
+                "selector": "",
+                "matched_keyword": "",
+            }
+        if isinstance(arg, dict) and "expectedUrl" in arg:
+            return {"selector": 'img[data-mujitask-main-image-target="1"]'}
+        if "visible_signal_count" in script:
+            return {
+                "title_text": "Sample TikTok Product",
+                "title_selector": "h1",
+                "price_text": "$24.99",
+                "price_selector": "[data-e2e='pdp-product-price']",
+                "shop_name": "Sample Shop",
+                "shop_selector": "[data-e2e='shop-name']",
+                "main_image_url": "https://example.com/main-image.webp?foo=bar",
+                "main_image_selector": "img",
+                "main_image_loaded": True,
+                "visible_signal_count": 3,
+            }
+        if "loaded" in script:
+            return {"selector": 'img[data-mujitask-main-image-target="1"]', "loaded": True}
+        raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+
 class _FakeLoginToastPage(_FakePage):
     def __init__(self, visibility_sequence: list[bool]) -> None:
         super().__init__()
@@ -211,6 +240,87 @@ class _FakeLoginToastPage(_FakePage):
                 "matched_keyword": "login" if visible else "",
             }
         return super().evaluate(script, arg)
+
+
+class _FakeSecurityCheckPage(_FakePage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.url = "https://www.tiktok.com/passport/web/challenge"
+
+    def content(self) -> str:
+        return "<html><body><div>Security check</div><div>Slide to verify</div></body></html>"
+
+    def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            return {
+                "visible": False,
+                "text": "",
+                "selector": "",
+                "matched_keyword": "",
+            }
+        if "visible_signal_count" in script:
+            return {
+                "title_text": "",
+                "title_selector": "",
+                "price_text": "",
+                "price_selector": "",
+                "shop_name": "",
+                "shop_selector": "",
+                "main_image_url": "",
+                "main_image_selector": "",
+                "main_image_loaded": False,
+                "visible_signal_count": 0,
+            }
+        raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now_ms = 0
+
+    def monotonic(self) -> float:
+        return self.now_ms / 1000.0
+
+    def advance(self, timeout_ms: int) -> None:
+        self.now_ms += int(timeout_ms)
+
+
+class _FakeRecoverableSecurityCheckPage(_FakePage):
+    def __init__(self, *, clock: _FakeClock, clear_after_ms: int | None) -> None:
+        super().__init__()
+        self.clock = clock
+        self.clear_after_ms = clear_after_ms
+        self._source_url = self.url
+
+    def goto(self, url: str, wait_until: str | None = None) -> None:
+        self._source_url = url
+
+    @property
+    def url(self) -> str:
+        if self._security_active():
+            return "https://www.tiktok.com/passport/web/challenge"
+        return self._source_url
+
+    @url.setter
+    def url(self, value: str) -> None:
+        self._source_url = value
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        super().wait_for_timeout(timeout_ms)
+        self.clock.advance(timeout_ms)
+
+    def content(self) -> str:
+        if self._security_active():
+            return "<html><body><div>Security check</div><div>Slide to verify</div></body></html>"
+        return super().content()
+
+    def evaluate(self, script: str, arg=None):
+        if self._security_active():
+            return _FakeSecurityCheckPage.evaluate(self, script, arg)
+        return super().evaluate(script, arg)
+
+    def _security_active(self) -> bool:
+        return self.clear_after_ms is None or self.clock.now_ms < self.clear_after_ms
 
 
 def test_extract_tiktok_product_from_html_returns_expected_fields():
@@ -315,6 +425,18 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
     monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
     monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
     monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+    monkeypatch.setattr(
+        module,
+        "download_tiktok_product_main_image",
+        lambda product, *, download_dir, timeout=30, session=None: replace(
+            product,
+            main_image_local_path=str(Path(download_dir) / f"{product.product_id}-main-image.webp"),
+            main_image_file_name=f"{product.product_id}-main-image.webp",
+            main_image_mime_type="image/webp",
+        ),
+    )
+    (tmp_path / "images").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "images" / "1729732615040962895-main-image.webp").write_bytes(b"downloaded-main-image")
 
     product = fetch_tiktok_product_record_via_browser(
         "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
@@ -322,9 +444,9 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
     )
 
     assert product.normalized_url == "https://www.tiktok.com/shop/pdp/1729732615040962895"
-    assert product.main_image_local_path.endswith("1729732615040962895-main-image.png")
+    assert product.main_image_local_path.endswith("1729732615040962895-main-image.webp")
     assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
-    assert Path(product.main_image_local_path).read_bytes() == b"main-image"
+    assert Path(product.main_image_local_path).read_bytes() == b"downloaded-main-image"
     assert Path(product.product_page_screenshot_local_path).read_bytes() == b"page-screenshot"
 
 
@@ -381,6 +503,71 @@ def test_fetch_tiktok_product_record_via_browser_falls_back_to_html_data_and_dow
     assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
 
 
+def test_fetch_tiktok_product_record_via_browser_falls_back_to_matching_dom_image_when_download_fails(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakeGenericImageSelectorPage(),
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+
+    def fake_download(*_args, **_kwargs):
+        raise module.TikTokProductExtractionError("download failed")
+
+    monkeypatch.setattr(module, "download_tiktok_product_main_image", fake_download)
+
+    product = fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    assert product.main_image_local_path.endswith("1729732615040962895-main-image.png")
+    assert Path(product.main_image_local_path).read_bytes() == b"main-image"
+    assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
+
+
+def test_build_record_from_browser_state_prefers_router_main_image_url_over_generic_dom_image():
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["_build_record_from_browser_state"],
+    )
+
+    product = module._build_record_from_browser_state(
+        html=SAMPLE_HTML,
+        dom_snapshot={
+            "product_id": "1729732615040962895",
+            "title_text": "Sample TikTok Product",
+            "main_image_url": "https://example.com/wrong-logo.png",
+            "main_image_selector": "img",
+            "price_text": "$24.99",
+            "shop_name": "Wrong Shop",
+        },
+        source_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+        resolved_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+    )
+
+    assert product.main_image_url == "https://example.com/main-image.webp"
+
+
 def test_fetch_tiktok_product_record_via_browser_waits_for_login_toast_to_clear(
     monkeypatch,
     tmp_path,
@@ -434,6 +621,82 @@ def test_wait_for_login_toast_to_settle_raises_when_toast_never_disappears():
             poll_ms=250,
             stable_absent_polls=2,
         )
+
+
+def test_fetch_tiktok_product_record_via_browser_raises_security_check_error_when_challenge_page_detected(
+    monkeypatch,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    clock = _FakeClock()
+    monkeypatch.setattr(module.time, "monotonic", clock.monotonic)
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakeRecoverableSecurityCheckPage(clock=clock, clear_after_ms=None),
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+
+    with pytest.raises(module.TikTokSecurityCheckError, match="security check"):
+        module.fetch_tiktok_product_record_via_browser(
+            "https://www.tiktok.com/shop/pdp/1729732615040962895",
+            profile_ref="local-chrome",
+            timeout_ms=500,
+            security_check_grace_ms=1000,
+        )
+
+
+def test_fetch_tiktok_product_record_via_browser_continues_when_security_check_clears_within_grace_window(
+    monkeypatch,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    clock = _FakeClock()
+    monkeypatch.setattr(module.time, "monotonic", clock.monotonic)
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakeRecoverableSecurityCheckPage(clock=clock, clear_after_ms=1000),
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+
+    product = module.fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895",
+        profile_ref="local-chrome",
+        timeout_ms=500,
+        capture_page_screenshot=False,
+        security_check_grace_ms=1000,
+    )
+
+    assert product.product_id == "1729732615040962895"
+    assert product.title == "Sample TikTok Product"
+    assert clock.now_ms >= 1000
 
 
 def test_normalize_tiktok_product_url_strips_parameters():

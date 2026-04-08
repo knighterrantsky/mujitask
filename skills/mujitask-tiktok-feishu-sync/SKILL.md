@@ -1,193 +1,143 @@
+---
+name: mujitask-tiktok-feishu-sync
+description: >-
+  TikTok/TK competitor analysis and FastMoss product discovery for the current Feishu table.
+  Use when the user asks to update TikTok competitor data, do TikTok竞品分析 / TK竞品分析,
+  search or collect FastMoss / Fastmoss products, or write competitor results back to the current
+  Feishu table, even if the user does not know this skill name. For keyword-search requests,
+  extract the keyword from natural language and use a default 7-day sales threshold of 200 when
+  the user does not specify one; if the user specifies a threshold such as 300, use that value.
+metadata:
+  short-description: TK竞品采集与更新
+---
+
 # mujitask-tiktok-feishu-sync
 
-TK 竞品采集与更新 skill。
+执行当前飞书表的 TK 竞品更新与 FastMoss 关键词找品。
 
-本文件描述 v3.0 的 skill 目标设计，并说明当前实现基线。  
-它的目的不是暴露底层 task，而是让 OpenClaw 用一个 skill 同时触发“定时更新”和“关键词搜索”两类业务。
+## 触发条件
 
-## Skill 定位
+- 下面这些表达都应该触发本 skill：
+  - `TikTok竞品分析`
+  - `TK竞品分析`
+  - `TikTok竞品`
+  - `TK竞品`
+  - `FastMoss`
+  - `Fastmoss`
+  - `竞品抓取`
+  - `竞品找品`
+  - `写入当前飞书表`
+- 如果用户表达的是“更新当前表 / 同步当前竞品表 / 定时抓取竞品数据”，走定时更新入口。
+- 如果用户表达的是“搜索 / 查询 / 收集 FastMoss 商品并写入飞书”，走关键词搜索入口。
 
-这个 skill 的目标定位是：
+## 输入提取规则
 
-- 使用当前飞书竞品表做定时更新
-- 通过 FastMoss 关键词搜索发现新竞品
-- 统一回写飞书表中的自动维护字段
+- 只从用户输入中提取：
+  - `关键词`
+  - `7日销量阈值`
+- 如果用户没有明确提供 `7日销量阈值`，默认使用 `200`。
+- 如果用户明确提供了阈值，例如 `300`，则使用用户提供的值。
 
-对 OpenClaw 暴露两类业务入口：
+## 固定配置
 
-1. 定时更新当前飞书竞品表
-2. 按关键词搜索 FastMoss 竞品并写入飞书
+- 从 `skill.local.env` 读取：
+  - `INSTALL_DIR`
+  - `TABLE_URL`
+  - `FEISHU_ACCESS_TOKEN`
+  - `BROWSER_PROFILE_REF`
+  - `FASTMOSS_PHONE`
+  - `FASTMOSS_PASSWORD`
+- 不要在对话中向用户索取这些固定配置。
 
-## 适用场景
+## 执行约束
 
-- 飞书多维表格中已经维护了部分竞品链接
-- 需要每天定时更新表中竞品数据
-- 需要通过关键词搜索批量发现新商品
-- 需要把 TikTok 信息、FastMoss 截图和销量数据统一写回飞书
+- 不要输出设计意图、版本目标、历史重构信息。
+- 用户如果要求“写入当前飞书表”，则默认自动执行完整后续流程，不要停在中间步骤等待用户追加指令。
+- 默认在一次用户请求内自动推进到详情补全结束；只有遇到真实错误、安全验证未解除或明确停止条件时，才允许中断。
+- 用户如果要求“写入当前飞书表”，则不能在只完成 `keyword-candidates` 或 `insert-seed-row` 后回复“已完成”。
+- 定时更新入口必须按这个顺序执行：
+  1. `run_fastmoss_login_check_step.sh`
+  2. `run_cleanup_step.sh`
+  3. `run_pending_rows_step.sh`
+  4. 对 `target_rows` 执行 `run_single_row_update_step.sh`
+- 关键词搜索入口必须按这个顺序执行：
+  1. `run_fastmoss_login_check_step.sh`
+  2. `run_keyword_candidate_step.sh`
+  3. 对每个 `candidate_new` 执行 `run_insert_seed_row_step.sh`
+  4. 对新写入的 `record_id` 执行 `run_single_row_update_step.sh`
+- 如果 `run_insert_seed_row_step.sh` 没有返回新的 `record_id`，不要把该商品计入“详情已补全”。
 
-## 本地配置
+## 输出约束
 
-skill 默认从当前目录下的 `skill.local.env` 读取本地配置。
+- 默认只向用户输出最终结果摘要，不展开内部 step 编排细节。
+- 不要把候选发现、种子写入、内部续跑这些过程当成主要输出内容。
+- 除非用户主动要求详细过程，否则不要把候选数、步骤名、内部子任务分段作为常规输出。
+- 如果流程已经完整执行到详情补全结束，可以回复“已完成”。
+- 如果流程因为真实错误或安全验证等原因未能自动完成，才说明未完成原因。
+- 如果内部为了稳定性拆成多个子任务，继续自动衔接执行；除非确实未完成，否则不要把中间分段细节暴露给用户。
 
-v3.0 目标配置包括：
+## 定时更新入口
 
-- `INSTALL_DIR`
-- `TABLE_URL`
-- `FEISHU_ACCESS_TOKEN`
-- `BROWSER_PROFILE_REF`
-- `FASTMOSS_PHONE`
-- `FASTMOSS_PASSWORD`
-
-配置边界：
-
-- `TABLE_URL` 不从用户对话输入
-- `FEISHU_ACCESS_TOKEN` 不从用户对话输入
-- `FASTMOSS_PHONE` 和 `FASTMOSS_PASSWORD` 不从用户对话输入
-- `关键词` 和 `7日销量阈值` 只来自用户输入或调度参数
-
-## 对外业务语义
-
-### 1. 定时更新入口
-
-适合下面这类触发：
+用户语义示例：
 
 - 更新当前飞书竞品表
 - 执行每日竞品数据同步
 - 对当前飞书表做定时刷新
 
-这个入口的目标执行顺序是：
+推荐步骤：
 
-1. 标准化并去重 `产品链接`
-2. 识别待更新行
-3. 对待更新行逐条执行商品详情更新
+1. `bash run_fastmoss_login_check_step.sh`
+2. `bash run_cleanup_step.sh`
+3. `bash run_pending_rows_step.sh`
+4. 从 pending 结果中读取 `target_rows`
+5. 对 `target_rows` 继续执行：
+   - `bash run_single_row_update_step.sh --record-id <record_id> --skip-fastmoss-login-validation`
 
-### 2. 关键词搜索入口
+固定规则：
 
-适合下面这类触发：
+- 必须先执行链接标准化与去重。
+- 商品详情更新时，必须先抓 TikTok 信息，再进入 FastMoss 详情页。
+- 打开 FastMoss 商品详情页后必须先截图，再抓取销量信息。
+
+## 关键词搜索入口
+
+用户语义示例：
 
 - 帮我查询关键字为 `east egg` 的 7 日内销量大于 200 的 TK 商品数据
+- 帮我搜一下 `easter egg` 的 TK 竞品并写入当前飞书表
 - 搜索 FastMoss 中关键词为 `easter egg` 的商品并写入飞书
 - 收集关键词为 `graduation gifts` 的 TK 竞品
 
-这个入口的目标执行顺序是：
+推荐步骤：
 
-1. 从用户输入中提取 `关键词`
-2. 从用户输入中提取 `7日销量阈值`
-3. 通过 FastMoss 搜索候选商品
-4. 固定按 `近7天销量` 排序并翻页穷举
-5. 先按 `SKU-ID` 判重，再按标准化后的 `产品链接` 判重
-6. 已存在商品直接跳过
-7. 新商品先写入 `SKU-ID`
-8. 再补全其他自动维护字段
-9. 对新商品在 `备注` 中写 `通过搜索关键字：{关键词}`
+1. `bash run_fastmoss_login_check_step.sh`
+2. `bash run_keyword_candidate_step.sh --search-keyword "<keyword>" --sales-7d-threshold <number> --skip-fastmoss-login-validation`
+3. 读取关键词候选结果中的 `target_items`
+4. 对每个 `candidate_new` 逐条执行：
+   - `bash run_insert_seed_row_step.sh --sku-id <sku_id> --search-keyword "<keyword>"`
+5. 从每次 seed insert 结果中读取 `item.record_id`
+6. 对新插入的 `record_id` 继续执行：
+   - `bash run_single_row_update_step.sh --record-id <record_id> --skip-fastmoss-login-validation`
 
-## 入口分发规则
+如果用户没有指定 `7日销量阈值`，用：
 
-主入口分发遵循以下规则：
+- `bash run_keyword_candidate_step.sh --search-keyword "<keyword>" --skip-fastmoss-login-validation`
 
-1. OpenClaw 定时任务固定进入定时更新入口。
-2. 用户输入中如果同时包含关键词搜索意图和销量阈值，则进入关键词搜索入口。
-3. 用户输入如果表达的是“更新当前表”“同步当前竞品表”，则进入定时更新入口。
+此时默认阈值为 `200`。
 
-## 固定执行规则
+固定规则：
 
-- OpenClaw 负责顶层编排，skill 对外优先暴露确定性 step 脚本。
-- `TABLE_URL` 固定来自 `skill.local.env`。
-- 所有业务数据最终都写回同一张飞书表。
-- 定时更新入口必须先执行链接标准化与去重。
-- 商品详情更新时，必须先抓 TikTok 信息，再进入 FastMoss 详情页。
-- 打开 FastMoss 商品详情页后必须先截图，再抓取销量信息。
-- 关键词搜索入口必须固定使用 FastMoss 作为数据源。
-- 关键词搜索结果必须固定按 `近7天销量` 排序并翻页穷举。
-- 关键词候选商品必须执行两级判重：
-  - 先按 `SKU-ID`
-  - 再按标准化后的 `产品链接`
+- 数据源固定为 FastMoss。
+- 搜索结果固定按 `近7天销量` 排序并翻页穷举。
+- 候选商品必须先按 `SKU-ID` 判重，再按标准化后的 `产品链接` 判重。
+- 只要命中任一判重条件，就视为已存在商品并直接跳过。
+- 新商品先写入 `SKU-ID`、`产品链接`、`备注`，再进入详情补全。
+- `备注` 写入格式固定为：`通过搜索关键字：{关键词}`。
 
-## 输出协议
+## 运行时处理规则
 
-主入口继续复用当前同步输出协议：
-
-- 运行中输出阶段日志、`run_id`、进度文件路径和心跳日志
-- 结束前输出固定尾行：`__OPENCLAW_RESULT__ <json>`
-
-v3.0 的目标结果摘要应包含：
-
-- `status`
-- `task_name`
-- `entry_type`
-- `message`
-- `summary`
-- `detail`
-- `error`
-
-其中：
-
-- `entry_type = scheduled_update`
-- `entry_type = keyword_search`
-
-说明：
-
-- 当前 [docs/business/05-openclaw-output-protocol.md](/Users/happyzhao/Work/mujitask/docs/business/05-openclaw-output-protocol.md#L1) 仍以 cleanup / batch 结果为基线
-- v3.0 这里描述的是目标 skill 设计，不等于当前 helper 已经完整支持该结构
-
-## 当前实现
-
-当前 skill 已经提供面向 OpenClaw 编排的确定性 step 脚本：
-
-- `run_cleanup_step.sh`
-- `run_pending_rows_step.sh`
-- `run_single_row_update_step.sh`
-- `run_keyword_candidate_step.sh`
-- `run_insert_seed_row_step.sh`
-
-这些 step 脚本统一通过 `run_skill_step.py` 调 framework task，并复用：
-
-- `chrome_cdp` 与 `roxy` 两类浏览器 profile 解析
-- `__OPENCLAW_RESULT__ <json>` 尾行协议
-- 进度日志、心跳日志和运行文件输出
-
-仍保留但不再建议作为 v3.0 主路径使用的旧脚本：
-
-- `run_feishu_tiktok_sync.sh`
-- `run_batch_sync.sh`
-- `run_cleanup.sh`
-
-## 常见错误
-
-### 缺少 `skill.local.env`
-
-- 无法读取本地业务配置
-- 处理方式：从 `skill.local.env.example` 复制并填写
-
-### 缺少 `TABLE_URL`
-
-- 无法定位飞书目标表
-- 处理方式：补充正确的飞书表地址
-
-### 缺少 `FEISHU_ACCESS_TOKEN`
-
-- 无法读取或回写飞书数据
-- 处理方式：补充有效的飞书 token
-
-### 缺少 `FASTMOSS_PHONE` 或 `FASTMOSS_PASSWORD`
-
-- 无法执行关键词搜索或 FastMoss 明细抓取
-- 处理方式：在 `skill.local.env` 中补充 FastMoss 登录信息
-
-### 浏览器 profile 未就绪
-
-- 无法进入 TikTok 或 FastMoss 页面
-- 处理方式：`chrome_cdp` 模式下先启动对应 CDP 端点；`roxy` 模式下检查 `ROXY_HOST`、`ROXY_TOKEN` 与 profile 配置
-
-## 推荐调用方式
-
-在 v3.0 下，推荐由 OpenClaw 按步骤调用：
-
-- 定时任务：
-  - `bash run_cleanup_step.sh`
-  - `bash run_pending_rows_step.sh`
-  - `bash run_single_row_update_step.sh --record-id <record_id>`
-- 关键词搜索：
-  - `bash run_keyword_candidate_step.sh --search-keyword "<keyword>" --sales-7d-threshold <number>`
-  - `bash run_insert_seed_row_step.sh --sku-id <sku_id> --search-keyword "<keyword>"`
-  - `bash run_single_row_update_step.sh --record-id <record_id>`
+- 如果同一批次里已经做过 FastMoss 登录校验，后续步骤复用 `--skip-fastmoss-login-validation`。
+- 如果为了稳定性需要拆成多个内部子任务，默认自动继续，不要等待用户追加同类指令。
+- 如果 TikTok 遇到安全验证，先给人工介入窗口；窗口结束后仍未解除，再按跳过处理。
+- 结束前依然输出 `__OPENCLAW_RESULT__ <json>`。
+- 优先让 OpenClaw 根据结果 JSON 继续后续步骤，而不是依赖自然语言猜测。

@@ -25,6 +25,26 @@ try {
         throw "[deploy-openclaw] $Message"
     }
 
+    function Test-SkillFrontmatter([string]$SkillMdPath) {
+        $content = Get-Content -Raw -LiteralPath $SkillMdPath
+        $frontmatterMatch = [regex]::Match($content, '(?s)\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)')
+        if (-not $frontmatterMatch.Success) {
+            Fail "$SkillMdPath is missing YAML frontmatter."
+        }
+
+        $frontmatter = $frontmatterMatch.Groups[1].Value
+        $nameMatch = [regex]::Match($frontmatter, '(?m)^\s*name:\s*(\S.*?)\s*$')
+        if (-not $nameMatch.Success) {
+            Fail "$SkillMdPath frontmatter is missing name."
+        }
+        if ($nameMatch.Groups[1].Value.Trim() -ne "mujitask-tiktok-feishu-sync") {
+            Fail "$SkillMdPath frontmatter name must be mujitask-tiktok-feishu-sync."
+        }
+        if (-not [regex]::IsMatch($frontmatter, '(?m)^\s*description:\s*.+$')) {
+            Fail "$SkillMdPath frontmatter is missing description."
+        }
+    }
+
     function Prompt([string]$Label, [string]$DefaultValue = "") {
         if ([string]::IsNullOrWhiteSpace($DefaultValue)) {
             do {
@@ -378,12 +398,12 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
             "SKILL.md",
             "skill.local.env",
             "skill.local.env.example",
-            "run_feishu_tiktok_sync.sh",
-            "run_feishu_tiktok_sync.ps1",
-            "run_cleanup.sh",
-            "run_cleanup.ps1",
-            "run_batch_sync.sh",
-            "run_batch_sync.ps1",
+            "run_cleanup_step.sh",
+            "run_pending_rows_step.sh",
+            "run_single_row_update_step.sh",
+            "run_keyword_candidate_step.sh",
+            "run_insert_seed_row_step.sh",
+            "run_fastmoss_login_check_step.sh",
             "start_browser_cdp.sh",
             "start_browser_cdp.ps1"
         )) {
@@ -391,6 +411,8 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
                 Fail "Smoke check failed: missing $(Join-Path $TargetSkillDir $fileName)."
             }
         }
+
+        Test-SkillFrontmatter (Join-Path $TargetSkillDir "SKILL.md")
     }
 
     Ensure-Uv

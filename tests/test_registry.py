@@ -6,6 +6,7 @@ def test_build_task_registry_registers_demo_task():
 
     assert registry.names() == [
         "fastmoss_keyword_candidate_discovery",
+        "fastmoss_login_check",
         "fastmoss_product_sales_snapshot",
         "feishu_pending_rows_scan",
         "feishu_seed_row_insert",
@@ -16,6 +17,7 @@ def test_build_task_registry_registers_demo_task():
         "tiktok_product_link_cleanup",
         "tiktok_product_to_feishu",
     ]
+    assert registry.get("fastmoss_login_check") is not None
     assert registry.get("fastmoss_keyword_candidate_discovery") is not None
     assert registry.get("source_to_target_publish_demo") is not None
     assert registry.get("feishu_pending_rows_scan") is not None

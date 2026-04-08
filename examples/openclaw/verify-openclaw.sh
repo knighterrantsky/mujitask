@@ -25,6 +25,35 @@ fail() {
   exit 1
 }
 
+check_skill_frontmatter() {
+  local skill_md="$1"
+  local python_bin="$2"
+
+  "$python_bin" - "$skill_md" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+skill_md = Path(sys.argv[1])
+text = skill_md.read_text(encoding="utf-8")
+
+match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, flags=re.DOTALL)
+if not match:
+    raise SystemExit(f"{skill_md} is missing YAML frontmatter.")
+
+frontmatter = match.group(1)
+name_match = re.search(r"(?m)^\s*name:\s*(\S.*?)\s*$", frontmatter)
+description_match = re.search(r"(?m)^\s*description:\s*.+$", frontmatter)
+
+if not name_match:
+    raise SystemExit(f"{skill_md} frontmatter is missing name.")
+if name_match.group(1).strip() != "mujitask-tiktok-feishu-sync":
+    raise SystemExit(f"{skill_md} frontmatter name must be mujitask-tiktok-feishu-sync.")
+if not description_match:
+    raise SystemExit(f"{skill_md} frontmatter is missing description.")
+PY
+}
+
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -94,10 +123,12 @@ main() {
   check_file "$SKILL_DIR/SKILL.md"
   check_file "$SKILL_DIR/skill.local.env"
   check_file "$SKILL_DIR/skill.local.env.example"
-  check_file "$SKILL_DIR/run_feishu_tiktok_sync.sh"
-  check_file "$SKILL_DIR/run_feishu_tiktok_sync.ps1"
-  check_file "$SKILL_DIR/run_cleanup.sh"
-  check_file "$SKILL_DIR/run_batch_sync.sh"
+  check_file "$SKILL_DIR/run_cleanup_step.sh"
+  check_file "$SKILL_DIR/run_pending_rows_step.sh"
+  check_file "$SKILL_DIR/run_single_row_update_step.sh"
+  check_file "$SKILL_DIR/run_keyword_candidate_step.sh"
+  check_file "$SKILL_DIR/run_insert_seed_row_step.sh"
+  check_file "$SKILL_DIR/run_fastmoss_login_check_step.sh"
   check_file "$SKILL_DIR/start_browser_cdp.sh"
 
   log "Checking installed project directory"
@@ -106,6 +137,10 @@ main() {
   check_file "$python_bin"
   check_file "$browser_profiles"
   check_file "$deploy_state"
+
+  log "Checking SKILL.md frontmatter"
+  check_skill_frontmatter "$SKILL_DIR/SKILL.md" "$python_bin"
+  log "OK: SKILL.md frontmatter contains the required OpenClaw metadata"
 
   log "Checking OpenClaw workspace for obsolete skill backups"
   shopt -s nullglob

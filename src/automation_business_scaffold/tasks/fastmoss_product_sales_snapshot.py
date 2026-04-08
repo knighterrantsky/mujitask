@@ -34,6 +34,7 @@ class FastMossProductSalesSnapshotTask(BaseWorkflowTask):
             step_delay_sec=float(context.params.get("step_delay_sec", 2.0) or 2.0),
             login_settle_sec=float(context.params.get("login_settle_sec", 8.0) or 8.0),
             capture_detail_screenshot=_coerce_bool(context.params.get("capture_detail_screenshot"), default=True),
+            verify_login=_coerce_bool(context.params.get("verify_fastmoss_login"), default=True),
         )
         snapshot_data = snapshot.to_dict()
 

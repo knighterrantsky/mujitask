@@ -47,6 +47,15 @@ def _build_summary_text(summary: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _pick_single_step_output(step_outputs: Any) -> dict[str, Any]:
+    if not isinstance(step_outputs, dict):
+        return {}
+    if len(step_outputs) != 1:
+        return {}
+    only_value = next(iter(step_outputs.values()), {})
+    return only_value if isinstance(only_value, dict) else {}
+
+
 def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
     payload = _load_json_file(args.run_file)
     result_payload: dict[str, Any] = {
@@ -69,12 +78,16 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         result_data = result.get("data", {}) if isinstance(result, dict) else {}
         step_outputs = result_data.get("step_outputs", {}) if isinstance(result_data, dict) else {}
         emit_summary = step_outputs.get("emit_summary", {}) if isinstance(step_outputs, dict) else {}
+        single_step_output = _pick_single_step_output(step_outputs)
         summary = result_data.get("summary", {}) if isinstance(result_data, dict) else {}
         failed_items = result_data.get("failed_items", []) if isinstance(result_data, dict) else []
 
-        if isinstance(emit_summary, dict):
+        if isinstance(emit_summary, dict) and emit_summary:
             summary = emit_summary.get("summary", summary)
             failed_items = emit_summary.get("failed_items", failed_items)
+        elif not summary and single_step_output:
+            summary = single_step_output.get("summary", summary)
+            failed_items = single_step_output.get("failed_items", failed_items)
 
         error = payload.get("error")
 
