@@ -161,8 +161,11 @@ ensure_uv() {
 ensure_python_311() {
   log "Ensuring Python 3.11 is available through uv"
   "$UV_BIN" python install 3.11 >/dev/null
-  PYTHON_BIN="$("$UV_BIN" python find 3.11 | tr -d '\r' | head -n 1)"
+  # Avoid resolving a project-local .venv under the install directory, because
+  # the deployment flow may delete and recreate that directory mid-run.
+  PYTHON_BIN="$("$UV_BIN" python find --managed-python --no-project --resolve-links 3.11 | tr -d '\r' | head -n 1)"
   [[ -n "$PYTHON_BIN" ]] || fail "Could not resolve Python 3.11 after uv installation."
+  [[ -x "$PYTHON_BIN" ]] || fail "Resolved Python 3.11 is not executable: $PYTHON_BIN"
 }
 
 python_json_get() {

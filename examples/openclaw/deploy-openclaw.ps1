@@ -123,9 +123,14 @@ try {
     function Ensure-Python311 {
         Log "Ensuring Python 3.11 is available through uv"
         & $script:UvBin python install 3.11 | Out-Null
-        $candidate = (& $script:UvBin python find 3.11 | Select-Object -First 1).Trim()
+        # Avoid resolving a project-local .venv under the install directory, because
+        # the deployment flow may delete and recreate that directory mid-run.
+        $candidate = (& $script:UvBin python find --managed-python --no-project --resolve-links 3.11 | Select-Object -First 1).Trim()
         if ([string]::IsNullOrWhiteSpace($candidate)) {
             Fail "Could not resolve Python 3.11 after uv installation."
+        }
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            Fail "Resolved Python 3.11 path does not exist: $candidate"
         }
         $script:PythonBin = $candidate
     }
