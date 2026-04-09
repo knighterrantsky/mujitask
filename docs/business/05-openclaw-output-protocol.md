@@ -55,13 +55,16 @@
 例如：
 
 ```text
-[feishu-tiktok-sync] Step 1/2: normalizing and deduplicating TikTok links in Feishu
+[feishu-tiktok-sync] Step 1/3: normalizing and deduplicating TikTok links in Feishu
 [cleanup] Running tiktok_product_link_cleanup with run_mode=canary run_id=openclaw-cleanup-...
 [cleanup] Progress files: run_file=... steps_file=...
-[feishu-tiktok-sync] Step 2/2: crawling TikTok competitor data and writing results back to Feishu
-[batch-sync] Running tiktok_feishu_batch_sync with run_mode=canary max_records=0 run_id=openclaw-...
-[batch-sync] Progress files: run_file=... steps_file=...
-[batch-sync] Heartbeat: run is still active; waiting for the next workflow update
+[feishu-tiktok-sync] Step 2/3: scanning pending competitor rows in Feishu
+[pending-rows] Running feishu_pending_rows_scan with run_mode=canary run_id=openclaw-pending-...
+[pending-rows] Progress files: run_file=... steps_file=...
+[feishu-tiktok-sync] Step 3/N: updating pending competitor rows one by one
+[single-row-update] Running feishu_single_row_update for record_id=recXXXX run_mode=canary run_id=openclaw-update-...
+[single-row-update] Progress files: run_file=... steps_file=...
+[single-row-update] Heartbeat: run is still active; waiting for the next workflow update
 ```
 
 ### 3.2 原始 CLI 输出
@@ -100,7 +103,8 @@ __OPENCLAW_RESULT__ <json>
 - `message`
 - `summary`
 - `cleanup`
-- `batch`
+- `pending_rows`
+- `updates`
 
 推荐字段：
 
@@ -112,8 +116,9 @@ __OPENCLAW_RESULT__ <json>
 其中：
 
 - `cleanup` 为前置链接清理阶段的短摘要
-- `batch` 为 TikTok 抓取与回写阶段的短摘要
-- `summary` 默认复用 batch 阶段的 `summary`
+- `pending_rows` 为待更新行扫描阶段的短摘要
+- `updates` 为逐条更新阶段的短摘要
+- `summary` 默认复用 `updates` 阶段的 `summary`
 
 ## 4. 错误与排障
 
@@ -128,13 +133,19 @@ __OPENCLAW_RESULT__ <json>
 
 - 仍然输出 `__OPENCLAW_RESULT__ <json>`
 - 其中 `status = failed`
-- `batch` 可能为空
+- `pending_rows` 和 `updates` 可能为空
 
-如果主入口在 batch 阶段失败：
+如果主入口在 pending rows 阶段失败：
 
 - 仍然输出 `__OPENCLAW_RESULT__ <json>`
 - `cleanup` 会保留已完成阶段的摘要
-- `batch.error` 或顶层 `error` 会给出失败说明
+- `updates` 可能为空
+
+如果主入口在逐条更新阶段失败：
+
+- 仍然输出 `__OPENCLAW_RESULT__ <json>`
+- `cleanup` 和 `pending_rows` 会保留已完成阶段的摘要
+- `updates.error` 或顶层 `error` 会给出失败说明
 
 ## 5. 与后续异步方案的关系
 

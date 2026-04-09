@@ -11,9 +11,6 @@ from automation_business_scaffold.tasks.feishu_single_row_update import FeishuSi
 from automation_business_scaffold.tasks.source_to_target_publish_demo import (
     SourceToTargetPublishDemoTask,
 )
-from automation_business_scaffold.tasks.tiktok_feishu_batch_sync import (
-    TikTokFeishuBatchSyncTask,
-)
 from automation_business_scaffold.tasks.tiktok_feishu_single_sync import (
     TikTokFeishuSingleSyncTask,
 )
@@ -33,7 +30,6 @@ DEFAULT_TASKS = [
     FastMossKeywordCandidateDiscoveryTask(),
     TikTokProductToFeishuTask(),
     TikTokFeishuSingleSyncTask(),
-    TikTokFeishuBatchSyncTask(),
     TikTokProductLinkCleanupTask(),
     FastMossProductSalesSnapshotTask(),
 ]
@@ -49,6 +45,5 @@ __all__ = [
     "SourceToTargetPublishDemoTask",
     "TikTokProductToFeishuTask",
     "TikTokFeishuSingleSyncTask",
-    "TikTokFeishuBatchSyncTask",
     "TikTokProductLinkCleanupTask",
 ]

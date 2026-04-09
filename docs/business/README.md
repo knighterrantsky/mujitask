@@ -1,6 +1,6 @@
 # Business 文档总览
 
-更新时间：`2026-04-03`
+更新时间：`2026-04-09`
 
 `docs/business` 当前只保留 5 个主文档和 1 个总览入口。
 
@@ -21,4 +21,7 @@
 ## 当前正式业务入口
 
 - `tiktok_product_link_cleanup`
-- `tiktok_feishu_batch_sync`
+- `feishu_pending_rows_scan`
+- `feishu_single_row_update`
+- `feishu_seed_row_insert`
+- `fastmoss_keyword_candidate_discovery`

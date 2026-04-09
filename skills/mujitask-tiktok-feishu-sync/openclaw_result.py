@@ -119,55 +119,6 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
     return result_payload
 
 
-def build_combined_summary(args: argparse.Namespace) -> dict[str, Any]:
-    cleanup = _load_json_file(args.cleanup_result_file)
-    batch = _load_json_file(args.batch_result_file)
-
-    cleanup_payload = cleanup if isinstance(cleanup, dict) and cleanup else None
-    batch_payload = batch if isinstance(batch, dict) and batch else None
-
-    combined: dict[str, Any] = {
-        "status": args.status or "unknown",
-        "task_name": args.task_name,
-        "cleanup": cleanup_payload,
-        "batch": batch_payload,
-        "message": args.message or "",
-        "error": args.error_message or "",
-    }
-
-    primary = batch_payload or cleanup_payload or {}
-    if isinstance(primary, dict):
-        if primary.get("run_id"):
-            combined["run_id"] = primary["run_id"]
-        if primary.get("summary"):
-            combined["summary"] = primary["summary"]
-        if primary.get("summary_text"):
-            combined["summary_text"] = primary["summary_text"]
-
-    failed_item_count = 0
-    if isinstance(batch_payload, dict):
-        failed_item_count = int(batch_payload.get("failed_item_count", 0) or 0)
-    combined["failed_item_count"] = failed_item_count
-
-    if not combined["message"]:
-        if combined["status"] == "success":
-            combined["message"] = "TikTok Feishu sync completed."
-        elif args.error_message:
-            combined["message"] = args.error_message
-        elif batch_payload and batch_payload.get("message"):
-            combined["message"] = str(batch_payload["message"])
-        elif cleanup_payload and cleanup_payload.get("message"):
-            combined["message"] = str(cleanup_payload["message"])
-
-    if not str(combined.get("error", "")).strip():
-        if isinstance(batch_payload, dict) and str(batch_payload.get("error", "")).strip():
-            combined["error"] = str(batch_payload["error"]).strip()
-        elif isinstance(cleanup_payload, dict) and str(cleanup_payload.get("error", "")).strip():
-            combined["error"] = str(cleanup_payload["error"]).strip()
-
-    return combined
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build compact OpenClaw result payloads.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -182,21 +133,8 @@ def main() -> int:
     run_parser.add_argument("--status")
     run_parser.add_argument("--error-message")
 
-    combine_parser = subparsers.add_parser("combine", help="Combine cleanup and batch results.")
-    combine_parser.add_argument("--cleanup-result-file")
-    combine_parser.add_argument("--batch-result-file")
-    combine_parser.add_argument("--task-name", default="feishu_tiktok_sync")
-    combine_parser.add_argument("--status")
-    combine_parser.add_argument("--message")
-    combine_parser.add_argument("--error-message")
-
     args = parser.parse_args()
-
-    if args.command == "run-summary":
-        payload = build_run_summary(args)
-    else:
-        payload = build_combined_summary(args)
-
+    payload = build_run_summary(args)
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0
 

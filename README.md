@@ -131,29 +131,30 @@ automation-business-scaffold-run run \
   }'
 ```
 
-直接运行 TikTok 飞书表驱动抓取与回写 task：
+当前表驱动更新链路已经拆成 3 个 task，由 OpenClaw skill 负责编排：
+
+- `tiktok_product_link_cleanup`
+- `feishu_pending_rows_scan`
+- `feishu_single_row_update`
+
+如果只想先看当前飞书表里哪些行还需要补齐，可以直接运行待更新扫描 task：
 
 ```bash
 cd "$HOME/apps/mujitask"
 automation-business-scaffold-run run \
-  --task tiktok_feishu_batch_sync \
+  --task feishu_pending_rows_scan \
   --params-json '{
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "url_field_name": "产品链接",
-    "profile_ref": "local-chrome",
     "run_mode": "canary"
   }'
 ```
 
 说明：
 
-- `tiktok_feishu_batch_sync` 是当前 TikTok 飞书竞品分析的主入口
-- 它会从当前飞书视图读取现有记录，逐条判断阶段一字段是否缺失
-- 只有存在空缺字段的记录才会被抓取
-- 单条记录按“抓取 -> 上传附件 -> 直接更新当前行”执行
-- 只要发生写回，就会同步刷新 `记录日期`
 - `tiktok_product_link_cleanup` 只是前置辅助能力，用来规范 `产品链接` 并删除重复整行
+- `feishu_pending_rows_scan` 只负责识别待更新行，不会抓取详情也不会写回
+- `feishu_single_row_update` 才是当前单条记录补齐更新入口，会按缺失字段写入 TikTok 和 FastMoss 数据
 
 如果只是单条 URL 调试底层字段构建，可以继续使用：
 
@@ -213,8 +214,11 @@ python -m automation_business_scaffold.cli run \
 
 当前 TikTok 业务入口：
 
-- `tiktok_feishu_batch_sync`
 - `tiktok_product_link_cleanup`
+- `feishu_pending_rows_scan`
+- `feishu_single_row_update`
+- `feishu_seed_row_insert`
+- `fastmoss_keyword_candidate_discovery`
 - `tiktok_product_to_feishu`
 
 ## 5. 新业务怎么从这里开始

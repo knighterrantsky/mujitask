@@ -164,7 +164,14 @@ main() {
 import json
 import sys
 
-required = {"tiktok_product_link_cleanup", "tiktok_feishu_batch_sync"}
+required = {
+    "tiktok_product_link_cleanup",
+    "feishu_pending_rows_scan",
+    "feishu_single_row_update",
+    "feishu_seed_row_insert",
+    "fastmoss_keyword_candidate_discovery",
+    "fastmoss_login_check",
+}
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 
