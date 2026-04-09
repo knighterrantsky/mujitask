@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
+from automation_framework.browser import BlockerRule, BlockerRulesConfig
+
 from automation_business_scaffold.models import FastMossProductSalesSnapshot
 
-from .browser_compat import BlockerRule, BlockerRulesConfig
 from .browser_bridge import open_automation_page
 
 DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL = "https://www.fastmoss.com/zh/account/center"

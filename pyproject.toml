@@ -5,7 +5,7 @@ description = "Business scaffold for building browser automation workflows on to
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.1",
+  "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.6",
   "requests>=2.32.0",
   "uvicorn>=0.35.0",
 ]

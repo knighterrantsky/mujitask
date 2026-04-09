@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from inspect import signature
 from typing import Any, Iterator
 
 from automation_framework.browser import (
+    BlockedHandlingConfig,
+    BlockerRulesConfig,
     BrowserSessionRequest,
     build_browser_provider,
     build_target_key,
     resolve_browser_target,
 )
-
-from .browser_compat import BlockedHandlingConfig, BlockerRulesConfig
 
 
 @dataclass(slots=True)
@@ -45,24 +44,17 @@ def open_automation_page(
         provider_name=provider_name,
     )
     provider = build_browser_provider(target.provider)
-    request_kwargs: dict[str, Any] = {
-        "profile_id": target.profile_id,
-        "workspace_id": target.workspace_id,
-        "headless": headless,
-        "force_open": force_open,
-        "metadata": {
+    request = BrowserSessionRequest(
+        profile_id=target.profile_id,
+        workspace_id=target.workspace_id,
+        headless=headless,
+        force_open=force_open,
+        blocked_handling=blocked_handling or BlockedHandlingConfig(),
+        blocker_rules=blocker_rules or BlockerRulesConfig(),
+        metadata={
             "profile_ref": target.profile_ref,
             **target.metadata,
         },
-    }
-    request_params = set(signature(BrowserSessionRequest).parameters)
-    if "blocked_handling" in request_params:
-        request_kwargs["blocked_handling"] = blocked_handling or BlockedHandlingConfig()
-    if "blocker_rules" in request_params:
-        request_kwargs["blocker_rules"] = blocker_rules or BlockerRulesConfig()
-
-    request = BrowserSessionRequest(
-        **request_kwargs,
     )
     session = provider.open_session(request)
     try:
