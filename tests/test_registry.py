@@ -12,7 +12,6 @@ def test_build_task_registry_registers_demo_task():
         "feishu_seed_row_insert",
         "feishu_single_row_update",
         "source_to_target_publish_demo",
-        "tiktok_feishu_batch_sync",
         "tiktok_feishu_single_sync",
         "tiktok_product_link_cleanup",
         "tiktok_product_to_feishu",
@@ -25,6 +24,5 @@ def test_build_task_registry_registers_demo_task():
     assert registry.get("feishu_single_row_update") is not None
     assert registry.get("tiktok_product_to_feishu") is not None
     assert registry.get("tiktok_feishu_single_sync") is not None
-    assert registry.get("tiktok_feishu_batch_sync") is not None
     assert registry.get("tiktok_product_link_cleanup") is not None
     assert registry.get("fastmoss_product_sales_snapshot") is not None

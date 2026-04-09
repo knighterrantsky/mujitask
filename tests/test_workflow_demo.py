@@ -143,6 +143,10 @@ def test_cli_runner_lists_registered_tasks():
             ),
         },
         {
+            "name": "fastmoss_login_check",
+            "description": "Validate the FastMoss account login once at the beginning of an orchestrated flow.",
+        },
+        {
             "name": "fastmoss_product_sales_snapshot",
             "description": (
                 "Log into FastMoss if needed, search a product_id, open the detail page, and collect "
@@ -168,13 +172,6 @@ def test_cli_runner_lists_registered_tasks():
         {
             "name": "source_to_target_publish_demo",
             "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
-        },
-        {
-            "name": "tiktok_feishu_batch_sync",
-            "description": (
-                "Read pre-cleaned TikTok product rows from Feishu, skip rows whose stage-1 fields are already filled, "
-                "and process each incomplete row one-by-one via browser collection, attachment upload, and direct write-back."
-            ),
         },
         {
             "name": "tiktok_feishu_single_sync",

@@ -393,7 +393,14 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
 
         $payload = Get-Content -Raw -LiteralPath $tasksFile | ConvertFrom-Json
         $taskNames = @($payload.tasks | ForEach-Object { $_.name })
-        foreach ($required in @("tiktok_product_link_cleanup", "tiktok_feishu_batch_sync")) {
+        foreach ($required in @(
+            "tiktok_product_link_cleanup",
+            "feishu_pending_rows_scan",
+            "feishu_single_row_update",
+            "feishu_seed_row_insert",
+            "fastmoss_keyword_candidate_discovery",
+            "fastmoss_login_check"
+        )) {
             if ($taskNames -notcontains $required) {
                 Fail "Smoke check failed: missing task $required."
             }

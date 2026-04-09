@@ -253,7 +253,7 @@ __OPENCLAW_RESULT__ <json>
 
 说明：
 
-- 当前 [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md) 仍以 cleanup/batch 结果为基线。
+- 当前 [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md) 已按 `cleanup / pending_rows / updates` 的阶段摘要口径整理。
 - v3.0 这里描述的是 skill 设计目标，用于后续扩展协议字段，而不是声明当前 helper 已经支持这些字段。
 
 ## 7. Skill 执行规则
@@ -287,10 +287,10 @@ skill 执行关键词搜索模式时，规则固定为：
 
 当前基线：
 
-- 当前 skill 只有一个“cleanup + batch sync”主入口。
-- 当前 skill 主要覆盖 TikTok 批量更新语义。
-- 当前 skill 本地配置中还未包含 FastMoss 登录信息。
-- 当前输出 helper 仍以 cleanup / batch 结构为主。
+- 当前定时更新链路已经拆成 `cleanup -> pending_rows_scan -> single_row_update`。
+- 当前 skill 已同时提供定时更新与关键词找品所需的 step 脚本。
+- 当前 skill 本地配置已经包含 FastMoss 登录信息。
+- 当前输出 helper 以单次 run-summary 为主，组合阶段摘要仍由上层入口决定。
 
 v3.0 目标：
 
