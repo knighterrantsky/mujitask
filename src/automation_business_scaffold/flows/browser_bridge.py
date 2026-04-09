@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from automation_framework.browser import (
+    BlockedHandlingConfig,
+    BlockerRulesConfig,
     BrowserSessionRequest,
     build_browser_provider,
     build_target_key,
@@ -32,6 +34,8 @@ def open_automation_page(
     provider_name: str | None = None,
     headless: bool = False,
     force_open: bool = False,
+    blocked_handling: BlockedHandlingConfig | None = None,
+    blocker_rules: BlockerRulesConfig | None = None,
 ) -> Iterator[BrowserPageSession]:
     target = resolve_browser_target(
         profile_ref=profile_ref,
@@ -45,6 +49,8 @@ def open_automation_page(
         workspace_id=target.workspace_id,
         headless=headless,
         force_open=force_open,
+        blocked_handling=blocked_handling or BlockedHandlingConfig(),
+        blocker_rules=blocker_rules or BlockerRulesConfig(),
         metadata={
             "profile_ref": target.profile_ref,
             **target.metadata,

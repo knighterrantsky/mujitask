@@ -62,6 +62,7 @@ def _sample_snapshot(*, product_id: str, tmp_path: Path) -> FastMossProductSales
         detail_url=f"https://www.fastmoss.com/zh/e-commerce/detail/{product_id}",
         product_title="Easter Eggs",
         login_state="already_logged_in",
+        fastmoss_price_amount="29.91",
         yesterday_sales="11",
         sales_7d="222",
         sales_28d="999",
@@ -91,6 +92,7 @@ def test_run_feishu_pending_rows_scan_only_checks_auto_update_fields(monkeypatch
                         "卖家": "Shop",
                         "前台截图": [{"file_token": "page"}],
                         "价格": "10.00",
+                        "fastmoss价格": "9.99",
                         "Fastmoss截图": [{"file_token": "fastmoss"}],
                         "昨日销量": "1",
                         "近7天销量": "2",
@@ -110,6 +112,7 @@ def test_run_feishu_pending_rows_scan_only_checks_auto_update_fields(monkeypatch
                         "卖家": "Shop",
                         "前台截图": [{"file_token": "page"}],
                         "价格": "10.00",
+                        "fastmoss价格": "9.99",
                         "Fastmoss截图": [{"file_token": "fastmoss"}],
                         "昨日销量": "1",
                         "近7天销量": "2",
@@ -148,6 +151,57 @@ def test_run_feishu_pending_rows_scan_only_checks_auto_update_fields(monkeypatch
             "normalized_url": "https://www.tiktok.com/shop/pdp/1111111111111111111",
             "sku_id": "1111111111111111111",
             "missing_fields": ["标题"],
+        }
+    ]
+
+
+def test_run_feishu_pending_rows_scan_marks_missing_fastmoss_price_as_pending(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_pending_rows_scan"],
+    )
+
+    class FakeClient:
+        def list_all_records(self, *, app_token, table_id, page_size=100, view_id=None):
+            return [
+                {
+                    "record_id": "rec-fastmoss-price-missing",
+                    "fields": {
+                        "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1111111111111111111"},
+                        "SKU-ID": "1111111111111111111",
+                        "图片": [{"file_token": "img"}],
+                        "标题": "Done",
+                        "节日": "复活节",
+                        "卖家": "Shop",
+                        "前台截图": [{"file_token": "page"}],
+                        "价格": "10.00",
+                        "Fastmoss截图": [{"file_token": "fastmoss"}],
+                        "昨日销量": "1",
+                        "近7天销量": "2",
+                        "近90天销量": "3",
+                        "记录日期": "2026/04/07",
+                    },
+                }
+            ]
+
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+
+    payload = run_feishu_pending_rows_scan(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999&view=vew999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "draft",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"pending": 1}
+    assert payload["target_rows"] == [
+        {
+            "record_id": "rec-fastmoss-price-missing",
+            "source_url": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+            "normalized_url": "https://www.tiktok.com/shop/pdp/1111111111111111111",
+            "sku_id": "1111111111111111111",
+            "missing_fields": ["fastmoss价格"],
         }
     ]
 
@@ -216,6 +270,7 @@ def test_run_feishu_single_row_update_canary_writes_tiktok_and_fastmoss_fields(m
     assert payload["summary"]["counts"] == {"updated": 1}
     updated_fields = fake_client.updated[0][1]
     assert updated_fields["SKU-ID"] == "1732268173492064949"
+    assert updated_fields["fastmoss价格"] == "29.91"
     assert updated_fields["昨日销量"] == "11"
     assert updated_fields["近7天销量"] == "222"
     assert updated_fields["近90天销量"] == "1888"
@@ -355,6 +410,7 @@ def test_run_feishu_single_row_update_preserves_existing_non_exempt_fields(monke
                             "卖家": "Manual Seller",
                             "前台截图": [{"file_token": "existing-page"}],
                             "价格": "99",
+                            "fastmoss价格": "29.91",
                             "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
                             "昨日销量": "3",
                             "近7天销量": "",
@@ -438,6 +494,7 @@ def test_run_feishu_single_row_update_does_not_write_when_no_fields_are_missing(
                             "卖家": "Manual Seller",
                             "前台截图": [{"file_token": "existing-page"}],
                             "价格": "99",
+                            "fastmoss价格": "29.91",
                             "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
                             "昨日销量": "3",
                             "近7天销量": "22",
@@ -509,6 +566,7 @@ def test_run_feishu_single_row_update_skips_completed_row_before_fetch(monkeypat
                             "卖家": "Manual Seller",
                             "前台截图": [{"file_token": "existing-page"}],
                             "价格": "99",
+                            "fastmoss价格": "29.91",
                             "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
                             "昨日销量": "3",
                             "近7天销量": "22",

@@ -37,6 +37,7 @@ from .tiktok_feishu_sync_flow import (
 DEFAULT_URL_FIELD_NAME = "产品链接"
 DEFAULT_SKU_FIELD_NAME = "SKU-ID"
 DEFAULT_REMARK_FIELD_NAME = "备注"
+DEFAULT_FASTMOSS_PRICE_FIELD_NAME = "fastmoss价格"
 DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME = "Fastmoss截图"
 DEFAULT_YESTERDAY_SALES_FIELD_NAME = "昨日销量"
 DEFAULT_7D_SALES_FIELD_NAME = "近7天销量"
@@ -60,6 +61,7 @@ AUTO_UPDATE_FIELD_NAMES = (
     "卖家",
     "前台截图",
     "价格",
+    DEFAULT_FASTMOSS_PRICE_FIELD_NAME,
     DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME,
     DEFAULT_YESTERDAY_SALES_FIELD_NAME,
     DEFAULT_7D_SALES_FIELD_NAME,
@@ -600,6 +602,7 @@ def _build_fastmoss_write_fields(snapshot: FastMossProductSalesSnapshot) -> dict
         raise ValueError("FastMoss detail screenshot is required")
 
     return {
+        DEFAULT_FASTMOSS_PRICE_FIELD_NAME: snapshot.fastmoss_price_amount,
         DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME: {
             "type": "local_file",
             "path": str(screenshot_path),
