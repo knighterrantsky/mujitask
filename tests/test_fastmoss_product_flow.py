@@ -674,3 +674,47 @@ def test_wait_for_fastmoss_overview_sales_refresh_requires_metric_refresh(monkey
     )
 
     assert refreshed == "24"
+
+
+def test_wait_for_fastmoss_overview_sales_refresh_waits_for_loading_to_clear(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_wait_for_fastmoss_overview_sales_refresh"],
+    )
+
+    class FakeOverview:
+        def __init__(self, texts):
+            self._texts = iter(texts)
+
+        def inner_text(self, timeout: int = 5000) -> str:
+            return next(self._texts)
+
+    loading_states = iter([True, True, False, False])
+    loading_checks: list[bool] = []
+
+    def fake_has_loading(_overview) -> bool:
+        state = next(loading_states)
+        loading_checks.append(state)
+        return state
+
+    overview = FakeOverview(
+        [
+            "近7天 概览 24 日均3 销量",
+            "近7天 概览 24 日均3 销量",
+            "近7天 概览 24 日均3 销量",
+            "近7天 概览 24 日均3 销量",
+        ]
+    )
+    monkeypatch.setattr(module, "_fastmoss_overview_has_loading", fake_has_loading)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+    refreshed = module._wait_for_fastmoss_overview_sales_refresh(
+        overview,
+        previous_text="近90天 概览 100 日均1 销量",
+        min_wait_sec=0,
+        require_change=True,
+        timeout_sec=1,
+    )
+
+    assert refreshed == "24"
+    assert loading_checks == [True, True, False, False]

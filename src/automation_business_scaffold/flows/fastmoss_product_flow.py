@@ -17,6 +17,14 @@ DEFAULT_FASTMOSS_SEARCH_URL = "https://www.fastmoss.com/zh/e-commerce/search"
 DEFAULT_FASTMOSS_STEP_DELAY_SEC = 2.0
 DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC = 8.0
 DEFAULT_FASTMOSS_DETAIL_SCREENSHOT_DIR = "runtime/downloads/fastmoss_detail_screenshots"
+FASTMOSS_OVERVIEW_LOADING_SELECTORS = (
+    ".ant-spin-spinning",
+    ".ant-spin-dot",
+    ".ant-skeleton",
+    ".ant-skeleton-active",
+    ".anticon-loading",
+)
+FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC = 0.2
 
 
 class FastMossStage2Error(RuntimeError):
@@ -725,13 +733,33 @@ def _wait_for_fastmoss_overview_sales_refresh(
     stable_value = ""
     stable_count = 0
     last_text = previous_text
+    poll_count = 0
+    loading_seen = False
+    loading_clear_streak = 0
+    loading_probe_polls = _fastmoss_wait_poll_count(
+        max(min_wait_sec, 0.8 if require_change else min_wait_sec),
+    )
 
     while time.time() < deadline:
+        poll_count += 1
         current_text = _safe_fastmoss_overview_text(overview)
+        is_loading = _fastmoss_overview_has_loading(overview)
+        if is_loading:
+            loading_seen = True
+            loading_clear_streak = 0
+            stable_value = ""
+            stable_count = 0
+            last_text = current_text
+            time.sleep(FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC)
+            continue
+
+        if loading_seen:
+            loading_clear_streak += 1
+
         try:
             current_value = _extract_sales_value_from_overview_text(current_text)
         except FastMossStage2Error:
-            time.sleep(0.2)
+            time.sleep(FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC)
             continue
 
         if current_value == stable_value:
@@ -742,18 +770,27 @@ def _wait_for_fastmoss_overview_sales_refresh(
 
         waited_long_enough = (time.time() - start_time) >= min_wait_sec
         text_changed = bool(current_text) and current_text != previous_text
-        if waited_long_enough and stable_count >= 2 and (text_changed or not require_change):
+        loading_probe_finished = loading_seen or poll_count >= loading_probe_polls
+        loading_cleared = not loading_seen or loading_clear_streak >= 2
+        if (
+            waited_long_enough
+            and loading_probe_finished
+            and loading_cleared
+            and stable_count >= 2
+            and (text_changed or not require_change)
+        ):
             return current_value
 
         last_text = current_text
-        time.sleep(0.2)
+        time.sleep(FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC)
 
     if not require_change and stable_value:
         return stable_value
 
+    still_loading = _fastmoss_overview_has_loading(overview)
     raise FastMossStage2Error(
         "FastMoss overview sales metric did not refresh after the range/date switch "
-        f"(text_changed={last_text != previous_text})"
+        f"(text_changed={last_text != previous_text}, loading_seen={loading_seen}, still_loading={still_loading})"
     )
 
 
@@ -777,7 +814,7 @@ def _wait_for_fastmoss_range_label_selected(range_label: Any, *, timeout_sec: fl
     while time.time() < deadline:
         if _is_fastmoss_range_label_selected(range_label):
             return True
-        time.sleep(0.2)
+        time.sleep(FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC)
     return _is_fastmoss_range_label_selected(range_label)
 
 
@@ -793,6 +830,30 @@ def _extract_sales_value_from_overview_text(overview_text: str) -> str:
     if not match:
         raise FastMossStage2Error("FastMoss overview sales metric could not be parsed")
     return match.group(1).strip()
+
+
+def _fastmoss_overview_has_loading(overview: Any) -> bool:
+    for selector in FASTMOSS_OVERVIEW_LOADING_SELECTORS:
+        try:
+            candidates = overview.locator(selector)
+        except Exception:
+            continue
+        count = candidates.count()
+        for index in range(count):
+            candidate = candidates.nth(index)
+            try:
+                if candidate.is_visible():
+                    return True
+            except Exception:
+                class_name = str(candidate.get_attribute("class") or "").strip().lower()
+                if class_name and "hidden" not in class_name:
+                    return True
+    return False
+
+
+def _fastmoss_wait_poll_count(target_sec: float) -> int:
+    normalized_target = max(target_sec, FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC * 2)
+    return max(2, int((normalized_target / FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC) + 0.999))
 
 
 def _extract_fastmoss_product_title(page: Any) -> str:
