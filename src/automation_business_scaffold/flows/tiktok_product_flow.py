@@ -12,8 +12,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from automation_framework.browser import BlockedContext, BlockedHandlingConfig, BlockedResolution
-
 try:
     import requests
 except ModuleNotFoundError:  # pragma: no cover - exercised in ad-hoc validation env.
@@ -21,6 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in ad-hoc validation
 
 from automation_business_scaffold.models import TikTokProductRecord
 
+from .browser_compat import BlockedContext, BlockedHandlingConfig, BlockedResolution
 from .browser_bridge import open_automation_page
 
 DEFAULT_TIKTOK_HEADERS = {
