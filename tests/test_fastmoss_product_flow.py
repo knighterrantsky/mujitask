@@ -5,8 +5,10 @@ from datetime import datetime
 
 from automation_business_scaffold.flows.fastmoss_product_flow import (
     _day_before_yesterday_date_string,
+    _extract_fastmoss_price_amount_from_text,
     _extract_sales_value_from_overview_text,
     _normalize_fastmoss_product_id,
+    _normalize_fastmoss_price_amount,
     _parse_fastmoss_metric_number,
     _preferred_fastmoss_yesterday_dates,
     _yesterday_date_string,
@@ -56,6 +58,24 @@ def test_parse_fastmoss_metric_number_supports_chinese_and_suffix_units():
     assert _parse_fastmoss_metric_number("19.44万") == 194400
     assert _parse_fastmoss_metric_number("12.5k") == 12500
     assert _parse_fastmoss_metric_number("1.2M") == 1200000
+
+
+def test_normalize_fastmoss_price_amount_returns_numeric_string():
+    assert _normalize_fastmoss_price_amount("$29.91") == "29.91"
+    assert _normalize_fastmoss_price_amount("US$1,299.00") == "1299.00"
+
+
+def test_extract_fastmoss_price_amount_from_text_reads_current_price_after_label():
+    page_text = """
+预估上架日期：
+2025-04-20 (GMT+8)
+价格：
+$29.91
+$59.84
+趋势
+运费：
+"""
+    assert _extract_fastmoss_price_amount_from_text(page_text) == "29.91"
 
 
 def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_screenshots_before_extraction(
@@ -128,6 +148,11 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
     )
     monkeypatch.setattr(
         module,
+        "_extract_fastmoss_price_amount",
+        lambda page: fake_page.events.append("extract_price") or "29.91",
+    )
+    monkeypatch.setattr(
+        module,
         "_extract_fastmoss_period_sales",
         lambda page, *, days, step_delay_sec: (
             fake_page.events.append(f"extract_{days}d"),
@@ -156,6 +181,7 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
         "open_detail",
         "capture_screenshot",
         "extract_title",
+        "extract_price",
         "extract_7d",
         "extract_28d",
         "extract_90d",
@@ -167,6 +193,7 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
         "detail_url": "https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949",
         "product_title": "Example Product",
         "login_state": "logged_in",
+        "fastmoss_price_amount": "29.91",
         "yesterday_sales": "0",
         "sales_7d": "24",
         "sales_28d": "940",
@@ -201,6 +228,7 @@ def test_fetch_fastmoss_product_sales_via_browser_can_skip_login_verification(mo
     monkeypatch.setattr(module, "_ensure_fastmoss_logged_in", fail_ensure_login)
     monkeypatch.setattr(module, "_open_fastmoss_detail_page", lambda page, detail_url, step_delay_sec: None)
     monkeypatch.setattr(module, "_extract_fastmoss_product_title", lambda page: "Example Product")
+    monkeypatch.setattr(module, "_extract_fastmoss_price_amount", lambda page: "29.91")
     monkeypatch.setattr(module, "_extract_fastmoss_period_sales", lambda page, *, days, step_delay_sec: days)
     monkeypatch.setattr(module, "_extract_fastmoss_yesterday_sales", lambda page, **kwargs: "-1")
 
@@ -213,6 +241,7 @@ def test_fetch_fastmoss_product_sales_via_browser_can_skip_login_verification(mo
     )
 
     assert snapshot.login_state == "skipped_login_verification"
+    assert snapshot.fastmoss_price_amount == "29.91"
 
 
 def test_extract_fastmoss_yesterday_sales_uses_date_picker_selection(monkeypatch):

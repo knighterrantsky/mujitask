@@ -12,7 +12,7 @@ class FastMossProductSalesSnapshotTask(BaseWorkflowTask):
     name = "fastmoss_product_sales_snapshot"
     description = (
         "Log into FastMoss if needed, search a product_id, open the detail page, and collect "
-        "yesterday/7d/28d/90d sales metrics."
+        "price plus yesterday/7d/28d/90d sales metrics."
     )
 
     def build_workflow(self, params: dict[str, Any]):
@@ -39,7 +39,7 @@ class FastMossProductSalesSnapshotTask(BaseWorkflowTask):
         snapshot_data = snapshot.to_dict()
 
         return FrameworkResult.ok(
-            message="Fetched FastMoss stage-2 sales metrics.",
+            message="Fetched FastMoss detail price and stage-2 sales metrics.",
             data={"fastmoss_snapshot": snapshot_data},
             metadata={
                 "artifacts_payload": {

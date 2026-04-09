@@ -11,6 +11,7 @@ class FastMossProductSalesSnapshot:
     detail_url: str
     product_title: str
     login_state: str
+    fastmoss_price_amount: str
     yesterday_sales: str
     sales_7d: str
     sales_28d: str
@@ -30,6 +31,7 @@ class FastMossProductSalesSnapshot:
             detail_url=str(data.get("detail_url", "")),
             product_title=str(data.get("product_title", "")),
             login_state=str(data.get("login_state", "")),
+            fastmoss_price_amount=str(data.get("fastmoss_price_amount", "")),
             yesterday_sales=str(data.get("yesterday_sales", "")),
             sales_7d=str(data.get("sales_7d", "")),
             sales_28d=str(data.get("sales_28d", "")),

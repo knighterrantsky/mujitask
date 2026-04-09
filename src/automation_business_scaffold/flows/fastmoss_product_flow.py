@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
+from automation_framework.browser import BlockerRule, BlockerRulesConfig
+
 from automation_business_scaffold.models import FastMossProductSalesSnapshot
 
 from .browser_bridge import open_automation_page
@@ -25,6 +27,48 @@ FASTMOSS_OVERVIEW_LOADING_SELECTORS = (
     ".anticon-loading",
 )
 FASTMOSS_OVERVIEW_POLL_INTERVAL_SEC = 0.2
+FASTMOSS_BLOCKER_DETECT_SELECTORS = (
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    "dialog",
+    ".ant-modal-root",
+    ".ant-modal-wrap",
+    ".ant-modal-mask",
+    '[class*="modal"]',
+    '[class*="overlay"]',
+    '[class*="interstitial"]',
+    '[data-testid*="modal"]',
+    '[data-testid*="popup"]',
+    '[data-testid*="overlay"]',
+    '[class*="captcha"]',
+    '[id*="captcha"]',
+    'iframe[src*="captcha"]',
+    'iframe[src*="challenge"]',
+    'iframe[src*="checkpoint"]',
+)
+FASTMOSS_BLOCKER_DISMISS_SELECTORS = (
+    '[aria-label*="close" i]',
+    '[data-testid*="close" i]',
+    '[class*="close" i]',
+    '[id*="close" i]',
+    ".ant-modal-close",
+    ".ant-modal-close-x",
+)
+FASTMOSS_BLOCKER_DISMISS_KEYWORDS = (
+    "close",
+    "dismiss",
+    "cancel",
+    "skip",
+    "not now",
+    "no thanks",
+    "got it",
+    "later",
+    "关闭",
+    "取消",
+    "知道了",
+    "稍后",
+    "以后再说",
+)
 
 
 class FastMossStage2Error(RuntimeError):
@@ -50,7 +94,10 @@ def fetch_fastmoss_product_sales_via_browser(
     detail_url = _build_fastmoss_detail_url(normalized_product_id)
     search_url = _build_fastmoss_search_url(normalized_product_id)
 
-    with open_automation_page(profile_ref=profile_ref) as browser_page:
+    with open_automation_page(
+        profile_ref=profile_ref,
+        blocker_rules=_fastmoss_blocker_rules(),
+    ) as browser_page:
         page = browser_page.page
         login_state = _resolve_fastmoss_login_state(
             page,
@@ -72,6 +119,7 @@ def fetch_fastmoss_product_sales_via_browser(
             )
 
         product_title = _extract_fastmoss_product_title(page)
+        fastmoss_price_amount = _extract_fastmoss_price_amount(page)
         sales_7d = _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec)
         sales_28d = _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec)
         sales_90d = _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec)
@@ -89,6 +137,7 @@ def fetch_fastmoss_product_sales_via_browser(
             detail_url=detail_url,
             product_title=product_title,
             login_state=login_state,
+            fastmoss_price_amount=fastmoss_price_amount,
             yesterday_sales=yesterday_sales,
             sales_7d=sales_7d,
             sales_28d=sales_28d,
@@ -120,7 +169,10 @@ def discover_fastmoss_keyword_candidates_via_browser(
     phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
     password = _resolve_fastmoss_secret(fastmoss_password, fastmoss_password_env)
 
-    with open_automation_page(profile_ref=profile_ref) as browser_page:
+    with open_automation_page(
+        profile_ref=profile_ref,
+        blocker_rules=_fastmoss_blocker_rules(),
+    ) as browser_page:
         page = browser_page.page
         login_state = _resolve_fastmoss_login_state(
             page,
@@ -193,7 +245,10 @@ def validate_fastmoss_login_via_browser(
     phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
     password = _resolve_fastmoss_secret(fastmoss_password, fastmoss_password_env)
 
-    with open_automation_page(profile_ref=profile_ref) as browser_page:
+    with open_automation_page(
+        profile_ref=profile_ref,
+        blocker_rules=_fastmoss_blocker_rules(),
+    ) as browser_page:
         page = browser_page.page
         login_state = _ensure_fastmoss_logged_in(
             page,
@@ -278,6 +333,20 @@ def _resolve_fastmoss_login_state(
         password=password,
         step_delay_sec=step_delay_sec,
         login_settle_sec=login_settle_sec,
+    )
+
+
+def _fastmoss_blocker_rules() -> BlockerRulesConfig:
+    return BlockerRulesConfig(
+        inherit_defaults=False,
+        domain_rules=[
+            BlockerRule(
+                domains=["fastmoss.com"],
+                detect_selectors=list(FASTMOSS_BLOCKER_DETECT_SELECTORS),
+                dismiss_selectors=list(FASTMOSS_BLOCKER_DISMISS_SELECTORS),
+                dismiss_keywords=list(FASTMOSS_BLOCKER_DISMISS_KEYWORDS),
+            )
+        ],
     )
 
 
@@ -866,6 +935,74 @@ def _extract_fastmoss_product_title(page: Any) -> str:
     return title_parts[0].strip()
 
 
+def _extract_fastmoss_price_amount(page: Any, *, timeout_sec: float = 6.0) -> str:
+    deadline = time.time() + max(timeout_sec, 0.2)
+    while time.time() < deadline:
+        page_text = _safe_fastmoss_body_text(page)
+        price_amount = _extract_fastmoss_price_amount_from_text(page_text)
+        if price_amount:
+            return price_amount
+        time.sleep(0.2)
+
+    raise FastMossStage2Error("FastMoss product price could not be parsed from detail page")
+
+
+def _extract_fastmoss_price_amount_from_text(page_text: str) -> str:
+    lines = [line.strip() for line in str(page_text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        inline_amount = _extract_fastmoss_price_amount_from_line(line)
+        if inline_amount:
+            return inline_amount
+        if not _is_fastmoss_price_label(line):
+            continue
+
+        for candidate in lines[index + 1 : min(len(lines), index + 5)]:
+            if _is_fastmoss_price_section_boundary(candidate):
+                break
+            price_amount = _normalize_fastmoss_price_amount(candidate)
+            if price_amount:
+                return price_amount
+    return ""
+
+
+def _extract_fastmoss_price_amount_from_line(line: str) -> str:
+    match = re.search(r"(?:价格|price)\s*[:：]\s*([^\s]+)", line, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return _normalize_fastmoss_price_amount(match.group(1))
+
+
+def _is_fastmoss_price_label(line: str) -> bool:
+    normalized = "".join(str(line or "").split()).lower()
+    return normalized in {"价格", "价格：", "价格:", "price", "price:", "price："}
+
+
+def _is_fastmoss_price_section_boundary(line: str) -> bool:
+    normalized = "".join(str(line or "").split()).lower()
+    if not normalized:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "趋势",
+            "运费",
+            "佣金",
+            "视频数量",
+            "预估上架日期",
+            "估算佣金",
+            "达人",
+            "gmv",
+        )
+    )
+
+
+def _safe_fastmoss_body_text(page: Any) -> str:
+    try:
+        return str(page.locator("body").first.inner_text(timeout=5000) or "").strip()
+    except Exception:
+        return ""
+
+
 def _capture_fastmoss_detail_screenshot(
     page: Any,
     *,
@@ -919,6 +1056,17 @@ def _parse_fastmoss_metric_number(value: str) -> float:
     if unit == "亿":
         return amount * 100_000_000
     return amount
+
+
+def _normalize_fastmoss_price_amount(value: str) -> str:
+    raw_value = str(value or "").strip().replace(",", "")
+    if not raw_value:
+        return ""
+
+    match = re.search(r"(-?\d+(?:\.\d+)?)", raw_value)
+    if not match:
+        return ""
+    return match.group(1)
 
 
 def _yesterday_date_string(now: datetime | None = None) -> str:
