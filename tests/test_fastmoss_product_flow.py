@@ -672,6 +672,67 @@ def test_extract_fastmoss_period_sales_allows_steady_metric_after_range_selectio
     }
 
 
+def test_extract_fastmoss_period_sales_allows_steady_metric_when_overview_is_already_on_target_range(
+    monkeypatch,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_extract_fastmoss_period_sales"],
+    )
+
+    class FakeLabel:
+        def __init__(self) -> None:
+            self.first = self
+
+        def count(self) -> int:
+            return 1
+
+        def get_attribute(self, name: str):
+            if name == "aria-checked":
+                return "false"
+            if name == "class":
+                return ""
+            return ""
+
+    class FakeOverview:
+        def __init__(self) -> None:
+            self.label = FakeLabel()
+
+        def locator(self, selector: str):
+            if selector == "label:has-text('近7天')":
+                return self.label
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    wait_args: dict[str, object] = {}
+
+    monkeypatch.setattr(module, "_fastmoss_overview_locator", lambda page: FakeOverview())
+    monkeypatch.setattr(module, "_safe_fastmoss_overview_text", lambda overview: "近7天 概览 24 日均3 销量")
+    monkeypatch.setattr(module, "_page_click", lambda page, target: None)
+    monkeypatch.setattr(module, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(module, "_wait_for_fastmoss_range_label_selected", lambda label, timeout_sec=0: False)
+
+    def fake_wait(overview, *, previous_text, min_wait_sec, require_change, timeout_sec=12.0):
+        wait_args.update(
+            {
+                "previous_text": previous_text,
+                "min_wait_sec": min_wait_sec,
+                "require_change": require_change,
+            }
+        )
+        return "24"
+
+    monkeypatch.setattr(module, "_wait_for_fastmoss_overview_sales_refresh", fake_wait)
+
+    sales = module._extract_fastmoss_period_sales(object(), days="7", step_delay_sec=0)
+
+    assert sales == "24"
+    assert wait_args == {
+        "previous_text": "近7天 概览 24 日均3 销量",
+        "min_wait_sec": 0.4,
+        "require_change": False,
+    }
+
+
 def test_wait_for_fastmoss_overview_sales_refresh_requires_metric_refresh(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",

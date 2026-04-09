@@ -450,6 +450,248 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
     assert Path(product.product_page_screenshot_local_path).read_bytes() == b"page-screenshot"
 
 
+def test_fetch_tiktok_product_record_via_browser_passes_blocked_handler(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+    captured_kwargs: dict[str, object] = {}
+
+    @contextmanager
+    def fake_open_automation_page(**kwargs):
+        captured_kwargs.update(kwargs)
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakePage(),
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+    monkeypatch.setattr(
+        module,
+        "download_tiktok_product_main_image",
+        lambda product, *, download_dir, timeout=30, session=None: replace(
+            product,
+            main_image_local_path=str(Path(download_dir) / f"{product.product_id}-main-image.webp"),
+            main_image_file_name=f"{product.product_id}-main-image.webp",
+            main_image_mime_type="image/webp",
+        ),
+    )
+    (tmp_path / "images").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "images" / "1729732615040962895-main-image.webp").write_bytes(b"downloaded-main-image")
+
+    module.fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    blocked_handling = captured_kwargs["blocked_handling"]
+    assert callable(blocked_handling.handler)
+
+
+def test_handle_tiktok_blocked_context_dismisses_login_promo_with_escape(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["_handle_tiktok_blocked_context"],
+    )
+    delays = iter([960, 340])
+
+    class FakeKeyboard:
+        def __init__(self, page) -> None:
+            self.page = page
+
+        def press(self, key: str) -> None:
+            self.page.pressed_keys.append(key)
+            if key == "Escape":
+                self.page.promo_visible = False
+
+    class FakePromoPage:
+        def __init__(self) -> None:
+            self.promo_visible = True
+            self.pressed_keys: list[str] = []
+            self.waited_timeouts: list[int] = []
+            self.keyboard = FakeKeyboard(self)
+            self.mouse = None
+
+        def evaluate(self, script: str, arg=None):
+            if isinstance(arg, dict) and arg.get("keywords") == ["log in", "create account"]:
+                return {
+                    "visible": self.promo_visible,
+                    "text": "Welcome! Ready for Some Savings? Log in Create Account" if self.promo_visible else "",
+                    "selector": "[role='dialog']" if self.promo_visible else "",
+                }
+            if "visible_signal_count" in script:
+                return {"visible_signal_count": 0}
+            raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            self.waited_timeouts.append(timeout_ms)
+
+    page = FakePromoPage()
+    monkeypatch.setattr(
+        module,
+        "_wait_with_random_delay",
+        lambda page, *, min_ms, max_ms: page.wait_for_timeout(next(delays)),
+    )
+    automation_page = type("_AutomationPage", (), {"raw_page": page, "page": page})()
+    event = type(
+        "_Event",
+        (),
+        {
+            "page_url": "https://www.tiktok.com/shop/pdp/1729732615040962895",
+            "blocker_type": "guide_overlay",
+            "summary": "Welcome! Ready for Some Savings? Log in to see your exclusive discounts. Log in Create Account",
+        },
+    )()
+
+    resolution = module._handle_tiktok_blocked_context(automation_page, event)
+
+    assert resolution.action == "handled_recheck"
+    assert page.pressed_keys == ["Escape"]
+    assert page.waited_timeouts == [960, 340]
+
+
+def test_handle_tiktok_blocked_context_force_continues_after_dismiss_when_product_content_is_visible(
+    monkeypatch,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["_handle_tiktok_blocked_context"],
+    )
+    delays = iter([1010, 410])
+
+    class FakeKeyboard:
+        def __init__(self, page) -> None:
+            self.page = page
+
+        def press(self, key: str) -> None:
+            self.page.pressed_keys.append(key)
+            if key == "Escape":
+                self.page.promo_visible = False
+
+    class FakePromoPage:
+        def __init__(self) -> None:
+            self.promo_visible = True
+            self.pressed_keys: list[str] = []
+            self.waited_timeouts: list[int] = []
+            self.keyboard = FakeKeyboard(self)
+            self.mouse = None
+
+        def evaluate(self, script: str, arg=None):
+            if isinstance(arg, dict) and arg.get("keywords") == ["log in", "create account"]:
+                return {
+                    "visible": self.promo_visible,
+                    "text": "Welcome! Ready for Some Savings? Log in Create Account" if self.promo_visible else "",
+                    "selector": "[role='dialog']" if self.promo_visible else "",
+                }
+            if "visible_signal_count" in script:
+                return {"visible_signal_count": 3}
+            raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            self.waited_timeouts.append(timeout_ms)
+
+    page = FakePromoPage()
+    monkeypatch.setattr(
+        module,
+        "_wait_with_random_delay",
+        lambda page, *, min_ms, max_ms: page.wait_for_timeout(next(delays)),
+    )
+    automation_page = type("_AutomationPage", (), {"raw_page": page, "page": page})()
+    event = type(
+        "_Event",
+        (),
+        {
+            "page_url": "https://www.tiktok.com/shop/pdp/1729732615040962895",
+            "blocker_type": "guide_overlay",
+            "summary": "Welcome! Ready for Some Savings? Log in to see your exclusive discounts. Log in Create Account",
+        },
+    )()
+
+    resolution = module._handle_tiktok_blocked_context(automation_page, event)
+
+    assert resolution.action == "force_continue"
+    assert page.pressed_keys == ["Escape"]
+    assert page.waited_timeouts == [1010, 410]
+
+
+def test_handle_tiktok_blocked_context_force_continues_when_promo_is_non_blocking(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.tiktok_product_flow",
+        fromlist=["_handle_tiktok_blocked_context"],
+    )
+    delays = iter([930, 330, 220, 360])
+
+    class FakeKeyboard:
+        def __init__(self, page) -> None:
+            self.page = page
+
+        def press(self, key: str) -> None:
+            self.page.pressed_keys.append(key)
+
+    class FakeMouse:
+        def __init__(self, page) -> None:
+            self.page = page
+
+        def click(self, x: int, y: int) -> None:
+            self.page.mouse_clicks.append((x, y))
+
+    class FakePromoPage:
+        def __init__(self) -> None:
+            self.promo_visible = True
+            self.pressed_keys: list[str] = []
+            self.mouse_clicks: list[tuple[int, int]] = []
+            self.waited_timeouts: list[int] = []
+            self.keyboard = FakeKeyboard(self)
+            self.mouse = FakeMouse(self)
+
+        def evaluate(self, script: str, arg=None):
+            if isinstance(arg, dict) and arg.get("keywords") == ["log in", "create account"]:
+                return {
+                    "visible": self.promo_visible,
+                    "text": "Welcome! Ready for Some Savings? Log in Create Account",
+                    "selector": "[role='dialog']",
+                }
+            if "visible_signal_count" in script:
+                return {"visible_signal_count": 3}
+            raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            self.waited_timeouts.append(timeout_ms)
+
+    page = FakePromoPage()
+    monkeypatch.setattr(
+        module,
+        "_wait_with_random_delay",
+        lambda page, *, min_ms, max_ms: page.wait_for_timeout(next(delays)),
+    )
+    automation_page = type("_AutomationPage", (), {"raw_page": page, "page": page})()
+    event = type(
+        "_Event",
+        (),
+        {
+            "page_url": "https://www.tiktok.com/shop/pdp/1729732615040962895",
+            "blocker_type": "guide_overlay",
+            "summary": "Welcome! Ready for Some Savings? Log in to see your exclusive discounts. Log in Create Account",
+        },
+    )()
+
+    resolution = module._handle_tiktok_blocked_context(automation_page, event)
+
+    assert resolution.action == "force_continue"
+    assert page.pressed_keys == ["Escape"]
+    assert page.mouse_clicks == [(40, 40)]
+    assert page.waited_timeouts == [930, 330, 220, 360]
+
+
 def test_fetch_tiktok_product_record_via_browser_falls_back_to_html_data_and_downloaded_main_image(
     monkeypatch,
     tmp_path,

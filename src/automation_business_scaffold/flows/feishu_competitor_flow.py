@@ -11,6 +11,7 @@ from automation_business_scaffold.flows.fastmoss_product_flow import (
 )
 from automation_business_scaffold.flows.tiktok_product_flow import (
     TikTokSecurityCheckError,
+    TikTokProductUnavailableError,
     build_feishu_bitable_record,
     fetch_tiktok_product_record_via_browser,
     normalize_tiktok_product_url,
@@ -38,10 +39,19 @@ DEFAULT_URL_FIELD_NAME = "产品链接"
 DEFAULT_SKU_FIELD_NAME = "SKU-ID"
 DEFAULT_REMARK_FIELD_NAME = "备注"
 DEFAULT_FASTMOSS_PRICE_FIELD_NAME = "fastmoss价格"
+DEFAULT_PRODUCT_STATUS_FIELD_NAME = "商品状态"
 DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME = "Fastmoss截图"
 DEFAULT_YESTERDAY_SALES_FIELD_NAME = "昨日销量"
 DEFAULT_7D_SALES_FIELD_NAME = "近7天销量"
 DEFAULT_90D_SALES_FIELD_NAME = "近90天销量"
+FASTMOSS_DEPENDENT_FIELD_NAMES = (
+    DEFAULT_FASTMOSS_PRICE_FIELD_NAME,
+    DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME,
+    DEFAULT_YESTERDAY_SALES_FIELD_NAME,
+    DEFAULT_7D_SALES_FIELD_NAME,
+    DEFAULT_90D_SALES_FIELD_NAME,
+)
+UNAVAILABLE_PRODUCT_STATUS_VALUE = "已下架/区域不可售"
 DEFAULT_SINGLE_ROW_FIELD_MAPPING = {
     "source_url": DEFAULT_URL_FIELD_NAME,
     "product_id": DEFAULT_SKU_FIELD_NAME,
@@ -115,9 +125,30 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(fields, dict):
         fields = {}
     missing_fields = _missing_auto_update_field_names(fields)
+    product_status = _normalize_status_field_value(fields.get(DEFAULT_PRODUCT_STATUS_FIELD_NAME))
 
     source_url = str(settings["source_url"] or _normalize_link_value(fields.get(DEFAULT_URL_FIELD_NAME))).strip()
     sku_id = str(settings["sku_id"] or fields.get(DEFAULT_SKU_FIELD_NAME) or "").strip()
+
+    if product_status == UNAVAILABLE_PRODUCT_STATUS_VALUE:
+        result_item = {
+            "record_id": settings["record_id"],
+            "source_url": source_url,
+            "normalized_url": _normalize_existing_product_url(source_url),
+            "product_id": sku_id,
+            "status": "skipped_unavailable",
+            "error": "",
+            "unavailable_reason": product_status,
+            "fields": {},
+            "logical_fields": {},
+            "fastmoss_snapshot": {},
+            "missing_fields": missing_fields,
+        }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
 
     if not missing_fields:
         result_item = {
@@ -127,6 +158,7 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
             "product_id": sku_id,
             "status": "skipped_completed",
             "error": "",
+            "unavailable_reason": "",
             "fields": {},
             "logical_fields": {},
             "fastmoss_snapshot": {},
@@ -154,11 +186,50 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
             "product_id": sku_id,
             "status": "skipped_security_check",
             "error": str(exc),
+            "unavailable_reason": "",
             "fields": {},
             "logical_fields": {},
             "fastmoss_snapshot": {},
             "missing_fields": missing_fields,
         }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+    except TikTokProductUnavailableError as exc:
+        preview_fields = _build_unavailable_product_status_fields()
+        result_item = {
+            "record_id": settings["record_id"],
+            "source_url": source_url,
+            "normalized_url": _normalize_existing_product_url(source_url),
+            "product_id": sku_id,
+            "status": "preview_unavailable",
+            "error": "",
+            "unavailable_reason": str(exc),
+            "fields": preview_fields,
+            "logical_fields": {},
+            "fastmoss_snapshot": {},
+            "missing_fields": missing_fields,
+        }
+        if not settings["apply_mutations"]:
+            return {
+                "summary": _summarize_status_counts([result_item]),
+                "item": result_item,
+                "items": [result_item],
+            }
+
+        try:
+            target.client.update_record(
+                target.app_token,
+                target.table_id,
+                settings["record_id"],
+                preview_fields,
+            )
+            result_item["status"] = "marked_unavailable"
+        except Exception as exc_update:
+            result_item["status"] = "update_failed"
+            result_item["error"] = str(exc_update)
         return {
             "summary": _summarize_status_counts([result_item]),
             "item": result_item,
@@ -173,18 +244,20 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
     )
     _validate_product_for_single_row_update(product)
 
-    fastmoss_snapshot = fetch_fastmoss_product_sales_via_browser(
-        product.product_id,
-        profile_ref=settings["profile_ref"],
-        fastmoss_phone=settings["fastmoss_phone"],
-        fastmoss_password=settings["fastmoss_password"],
-        fastmoss_phone_env=settings["fastmoss_phone_env"],
-        fastmoss_password_env=settings["fastmoss_password_env"],
-        step_delay_sec=settings["step_delay_sec"],
-        login_settle_sec=settings["login_settle_sec"],
-        capture_detail_screenshot=True,
-        verify_login=settings["verify_fastmoss_login"],
-    )
+    fastmoss_snapshot: FastMossProductSalesSnapshot | None = None
+    if _single_row_needs_fastmoss(missing_fields):
+        fastmoss_snapshot = fetch_fastmoss_product_sales_via_browser(
+            product.product_id,
+            profile_ref=settings["profile_ref"],
+            fastmoss_phone=settings["fastmoss_phone"],
+            fastmoss_password=settings["fastmoss_password"],
+            fastmoss_phone_env=settings["fastmoss_phone_env"],
+            fastmoss_password_env=settings["fastmoss_password_env"],
+            step_delay_sec=settings["step_delay_sec"],
+            login_settle_sec=settings["login_settle_sec"],
+            capture_detail_screenshot=True,
+            verify_login=settings["verify_fastmoss_login"],
+        )
     preview_fields = _build_single_row_write_fields(
         product=product,
         fastmoss_snapshot=fastmoss_snapshot,
@@ -201,9 +274,10 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         "product_id": product.product_id,
         "status": "preview" if selected_preview_fields else "skipped_completed",
         "error": "",
+        "unavailable_reason": "",
         "fields": selected_preview_fields,
         "logical_fields": product.to_dict(),
-        "fastmoss_snapshot": fastmoss_snapshot.to_dict(),
+        "fastmoss_snapshot": fastmoss_snapshot.to_dict() if fastmoss_snapshot is not None else {},
         "missing_fields": missing_fields,
     }
 
@@ -389,8 +463,19 @@ def _build_pending_row_item(raw_record: dict[str, Any]) -> dict[str, Any]:
 
     source_url = _normalize_link_value(fields.get(DEFAULT_URL_FIELD_NAME))
     sku_id = str(fields.get(DEFAULT_SKU_FIELD_NAME, "") or "").strip()
+    product_status = _normalize_status_field_value(fields.get(DEFAULT_PRODUCT_STATUS_FIELD_NAME))
     normalized_url = _normalize_existing_product_url(source_url)
     missing_fields = _missing_auto_update_field_names(fields)
+    if product_status == UNAVAILABLE_PRODUCT_STATUS_VALUE:
+        return {
+            "record_id": record_id,
+            "source_url": source_url,
+            "normalized_url": normalized_url,
+            "sku_id": sku_id,
+            "status": "skipped_unavailable",
+            "error": "",
+            "missing_fields": missing_fields,
+        }
     if not missing_fields:
         return {
             "record_id": record_id,
@@ -564,7 +649,7 @@ def _resolve_tiktok_product_url(*, source_url: str, sku_id: str) -> str:
 def _build_single_row_write_fields(
     *,
     product: TikTokProductRecord,
-    fastmoss_snapshot: FastMossProductSalesSnapshot,
+    fastmoss_snapshot: FastMossProductSalesSnapshot | None,
 ) -> dict[str, Any]:
     stage1_fields = build_feishu_bitable_record(
         product,
@@ -573,7 +658,7 @@ def _build_single_row_write_fields(
     stage1_fields[DEFAULT_URL_FIELD_NAME] = _build_link_value(product.normalized_url)
     stage1_fields[DEFAULT_RECORD_DATE_FIELD_NAME] = _current_record_date()
 
-    fastmoss_fields = _build_fastmoss_write_fields(fastmoss_snapshot)
+    fastmoss_fields = _build_fastmoss_write_fields(fastmoss_snapshot) if fastmoss_snapshot else {}
     return {
         **stage1_fields,
         **fastmoss_fields,
@@ -613,6 +698,10 @@ def _build_fastmoss_write_fields(snapshot: FastMossProductSalesSnapshot) -> dict
         DEFAULT_7D_SALES_FIELD_NAME: snapshot.sales_7d,
         DEFAULT_90D_SALES_FIELD_NAME: snapshot.sales_90d,
     }
+
+
+def _single_row_needs_fastmoss(missing_fields: list[str]) -> bool:
+    return any(field_name in FASTMOSS_DEPENDENT_FIELD_NAMES for field_name in missing_fields)
 
 
 def _validate_product_for_single_row_update(product: TikTokProductRecord) -> None:
@@ -678,6 +767,32 @@ def _field_has_value(value: Any) -> bool:
     if isinstance(value, list):
         return len(value) > 0
     return True
+
+
+def _normalize_status_field_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        for item in value:
+            normalized = _normalize_status_field_value(item)
+            if normalized:
+                return normalized
+        return ""
+    if isinstance(value, dict):
+        for key in ("text", "name", "value"):
+            normalized = _normalize_status_field_value(value.get(key))
+            if normalized:
+                return normalized
+        return ""
+    return str(value).strip()
+
+
+def _build_unavailable_product_status_fields() -> dict[str, Any]:
+    return {
+        DEFAULT_PRODUCT_STATUS_FIELD_NAME: UNAVAILABLE_PRODUCT_STATUS_VALUE,
+    }
 
 
 def _build_keyword_remark(search_keyword: str) -> str:

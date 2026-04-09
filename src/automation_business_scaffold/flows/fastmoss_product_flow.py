@@ -577,6 +577,7 @@ def _extract_fastmoss_period_sales(page: Any, *, days: str, step_delay_sec: floa
     if not range_label.count():
         raise FastMossStage2Error(f"FastMoss overview range label '{label_text}' was not found")
     previous_overview_text = _safe_fastmoss_overview_text(overview)
+    already_on_target_range = label_text in "".join(previous_overview_text.split())
     require_refresh = not _is_fastmoss_range_label_selected(range_label)
     selected_after_click = False
     if require_refresh:
@@ -590,7 +591,7 @@ def _extract_fastmoss_period_sales(page: Any, *, days: str, step_delay_sec: floa
         overview,
         previous_text=previous_overview_text,
         min_wait_sec=max(step_delay_sec, 0.4),
-        require_change=require_refresh and not selected_after_click,
+        require_change=require_refresh and not selected_after_click and not already_on_target_range,
     )
 
 
@@ -987,11 +988,13 @@ def _is_fastmoss_price_section_boundary(line: str) -> bool:
             "趋势",
             "运费",
             "佣金",
-            "视频数量",
-            "预估上架日期",
-            "估算佣金",
             "达人",
-            "gmv",
+            "销量",
+            "销售额",
+            "利润",
+            "利润率",
+            "预估上架日期",
+            "商品信息",
         )
     )
 

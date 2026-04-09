@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import mimetypes
 import json
+import mimetypes
+import random
 import re
 import time
 from dataclasses import replace
@@ -10,6 +11,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from automation_framework.browser import BlockedContext, BlockedHandlingConfig, BlockedResolution
 
 try:
     import requests
@@ -98,6 +101,37 @@ DEFAULT_LOGIN_TOAST_POLL_MS = 250
 DEFAULT_LOGIN_TOAST_STABLE_POLLS = 2
 DEFAULT_SECURITY_CHECK_GRACE_MS = 10000
 DEFAULT_SECURITY_CHECK_POLL_MS = 500
+DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MIN_MS = 700
+DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MAX_MS = 1600
+DEFAULT_TIKTOK_BLOCKER_RETRY_MIN_MS = 180
+DEFAULT_TIKTOK_BLOCKER_RETRY_MAX_MS = 420
+DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS = 280
+DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS = 520
+TIKTOK_LOGIN_PROMO_KEYWORDS = (
+    "welcome! ready for some savings",
+    "exclusive discounts",
+    "create account",
+    "coupon center",
+)
+UNAVAILABLE_PAGE_SIGNALS: tuple[tuple[str, str], ...] = (
+    ("product not available in this country or region", "Product not available in this country or region"),
+    ("product not available in your country or region", "Product not available in your country or region"),
+    ("this product is no longer available", "This product is no longer available"),
+    ("product no longer available", "Product no longer available"),
+    ("this product is unavailable", "This product is unavailable"),
+    ("product unavailable", "Product unavailable"),
+    ("item unavailable", "Item unavailable"),
+    ("product not available", "Product not available"),
+    ("商品已下架", "商品已下架"),
+    ("该商品已下架", "该商品已下架"),
+    ("商品不存在", "商品不存在"),
+    ("此商品不存在", "此商品不存在"),
+    ("商品不可用", "商品不可用"),
+    ("当前商品不可用", "当前商品不可用"),
+    ("当前地区不可售", "当前地区不可售"),
+    ("当前国家或地区不可售", "当前国家或地区不可售"),
+    ("该商品在您所在地区不可售", "该商品在您所在地区不可售"),
+)
 
 
 class TikTokProductExtractionError(RuntimeError):
@@ -105,6 +139,10 @@ class TikTokProductExtractionError(RuntimeError):
 
 
 class TikTokSecurityCheckError(TikTokProductExtractionError):
+    pass
+
+
+class TikTokProductUnavailableError(TikTokProductExtractionError):
     pass
 
 
@@ -163,6 +201,9 @@ def fetch_tiktok_product_record(
     blocked_message = _extract_blocked_message(response.text, response.headers.get("Content-Type", ""))
     if blocked_message:
         raise TikTokProductExtractionError(blocked_message)
+    unavailable_message = _extract_unavailable_message(response.text)
+    if unavailable_message:
+        raise TikTokProductUnavailableError(unavailable_message)
 
     return extract_tiktok_product_from_html(
         response.text,
@@ -179,9 +220,12 @@ def fetch_tiktok_product_record_via_browser(
     capture_page_screenshot: bool = True,
     security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
 ) -> TikTokProductRecord:
-    with open_automation_page(profile_ref=profile_ref) as browser_page:
+    with open_automation_page(
+        profile_ref=profile_ref,
+        blocked_handling=_tiktok_blocked_handling(),
+    ) as browser_page:
         page = browser_page.page
-        _page_goto(page, product_url)
+        _page_goto(page, product_url, timeout_ms=timeout_ms)
         login_toast_timeout_ms = min(
             max(timeout_ms, DEFAULT_LOGIN_TOAST_POLL_MS),
             DEFAULT_LOGIN_TOAST_TIMEOUT_MS,
@@ -208,6 +252,13 @@ def fetch_tiktok_product_record_via_browser(
             )
         if security_check_message:
             raise TikTokSecurityCheckError(security_check_message)
+        unavailable_message = (
+            str(dom_snapshot.get("unavailable_message", "")).strip()
+            or _extract_unavailable_message(html)
+            or _extract_unavailable_message(_safe_body_text(page))
+        )
+        if unavailable_message:
+            raise TikTokProductUnavailableError(unavailable_message)
         product = _build_record_from_browser_state(
             html=html,
             dom_snapshot=dom_snapshot,
@@ -229,6 +280,9 @@ def extract_tiktok_product_from_html(
     source_url: str,
     resolved_url: str = "",
 ) -> TikTokProductRecord:
+    unavailable_message = _extract_unavailable_message(html)
+    if unavailable_message:
+        raise TikTokProductUnavailableError(unavailable_message)
     router_data = _extract_json_script(html, "__MODERN_ROUTER_DATA__")
     component_data = _find_product_component_data(router_data)
 
@@ -408,6 +462,12 @@ def _wait_for_product_page_ready(page: Any, *, timeout_ms: int) -> dict[str, Any
         latest_snapshot = _read_dom_product_snapshot(page)
         if int(latest_snapshot.get("visible_signal_count", 0)) >= 2:
             return latest_snapshot
+        unavailable_message = _extract_unavailable_message(_safe_page_content(page))
+        if unavailable_message:
+            return {
+                **latest_snapshot,
+                "unavailable_message": unavailable_message,
+            }
         _safe_wait_for_timeout(page, 250)
 
     return latest_snapshot
@@ -428,6 +488,8 @@ def _build_record_from_browser_state(
                 source_url=source_url,
                 resolved_url=resolved_url,
             )
+        except TikTokProductUnavailableError:
+            raise
         except TikTokProductExtractionError:
             router_record = None
 
@@ -689,6 +751,151 @@ def _capture_locator_screenshot(page: Any, target_path: Path, *, selector: str) 
     raise TikTokProductExtractionError("failed to locate TikTok product main image element")
 
 
+def _tiktok_blocked_handling() -> BlockedHandlingConfig:
+    return BlockedHandlingConfig(handler=_handle_tiktok_blocked_context)
+
+
+def _handle_tiktok_blocked_context(automation_page: Any, event: BlockedContext) -> BlockedResolution:
+    if not _is_tiktok_login_promo_blocker(event):
+        return BlockedResolution.resume_default()
+
+    page = getattr(automation_page, "raw_page", None) or getattr(automation_page, "page", None) or automation_page
+    if _dismiss_tiktok_login_promo(page):
+        if _tiktok_product_content_is_visible(page):
+            return BlockedResolution.force_continue(
+                "dismissed TikTok login promo popover and product content is visible"
+            )
+        return BlockedResolution.handled_recheck("dismissed TikTok login promo popover")
+    if _tiktok_product_content_is_visible(page):
+        return BlockedResolution.force_continue("ignored non-blocking TikTok login promo popover")
+    return BlockedResolution.resume_default()
+
+
+def _is_tiktok_login_promo_blocker(event: BlockedContext) -> bool:
+    page_url = str(getattr(event, "page_url", "") or "").lower()
+    blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
+    if "tiktok.com" not in page_url or blocker_type not in {"guide_overlay", "dom_modal", "unknown"}:
+        return False
+
+    normalized_summary = _normalize_browser_text(getattr(event, "summary", ""))
+    if "log in" not in normalized_summary:
+        return False
+    if "create account" in normalized_summary:
+        return True
+    return any(keyword in normalized_summary for keyword in TIKTOK_LOGIN_PROMO_KEYWORDS)
+
+
+def _dismiss_tiktok_login_promo(page: Any) -> bool:
+    if not _read_tiktok_login_promo_state(page).get("visible"):
+        return False
+
+    _wait_with_random_delay(
+        page,
+        min_ms=DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MIN_MS,
+        max_ms=DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MAX_MS,
+    )
+
+    keyboard = getattr(page, "keyboard", None)
+    if keyboard is not None and hasattr(keyboard, "press"):
+        try:
+            keyboard.press("Escape")
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS,
+            )
+        except Exception:
+            pass
+        if not _read_tiktok_login_promo_state(page).get("visible"):
+            return True
+
+    mouse = getattr(page, "mouse", None)
+    if mouse is not None and hasattr(mouse, "click"):
+        try:
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_RETRY_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_RETRY_MAX_MS,
+            )
+            mouse.click(40, 40)
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS,
+            )
+        except Exception:
+            pass
+        if not _read_tiktok_login_promo_state(page).get("visible"):
+            return True
+
+    return False
+
+
+def _tiktok_product_content_is_visible(page: Any) -> bool:
+    try:
+        dom_snapshot = _read_dom_product_snapshot(page)
+    except Exception:
+        return False
+    return int(dom_snapshot.get("visible_signal_count", 0)) >= 2
+
+
+def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
+    try:
+        payload = page.evaluate(
+            """(args) => {
+                const selectors = args.selectors || [];
+                const keywords = (args.keywords || [])
+                  .map((value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase())
+                  .filter(Boolean);
+
+                const normalizeText = (value) => String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const rect = element.getBoundingClientRect();
+                  const style = window.getComputedStyle(element);
+                  return rect.width >= 120 && rect.height >= 60 &&
+                    style.visibility !== "hidden" &&
+                    style.display !== "none" &&
+                    Number(style.opacity || "1") !== 0;
+                };
+
+                for (const selector of selectors) {
+                  for (const element of document.querySelectorAll(selector)) {
+                    if (!isVisible(element)) continue;
+                    const text = normalizeText(element.innerText || element.textContent || "");
+                    const loweredText = text.toLowerCase();
+                    if (!keywords.every((keyword) => loweredText.includes(keyword))) continue;
+                    return {
+                      visible: true,
+                      text,
+                      selector,
+                    };
+                  }
+                }
+
+                return {
+                  visible: false,
+                  text: "",
+                  selector: "",
+                };
+            }""",
+            {
+                "selectors": ["[role='dialog']", "[aria-modal='true']", "dialog", "[class*='popover']"],
+                "keywords": ["log in", "create account"],
+            },
+        )
+    except Exception:
+        return {
+            "visible": False,
+            "text": "",
+            "selector": "",
+        }
+    return payload if isinstance(payload, dict) else {}
+
+
 def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
     payload = page.evaluate(
         """(args) => {
@@ -805,6 +1012,21 @@ def _extract_blocked_message(text: str, content_type: str) -> str | None:
             return message.strip()
 
     return None
+
+
+def _extract_unavailable_message(text: str) -> str | None:
+    normalized_text = _normalize_browser_text(text)
+    if not normalized_text:
+        return None
+
+    for needle, display in UNAVAILABLE_PAGE_SIGNALS:
+        if needle in normalized_text:
+            return f"TikTok product unavailable: {display}"
+    return None
+
+
+def _normalize_browser_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
 def _extract_json_script(html: str, script_id: str) -> dict[str, Any]:
@@ -999,15 +1221,29 @@ def _coerce_normalized_url(value: str) -> str:
         return ""
 
 
-def _page_goto(page: Any, url: str) -> None:
+def _page_goto(page: Any, url: str, *, timeout_ms: int = 30000) -> None:
     navigate = getattr(page, "navigate", None)
     if callable(navigate):
-        navigate(url)
-        return
-    try:
-        page.goto(url, wait_until="domcontentloaded")
-    except TypeError:
-        page.goto(url)
+        try:
+            navigate(url, wait_until="domcontentloaded", timeout_ms=timeout_ms)
+            return
+        except TypeError:
+            pass
+
+    goto = getattr(page, "goto", None)
+    if callable(goto):
+        try:
+            goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except TypeError:
+            try:
+                goto(url, wait_until="domcontentloaded")
+                return
+            except TypeError:
+                goto(url)
+                return
+
+    raise TypeError("Page object does not support navigation.")
 
 
 def _wait_for_domcontentloaded(page: Any) -> None:
@@ -1022,6 +1258,16 @@ def _safe_wait_for_timeout(page: Any, timeout_ms: int) -> None:
         wait_for_timeout(timeout_ms)
         return
     time.sleep(timeout_ms / 1000.0)
+
+
+def _random_delay_ms(min_ms: int, max_ms: int) -> int:
+    normalized_min = max(int(min_ms), 0)
+    normalized_max = max(int(max_ms), normalized_min)
+    return random.randint(normalized_min, normalized_max)
+
+
+def _wait_with_random_delay(page: Any, *, min_ms: int, max_ms: int) -> None:
+    _safe_wait_for_timeout(page, _random_delay_ms(min_ms, max_ms))
 
 
 def _wait_for_login_toast_to_settle(

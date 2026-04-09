@@ -333,6 +333,91 @@ def test_run_feishu_single_row_update_can_skip_fastmoss_login_validation(monkeyp
     assert captured["verify_login"] is False
 
 
+def test_run_feishu_single_row_update_skips_fastmoss_when_only_tiktok_fields_are_missing(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.uploads: list[str] = []
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"},
+                            "SKU-ID": "1732268173492064949",
+                            "标题": "Existing Title",
+                            "节日": "复活节",
+                            "卖家": "Existing Seller",
+                            "价格": "19.99",
+                            "fastmoss价格": "29.91",
+                            "Fastmoss截图": [{"file_token": "existing-fastmoss"}],
+                            "昨日销量": "1",
+                            "近7天销量": "22",
+                            "近90天销量": "88",
+                        },
+                    }
+                }
+            }
+
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            self.uploads.append(file_name)
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(fake_client))
+    monkeypatch.setattr(module, "_current_record_date", lambda: "2026/04/09")
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True: _sample_product(
+            url="https://www.tiktok.com/shop/pdp/1732268173492064949",
+            tmp_path=tmp_path,
+        ),
+    )
+
+    def fail_fastmoss(*args, **kwargs):
+        raise AssertionError("FastMoss should be skipped when only TikTok fields are missing")
+
+    monkeypatch.setattr(module, "fetch_fastmoss_product_sales_via_browser", fail_fastmoss)
+
+    payload = module.run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-tiktok-only",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"updated": 1}
+    assert payload["item"]["fastmoss_snapshot"] == {}
+    assert fake_client.uploads == ["main-image.png", "product-page.png"]
+    assert fake_client.updated == [
+        (
+            "rec-tiktok-only",
+            {
+                "图片": [{"file_token": "file-token-main-image.png"}],
+                "前台截图": [{"file_token": "file-token-product-page.png"}],
+                "记录日期": "2026/04/09",
+            },
+        )
+    ]
+
+
 def test_run_feishu_single_row_update_skips_follow_up_when_tiktok_security_check_detected(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.feishu_competitor_flow",
