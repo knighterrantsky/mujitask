@@ -333,6 +333,65 @@ def test_run_feishu_single_row_update_can_skip_fastmoss_login_validation(monkeyp
     assert captured["verify_login"] is False
 
 
+def test_run_feishu_single_row_update_defaults_fastmoss_login_verification_to_false(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_single_row_update"],
+    )
+
+    class FakeClient:
+        def upload_media(self, *, file_name, file_data, parent_node, parent_type="bitable_file", extra=None):
+            return f"file-token-{file_name}"
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            return {"code": 0}
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1732268173492064949"},
+                            "SKU-ID": "1732268173492064949",
+                        },
+                    }
+                }
+            }
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+    monkeypatch.setattr(module, "_current_record_date", lambda: "2026/04/07")
+    monkeypatch.setattr(
+        module,
+        "fetch_tiktok_product_record_via_browser",
+        lambda source_url, profile_ref=None, capture_page_screenshot=True, **kwargs: _sample_product(
+            url="https://www.tiktok.com/shop/pdp/1732268173492064949",
+            tmp_path=tmp_path,
+        ),
+    )
+
+    def fake_fetch_snapshot(product_id, **kwargs):
+        captured.update(kwargs)
+        return _sample_snapshot(product_id=product_id, tmp_path=tmp_path)
+
+    monkeypatch.setattr(module, "fetch_fastmoss_product_sales_via_browser", fake_fetch_snapshot)
+
+    run_feishu_single_row_update(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "record_id": "rec-1",
+        }
+    )
+
+    assert captured["verify_login"] is False
+
+
 def test_run_feishu_single_row_update_skips_fastmoss_when_only_tiktok_fields_are_missing(
     monkeypatch,
     tmp_path,

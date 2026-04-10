@@ -5,10 +5,16 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 
-from automation_framework.browser import BlockerRule, BlockerRulesConfig
+from automation_framework.browser import (
+    BlockedContext,
+    BlockedHandlingConfig,
+    BlockedResolution,
+    BlockerRule,
+    BlockerRulesConfig,
+)
 
 from automation_business_scaffold.models import FastMossProductSalesSnapshot
 
@@ -19,6 +25,7 @@ DEFAULT_FASTMOSS_SEARCH_URL = "https://www.fastmoss.com/zh/e-commerce/search"
 DEFAULT_FASTMOSS_STEP_DELAY_SEC = 2.0
 DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC = 8.0
 DEFAULT_FASTMOSS_DETAIL_SCREENSHOT_DIR = "runtime/downloads/fastmoss_detail_screenshots"
+FASTMOSS_SESSION_RECOVERED_LOGIN_STATE = "relogged_in_after_session_loss"
 FASTMOSS_OVERVIEW_LOADING_SELECTORS = (
     ".ant-spin-spinning",
     ".ant-spin-dot",
@@ -40,6 +47,8 @@ FASTMOSS_BLOCKER_DETECT_SELECTORS = (
     '[data-testid*="modal"]',
     '[data-testid*="popup"]',
     '[data-testid*="overlay"]',
+)
+FASTMOSS_SECURITY_BLOCKER_DETECT_SELECTORS = (
     '[class*="captcha"]',
     '[id*="captcha"]',
     'iframe[src*="captcha"]',
@@ -69,6 +78,29 @@ FASTMOSS_BLOCKER_DISMISS_KEYWORDS = (
     "稍后",
     "以后再说",
 )
+FASTMOSS_SECURITY_BLOCKER_KEYWORDS = (
+    "captcha",
+    "verify",
+    "security",
+    "challenge",
+    "checkpoint",
+    "access denied",
+    "blocked",
+    "验证",
+    "风控",
+    "安全",
+)
+FASTMOSS_LOGIN_PROMPT_MARKERS = (
+    "游客身份",
+    "游客权限不足",
+    "权限不足，请登录/注册",
+    "登录/注册查看您的账户信息",
+    "手机号登录/注册",
+    "密码登录",
+    "输入您的手机号码",
+    "输入密码",
+    "注册/登录",
+)
 
 
 class FastMossStage2Error(RuntimeError):
@@ -86,7 +118,7 @@ def fetch_fastmoss_product_sales_via_browser(
     step_delay_sec: float = DEFAULT_FASTMOSS_STEP_DELAY_SEC,
     login_settle_sec: float = DEFAULT_FASTMOSS_LOGIN_SETTLE_SEC,
     capture_detail_screenshot: bool = True,
-    verify_login: bool = True,
+    verify_login: bool = False,
 ) -> FastMossProductSalesSnapshot:
     normalized_product_id = _normalize_fastmoss_product_id(product_id)
     phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
@@ -96,6 +128,7 @@ def fetch_fastmoss_product_sales_via_browser(
 
     with open_automation_page(
         profile_ref=profile_ref,
+        blocked_handling=_fastmoss_blocked_handling(),
         blocker_rules=_fastmoss_blocker_rules(),
     ) as browser_page:
         page = browser_page.page
@@ -107,29 +140,135 @@ def fetch_fastmoss_product_sales_via_browser(
             login_settle_sec=login_settle_sec,
             verify_login=verify_login,
         )
-        _open_fastmoss_detail_page(page, detail_url, step_delay_sec=step_delay_sec)
+        session_recovered = False
+        _, recovered_during_open = _run_fastmoss_action_with_relogin(
+            lambda: _open_fastmoss_detail_page(page, detail_url, step_delay_sec=step_delay_sec),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+        )
+        session_recovered = session_recovered or recovered_during_open
 
         screenshot_path = ""
         screenshot_name = ""
         screenshot_mime = ""
         if capture_detail_screenshot:
-            screenshot_path, screenshot_name, screenshot_mime = _capture_fastmoss_detail_screenshot(
-                page,
-                product_id=normalized_product_id,
+            (
+                (screenshot_path, screenshot_name, screenshot_mime),
+                recovered_during_screenshot,
+            ) = _run_fastmoss_action_with_relogin(
+                lambda: _capture_fastmoss_detail_screenshot(
+                    page,
+                    product_id=normalized_product_id,
+                ),
+                page=page,
+                phone=phone,
+                password=password,
+                step_delay_sec=step_delay_sec,
+                login_settle_sec=login_settle_sec,
+                restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                    page,
+                    detail_url,
+                    step_delay_sec=step_delay_sec,
+                ),
             )
+            session_recovered = session_recovered or recovered_during_screenshot
 
-        product_title = _extract_fastmoss_product_title(page)
-        fastmoss_price_amount = _extract_fastmoss_price_amount(page)
-        sales_7d = _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec)
-        sales_28d = _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec)
-        sales_90d = _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec)
-        preferred_yesterday_date, fallback_yesterday_date = _preferred_fastmoss_yesterday_dates()
-        yesterday_sales = _extract_fastmoss_yesterday_sales(
-            page,
-            target_date=preferred_yesterday_date,
-            fallback_target_date=fallback_yesterday_date,
+        product_title, recovered_during_title = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_product_title(page),
+            page=page,
+            phone=phone,
+            password=password,
             step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
         )
+        session_recovered = session_recovered or recovered_during_title
+        fastmoss_price_amount, recovered_during_price = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_price_amount(page),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
+        )
+        session_recovered = session_recovered or recovered_during_price
+        sales_7d, recovered_during_sales_7d = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
+        )
+        session_recovered = session_recovered or recovered_during_sales_7d
+        sales_28d, recovered_during_sales_28d = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
+        )
+        session_recovered = session_recovered or recovered_during_sales_28d
+        sales_90d, recovered_during_sales_90d = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
+        )
+        session_recovered = session_recovered or recovered_during_sales_90d
+        preferred_yesterday_date, fallback_yesterday_date = _preferred_fastmoss_yesterday_dates()
+        yesterday_sales, recovered_during_yesterday = _run_fastmoss_action_with_relogin(
+            lambda: _extract_fastmoss_yesterday_sales(
+                page,
+                target_date=preferred_yesterday_date,
+                fallback_target_date=fallback_yesterday_date,
+                step_delay_sec=step_delay_sec,
+            ),
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=lambda: _open_fastmoss_detail_page(
+                page,
+                detail_url,
+                step_delay_sec=step_delay_sec,
+            ),
+        )
+        session_recovered = session_recovered or recovered_during_yesterday
+
+        if session_recovered:
+            login_state = FASTMOSS_SESSION_RECOVERED_LOGIN_STATE
 
         return FastMossProductSalesSnapshot(
             product_id=normalized_product_id,
@@ -171,6 +310,7 @@ def discover_fastmoss_keyword_candidates_via_browser(
 
     with open_automation_page(
         profile_ref=profile_ref,
+        blocked_handling=_fastmoss_blocked_handling(),
         blocker_rules=_fastmoss_blocker_rules(),
     ) as browser_page:
         page = browser_page.page
@@ -247,6 +387,7 @@ def validate_fastmoss_login_via_browser(
 
     with open_automation_page(
         profile_ref=profile_ref,
+        blocked_handling=_fastmoss_blocked_handling(),
         blocker_rules=_fastmoss_blocker_rules(),
     ) as browser_page:
         page = browser_page.page
@@ -259,7 +400,9 @@ def validate_fastmoss_login_via_browser(
         )
         return {
             "login_state": login_state,
-            "profile_ref": str(getattr(browser_page, "profile_ref", "") or profile_ref or "").strip(),
+            "profile_ref": str(
+                getattr(browser_page, "profile_ref", "") or profile_ref or ""
+            ).strip(),
             "provider_name": str(getattr(browser_page, "provider_name", "") or "").strip(),
             "target_key": str(getattr(browser_page, "target_key", "") or "").strip(),
         }
@@ -281,24 +424,14 @@ def _ensure_fastmoss_logged_in(
     if not phone or not password:
         raise FastMossStage2Error("FastMoss login required but phone/password were not provided")
 
-    guest_modal = page.locator(".ant-modal-wrap").first
-    if guest_modal.count():
-        _page_click(page, guest_modal.get_by_text("登录/注册", exact=True).first)
-        _sleep(step_delay_sec)
+    login_modal = _open_fastmoss_login_modal(page, step_delay_sec=step_delay_sec)
+    login_modal = _switch_fastmoss_login_modal_to_password_mode(
+        page,
+        login_modal,
+        step_delay_sec=step_delay_sec,
+    )
 
-    login_modal = page.locator(".ant-modal-wrap").nth(1)
-    if not login_modal.count():
-        raise FastMossStage2Error("FastMoss login modal did not appear")
-
-    if login_modal.get_by_text("手机号登录/注册", exact=True).count():
-        _page_click(page, login_modal.get_by_text("手机号登录/注册", exact=True).first)
-        _sleep(step_delay_sec)
-    if login_modal.get_by_text("密码登录", exact=True).count():
-        _page_click(page, login_modal.get_by_text("密码登录", exact=True).first)
-        _sleep(step_delay_sec)
-
-    phone_input = login_modal.locator("input[placeholder='输入您的手机号码']").first
-    password_input = login_modal.locator("input[placeholder='输入密码']").first
+    phone_input, password_input = _fastmoss_login_inputs(page, login_modal)
     if not phone_input.count() or not password_input.count():
         raise FastMossStage2Error("FastMoss phone/password login inputs were not found")
 
@@ -306,7 +439,12 @@ def _ensure_fastmoss_logged_in(
     _sleep(step_delay_sec)
     _page_type_text(page, password_input, password)
     _sleep(step_delay_sec)
-    _page_click(page, login_modal.get_by_text("注册/登录", exact=True).first)
+    submit_button = _find_fastmoss_text_button(login_modal, "注册/登录")
+    if submit_button is None:
+        submit_button = _find_fastmoss_text_button(page, "注册/登录")
+    if submit_button is None:
+        raise FastMossStage2Error("FastMoss login submit button was not found")
+    _click_fastmoss_precise_target(page, submit_button)
     _sleep(login_settle_sec)
 
     _page_navigate(page, DEFAULT_FASTMOSS_ACCOUNT_CENTER_URL)
@@ -314,6 +452,136 @@ def _ensure_fastmoss_logged_in(
     if not _is_fastmoss_account_logged_in(page):
         raise FastMossStage2Error("FastMoss login did not reach the account center")
     return "logged_in"
+
+
+def _open_fastmoss_login_modal(page: Any, *, step_delay_sec: float) -> Any:
+    existing_modal = _find_fastmoss_login_modal(page, require_inputs=False)
+    if existing_modal is not None and _fastmoss_modal_has_login_inputs(existing_modal):
+        return existing_modal
+
+    login_button = _find_fastmoss_login_button(page, existing_modal)
+    if login_button is None:
+        raise FastMossStage2Error("FastMoss login modal did not appear")
+    _click_fastmoss_precise_target(page, login_button)
+    _sleep(step_delay_sec)
+
+    login_modal = _wait_for_fastmoss_login_modal(page, require_inputs=False)
+    if login_modal is None:
+        raise FastMossStage2Error("FastMoss login modal did not appear")
+    return login_modal
+
+
+def _switch_fastmoss_login_modal_to_password_mode(
+    page: Any,
+    login_modal: Any,
+    *,
+    step_delay_sec: float,
+) -> Any:
+    phone_login_button = _find_fastmoss_text_button(login_modal, "手机号登录/注册")
+    if phone_login_button is None:
+        phone_login_button = _find_fastmoss_text_button(page, "手机号登录/注册")
+    if phone_login_button is not None:
+        _click_fastmoss_precise_target(page, phone_login_button)
+        _sleep(step_delay_sec)
+        refreshed_modal = _wait_for_fastmoss_login_modal(page, require_inputs=False)
+        if refreshed_modal is not None:
+            login_modal = refreshed_modal
+
+    password_login_button = _find_fastmoss_text_button(login_modal, "密码登录")
+    if password_login_button is None:
+        password_login_button = _find_fastmoss_text_button(page, "密码登录")
+    if password_login_button is not None:
+        _click_fastmoss_precise_target(page, password_login_button)
+        _sleep(step_delay_sec)
+
+    refreshed_modal = _wait_for_fastmoss_login_modal(page, require_inputs=True)
+    if refreshed_modal is not None:
+        return refreshed_modal
+
+    for label in ("手机号登录/注册", "密码登录"):
+        button = _find_fastmoss_text_button(login_modal, label)
+        if button is None:
+            button = _find_fastmoss_text_button(page, label)
+        if button is None:
+            continue
+        _click_fastmoss_precise_target(page, button)
+        _sleep(step_delay_sec)
+
+    refreshed_modal = _wait_for_fastmoss_login_modal(page, require_inputs=True)
+    if refreshed_modal is not None:
+        return refreshed_modal
+    return login_modal
+
+
+def _wait_for_fastmoss_login_modal(page: Any, *, require_inputs: bool) -> Any | None:
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        login_modal = _find_fastmoss_login_modal(page, require_inputs=require_inputs)
+        if login_modal is not None:
+            return login_modal
+        _sleep(0.2)
+    return None
+
+
+def _find_fastmoss_login_modal(page: Any, *, require_inputs: bool) -> Any | None:
+    modals = page.locator(".ant-modal-wrap")
+    fallback_modal = None
+    for index in range(modals.count()):
+        modal = modals.nth(index)
+        if _fastmoss_modal_has_login_inputs(modal):
+            return modal
+        if _is_fastmoss_login_modal_candidate(modal):
+            fallback_modal = modal
+    if require_inputs:
+        return None
+    return fallback_modal
+
+
+def _is_fastmoss_login_modal_candidate(modal: Any) -> bool:
+    normalized_text = _normalize_fastmoss_browser_text(_safe_fastmoss_locator_text(modal))
+    if not normalized_text:
+        return False
+    modal_markers = FASTMOSS_LOGIN_PROMPT_MARKERS + (
+        "登录/注册",
+        "手机号登录/注册",
+        "密码登录",
+    )
+    return any(_normalize_fastmoss_browser_text(marker) in normalized_text for marker in modal_markers)
+
+
+def _fastmoss_modal_has_login_inputs(modal: Any) -> bool:
+    phone_input = modal.locator("input[placeholder='输入您的手机号码']").first
+    password_input = modal.locator("input[placeholder='输入密码']").first
+    return bool(phone_input.count() and password_input.count())
+
+
+def _find_fastmoss_login_button(page: Any, login_modal: Any | None) -> Any | None:
+    for scope in (login_modal, page):
+        if scope is None:
+            continue
+        button = _find_fastmoss_text_button(scope, "登录/注册")
+        if button is not None:
+            return button
+    return None
+
+
+def _find_fastmoss_text_button(scope: Any, text: str) -> Any | None:
+    button = scope.get_by_text(text, exact=True).first
+    if button.count():
+        return button
+    return None
+
+
+def _fastmoss_login_inputs(page: Any, login_modal: Any) -> tuple[Any, Any]:
+    for scope in (login_modal, page):
+        phone_input = scope.locator("input[placeholder='输入您的手机号码']").first
+        password_input = scope.locator("input[placeholder='输入密码']").first
+        if phone_input.count() and password_input.count():
+            return phone_input, password_input
+    return (
+        login_modal.locator("input[placeholder='输入您的手机号码']").first,
+        login_modal.locator("input[placeholder='输入密码']").first,
+    )
 
 
 def _resolve_fastmoss_login_state(
@@ -336,17 +604,155 @@ def _resolve_fastmoss_login_state(
     )
 
 
+def _run_fastmoss_action_with_relogin(
+    action: Callable[[], Any],
+    *,
+    page: Any,
+    phone: str,
+    password: str,
+    step_delay_sec: float,
+    login_settle_sec: float,
+    restore_after_relogin: Callable[[], None] | None = None,
+) -> tuple[Any, bool]:
+    recovered = False
+    if _fastmoss_session_relogin_required(page):
+        _recover_fastmoss_session(
+            page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=restore_after_relogin,
+        )
+        recovered = True
+
+    try:
+        return action(), recovered
+    except Exception:
+        if not _fastmoss_session_relogin_required(page):
+            raise
+        _recover_fastmoss_session(
+            page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=restore_after_relogin,
+        )
+        return action(), True
+
+
+def _recover_fastmoss_session(
+    page: Any,
+    *,
+    phone: str,
+    password: str,
+    step_delay_sec: float,
+    login_settle_sec: float,
+    restore_after_relogin: Callable[[], None] | None = None,
+) -> None:
+    if not phone or not password:
+        raise FastMossStage2Error(
+            "FastMoss session expired during data capture and no credentials were provided for re-login"
+        )
+    _ensure_fastmoss_logged_in(
+        page,
+        phone=phone,
+        password=password,
+        step_delay_sec=step_delay_sec,
+        login_settle_sec=login_settle_sec,
+    )
+    if restore_after_relogin is not None:
+        restore_after_relogin()
+
+
+def _fastmoss_blocked_handling() -> BlockedHandlingConfig:
+    return BlockedHandlingConfig(handler=_handle_fastmoss_blocked_context)
+
+
+def _handle_fastmoss_blocked_context(
+    _automation_page: Any, event: BlockedContext
+) -> BlockedResolution:
+    if _is_fastmoss_login_prompt_blocker(event):
+        return BlockedResolution.force_continue("allowed FastMoss login prompt/modal interaction")
+    return BlockedResolution.resume_default()
+
+
 def _fastmoss_blocker_rules() -> BlockerRulesConfig:
     return BlockerRulesConfig(
         inherit_defaults=False,
         domain_rules=[
             BlockerRule(
                 domains=["fastmoss.com"],
+                detect_selectors=list(FASTMOSS_SECURITY_BLOCKER_DETECT_SELECTORS),
+                detect_keywords=list(FASTMOSS_SECURITY_BLOCKER_KEYWORDS),
+                classify_as="security_challenge",
+            ),
+            BlockerRule(
+                domains=["fastmoss.com"],
                 detect_selectors=list(FASTMOSS_BLOCKER_DETECT_SELECTORS),
                 dismiss_selectors=list(FASTMOSS_BLOCKER_DISMISS_SELECTORS),
                 dismiss_keywords=list(FASTMOSS_BLOCKER_DISMISS_KEYWORDS),
-            )
+                classify_as="dom_modal",
+            ),
         ],
+    )
+
+
+def _is_fastmoss_login_prompt_blocker(event: BlockedContext) -> bool:
+    page_url = str(getattr(event, "page_url", "") or "").lower()
+    if "fastmoss.com" not in page_url:
+        return False
+
+    blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
+    if blocker_type == "security_challenge":
+        return False
+
+    candidate_texts = _collect_fastmoss_blocked_text_candidates(event)
+    return any(
+        marker in text for text in candidate_texts for marker in FASTMOSS_LOGIN_PROMPT_MARKERS
+    )
+
+
+def _collect_fastmoss_blocked_text_candidates(event: BlockedContext) -> tuple[str, ...]:
+    candidates: list[str] = []
+    normalized_summary = _normalize_fastmoss_browser_text(getattr(event, "summary", ""))
+    if normalized_summary:
+        candidates.append(normalized_summary)
+
+    dom_summary = getattr(event, "dom_summary", None)
+    if isinstance(dom_summary, dict):
+        dialogs = dom_summary.get("dialogs")
+        if isinstance(dialogs, list):
+            for item in dialogs:
+                if not isinstance(item, dict):
+                    continue
+                normalized_dialog_text = _normalize_fastmoss_browser_text(item.get("text", ""))
+                if normalized_dialog_text:
+                    candidates.append(normalized_dialog_text)
+        normalized_body_text = _normalize_fastmoss_browser_text(
+            dom_summary.get("body_text_excerpt", "")
+        )
+        if normalized_body_text:
+            candidates.append(normalized_body_text)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for text in candidates:
+        if text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return tuple(deduped)
+
+
+def _fastmoss_session_relogin_required(page: Any) -> bool:
+    normalized_body_text = _normalize_fastmoss_browser_text(_safe_fastmoss_body_text(page))
+    if not normalized_body_text:
+        return False
+    return any(
+        _normalize_fastmoss_browser_text(marker) in normalized_body_text
+        for marker in FASTMOSS_LOGIN_PROMPT_MARKERS
     )
 
 
@@ -354,7 +760,12 @@ def _is_fastmoss_account_logged_in(page: Any) -> bool:
     body_text = page.locator("body").inner_text(timeout=5000)
     if "账号ID：" in body_text or "会员有效期至" in body_text:
         return True
-    if "游客身份" in body_text or "登录/注册查看您的账户信息" in body_text:
+    if (
+        "游客身份" in body_text
+        or "游客权限不足" in body_text
+        or "权限不足，请登录/注册" in body_text
+        or "登录/注册查看您的账户信息" in body_text
+    ):
         return False
     return False
 
@@ -467,7 +878,9 @@ def _fastmoss_search_result_rows(page: Any) -> Any:
     return page.locator("tr[data-row-key]")
 
 
-def _extract_fastmoss_search_page_candidates(rows: Any, *, search_keyword: str) -> list[dict[str, Any]]:
+def _extract_fastmoss_search_page_candidates(
+    rows: Any, *, search_keyword: str
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     row_count = rows.count()
     for index in range(row_count):
@@ -488,9 +901,12 @@ def _extract_fastmoss_search_row_candidate(
     search_keyword: str,
     page_index: int | None,
 ) -> dict[str, Any] | None:
-    raw_product_id = str(row.get_attribute("data-row-key") or "").strip() or str(
-        row.locator("a[href*='/zh/e-commerce/detail/']").first.get_attribute("href") or ""
-    ).strip()
+    raw_product_id = (
+        str(row.get_attribute("data-row-key") or "").strip()
+        or str(
+            row.locator("a[href*='/zh/e-commerce/detail/']").first.get_attribute("href") or ""
+        ).strip()
+    )
     try:
         product_id = _normalize_fastmoss_product_id(raw_product_id)
     except ValueError:
@@ -498,7 +914,11 @@ def _extract_fastmoss_search_row_candidate(
 
     detail_link = row.locator("a[href*='/zh/e-commerce/detail/']").first
     detail_href = str(detail_link.get_attribute("href") or "").strip()
-    detail_url = urljoin(DEFAULT_FASTMOSS_SEARCH_URL, detail_href) if detail_href else _build_fastmoss_detail_url(product_id)
+    detail_url = (
+        urljoin(DEFAULT_FASTMOSS_SEARCH_URL, detail_href)
+        if detail_href
+        else _build_fastmoss_detail_url(product_id)
+    )
     title = ""
     if detail_link.count():
         title = str(detail_link.locator("h3").first.inner_text(timeout=3000) or "").strip()
@@ -749,7 +1169,9 @@ def _fastmoss_month_key_from_header_text(header_text: str) -> int | None:
 
 
 def _fastmoss_datepicker_nav_button(picker: Any, *, direction: str) -> Any | None:
-    selector = ".ant-picker-header-next-btn" if direction == "next" else ".ant-picker-header-prev-btn"
+    selector = (
+        ".ant-picker-header-next-btn" if direction == "next" else ".ant-picker-header-prev-btn"
+    )
     locator = picker.locator(selector)
     if not locator.count():
         return None
@@ -884,6 +1306,13 @@ def _wait_for_fastmoss_overview_sales_refresh(
 def _safe_fastmoss_overview_text(overview: Any) -> str:
     try:
         return str(overview.inner_text(timeout=5000) or "").strip()
+    except Exception:
+        return ""
+
+
+def _safe_fastmoss_locator_text(locator: Any) -> str:
+    try:
+        return str(locator.inner_text(timeout=2000) or "").strip()
     except Exception:
         return ""
 
@@ -1111,6 +1540,10 @@ def _sleep(seconds: float) -> None:
     if seconds <= 0:
         return
     time.sleep(seconds)
+
+
+def _normalize_fastmoss_browser_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().lower()
 
 
 def _is_automation_page(page: Any) -> bool:

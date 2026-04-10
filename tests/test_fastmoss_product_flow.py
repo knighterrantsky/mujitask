@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
+from types import SimpleNamespace
 
 from automation_business_scaffold.flows.fastmoss_product_flow import (
     _day_before_yesterday_date_string,
     _extract_fastmoss_price_amount_from_text,
     _extract_sales_value_from_overview_text,
+    _find_fastmoss_login_modal,
+    _fastmoss_session_relogin_required,
+    _is_fastmoss_account_logged_in,
     _normalize_fastmoss_product_id,
     _normalize_fastmoss_price_amount,
     _parse_fastmoss_metric_number,
@@ -19,7 +23,9 @@ from automation_business_scaffold.flows.fastmoss_product_flow import (
 def test_normalize_fastmoss_product_id_accepts_raw_id_and_detail_url():
     assert _normalize_fastmoss_product_id("1732268173492064949") == "1732268173492064949"
     assert (
-        _normalize_fastmoss_product_id("https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949")
+        _normalize_fastmoss_product_id(
+            "https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949"
+        )
         == "1732268173492064949"
     )
 
@@ -78,6 +84,222 @@ $59.84
     assert _extract_fastmoss_price_amount_from_text(page_text) == "29.91"
 
 
+def test_handle_fastmoss_blocked_context_allows_login_prompt_interaction():
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_handle_fastmoss_blocked_context"],
+    )
+
+    event = SimpleNamespace(
+        page_url="https://www.fastmoss.com/zh/account/center",
+        blocker_type="dom_modal",
+        summary="您当前为游客身份,请进行登录/注册查看您的账户信息~ 登录/注册",
+        dom_summary={
+            "dialogs": [
+                {
+                    "text": "您当前为游客身份,请进行登录/注册查看您的账户信息~登录/注册",
+                }
+            ]
+        },
+    )
+
+    resolution = module._handle_fastmoss_blocked_context(object(), event)
+
+    assert resolution.action == "force_continue"
+    assert "login prompt" in resolution.note
+
+
+def test_handle_fastmoss_blocked_context_keeps_security_challenge_blocked():
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_handle_fastmoss_blocked_context"],
+    )
+
+    event = SimpleNamespace(
+        page_url="https://www.fastmoss.com/zh/account/center",
+        blocker_type="security_challenge",
+        summary="captcha verify",
+        dom_summary=None,
+    )
+
+    resolution = module._handle_fastmoss_blocked_context(object(), event)
+
+    assert resolution.action == "resume_default"
+
+
+def test_find_fastmoss_login_modal_accepts_single_guest_modal():
+    class FakeFoundLocator:
+        def count(self) -> int:
+            return 1
+
+        @property
+        def first(self):
+            return self
+
+    class FakeMissingLocator:
+        def count(self) -> int:
+            return 0
+
+        @property
+        def first(self):
+            return self
+
+    class FakeLocatorGroup:
+        def __init__(self, items):
+            self._items = items
+
+        def count(self) -> int:
+            return len(self._items)
+
+        def nth(self, index: int):
+            return self._items[index]
+
+        @property
+        def first(self):
+            return self._items[0] if self._items else FakeMissingLocator()
+
+    class FakeModal:
+        def __init__(self, text: str, *, has_inputs: bool = False) -> None:
+            self.text = text
+            self.has_inputs = has_inputs
+
+        def inner_text(self, timeout: int = 2000) -> str:
+            return self.text
+
+        def locator(self, selector: str):
+            if selector in {
+                "input[placeholder='输入您的手机号码']",
+                "input[placeholder='输入密码']",
+            }:
+                return (
+                    FakeLocatorGroup([FakeFoundLocator()])
+                    if self.has_inputs
+                    else FakeLocatorGroup([])
+                )
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    class FakePage:
+        def __init__(self, modals) -> None:
+            self.modals = FakeLocatorGroup(modals)
+
+        def locator(self, selector: str):
+            if selector == ".ant-modal-wrap":
+                return self.modals
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    guest_modal = FakeModal("您当前为游客身份,请进行登录/注册查看您的账户信息~ 登录/注册")
+
+    assert _find_fastmoss_login_modal(FakePage([guest_modal]), require_inputs=False) is guest_modal
+    assert _find_fastmoss_login_modal(FakePage([guest_modal]), require_inputs=True) is None
+
+
+def test_find_fastmoss_login_modal_prefers_modal_with_phone_password_inputs():
+    class FakeFoundLocator:
+        def count(self) -> int:
+            return 1
+
+        @property
+        def first(self):
+            return self
+
+    class FakeMissingLocator:
+        def count(self) -> int:
+            return 0
+
+        @property
+        def first(self):
+            return self
+
+    class FakeLocatorGroup:
+        def __init__(self, items):
+            self._items = items
+
+        def count(self) -> int:
+            return len(self._items)
+
+        def nth(self, index: int):
+            return self._items[index]
+
+        @property
+        def first(self):
+            return self._items[0] if self._items else FakeMissingLocator()
+
+    class FakeModal:
+        def __init__(self, text: str, *, has_inputs: bool = False) -> None:
+            self.text = text
+            self.has_inputs = has_inputs
+
+        def inner_text(self, timeout: int = 2000) -> str:
+            return self.text
+
+        def locator(self, selector: str):
+            if selector in {
+                "input[placeholder='输入您的手机号码']",
+                "input[placeholder='输入密码']",
+            }:
+                return (
+                    FakeLocatorGroup([FakeFoundLocator()])
+                    if self.has_inputs
+                    else FakeLocatorGroup([])
+                )
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    class FakePage:
+        def __init__(self, modals) -> None:
+            self.modals = FakeLocatorGroup(modals)
+
+        def locator(self, selector: str):
+            if selector == ".ant-modal-wrap":
+                return self.modals
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    guest_modal = FakeModal("您当前为游客身份,请进行登录/注册查看您的账户信息~ 登录/注册")
+    login_modal = FakeModal("手机号登录/注册 密码登录", has_inputs=True)
+
+    assert (
+        _find_fastmoss_login_modal(FakePage([guest_modal, login_modal]), require_inputs=False)
+        is login_modal
+    )
+    assert (
+        _find_fastmoss_login_modal(FakePage([guest_modal, login_modal]), require_inputs=True)
+        is login_modal
+    )
+
+
+def test_fastmoss_session_relogin_required_detects_guest_permission_message():
+    class FakeBody:
+        @property
+        def first(self):
+            return self
+
+        def inner_text(self, timeout: int = 5000) -> str:
+            return "您当前是游客权限不足，请登录/注册 登录"
+
+    class FakePage:
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+    assert _fastmoss_session_relogin_required(FakePage()) is True
+
+
+def test_is_fastmoss_account_logged_in_returns_false_for_guest_permission_message():
+    class FakeBody:
+        @property
+        def first(self):
+            return self
+
+        def inner_text(self, timeout: int = 5000) -> str:
+            return "您当前是游客权限不足，请登录/注册 登录"
+
+    class FakePage:
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+    assert _is_fastmoss_account_logged_in(FakePage()) is False
+
+
 def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_screenshots_before_extraction(
     monkeypatch,
 ):
@@ -95,9 +317,11 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
             return "ignored"
 
     fake_page = FakePage()
+    captured_kwargs: dict[str, object] = {}
 
     @contextmanager
-    def fake_open_automation_page(**_kwargs):
+    def fake_open_automation_page(**kwargs):
+        captured_kwargs.update(kwargs)
         yield type(
             "_Session",
             (),
@@ -172,11 +396,16 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
         profile_ref="roxy-united-states",
         fastmoss_phone_env="FASTMOSS_PHONE",
         fastmoss_password_env="FASTMOSS_PASSWORD",
+        verify_login=True,
         step_delay_sec=0,
         login_settle_sec=0,
     )
 
-    assert fake_page.detail_gotos == ["https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949"]
+    assert fake_page.detail_gotos == [
+        "https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949"
+    ]
+    assert captured_kwargs["profile_ref"] == "roxy-united-states"
+    assert captured_kwargs["blocked_handling"].handler == module._handle_fastmoss_blocked_context
     assert fake_page.events == [
         "open_detail",
         "capture_screenshot",
@@ -204,7 +433,7 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
     }
 
 
-def test_fetch_fastmoss_product_sales_via_browser_can_skip_login_verification(monkeypatch):
+def test_fetch_fastmoss_product_sales_via_browser_skips_login_verification_by_default(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",
         fromlist=["fetch_fastmoss_product_sales_via_browser"],
@@ -226,15 +455,18 @@ def test_fetch_fastmoss_product_sales_via_browser_can_skip_login_verification(mo
         raise AssertionError("login validation should be skipped")
 
     monkeypatch.setattr(module, "_ensure_fastmoss_logged_in", fail_ensure_login)
-    monkeypatch.setattr(module, "_open_fastmoss_detail_page", lambda page, detail_url, step_delay_sec: None)
+    monkeypatch.setattr(
+        module, "_open_fastmoss_detail_page", lambda page, detail_url, step_delay_sec: None
+    )
     monkeypatch.setattr(module, "_extract_fastmoss_product_title", lambda page: "Example Product")
     monkeypatch.setattr(module, "_extract_fastmoss_price_amount", lambda page: "29.91")
-    monkeypatch.setattr(module, "_extract_fastmoss_period_sales", lambda page, *, days, step_delay_sec: days)
+    monkeypatch.setattr(
+        module, "_extract_fastmoss_period_sales", lambda page, *, days, step_delay_sec: days
+    )
     monkeypatch.setattr(module, "_extract_fastmoss_yesterday_sales", lambda page, **kwargs: "-1")
 
     snapshot = fetch_fastmoss_product_sales_via_browser(
         "1732268173492064949",
-        verify_login=False,
         capture_detail_screenshot=False,
         step_delay_sec=0,
         login_settle_sec=0,
@@ -242,6 +474,168 @@ def test_fetch_fastmoss_product_sales_via_browser_can_skip_login_verification(mo
 
     assert snapshot.login_state == "skipped_login_verification"
     assert snapshot.fastmoss_price_amount == "29.91"
+
+
+def test_fetch_fastmoss_product_sales_via_browser_relogs_when_session_expires_mid_fetch(
+    monkeypatch,
+):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["fetch_fastmoss_product_sales_via_browser"],
+    )
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.session_expired = False
+            self.detail_gotos: list[str] = []
+            self.events: list[str] = []
+
+        def title(self) -> str:
+            return "ignored"
+
+    fake_page = FakePage()
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type("_Session", (), {"page": fake_page})()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(
+        module,
+        "_resolve_fastmoss_login_state",
+        lambda page, *, phone, password, step_delay_sec, login_settle_sec, verify_login: (
+            "already_logged_in"
+        ),
+    )
+
+    relogin_calls: list[tuple[str, str]] = []
+
+    def fake_ensure_login(page, *, phone, password, step_delay_sec, login_settle_sec):
+        relogin_calls.append((phone, password))
+        fake_page.session_expired = False
+        return "logged_in"
+
+    monkeypatch.setattr(module, "_ensure_fastmoss_logged_in", fake_ensure_login)
+    monkeypatch.setattr(
+        module,
+        "_fastmoss_session_relogin_required",
+        lambda page: fake_page.session_expired,
+    )
+    monkeypatch.setattr(
+        module,
+        "_open_fastmoss_detail_page",
+        lambda page, detail_url, step_delay_sec: (
+            fake_page.detail_gotos.append(detail_url),
+            fake_page.events.append("open_detail"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_capture_fastmoss_detail_screenshot",
+        lambda page, *, product_id, screenshot_dir=module.DEFAULT_FASTMOSS_DETAIL_SCREENSHOT_DIR: (
+            fake_page.events.append("capture_screenshot"),
+            setattr(fake_page, "session_expired", True),
+            "/tmp/1732268173492064949-fastmoss-detail.png",
+            "1732268173492064949-fastmoss-detail.png",
+            "image/png",
+        )[2:],
+    )
+    monkeypatch.setattr(
+        module,
+        "_extract_fastmoss_product_title",
+        lambda page: fake_page.events.append("extract_title") or "Recovered Product",
+    )
+    monkeypatch.setattr(
+        module,
+        "_extract_fastmoss_price_amount",
+        lambda page: fake_page.events.append("extract_price") or "39.91",
+    )
+    monkeypatch.setattr(
+        module,
+        "_extract_fastmoss_period_sales",
+        lambda page, *, days, step_delay_sec: (
+            fake_page.events.append(f"extract_{days}d"),
+            {"7": "14", "28": "540", "90": "1204"}[days],
+        )[1],
+    )
+    monkeypatch.setattr(
+        module,
+        "_extract_fastmoss_yesterday_sales",
+        lambda page, *, target_date, fallback_target_date=None, step_delay_sec: (
+            fake_page.events.append("extract_yesterday") or "3"
+        ),
+    )
+
+    snapshot = fetch_fastmoss_product_sales_via_browser(
+        "1732268173492064949",
+        fastmoss_phone="18558425642",
+        fastmoss_password="Tiktok-623",
+        step_delay_sec=0,
+        login_settle_sec=0,
+    )
+
+    assert relogin_calls == [("18558425642", "Tiktok-623")]
+    assert fake_page.detail_gotos == [
+        "https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949",
+        "https://www.fastmoss.com/zh/e-commerce/detail/1732268173492064949",
+    ]
+    assert fake_page.events == [
+        "open_detail",
+        "capture_screenshot",
+        "open_detail",
+        "extract_title",
+        "extract_price",
+        "extract_7d",
+        "extract_28d",
+        "extract_90d",
+        "extract_yesterday",
+    ]
+    assert snapshot.login_state == module.FASTMOSS_SESSION_RECOVERED_LOGIN_STATE
+    assert snapshot.product_title == "Recovered Product"
+    assert snapshot.fastmoss_price_amount == "39.91"
+
+
+def test_validate_fastmoss_login_via_browser_passes_fastmoss_blocked_handling(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["validate_fastmoss_login_via_browser"],
+    )
+
+    fake_page = object()
+    captured_kwargs: dict[str, object] = {}
+
+    @contextmanager
+    def fake_open_automation_page(**kwargs):
+        captured_kwargs.update(kwargs)
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "roxy",
+                "target_key": "roxy:84278:sample",
+                "profile_ref": "roxy-tiktok",
+                "page": fake_page,
+            },
+        )()
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(
+        module,
+        "_ensure_fastmoss_logged_in",
+        lambda page, *, phone, password, step_delay_sec, login_settle_sec: "logged_in",
+    )
+
+    payload = module.validate_fastmoss_login_via_browser(
+        profile_ref="roxy-tiktok",
+        fastmoss_phone="18558425642",
+        fastmoss_password="Tiktok-623",
+        step_delay_sec=0,
+        login_settle_sec=0,
+    )
+
+    assert payload["login_state"] == "logged_in"
+    assert captured_kwargs["profile_ref"] == "roxy-tiktok"
+    assert captured_kwargs["blocked_handling"].handler == module._handle_fastmoss_blocked_context
 
 
 def test_extract_fastmoss_yesterday_sales_uses_date_picker_selection(monkeypatch):
@@ -281,10 +675,9 @@ def test_extract_fastmoss_yesterday_sales_uses_date_picker_selection(monkeypatch
     monkeypatch.setattr(
         module,
         "_select_fastmoss_overview_date",
-        lambda page, overview, *, input_locator, target_date, step_delay_sec: selections.append(
-            (input_locator.name, target_date, step_delay_sec)
-        )
-        or True,
+        lambda page, overview, *, input_locator, target_date, step_delay_sec: (
+            selections.append((input_locator.name, target_date, step_delay_sec)) or True
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -305,7 +698,9 @@ def test_extract_fastmoss_yesterday_sales_uses_date_picker_selection(monkeypatch
     ]
 
 
-def test_extract_fastmoss_yesterday_sales_falls_back_to_day_before_when_yesterday_unavailable(monkeypatch):
+def test_extract_fastmoss_yesterday_sales_falls_back_to_day_before_when_yesterday_unavailable(
+    monkeypatch,
+):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_yesterday_sales"],
@@ -364,7 +759,9 @@ def test_extract_fastmoss_yesterday_sales_falls_back_to_day_before_when_yesterda
     ]
 
 
-def test_extract_fastmoss_yesterday_sales_returns_negative_one_when_target_date_unavailable(monkeypatch):
+def test_extract_fastmoss_yesterday_sales_returns_negative_one_when_target_date_unavailable(
+    monkeypatch,
+):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_yesterday_sales"],
@@ -450,14 +847,20 @@ def test_select_fastmoss_overview_date_prefers_precise_locator_click(monkeypatch
 
     monkeypatch.setattr(module, "_sleep", lambda seconds: None)
     monkeypatch.setattr(module, "_visible_fastmoss_datepicker", lambda page, *, overview: object())
-    monkeypatch.setattr(module, "_navigate_fastmoss_datepicker_to_month", lambda *args, **kwargs: True)
-    monkeypatch.setattr(module, "_find_fastmoss_date_cell", lambda picker, *, target_date: FakeCell(cell_inner))
+    monkeypatch.setattr(
+        module, "_navigate_fastmoss_datepicker_to_month", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        module, "_find_fastmoss_date_cell", lambda picker, *, target_date: FakeCell(cell_inner)
+    )
     monkeypatch.setattr(
         module,
         "_wait_for_fastmoss_date_value",
         lambda locator, expected_value: fallback_calls.append(f"wait:{expected_value}"),
     )
-    monkeypatch.setattr(module, "_page_click", lambda page, target: fallback_calls.append("page_click"))
+    monkeypatch.setattr(
+        module, "_page_click", lambda page, target: fallback_calls.append("page_click")
+    )
 
     selected = module._select_fastmoss_overview_date(
         object(),
@@ -473,7 +876,9 @@ def test_select_fastmoss_overview_date_prefers_precise_locator_click(monkeypatch
     assert fallback_calls == ["wait:2026-04-06"]
 
 
-def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_click_fails(monkeypatch):
+def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_click_fails(
+    monkeypatch,
+):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",
         fromlist=["_click_fastmoss_precise_target"],
@@ -486,7 +891,9 @@ def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_clic
     fallback_targets: list[object] = []
     target = BrokenTarget()
 
-    monkeypatch.setattr(module, "_page_click", lambda page, candidate: fallback_targets.append(candidate))
+    monkeypatch.setattr(
+        module, "_page_click", lambda page, candidate: fallback_targets.append(candidate)
+    )
 
     module._click_fastmoss_precise_target(object(), target)
 
@@ -541,7 +948,9 @@ def test_navigate_fastmoss_datepicker_to_month_clicks_next_until_target_month_vi
         def click(self) -> None:
             self.picker.history.append(self.direction)
             if self.direction == "next":
-                self.picker.state_index = min(self.picker.state_index + 1, len(self.picker.states) - 1)
+                self.picker.state_index = min(
+                    self.picker.state_index + 1, len(self.picker.states) - 1
+                )
             else:
                 self.picker.state_index = max(self.picker.state_index - 1, 0)
 
@@ -782,10 +1191,14 @@ def test_extract_fastmoss_period_sales_allows_steady_metric_when_overview_is_alr
     wait_args: dict[str, object] = {}
 
     monkeypatch.setattr(module, "_fastmoss_overview_locator", lambda page: FakeOverview())
-    monkeypatch.setattr(module, "_safe_fastmoss_overview_text", lambda overview: "近7天 概览 24 日均3 销量")
+    monkeypatch.setattr(
+        module, "_safe_fastmoss_overview_text", lambda overview: "近7天 概览 24 日均3 销量"
+    )
     monkeypatch.setattr(module, "_page_click", lambda page, target: None)
     monkeypatch.setattr(module, "_sleep", lambda seconds: None)
-    monkeypatch.setattr(module, "_wait_for_fastmoss_range_label_selected", lambda label, timeout_sec=0: False)
+    monkeypatch.setattr(
+        module, "_wait_for_fastmoss_range_label_selected", lambda label, timeout_sec=0: False
+    )
 
     def fake_wait(overview, *, previous_text, min_wait_sec, require_change, timeout_sec=12.0):
         wait_args.update(
