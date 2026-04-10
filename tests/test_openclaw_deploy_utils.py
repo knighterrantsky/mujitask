@@ -132,3 +132,14 @@ def test_read_framework_dependency_prefers_pyproject_as_single_source(tmp_path: 
         "repo_url": "https://github.com/example/framework.git",
         "ref": "v0.3.6",
     }
+
+
+def test_deploy_script_embeds_single_file_payloads() -> None:
+    deploy_script = ROOT / "examples" / "openclaw" / "deploy-openclaw.sh"
+    text = deploy_script.read_text(encoding="utf-8")
+
+    assert "load_openclaw_common" in text
+    assert ": <<'__OPENCLAW_DEPLOY_COMMON__'" in text
+    assert ": <<'__OPENCLAW_DEPLOY_UTILS__'" in text
+    assert "install_framework_from_pyproject" in text
+    assert 'add_parser("read-framework-dependency")' in text

@@ -11,7 +11,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENCLAW_DEPLOY_UTILS="$SCRIPT_DIR/openclaw_deploy_utils.py"
-TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="${TMP_ROOT:-$(mktemp -d)}"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 UV_BIN=""
