@@ -104,6 +104,21 @@ def normalize_cleanup_records(records: list[dict[str, Any]], params: dict[str, A
         fields = raw_row.get("fields", {})
         if not isinstance(fields, dict):
             fields = {}
+
+        if _cleanup_raw_row_is_empty(fields):
+            items.append(
+                {
+                    "record_id": record_id,
+                    "source_url": "",
+                    "normalized_url": "",
+                    "status": "delete_empty",
+                    "error": "",
+                    "deleted_record_ids": [],
+                    "update_fields": {},
+                }
+            )
+            continue
+
         source_url = _normalize_link_value(fields.get(settings["url_field_name"]))
 
         if not source_url:
@@ -178,7 +193,7 @@ def delete_cleanup_duplicates(items: list[dict[str, Any]], params: dict[str, Any
             "deletion_results": [
                 {
                     "record_id": item["record_id"],
-                    "status": "delete_preview" if item["status"] == "delete_duplicate" else item["status"],
+                    "status": "delete_preview" if _should_delete_cleanup_row(item["status"]) else item["status"],
                     "error": item.get("error", ""),
                 }
                 for item in items
@@ -188,7 +203,7 @@ def delete_cleanup_duplicates(items: list[dict[str, Any]], params: dict[str, Any
     target = _build_table_target(settings["table_url"], settings["access_token"])
     deletion_results: list[dict[str, Any]] = []
     for item in items:
-        if item["status"] != "delete_duplicate":
+        if not _should_delete_cleanup_row(item["status"]):
             deletion_results.append(
                 {
                     "record_id": item["record_id"],
@@ -296,7 +311,7 @@ def build_cleanup_summary(
 
     for item in items:
         record_id = item["record_id"]
-        if item["status"] == "delete_duplicate":
+        if _should_delete_cleanup_row(item["status"]):
             deletion = deletion_by_id.get(record_id, {})
             final_items.append(
                 {
@@ -621,6 +636,26 @@ def _normalize_link_value(value: Any) -> str:
 
 def _build_link_value(value: str) -> dict[str, str]:
     return {"text": value, "link": value}
+
+
+def _cleanup_raw_row_is_empty(fields: dict[str, Any]) -> bool:
+    return not any(_cleanup_field_has_value(value) for value in fields.values())
+
+
+def _cleanup_field_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_cleanup_field_has_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_cleanup_field_has_value(item) for item in value)
+    return True
+
+
+def _should_delete_cleanup_row(status: str) -> bool:
+    return status in {"delete_duplicate", "delete_empty"}
 
 
 def _sleep_with_jitter(delay_sec: float, jitter_sec: float) -> None:

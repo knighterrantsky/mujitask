@@ -2,7 +2,7 @@
 
 更新时间：`2026-04-10`
 
-`docs/business` 当前只保留 6 个主文档和 1 个总览入口。
+`docs/business` 当前只保留 7 个主文档和 1 个总览入口。
 
 ## 主文档
 
@@ -12,6 +12,7 @@
 4. [04-openclaw-skills.md](./04-openclaw-skills.md)
 5. [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md)
 6. [06-openclaw-cli-升级方案.md](./06-openclaw-cli-升级方案.md)
+7. [07-版本管理最佳实践.md](./07-版本管理最佳实践.md)
 
 ## 实际可用的 Skill 文件
 

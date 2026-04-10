@@ -50,6 +50,20 @@ def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monk
                         }
                     },
                 },
+                {
+                    "record_id": "rec-5",
+                    "fields": {},
+                },
+                {
+                    "record_id": "rec-6",
+                    "fields": {
+                        "产品链接": {
+                            "link": "",
+                            "text": "",
+                        },
+                        "备注": "需要保留",
+                    },
+                },
             ]
 
     monkeypatch.setattr(module, "FeishuBitableClient", FakeClient)
@@ -64,8 +78,9 @@ def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monk
 
     assert payload["summary"]["counts"] == {
         "preview": 2,
-        "delete_preview": 1,
+        "delete_preview": 2,
         "invalid_url": 1,
+        "skipped_empty": 1,
     }
     keeper = next(item for item in payload["items"] if item["record_id"] == "rec-1")
     assert keeper["status"] == "preview"
@@ -73,6 +88,8 @@ def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monk
     assert keeper["normalized_url"] == "https://www.tiktok.com/shop/pdp/1111111111111111111"
     assert next(item for item in payload["items"] if item["record_id"] == "rec-2")["status"] == "delete_preview"
     assert next(item for item in payload["items"] if item["record_id"] == "rec-4")["status"] == "invalid_url"
+    assert next(item for item in payload["items"] if item["record_id"] == "rec-5")["status"] == "delete_preview"
+    assert next(item for item in payload["items"] if item["record_id"] == "rec-6")["status"] == "skipped_empty"
 
 
 def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_only_url(monkeypatch):
@@ -105,6 +122,10 @@ def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_o
                         }
                     },
                 },
+                {
+                    "record_id": "rec-3",
+                    "fields": {},
+                },
             ]
 
         def delete_record(self, app_token: str, table_id: str, record_id: str):
@@ -126,7 +147,7 @@ def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_o
         }
     )
 
-    assert fake_client.deleted == ["rec-2"]
+    assert fake_client.deleted == ["rec-2", "rec-3"]
     assert fake_client.updated == [
         (
             "rec-1",
@@ -138,4 +159,4 @@ def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_o
             },
         )
     ]
-    assert payload["summary"]["counts"] == {"updated": 1, "deleted": 1}
+    assert payload["summary"]["counts"] == {"updated": 1, "deleted": 2}
