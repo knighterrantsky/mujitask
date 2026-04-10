@@ -29,10 +29,9 @@ main() {
   deploy_state_supports_update "$deploy_state_path" \
     || fail "This install does not support update-openclaw.sh yet. Reinstall with the new deploy-openclaw.sh first."
 
-  local repo_url existing_repo_archive_url existing_framework_archive_url existing_last_ref
+  local repo_url existing_repo_archive_url existing_last_ref
   repo_url="$(read_kv_value "$deploy_state_path" "REPO_URL" 2>/dev/null || true)"
   existing_repo_archive_url="$(read_kv_value "$deploy_state_path" "REPO_ARCHIVE_URL" 2>/dev/null || true)"
-  existing_framework_archive_url="$(read_kv_value "$deploy_state_path" "FRAMEWORK_ARCHIVE_URL" 2>/dev/null || true)"
   existing_last_ref="$(read_kv_value "$deploy_state_path" "LAST_RESOLVED_REF" 2>/dev/null || true)"
   [[ -n "$repo_url" ]] || fail "REPO_URL is missing in $deploy_state_path."
 
@@ -85,34 +84,10 @@ main() {
   local pyproject_path="$install_dir/pyproject.toml"
   [[ -f "$pyproject_path" ]] || fail "Missing $pyproject_path after update sync."
 
-  local manifest_path="$install_dir/.platform/platform-manifest.yaml"
-  local framework_repo_url framework_ref framework_archive_url framework_archive framework_root framework_slug
-  framework_archive="$TMP_ROOT/framework-archive.zip"
-  [[ -f "$manifest_path" ]] || fail "Missing $manifest_path after update sync."
-  framework_repo_url="$(read_manifest_value "$manifest_path" "framework_repo_url" | tr -d '\r')"
-  framework_ref="$(read_manifest_value "$manifest_path" "framework_commit" | tr -d '\r')"
-
-  if framework_slug="$(parse_github_slug "$framework_repo_url" 2>/dev/null)"; then
-    framework_archive_url="https://api.github.com/repos/$framework_slug/zipball/$framework_ref"
-  else
-    framework_archive_url="$existing_framework_archive_url"
-    [[ -n "$framework_archive_url" ]] || fail "FRAMEWORK_ARCHIVE_URL is missing in $deploy_state_path for non-GitHub framework repo."
-    local lowered_framework
-    lowered_framework="$(to_lower "$framework_archive_url")"
-    if [[ "$lowered_framework" == *.tar.gz || "$lowered_framework" == *.tgz || "$lowered_framework" == *.tar ]]; then
-      framework_archive="$TMP_ROOT/framework-archive.tar.gz"
-    fi
-  fi
-
   local venv_python="$install_dir/.venv/bin/python"
   [[ -x "$venv_python" ]] || fail "Existing virtual environment is missing at $venv_python. Reinstall with deploy-openclaw.sh."
 
-  log "Downloading pinned automation-framework source"
-  download_file "$framework_archive_url" "$framework_archive"
-  framework_root="$(extract_archive "$framework_archive" "$TMP_ROOT/framework-extracted")"
-
-  log "Installing pinned automation-framework from local source"
-  "$UV_BIN" pip install --python "$venv_python" "$framework_root"
+  install_framework_from_pyproject "$pyproject_path" "$venv_python"
 
   local project_deps=()
   local dep
@@ -151,7 +126,7 @@ main() {
   cp -R "$source_skill_dir"/. "$target_skill_dir"/
   cp "$previous_skill_env" "$target_skill_dir/skill.local.env"
   write_skill_local_env "$target_skill_dir" "$install_dir" "$table_url" "$token"
-  write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${framework_archive_url:-}"
+  write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${LAST_FRAMEWORK_ARCHIVE_URL:-}"
 
   smoke_check "$install_dir" "$target_skill_dir"
 

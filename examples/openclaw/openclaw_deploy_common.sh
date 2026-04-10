@@ -325,25 +325,6 @@ replace_target_dir() {
   mkdir -p "$target_dir"
 }
 
-read_manifest_value() {
-  local manifest_path="$1"
-  local key="$2"
-  "$PYTHON_BIN" - "$manifest_path" "$key" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-manifest_path = Path(sys.argv[1])
-key = sys.argv[2]
-text = manifest_path.read_text(encoding="utf-8")
-pattern = rf"^{re.escape(key)}:\s*\"?([^\"]+)\"?\s*$"
-match = re.search(pattern, text, re.MULTILINE)
-if match is None:
-    raise SystemExit(f"Missing {key} in {manifest_path}")
-print(match.group(1))
-PY
-}
-
 read_project_dependencies() {
   local pyproject_path="$1"
   "$PYTHON_BIN" - "$pyproject_path" <<'PY'
@@ -358,6 +339,46 @@ for dep in data.get("project", {}).get("dependencies", []):
         continue
     print(dep)
 PY
+}
+
+read_framework_dependency_json() {
+  local pyproject_path="$1"
+  "$PYTHON_BIN" "$OPENCLAW_DEPLOY_UTILS" read-framework-dependency --path "$pyproject_path"
+}
+
+LAST_FRAMEWORK_ARCHIVE_URL=""
+
+install_framework_from_pyproject() {
+  local pyproject_path="$1"
+  local venv_python="$2"
+  local framework_json="$TMP_ROOT/framework-dependency.json"
+
+  LAST_FRAMEWORK_ARCHIVE_URL=""
+  read_framework_dependency_json "$pyproject_path" > "$framework_json"
+
+  local framework_kind framework_source
+  framework_kind="$(python_json_get "kind" "$framework_json" | tr -d '\r')"
+  framework_source="$(python_json_get "source" "$framework_json" | tr -d '\r')"
+  [[ -n "$framework_source" ]] || fail "automation-framework dependency source is missing in $pyproject_path."
+
+  if [[ "$framework_kind" == "git" ]]; then
+    local framework_repo_url framework_ref framework_slug framework_archive framework_root
+    framework_repo_url="$(python_json_get "repo_url" "$framework_json" | tr -d '\r')"
+    framework_ref="$(python_json_get "ref" "$framework_json" | tr -d '\r')"
+    if framework_slug="$(parse_github_slug "$framework_repo_url" 2>/dev/null)"; then
+      framework_archive="$TMP_ROOT/framework-archive.zip"
+      LAST_FRAMEWORK_ARCHIVE_URL="https://api.github.com/repos/$framework_slug/zipball/$framework_ref"
+      log "Downloading automation-framework pinned in pyproject.toml"
+      download_file "$LAST_FRAMEWORK_ARCHIVE_URL" "$framework_archive"
+      framework_root="$(extract_archive "$framework_archive" "$TMP_ROOT/framework-extracted")"
+      log "Installing automation-framework from downloaded source"
+      "$UV_BIN" pip install --python "$venv_python" "$framework_root"
+      return 0
+    fi
+  fi
+
+  log "Installing automation-framework directly from pyproject.toml"
+  "$UV_BIN" pip install --python "$venv_python" "$framework_source"
 }
 
 detect_chrome_bin() {

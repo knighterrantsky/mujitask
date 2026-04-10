@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
+import tomllib
 from pathlib import Path
 
 
@@ -80,6 +82,37 @@ def write_deploy_state_file(
         "UPDATE_SUPPORTED": update_supported,
     }
     merge_key_value_file(path, managed)
+
+
+def read_framework_dependency(path: Path) -> dict[str, str]:
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
+
+    dependencies = data.get("project", {}).get("dependencies", [])
+    matches = [dep for dep in dependencies if dep.startswith("automation-framework @ ")]
+    if len(matches) != 1:
+        raise ValueError(
+            "pyproject.toml must declare exactly one 'automation-framework @ ...' dependency."
+        )
+
+    dependency = matches[0]
+    source = dependency.split(" @ ", 1)[1].strip()
+    result = {
+        "dependency": dependency,
+        "source": source,
+        "kind": "direct",
+    }
+    if source.startswith("git+"):
+        git_source = source[len("git+") :]
+        base, _, fragment = git_source.partition("#")
+        repo_url, sep, ref = base.rpartition("@")
+        if sep and repo_url and ref:
+            result["kind"] = "git"
+            result["repo_url"] = repo_url
+            result["ref"] = ref
+        if fragment:
+            result["fragment"] = fragment
+    return result
 
 
 def deploy_state_supports_update(path: Path) -> bool:
@@ -175,6 +208,9 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy_state_parser.add_argument("--install-layout-version", default="1")
     deploy_state_parser.add_argument("--update-supported", default="1")
 
+    framework_parser = subparsers.add_parser("read-framework-dependency")
+    framework_parser.add_argument("--path", required=True)
+
     support_parser = subparsers.add_parser("check-update-support")
     support_parser.add_argument("--path", required=True)
 
@@ -215,6 +251,10 @@ def main(argv: list[str] | None = None) -> int:
             install_layout_version=args.install_layout_version,
             update_supported=args.update_supported,
         )
+        return 0
+
+    if args.command == "read-framework-dependency":
+        print(json.dumps(read_framework_dependency(Path(args.path)), ensure_ascii=False))
         return 0
 
     if args.command == "check-update-support":

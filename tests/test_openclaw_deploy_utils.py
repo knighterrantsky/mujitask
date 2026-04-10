@@ -110,3 +110,25 @@ def test_sync_install_tree_preserves_local_state_and_overwrites_managed_files(tm
     assert (target_dir / "README.md").read_text(encoding="utf-8") == "new readme\n"
     assert (target_dir / "config" / "browser_profiles.example.json").read_text(encoding="utf-8") == '{"example": true}\n'
     assert (target_dir / "skills" / "bundle.txt").read_text(encoding="utf-8") == "new bundle\n"
+
+
+def test_read_framework_dependency_prefers_pyproject_as_single_source(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\n"
+        "dependencies = [\n"
+        '  "automation-framework @ git+https://github.com/example/framework.git@v0.3.6",\n'
+        '  "requests>=2.32.0",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    dependency = MODULE.read_framework_dependency(pyproject)
+
+    assert dependency == {
+        "dependency": "automation-framework @ git+https://github.com/example/framework.git@v0.3.6",
+        "source": "git+https://github.com/example/framework.git@v0.3.6",
+        "kind": "git",
+        "repo_url": "https://github.com/example/framework.git",
+        "ref": "v0.3.6",
+    }

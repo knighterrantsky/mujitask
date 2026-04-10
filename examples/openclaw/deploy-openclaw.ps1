@@ -12,6 +12,7 @@ try {
     $script:UvBin = $null
     $script:PythonBin = $null
     $script:GitHubToken = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { "" }
+    $script:OpenClawDeployUtils = Join-Path $PSScriptRoot "openclaw_deploy_utils.py"
 
     function Log([string]$Message) {
         Write-Host "[deploy-openclaw] $Message"
@@ -260,16 +261,6 @@ print(root)
         }
     }
 
-    function Read-ManifestValue([string]$ManifestPath, [string]$Key) {
-        $content = Get-Content -Raw -LiteralPath $ManifestPath
-        $pattern = "(?m)^" + [regex]::Escape($Key) + ':\s*"?([^"`r`n]+)"?\s*$'
-        $match = [regex]::Match($content, $pattern)
-        if (-not $match.Success) {
-            Fail "Missing $Key in $ManifestPath"
-        }
-        return $match.Groups[1].Value.Trim()
-    }
-
     function Read-ProjectDependencies([string]$PyprojectPath) {
         $script = @'
 import sys
@@ -284,6 +275,42 @@ for dep in data.get("project", {}).get("dependencies", []):
     print(dep)
 '@
         return & $script:PythonBin -c $script $PyprojectPath
+    }
+
+    function Read-FrameworkDependency([string]$PyprojectPath) {
+        $raw = & $script:PythonBin $script:OpenClawDeployUtils read-framework-dependency --path $PyprojectPath
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Fail "automation-framework dependency metadata is missing in $PyprojectPath"
+        }
+        return $raw | ConvertFrom-Json
+    }
+
+    $script:LastFrameworkArchiveUrl = ""
+
+    function Install-FrameworkFromPyproject([string]$PyprojectPath, [string]$VenvPython) {
+        $script:LastFrameworkArchiveUrl = ""
+        $frameworkDependency = Read-FrameworkDependency -PyprojectPath $PyprojectPath
+        $frameworkSource = [string]$frameworkDependency.source
+        if ([string]::IsNullOrWhiteSpace($frameworkSource)) {
+            Fail "automation-framework dependency source is missing in $PyprojectPath"
+        }
+
+        if ([string]$frameworkDependency.kind -eq "git" -and $frameworkDependency.repo_url -and $frameworkDependency.ref) {
+            $frameworkSlug = Parse-GitHubSlug ([string]$frameworkDependency.repo_url)
+            if ($frameworkSlug) {
+                $frameworkArchive = Join-Path $TempRoot "framework-archive.zip"
+                $script:LastFrameworkArchiveUrl = "https://api.github.com/repos/$frameworkSlug/zipball/$($frameworkDependency.ref)"
+                Log "Downloading automation-framework pinned in pyproject.toml"
+                Download-File -Url $script:LastFrameworkArchiveUrl -TargetPath $frameworkArchive
+                $frameworkRoot = Extract-ArchiveFile -ArchivePath $frameworkArchive -OutputDir (Join-Path $TempRoot "framework-extracted")
+                Log "Installing automation-framework from downloaded source"
+                & $script:UvBin pip install --python $VenvPython $frameworkRoot
+                return
+            }
+        }
+
+        Log "Installing automation-framework directly from pyproject.toml"
+        & $script:UvBin pip install --python $VenvPython $frameworkSource
     }
 
     function Find-Chrome {
@@ -514,35 +541,6 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
         Fail "Missing $pyprojectPath after extraction."
     }
 
-    $manifestPath = Join-Path $installDir ".platform\platform-manifest.yaml"
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        Fail "Missing $manifestPath after extraction."
-    }
-    $frameworkRepoUrl = Read-ManifestValue -ManifestPath $manifestPath -Key "framework_repo_url"
-    $frameworkRef = Read-ManifestValue -ManifestPath $manifestPath -Key "framework_commit"
-
-    $frameworkArchive = Join-Path $TempRoot "framework-archive.zip"
-    $frameworkArchiveUrl = $null
-    $frameworkSlug = Parse-GitHubSlug $frameworkRepoUrl
-
-    if ($frameworkSlug) {
-        $frameworkArchiveUrl = "https://api.github.com/repos/$frameworkSlug/zipball/$frameworkRef"
-    } else {
-        if ($deployState["FRAMEWORK_ARCHIVE_URL"]) {
-            $frameworkArchiveUrl = [string]$deployState["FRAMEWORK_ARCHIVE_URL"]
-            Log "Reusing existing framework archive URL from $deployStatePath"
-        } else {
-            $frameworkArchiveUrl = Prompt "Framework archive URL for automation-framework"
-        }
-        if ($frameworkArchiveUrl.ToLower().EndsWith(".tar.gz") -or $frameworkArchiveUrl.ToLower().EndsWith(".tgz") -or $frameworkArchiveUrl.ToLower().EndsWith(".tar")) {
-            $frameworkArchive = Join-Path $TempRoot "framework-archive.tar.gz"
-        }
-    }
-
-    Log "Downloading pinned automation-framework source"
-    Download-File -Url $frameworkArchiveUrl -TargetPath $frameworkArchive
-    $frameworkRoot = Extract-ArchiveFile -ArchivePath $frameworkArchive -OutputDir (Join-Path $TempRoot "framework-extracted")
-
     Log "Creating project virtual environment"
     & $script:UvBin venv --python 3.11 (Join-Path $installDir ".venv") | Out-Null
 
@@ -551,8 +549,7 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
         Fail "Virtual environment python was not created."
     }
 
-    Log "Installing pinned automation-framework from local source"
-    & $script:UvBin pip install --python $venvPython $frameworkRoot
+    Install-FrameworkFromPyproject -PyprojectPath $pyprojectPath -VenvPython $venvPython
 
     $projectDeps = @(Read-ProjectDependencies -PyprojectPath (Join-Path $installDir "pyproject.toml"))
     if ($projectDeps.Count -gt 0) {
@@ -588,7 +585,7 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
     Replace-TargetDir -TargetDir $targetSkillDir
     Copy-DirectoryContents -SourceDir $sourceSkillDir -DestinationDir $targetSkillDir
     Write-SkillLocalEnv -SkillDir $targetSkillDir -InstallDir $installDir -TableUrl $tableUrl -Token $token
-    Write-DeployState -InstallDir $installDir -RepoUrl $repoUrl -ResolvedRef $resolvedRef -RepoArchiveUrl $archiveUrl -FrameworkArchiveUrl $frameworkArchiveUrl
+    Write-DeployState -InstallDir $installDir -RepoUrl $repoUrl -ResolvedRef $resolvedRef -RepoArchiveUrl $archiveUrl -FrameworkArchiveUrl $script:LastFrameworkArchiveUrl
 
     Smoke-Check -InstallDir $installDir -TargetSkillDir $targetSkillDir
 

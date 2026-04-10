@@ -16,7 +16,9 @@ def test_platform_manifest_matches_contract_pack_version():
     contract_dir = ROOT / "docs" / "framework_contract" / version
 
     assert contract_dir.exists()
-    assert version == manifest["framework_version"]
+    assert "framework_repo_url" not in manifest
+    assert "framework_commit" not in manifest
+    assert "framework_version" not in manifest
     assert (contract_dir / "public-import-surface.md").exists()
     assert (contract_dir / "public-capability-status.md").exists()
     assert (contract_dir / "public-timeline.md").exists()
@@ -30,11 +32,13 @@ def test_pyproject_pins_framework_dependency_and_example_files_exist():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"]["dependencies"]
 
-    assert any(
-        dependency.startswith(
-            "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@55e8223"
-        )
-        for dependency in dependencies
+    framework_dependencies = [
+        dependency for dependency in dependencies if dependency.startswith("automation-framework @ ")
+    ]
+
+    assert len(framework_dependencies) == 1
+    assert framework_dependencies[0] == (
+        "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.6"
     )
 
     profiles = json.loads((ROOT / "config" / "browser_profiles.example.json").read_text(encoding="utf-8"))

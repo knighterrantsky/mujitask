@@ -279,7 +279,9 @@ python -m automation_business_scaffold.cli run \
 
 ## 8. 如何替换 framework 依赖
 
-默认依赖已经 pin 到当前 framework commit：
+`automation-framework` 的安装版本只由 `pyproject.toml` 决定。
+
+当前依赖 pin 为：
 
 ```text
 55e8223a92f562f4053006c55e66fe5491c9be61
@@ -289,8 +291,9 @@ python -m automation_business_scaffold.cli run \
 
 1. 先看新的 `docs/framework_contract/<framework_version>/...`
 2. 再看 `docs/framework_contract/<framework_version>/public-migration-guide.md`
-3. 再更新 pinned framework 依赖
-4. 最后按需迁移 platform-managed 区域
+3. 再更新 `pyproject.toml` 里的 pinned framework 依赖
+4. 如果 contract pack 有变化，再更新 `.platform/platform-manifest.yaml` 中的 `public_contract_pack_version`
+5. 最后按需迁移 platform-managed 区域
 
 当前业务文档入口见：
 
@@ -309,4 +312,4 @@ pytest
 - `GET /tasks` 能看到 demo task
 - demo task 能通过 `/runs` 执行并产出 step / signal / artifact
 - `draft` 模式下带 `submit` effect 的 step 会被 runtime 阻止
-- vendored contract docs 版本与 `.platform/platform-manifest.yaml` 一致
+- vendored contract docs 版本与 `.platform/platform-manifest.yaml` 中的 `public_contract_pack_version` 一致

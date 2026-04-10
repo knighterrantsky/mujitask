@@ -1,8 +1,5 @@
 # Platform-managed: keep this file aligned with the vendored framework contract pack.
 repo_role: business_scaffold
-framework_repo_url: "https://github.com/knighterrantsky/automation-framework.git"
-framework_version: "0.2.1"
-framework_commit: "55e8223a92f562f4053006c55e66fe5491c9be61"
 scaffold_version: "0.1.0"
 public_contract_pack_version: "0.2.1"
 default_change_mode: "business_feature"
