@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 from automation_business_scaffold.extend_script.feishu_api import FeishuBitableClient
@@ -38,7 +39,7 @@ from .tiktok_feishu_sync_flow import (
 DEFAULT_URL_FIELD_NAME = "产品链接"
 DEFAULT_SKU_FIELD_NAME = "SKU-ID"
 DEFAULT_REMARK_FIELD_NAME = "备注"
-DEFAULT_FASTMOSS_PRICE_FIELD_NAME = "fastmoss价格"
+DEFAULT_FASTMOSS_PRICE_FIELD_NAME = "Fastmoss价格"
 DEFAULT_PRODUCT_STATUS_FIELD_NAME = "商品状态"
 DEFAULT_FASTMOSS_SCREENSHOT_FIELD_NAME = "Fastmoss截图"
 DEFAULT_YESTERDAY_SALES_FIELD_NAME = "昨日销量"
@@ -119,6 +120,11 @@ def run_feishu_pending_rows_scan(params: dict[str, Any]) -> dict[str, Any]:
 
 def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
     settings = _build_single_row_settings(params)
+    _log_single_row_timing(
+        record_id=str(settings["record_id"]),
+        phase="single_row_start",
+        run_mode=str(settings["run_mode"]),
+    )
     target = _build_table_target(settings["table_url"], settings["access_token"])
     raw_record = _load_feishu_record(target, settings["record_id"])
     fields = raw_record.get("fields", {})
@@ -171,12 +177,18 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         }
 
     resolved_product_url = _resolve_tiktok_product_url(source_url=source_url, sku_id=sku_id)
+    _log_single_row_timing(
+        record_id=str(settings["record_id"]),
+        phase="tiktok_fetch_start",
+        product_url=resolved_product_url,
+    )
 
     try:
         product = fetch_tiktok_product_record_via_browser(
             resolved_product_url,
             profile_ref=settings["profile_ref"],
             capture_page_screenshot=True,
+            trace_id=str(settings["record_id"]),
         )
     except TikTokSecurityCheckError as exc:
         result_item = {
@@ -243,9 +255,22 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         }
     )
     _validate_product_for_single_row_update(product)
+    _log_single_row_timing(
+        record_id=str(settings["record_id"]),
+        phase="tiktok_product_ready",
+        product_id=product.product_id,
+        normalized_url=product.normalized_url,
+        missing_fields="|".join(missing_fields),
+    )
 
     fastmoss_snapshot: FastMossProductSalesSnapshot | None = None
     if _single_row_needs_fastmoss(missing_fields):
+        _log_single_row_timing(
+            record_id=str(settings["record_id"]),
+            phase="fastmoss_fetch_start",
+            product_id=product.product_id,
+            missing_fields="|".join(missing_fields),
+        )
         fastmoss_snapshot = fetch_fastmoss_product_sales_via_browser(
             product.product_id,
             profile_ref=settings["profile_ref"],
@@ -257,6 +282,11 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
             login_settle_sec=settings["login_settle_sec"],
             capture_detail_screenshot=True,
             verify_login=settings["verify_fastmoss_login"],
+        )
+        _log_single_row_timing(
+            record_id=str(settings["record_id"]),
+            phase="fastmoss_fetch_ready",
+            product_id=product.product_id,
         )
     preview_fields = _build_single_row_write_fields(
         product=product,
@@ -329,6 +359,22 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
         "item": result_item,
         "items": [result_item],
     }
+
+
+def _log_single_row_timing(*, record_id: str, phase: str, **extra: Any) -> None:
+    epoch_ms = int(time.time() * 1000)
+    detail = " ".join(
+        f"{key}={str(value)}"
+        for key, value in extra.items()
+        if str(value or "").strip()
+    )
+    message = (
+        f"[single-row-timing] epoch_ms={epoch_ms} "
+        f"record_id={record_id} phase={phase}"
+    )
+    if detail:
+        message = f"{message} {detail}"
+    print(message, flush=True)
 
 
 def run_fastmoss_keyword_candidate_discovery(params: dict[str, Any]) -> dict[str, Any]:

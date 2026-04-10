@@ -653,7 +653,7 @@ def _select_fastmoss_overview_date(
     target_date: str,
     step_delay_sec: float,
 ) -> bool:
-    _page_click(page, input_locator)
+    _click_fastmoss_precise_target(page, input_locator)
     _sleep(step_delay_sec)
 
     picker = _visible_fastmoss_datepicker(page, overview=overview)
@@ -669,7 +669,7 @@ def _select_fastmoss_overview_date(
         return False
 
     cell_inner = cell.locator(".ant-picker-cell-inner").first
-    _page_click(page, cell_inner if cell_inner.count() else cell)
+    _click_fastmoss_precise_target(page, cell_inner if cell_inner.count() else cell)
     _sleep(step_delay_sec)
     _wait_for_fastmoss_date_value(input_locator, target_date)
     return True
@@ -712,7 +712,7 @@ def _navigate_fastmoss_datepicker_to_month(
             button = _fastmoss_datepicker_nav_button(picker, direction="prev")
         if button is None:
             return False
-        _page_click(page, button)
+        _click_fastmoss_precise_target(page, button)
         _sleep(step_delay_sec)
     return False
 
@@ -772,6 +772,23 @@ def _visible_fastmoss_datepicker(page: Any, *, overview: Any) -> Any:
             continue
         return picker
     raise FastMossStage2Error("FastMoss date picker dropdown did not appear")
+
+
+def _click_fastmoss_precise_target(page: Any, target: Any, *, timeout_ms: int = 5000) -> None:
+    click = getattr(target, "click", None)
+    if callable(click):
+        try:
+            click(timeout=timeout_ms)
+            return
+        except TypeError:
+            try:
+                click()
+                return
+            except Exception:
+                pass
+        except Exception:
+            pass
+    _page_click(page, target)
 
 
 def _wait_for_fastmoss_date_value(input_locator: Any, expected_value: str) -> None:

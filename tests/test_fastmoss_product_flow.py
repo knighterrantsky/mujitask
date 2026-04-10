@@ -417,6 +417,82 @@ def test_extract_fastmoss_yesterday_sales_returns_negative_one_when_target_date_
     ]
 
 
+def test_select_fastmoss_overview_date_prefers_precise_locator_click(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_select_fastmoss_overview_date"],
+    )
+
+    class FakeClickable:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.click_calls: list[int | None] = []
+            self.first = self
+
+        def count(self) -> int:
+            return 1
+
+        def click(self, timeout: int | None = None) -> None:
+            self.click_calls.append(timeout)
+
+    class FakeCell:
+        def __init__(self, inner: FakeClickable) -> None:
+            self.inner = inner
+
+        def locator(self, selector: str):
+            if selector == ".ant-picker-cell-inner":
+                return self.inner
+            raise AssertionError(f"unexpected selector: {selector}")
+
+    fallback_calls: list[str] = []
+    input_locator = FakeClickable("input")
+    cell_inner = FakeClickable("cell_inner")
+
+    monkeypatch.setattr(module, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(module, "_visible_fastmoss_datepicker", lambda page, *, overview: object())
+    monkeypatch.setattr(module, "_navigate_fastmoss_datepicker_to_month", lambda *args, **kwargs: True)
+    monkeypatch.setattr(module, "_find_fastmoss_date_cell", lambda picker, *, target_date: FakeCell(cell_inner))
+    monkeypatch.setattr(
+        module,
+        "_wait_for_fastmoss_date_value",
+        lambda locator, expected_value: fallback_calls.append(f"wait:{expected_value}"),
+    )
+    monkeypatch.setattr(module, "_page_click", lambda page, target: fallback_calls.append("page_click"))
+
+    selected = module._select_fastmoss_overview_date(
+        object(),
+        object(),
+        input_locator=input_locator,
+        target_date="2026-04-06",
+        step_delay_sec=0,
+    )
+
+    assert selected is True
+    assert input_locator.click_calls == [5000]
+    assert cell_inner.click_calls == [5000]
+    assert fallback_calls == ["wait:2026-04-06"]
+
+
+def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_click_fails(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.fastmoss_product_flow",
+        fromlist=["_click_fastmoss_precise_target"],
+    )
+
+    class BrokenTarget:
+        def click(self, timeout: int | None = None) -> None:
+            raise RuntimeError("boom")
+
+    fallback_targets: list[object] = []
+    target = BrokenTarget()
+
+    monkeypatch.setattr(module, "_page_click", lambda page, candidate: fallback_targets.append(candidate))
+
+    module._click_fastmoss_precise_target(object(), target)
+
+    assert fallback_targets == [target]
+
+
 def test_navigate_fastmoss_datepicker_to_month_clicks_next_until_target_month_visible(monkeypatch):
     module = __import__(
         "automation_business_scaffold.flows.fastmoss_product_flow",
