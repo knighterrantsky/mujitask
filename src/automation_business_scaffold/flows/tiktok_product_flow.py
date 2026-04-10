@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import mimetypes
 import json
+import mimetypes
+import random
 import re
 import time
 from dataclasses import replace
@@ -10,6 +11,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from automation_framework.browser import BlockedContext, BlockedHandlingConfig, BlockedResolution
 
 try:
     import requests
@@ -98,6 +101,68 @@ DEFAULT_LOGIN_TOAST_POLL_MS = 250
 DEFAULT_LOGIN_TOAST_STABLE_POLLS = 2
 DEFAULT_SECURITY_CHECK_GRACE_MS = 10000
 DEFAULT_SECURITY_CHECK_POLL_MS = 500
+DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MIN_MS = 700
+DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MAX_MS = 1600
+DEFAULT_TIKTOK_BLOCKER_RETRY_MIN_MS = 180
+DEFAULT_TIKTOK_BLOCKER_RETRY_MAX_MS = 420
+DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS = 280
+DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS = 520
+TIKTOK_LOGIN_PROMO_KEYWORDS = (
+    "welcome! ready for some savings",
+    "exclusive discounts",
+    "create account",
+    "coupon center",
+)
+TIKTOK_EARLY_LOGIN_PROMO_MARKERS = (
+    "tiktok shop",
+    "get app",
+    "search",
+)
+SECURITY_CHECK_STRONG_SIGNALS = (
+    "security check",
+    "security verification",
+    "verify to continue",
+    "verify you are human",
+    "are you human",
+    "unusual traffic",
+    "slide to verify",
+    "drag the slider",
+    "complete the verification",
+    "请完成安全验证",
+    "安全验证",
+    "完成验证",
+    "人机验证",
+    "验证以继续",
+    "/challenge",
+)
+SECURITY_CHECK_WEAK_SIGNALS = (
+    "captcha",
+    "secsdk-captcha",
+)
+SECURITY_CHECK_HTML_FALLBACK_SIGNALS = (
+    "lucifer-captcha",
+    "captcha/index",
+    "captcha/verify",
+)
+UNAVAILABLE_PAGE_SIGNALS: tuple[tuple[str, str], ...] = (
+    ("product not available in this country or region", "Product not available in this country or region"),
+    ("product not available in your country or region", "Product not available in your country or region"),
+    ("this product is no longer available", "This product is no longer available"),
+    ("product no longer available", "Product no longer available"),
+    ("this product is unavailable", "This product is unavailable"),
+    ("product unavailable", "Product unavailable"),
+    ("item unavailable", "Item unavailable"),
+    ("product not available", "Product not available"),
+    ("商品已下架", "商品已下架"),
+    ("该商品已下架", "该商品已下架"),
+    ("商品不存在", "商品不存在"),
+    ("此商品不存在", "此商品不存在"),
+    ("商品不可用", "商品不可用"),
+    ("当前商品不可用", "当前商品不可用"),
+    ("当前地区不可售", "当前地区不可售"),
+    ("当前国家或地区不可售", "当前国家或地区不可售"),
+    ("该商品在您所在地区不可售", "该商品在您所在地区不可售"),
+)
 
 
 class TikTokProductExtractionError(RuntimeError):
@@ -106,6 +171,30 @@ class TikTokProductExtractionError(RuntimeError):
 
 class TikTokSecurityCheckError(TikTokProductExtractionError):
     pass
+
+
+class TikTokProductUnavailableError(TikTokProductExtractionError):
+    pass
+
+
+def _log_tiktok_fetch_timing(*, trace_id: str, phase: str, **extra: Any) -> None:
+    normalized_trace_id = str(trace_id).strip()
+    if not normalized_trace_id:
+        return
+
+    epoch_ms = int(time.time() * 1000)
+    detail = " ".join(
+        f"{key}={str(value)}"
+        for key, value in extra.items()
+        if str(value or "").strip()
+    )
+    message = (
+        f"[tiktok-fetch-timing] epoch_ms={epoch_ms} "
+        f"trace_id={normalized_trace_id} phase={phase}"
+    )
+    if detail:
+        message = f"{message} {detail}"
+    print(message, flush=True)
 
 
 def extract_tiktok_product_id(value: str) -> str:
@@ -163,6 +252,9 @@ def fetch_tiktok_product_record(
     blocked_message = _extract_blocked_message(response.text, response.headers.get("Content-Type", ""))
     if blocked_message:
         raise TikTokProductExtractionError(blocked_message)
+    unavailable_message = _extract_unavailable_message(response.text)
+    if unavailable_message:
+        raise TikTokProductUnavailableError(unavailable_message)
 
     return extract_tiktok_product_from_html(
         response.text,
@@ -178,10 +270,24 @@ def fetch_tiktok_product_record_via_browser(
     timeout_ms: int = 30000,
     capture_page_screenshot: bool = True,
     security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
+    trace_id: str = "",
 ) -> TikTokProductRecord:
-    with open_automation_page(profile_ref=profile_ref) as browser_page:
+    _log_tiktok_fetch_timing(
+        trace_id=trace_id,
+        phase="browser_fetch_start",
+        product_url=product_url,
+    )
+    with open_automation_page(
+        profile_ref=profile_ref,
+        blocked_handling=_tiktok_blocked_handling(),
+    ) as browser_page:
         page = browser_page.page
-        _page_goto(page, product_url)
+        _page_goto(page, product_url, timeout_ms=timeout_ms)
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="page_goto_ready",
+            resolved_url=str(getattr(page, "url", "") or product_url),
+        )
         login_toast_timeout_ms = min(
             max(timeout_ms, DEFAULT_LOGIN_TOAST_POLL_MS),
             DEFAULT_LOGIN_TOAST_TIMEOUT_MS,
@@ -191,7 +297,24 @@ def fetch_tiktok_product_record_via_browser(
             settle_ms=min(DEFAULT_LOGIN_TOAST_SETTLE_MS, login_toast_timeout_ms),
             timeout_ms=login_toast_timeout_ms,
         )
-        dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=timeout_ms)
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="login_toast_settled",
+        )
+        dom_snapshot = _wait_for_product_page_ready(
+            page,
+            timeout_ms=timeout_ms,
+            source_url=product_url,
+            trace_id=trace_id,
+        )
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="product_page_ready",
+            visible_signal_count=dom_snapshot.get("visible_signal_count", ""),
+            has_title=bool(str(dom_snapshot.get("title", "")).strip()),
+            has_price=bool(str(dom_snapshot.get("price_text", "")).strip()),
+            has_shop=bool(str(dom_snapshot.get("shop_name", "")).strip()),
+        )
         html = _safe_page_content(page)
         resolved_url = str(getattr(page, "url", "") or product_url)
         security_check_message = _detect_browser_security_check(
@@ -208,11 +331,28 @@ def fetch_tiktok_product_record_via_browser(
             )
         if security_check_message:
             raise TikTokSecurityCheckError(security_check_message)
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="security_check_cleared",
+            resolved_url=resolved_url,
+        )
+        unavailable_message = (
+            str(dom_snapshot.get("unavailable_message", "")).strip()
+            or _extract_unavailable_message(html)
+            or _extract_unavailable_message(_safe_body_text(page))
+        )
+        if unavailable_message:
+            raise TikTokProductUnavailableError(unavailable_message)
         product = _build_record_from_browser_state(
             html=html,
             dom_snapshot=dom_snapshot,
             source_url=product_url,
             resolved_url=resolved_url,
+        )
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="record_built",
+            product_id=product.product_id,
         )
         return _capture_browser_product_artifacts(
             page,
@@ -220,6 +360,7 @@ def fetch_tiktok_product_record_via_browser(
             dom_snapshot=dom_snapshot,
             capture_page_screenshot=capture_page_screenshot,
             timeout_ms=timeout_ms,
+            trace_id=trace_id,
         )
 
 
@@ -229,6 +370,9 @@ def extract_tiktok_product_from_html(
     source_url: str,
     resolved_url: str = "",
 ) -> TikTokProductRecord:
+    unavailable_message = _extract_unavailable_message(html)
+    if unavailable_message:
+        raise TikTokProductUnavailableError(unavailable_message)
     router_data = _extract_json_script(html, "__MODERN_ROUTER_DATA__")
     component_data = _find_product_component_data(router_data)
 
@@ -399,18 +543,168 @@ def infer_tiktok_product_holiday(
     return "其他" if "其他" in options else ""
 
 
-def _wait_for_product_page_ready(page: Any, *, timeout_ms: int) -> dict[str, Any]:
+def _wait_for_product_page_ready(
+    page: Any,
+    *,
+    timeout_ms: int,
+    source_url: str = "",
+    trace_id: str = "",
+) -> dict[str, Any]:
     _wait_for_domcontentloaded(page)
-    deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
+    effective_timeout_sec = max(timeout_ms, 1000) / 1000.0
+    started_at = time.monotonic()
+    deadline = started_at + effective_timeout_sec
     latest_snapshot: dict[str, Any] = {}
+    poll_count = 0
+    last_probe_signature: tuple[Any, ...] | None = None
 
     while time.monotonic() < deadline:
         latest_snapshot = _read_dom_product_snapshot(page)
-        if int(latest_snapshot.get("visible_signal_count", 0)) >= 2:
+        poll_count += 1
+        resolved_url = str(getattr(page, "url", "") or source_url)
+        page_html = _safe_page_content(page)
+        unavailable_message = _extract_unavailable_message(page_html)
+        capture_ready_state = _read_browser_capture_ready_state(
+            html=page_html,
+            dom_snapshot=latest_snapshot,
+            source_url=source_url,
+            resolved_url=resolved_url,
+        )
+        title_ready = bool(str(latest_snapshot.get("title_text", "")).strip())
+        price_ready = bool(str(latest_snapshot.get("price_text", "")).strip())
+        image_ready = bool(str(latest_snapshot.get("main_image_url", "")).strip())
+        image_loaded = bool(latest_snapshot.get("main_image_loaded"))
+        shop_ready = bool(str(latest_snapshot.get("shop_name", "")).strip())
+        visible_signal_count = int(latest_snapshot.get("visible_signal_count", 0))
+        waiting_for = [
+            name
+            for name, is_ready in (
+                ("title", title_ready),
+                ("price", price_ready),
+                ("image", image_ready),
+            )
+            if not is_ready
+        ]
+        probe_signature = (
+            visible_signal_count,
+            title_ready,
+            price_ready,
+            image_ready,
+            image_loaded,
+            shop_ready,
+            bool(capture_ready_state.get("ready")),
+            str(capture_ready_state.get("reason", "")).strip(),
+            tuple(waiting_for),
+        )
+        if trace_id and probe_signature != last_probe_signature:
+            elapsed_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+            _log_tiktok_fetch_timing(
+                trace_id=trace_id,
+                phase="product_page_wait_probe",
+                poll=poll_count,
+                elapsed_ms=elapsed_ms,
+                visible_signal_count=visible_signal_count,
+                title_ready=title_ready,
+                price_ready=price_ready,
+                image_ready=image_ready,
+                image_loaded=image_loaded,
+                shop_ready=shop_ready,
+                capture_ready=bool(capture_ready_state.get("ready")),
+                capture_reason=str(capture_ready_state.get("reason", "")).strip(),
+                waiting_for="|".join(waiting_for) or "ready",
+            )
+            last_probe_signature = probe_signature
+        if visible_signal_count >= 2:
+            if trace_id:
+                _log_tiktok_fetch_timing(
+                    trace_id=trace_id,
+                    phase="product_page_wait_satisfied",
+                    poll=poll_count,
+                    elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    visible_signal_count=visible_signal_count,
+                )
+            return latest_snapshot
+        if unavailable_message:
+            if trace_id:
+                _log_tiktok_fetch_timing(
+                    trace_id=trace_id,
+                    phase="product_page_wait_unavailable",
+                    poll=poll_count,
+                    elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    unavailable_message=unavailable_message,
+                )
+            return {
+                **latest_snapshot,
+                "unavailable_message": unavailable_message,
+            }
+        if capture_ready_state.get("ready"):
+            if trace_id:
+                _log_tiktok_fetch_timing(
+                    trace_id=trace_id,
+                    phase="product_page_wait_capture_ready",
+                    poll=poll_count,
+                    elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    capture_reason=str(capture_ready_state.get("reason", "")).strip() or "record_and_image_ready",
+                )
             return latest_snapshot
         _safe_wait_for_timeout(page, 250)
 
+    if trace_id:
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="product_page_wait_timeout",
+            poll=poll_count,
+            elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+            visible_signal_count=int(latest_snapshot.get("visible_signal_count", 0)),
+            title_ready=bool(str(latest_snapshot.get("title_text", "")).strip()),
+            price_ready=bool(str(latest_snapshot.get("price_text", "")).strip()),
+            image_ready=bool(str(latest_snapshot.get("main_image_url", "")).strip()),
+            image_loaded=bool(latest_snapshot.get("main_image_loaded")),
+            shop_ready=bool(str(latest_snapshot.get("shop_name", "")).strip()),
+        )
     return latest_snapshot
+
+
+def _read_browser_capture_ready_state(
+    *,
+    html: str,
+    dom_snapshot: dict[str, Any],
+    source_url: str,
+    resolved_url: str,
+) -> dict[str, Any]:
+    if not html.strip():
+        return {
+            "ready": False,
+            "reason": "missing_html",
+        }
+
+    try:
+        product = _build_record_from_browser_state(
+            html=html,
+            dom_snapshot=dom_snapshot,
+            source_url=source_url,
+            resolved_url=resolved_url,
+        )
+    except TikTokProductUnavailableError:
+        raise
+    except TikTokProductExtractionError as exc:
+        reason = str(exc).strip().lower()
+        reason = reason.removeprefix("failed to extract tiktok product ").removesuffix(" from browser page").strip()
+        return {
+            "ready": False,
+            "reason": reason.replace(" ", "_") or "incomplete_product_data",
+        }
+
+    if not product.shop_name.strip():
+        return {
+            "ready": False,
+            "reason": "missing_shop_name",
+        }
+
+    return {
+        "ready": True,
+        "reason": "record_and_image_ready",
+    }
 
 
 def _build_record_from_browser_state(
@@ -428,6 +722,8 @@ def _build_record_from_browser_state(
                 source_url=source_url,
                 resolved_url=resolved_url,
             )
+        except TikTokProductUnavailableError:
+            raise
         except TikTokProductExtractionError:
             router_record = None
 
@@ -482,15 +778,29 @@ def _capture_browser_product_artifacts(
     dom_snapshot: dict[str, Any],
     capture_page_screenshot: bool,
     timeout_ms: int,
+    trace_id: str = "",
 ) -> TikTokProductRecord:
     updated = _materialize_browser_main_image(
         page,
         product,
         dom_snapshot=dom_snapshot,
         timeout_ms=timeout_ms,
+        trace_id=trace_id,
+    )
+    _log_tiktok_fetch_timing(
+        trace_id=trace_id,
+        phase="main_image_ready",
+        product_id=updated.product_id,
+        main_image_file_name=updated.main_image_file_name,
     )
 
     if not capture_page_screenshot:
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="browser_fetch_complete",
+            product_id=updated.product_id,
+            capture_page_screenshot=False,
+        )
         return updated
 
     screenshot_dir = Path(DEFAULT_PAGE_SCREENSHOT_DIR)
@@ -498,12 +808,25 @@ def _capture_browser_product_artifacts(
     screenshot_file_name = f"{product.product_id}-product-page.png"
     screenshot_path = screenshot_dir / screenshot_file_name
     page.screenshot(path=str(screenshot_path), full_page=True)
-    return replace(
+    final_product = replace(
         updated,
         product_page_screenshot_local_path=str(screenshot_path),
         product_page_screenshot_file_name=screenshot_file_name,
         product_page_screenshot_mime_type="image/png",
     )
+    _log_tiktok_fetch_timing(
+        trace_id=trace_id,
+        phase="page_screenshot_ready",
+        product_id=final_product.product_id,
+        screenshot_file_name=screenshot_file_name,
+    )
+    _log_tiktok_fetch_timing(
+        trace_id=trace_id,
+        phase="browser_fetch_complete",
+        product_id=final_product.product_id,
+        capture_page_screenshot=True,
+    )
+    return final_product
 
 
 def _materialize_browser_main_image(
@@ -512,10 +835,20 @@ def _materialize_browser_main_image(
     *,
     dom_snapshot: dict[str, Any],
     timeout_ms: int,
+    trace_id: str = "",
 ) -> TikTokProductRecord:
     main_image_selector = str(dom_snapshot.get("main_image_selector", "")).strip()
     try:
-        return download_tiktok_product_main_image(product, download_dir=DEFAULT_IMAGE_DOWNLOAD_DIR)
+        downloaded = download_tiktok_product_main_image(
+            product,
+            download_dir=DEFAULT_IMAGE_DOWNLOAD_DIR,
+        )
+        _log_tiktok_fetch_timing(
+            trace_id=trace_id,
+            phase="main_image_download_ready",
+            product_id=downloaded.product_id,
+        )
+        return downloaded
     except Exception:
         pass
 
@@ -537,12 +870,19 @@ def _materialize_browser_main_image(
             main_image_path = image_dir / main_image_file_name
             _capture_locator_screenshot(page, main_image_path, selector=screenshot_selector)
 
-            return replace(
+            captured = replace(
                 product,
                 main_image_local_path=str(main_image_path),
                 main_image_file_name=main_image_file_name,
                 main_image_mime_type="image/png",
             )
+            _log_tiktok_fetch_timing(
+                trace_id=trace_id,
+                phase="main_image_screenshot_ready",
+                product_id=captured.product_id,
+                selector=screenshot_selector,
+            )
+            return captured
         except Exception:
             pass
 
@@ -689,6 +1029,191 @@ def _capture_locator_screenshot(page: Any, target_path: Path, *, selector: str) 
     raise TikTokProductExtractionError("failed to locate TikTok product main image element")
 
 
+def _tiktok_blocked_handling() -> BlockedHandlingConfig:
+    return BlockedHandlingConfig(handler=_handle_tiktok_blocked_context)
+
+
+def _handle_tiktok_blocked_context(automation_page: Any, event: BlockedContext) -> BlockedResolution:
+    if not _is_tiktok_login_promo_blocker(event):
+        return BlockedResolution.resume_default()
+
+    page = getattr(automation_page, "raw_page", None) or getattr(automation_page, "page", None) or automation_page
+    if _dismiss_tiktok_login_promo(page):
+        if _tiktok_product_content_is_visible(page):
+            return BlockedResolution.force_continue(
+                "dismissed TikTok login promo popover and product content is visible"
+            )
+        if str(getattr(event, "detection_source", "") or "").strip().lower() == "body":
+            return BlockedResolution.force_continue(
+                "dismissed TikTok login promo popover from body-level blocker probe"
+            )
+        return BlockedResolution.handled_recheck("dismissed TikTok login promo popover")
+    if _tiktok_product_content_is_visible(page):
+        return BlockedResolution.force_continue("ignored non-blocking TikTok login promo popover")
+    return BlockedResolution.resume_default()
+
+
+def _is_tiktok_login_promo_blocker(event: BlockedContext) -> bool:
+    page_url = str(getattr(event, "page_url", "") or "").lower()
+    blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
+    if "tiktok.com/shop/pdp/" not in page_url or blocker_type not in {"guide_overlay", "dom_modal", "unknown"}:
+        return False
+
+    candidate_texts = _collect_tiktok_blocked_text_candidates(event)
+    if not any(_contains_login_prompt(text) for text in candidate_texts):
+        return False
+    if any("create account" in text for text in candidate_texts):
+        return True
+    if any(keyword in text for text in candidate_texts for keyword in TIKTOK_LOGIN_PROMO_KEYWORDS):
+        return True
+    return any(marker in text for text in candidate_texts for marker in TIKTOK_EARLY_LOGIN_PROMO_MARKERS)
+
+
+def _collect_tiktok_blocked_text_candidates(event: BlockedContext) -> tuple[str, ...]:
+    candidates: list[str] = []
+    normalized_summary = _normalize_browser_text(getattr(event, "summary", ""))
+    if normalized_summary:
+        candidates.append(normalized_summary)
+
+    dom_summary = getattr(event, "dom_summary", None)
+    if isinstance(dom_summary, dict):
+        dialogs = dom_summary.get("dialogs")
+        if isinstance(dialogs, list):
+            for item in dialogs:
+                if not isinstance(item, dict):
+                    continue
+                normalized_dialog_text = _normalize_browser_text(item.get("text", ""))
+                if normalized_dialog_text:
+                    candidates.append(normalized_dialog_text)
+        normalized_body_text = _normalize_browser_text(dom_summary.get("body_text_excerpt", ""))
+        if normalized_body_text:
+            candidates.append(normalized_body_text)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for text in candidates:
+        if text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return tuple(deduped)
+
+
+def _contains_login_prompt(text: str) -> bool:
+    return any(token in text for token in ("log in", "login", "sign in", "signin"))
+
+
+def _dismiss_tiktok_login_promo(page: Any) -> bool:
+    if not _read_tiktok_login_promo_state(page).get("visible"):
+        return False
+
+    _wait_with_random_delay(
+        page,
+        min_ms=DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MIN_MS,
+        max_ms=DEFAULT_TIKTOK_BLOCKER_PRE_DISMISS_MAX_MS,
+    )
+
+    keyboard = getattr(page, "keyboard", None)
+    if keyboard is not None and hasattr(keyboard, "press"):
+        try:
+            keyboard.press("Escape")
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS,
+            )
+        except Exception:
+            pass
+        if not _read_tiktok_login_promo_state(page).get("visible"):
+            return True
+
+    mouse = getattr(page, "mouse", None)
+    if mouse is not None and hasattr(mouse, "click"):
+        try:
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_RETRY_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_RETRY_MAX_MS,
+            )
+            mouse.click(40, 40)
+            _wait_with_random_delay(
+                page,
+                min_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS,
+                max_ms=DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS,
+            )
+        except Exception:
+            pass
+        if not _read_tiktok_login_promo_state(page).get("visible"):
+            return True
+
+    return False
+
+
+def _tiktok_product_content_is_visible(page: Any) -> bool:
+    try:
+        dom_snapshot = _read_dom_product_snapshot(page)
+    except Exception:
+        return False
+    return int(dom_snapshot.get("visible_signal_count", 0)) >= 2
+
+
+def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
+    try:
+        payload = page.evaluate(
+            """(args) => {
+                const selectors = args.selectors || [];
+                const keywords = (args.keywords || [])
+                  .map((value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase())
+                  .filter(Boolean);
+
+                const normalizeText = (value) => String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const rect = element.getBoundingClientRect();
+                  const style = window.getComputedStyle(element);
+                  return rect.width >= 120 && rect.height >= 60 &&
+                    style.visibility !== "hidden" &&
+                    style.display !== "none" &&
+                    Number(style.opacity || "1") !== 0;
+                };
+
+                for (const selector of selectors) {
+                  for (const element of document.querySelectorAll(selector)) {
+                    if (!isVisible(element)) continue;
+                    const text = normalizeText(element.innerText || element.textContent || "");
+                    const loweredText = text.toLowerCase();
+                    if (!keywords.every((keyword) => loweredText.includes(keyword))) continue;
+                    return {
+                      visible: true,
+                      text,
+                      selector,
+                    };
+                  }
+                }
+
+                return {
+                  visible: false,
+                  text: "",
+                  selector: "",
+                };
+            }""",
+            {
+                "selectors": ["[role='dialog']", "[aria-modal='true']", "dialog", "[class*='popover']"],
+                "keywords": ["log in", "create account"],
+            },
+        )
+    except Exception:
+        return {
+            "visible": False,
+            "text": "",
+            "selector": "",
+        }
+    return payload if isinstance(payload, dict) else {}
+
+
 def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
     payload = page.evaluate(
         """(args) => {
@@ -805,6 +1330,21 @@ def _extract_blocked_message(text: str, content_type: str) -> str | None:
             return message.strip()
 
     return None
+
+
+def _extract_unavailable_message(text: str) -> str | None:
+    normalized_text = _normalize_browser_text(text)
+    if not normalized_text:
+        return None
+
+    for needle, display in UNAVAILABLE_PAGE_SIGNALS:
+        if needle in normalized_text:
+            return f"TikTok product unavailable: {display}"
+    return None
+
+
+def _normalize_browser_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
 def _extract_json_script(html: str, script_id: str) -> dict[str, Any]:
@@ -999,15 +1539,29 @@ def _coerce_normalized_url(value: str) -> str:
         return ""
 
 
-def _page_goto(page: Any, url: str) -> None:
+def _page_goto(page: Any, url: str, *, timeout_ms: int = 30000) -> None:
     navigate = getattr(page, "navigate", None)
     if callable(navigate):
-        navigate(url)
-        return
-    try:
-        page.goto(url, wait_until="domcontentloaded")
-    except TypeError:
-        page.goto(url)
+        try:
+            navigate(url, wait_until="domcontentloaded", timeout_ms=timeout_ms)
+            return
+        except TypeError:
+            pass
+
+    goto = getattr(page, "goto", None)
+    if callable(goto):
+        try:
+            goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except TypeError:
+            try:
+                goto(url, wait_until="domcontentloaded")
+                return
+            except TypeError:
+                goto(url)
+                return
+
+    raise TypeError("Page object does not support navigation.")
 
 
 def _wait_for_domcontentloaded(page: Any) -> None:
@@ -1022,6 +1576,16 @@ def _safe_wait_for_timeout(page: Any, timeout_ms: int) -> None:
         wait_for_timeout(timeout_ms)
         return
     time.sleep(timeout_ms / 1000.0)
+
+
+def _random_delay_ms(min_ms: int, max_ms: int) -> int:
+    normalized_min = max(int(min_ms), 0)
+    normalized_max = max(int(max_ms), normalized_min)
+    return random.randint(normalized_min, normalized_max)
+
+
+def _wait_with_random_delay(page: Any, *, min_ms: int, max_ms: int) -> None:
+    _safe_wait_for_timeout(page, _random_delay_ms(min_ms, max_ms))
 
 
 def _wait_for_login_toast_to_settle(
@@ -1197,7 +1761,11 @@ def _wait_for_security_check_intervention(
             if int(latest_dom_snapshot.get("visible_signal_count", 0)) < 2:
                 remaining_ms = max(int((deadline - time.monotonic()) * 1000), 0)
                 if remaining_ms > 0:
-                    latest_dom_snapshot = _wait_for_product_page_ready(page, timeout_ms=remaining_ms)
+                    latest_dom_snapshot = _wait_for_product_page_ready(
+                        page,
+                        timeout_ms=remaining_ms,
+                        source_url=product_url,
+                    )
                     latest_html = _safe_page_content(page)
                     latest_resolved_url = str(getattr(page, "url", "") or product_url)
                     latest_security_message = _detect_browser_security_check(
@@ -1221,43 +1789,40 @@ def _detect_browser_security_check(
     resolved_url: str,
     dom_snapshot: dict[str, Any],
 ) -> str | None:
-    if int(dom_snapshot.get("visible_signal_count", 0)) >= 2 and html and "__MODERN_ROUTER_DATA__" in html:
+    visible_signal_count = int(dom_snapshot.get("visible_signal_count", 0))
+    has_router_data = bool(html and "__MODERN_ROUTER_DATA__" in html)
+    if visible_signal_count >= 2 and has_router_data:
         return None
 
-    haystack = "\n".join(
-        part
-        for part in (
-            str(resolved_url or ""),
-            _safe_body_text(page),
-            str(html or ""),
-        )
-        if part
-    ).lower()
-    if not haystack:
-        return None
+    normalized_url = _normalize_browser_text(resolved_url)
+    normalized_body = _normalize_browser_text(_safe_body_text(page))
+    normalized_html = _normalize_browser_text(html)
 
-    security_signals = (
-        "captcha",
-        "security check",
-        "security verification",
-        "verify to continue",
-        "verify you are human",
-        "are you human",
-        "unusual traffic",
-        "slide to verify",
-        "drag the slider",
-        "complete the verification",
-        "请完成安全验证",
-        "安全验证",
-        "完成验证",
-        "人机验证",
-        "验证以继续",
-        "secsdk-captcha",
-        "/challenge",
+    signal = _find_security_check_signal(
+        (normalized_url, normalized_body),
+        SECURITY_CHECK_STRONG_SIGNALS + SECURITY_CHECK_WEAK_SIGNALS,
     )
-    for signal in security_signals:
-        if signal in haystack:
-            return f"TikTok security check detected: {signal}"
+    if signal:
+        return f"TikTok security check detected: {signal}"
+
+    signal = _find_security_check_signal((normalized_html,), SECURITY_CHECK_STRONG_SIGNALS)
+    if signal:
+        return f"TikTok security check detected: {signal}"
+
+    if visible_signal_count > 0 or has_router_data:
+        return None
+
+    signal = _find_security_check_signal((normalized_html,), SECURITY_CHECK_HTML_FALLBACK_SIGNALS)
+    if signal:
+        return f"TikTok security check detected: {signal}"
+    return None
+
+
+def _find_security_check_signal(haystacks: tuple[str, ...], signals: tuple[str, ...]) -> str | None:
+    for signal in signals:
+        for haystack in haystacks:
+            if haystack and signal in haystack:
+                return signal
     return None
 
 
