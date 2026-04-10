@@ -1,8 +1,8 @@
 # Business 文档总览
 
-更新时间：`2026-04-09`
+更新时间：`2026-04-10`
 
-`docs/business` 当前只保留 5 个主文档和 1 个总览入口。
+`docs/business` 当前只保留 6 个主文档和 1 个总览入口。
 
 ## 主文档
 
@@ -11,11 +11,13 @@
 3. [03-部署文档.md](./03-部署文档.md)
 4. [04-openclaw-skills.md](./04-openclaw-skills.md)
 5. [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md)
+6. [06-openclaw-cli-升级方案.md](./06-openclaw-cli-升级方案.md)
 
 ## 实际可用的 Skill 文件
 
 - [skills/mujitask-tiktok-feishu-sync/SKILL.md](../../skills/mujitask-tiktok-feishu-sync/SKILL.md)
 - [examples/openclaw/deploy-openclaw.sh](../../examples/openclaw/deploy-openclaw.sh)
+- [examples/openclaw/update-openclaw.sh](../../examples/openclaw/update-openclaw.sh)
 - [examples/openclaw/deploy-openclaw.ps1](../../examples/openclaw/deploy-openclaw.ps1)
 
 ## 当前正式业务入口

@@ -116,6 +116,8 @@ main() {
   local python_bin="$INSTALL_DIR/.venv/bin/python"
   local browser_profiles="$INSTALL_DIR/config/browser_profiles.json"
   local deploy_state="$INSTALL_DIR/runtime/deployment/openclaw-deploy.env"
+  local install_layout_version=""
+  local update_supported=""
   local skills_root="$HOME/.openclaw/workspace/skills"
 
   log "Checking deployed skill directory"
@@ -137,6 +139,44 @@ main() {
   check_file "$python_bin"
   check_file "$browser_profiles"
   check_file "$deploy_state"
+
+  install_layout_version="$("$python_bin" - "$deploy_state" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = ""
+for raw_line in path.read_text(encoding="utf-8").splitlines():
+    stripped = raw_line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in raw_line:
+        continue
+    key, raw_value = raw_line.split("=", 1)
+    if key.strip().lstrip("\ufeff") == "INSTALL_LAYOUT_VERSION":
+        value = raw_value.strip().strip('"').strip("'")
+        break
+print(value)
+PY
+)"
+  update_supported="$("$python_bin" - "$deploy_state" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = ""
+for raw_line in path.read_text(encoding="utf-8").splitlines():
+    stripped = raw_line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in raw_line:
+        continue
+    key, raw_value = raw_line.split("=", 1)
+    if key.strip().lstrip("\ufeff") == "UPDATE_SUPPORTED":
+        value = raw_value.strip().strip('"').strip("'")
+        break
+print(value)
+PY
+)"
+  [[ "$install_layout_version" == "1" ]] || fail "INSTALL_LAYOUT_VERSION=1 is missing in $deploy_state."
+  [[ "$update_supported" == "1" ]] || fail "UPDATE_SUPPORTED=1 is missing in $deploy_state."
+  log "OK: deployment state marks this install as update-openclaw compatible"
 
   log "Checking SKILL.md frontmatter"
   check_skill_frontmatter "$SKILL_DIR/SKILL.md" "$python_bin"

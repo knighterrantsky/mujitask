@@ -130,6 +130,7 @@ v3.0 的本地配置项应包含：
 - `FEISHU_ACCESS_TOKEN` 固定由 skill 配置提供。
 - `FASTMOSS_PHONE` 和 `FASTMOSS_PASSWORD` 固定由 skill 配置提供。
 - `关键词` 和 `7日销量阈值` 只来自用户对话或调度参数，不进入 skill 固定配置。
+- `update-openclaw.sh` 刷新已部署 skill 时，必须保留已有 `skill.local.env` 中的扩展键，不得删除 `BROWSER_PROFILE_REF`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 或其他未知本地键。
 
 浏览器配置约束：
 
