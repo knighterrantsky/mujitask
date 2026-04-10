@@ -56,16 +56,16 @@ metadata:
 - 默认在一次用户请求内自动推进到详情补全结束；只有遇到真实错误、安全验证未解除或明确停止条件时，才允许中断。
 - 用户如果要求“写入当前飞书表”，则不能在只完成 `keyword-candidates` 或 `insert-seed-row` 后回复“已完成”。
 - 定时更新入口必须按这个顺序执行：
-  1. `run_fastmoss_login_check_step.sh`
-  2. `run_cleanup_step.sh`
-  3. `run_pending_rows_step.sh`
-  4. 对 `target_rows` 执行 `run_single_row_update_step.sh`
+  1. `run_cleanup_step.sh`
+  2. `run_pending_rows_step.sh`
+  3. 对 `target_rows` 执行 `run_single_row_update_step.sh`
 - 关键词搜索入口必须按这个顺序执行：
   1. `run_fastmoss_login_check_step.sh`
   2. `run_keyword_candidate_step.sh`
   3. 对每个 `candidate_new` 执行 `run_insert_seed_row_step.sh`
   4. 对新写入的 `record_id` 执行 `run_single_row_update_step.sh`
 - 如果 `run_insert_seed_row_step.sh` 没有返回新的 `record_id`，不要把该商品计入“详情已补全”。
+- `run_fastmoss_login_check_step.sh` 仅用于关键词搜索批次前置校验或人工排障，不是定时更新默认步骤。
 
 ## 输出约束
 
@@ -86,18 +86,18 @@ metadata:
 
 推荐步骤：
 
-1. `bash run_fastmoss_login_check_step.sh`
-2. `bash run_cleanup_step.sh`
-3. `bash run_pending_rows_step.sh`
-4. 从 pending 结果中读取 `target_rows`
-5. 对 `target_rows` 继续执行：
-   - `bash run_single_row_update_step.sh --record-id <record_id> --skip-fastmoss-login-validation`
+1. `bash run_cleanup_step.sh`
+2. `bash run_pending_rows_step.sh`
+3. 从 pending 结果中读取 `target_rows`
+4. 对 `target_rows` 继续执行：
+   - `bash run_single_row_update_step.sh --record-id <record_id>`
 
 固定规则：
 
 - 必须先执行链接标准化与去重。
 - 商品详情更新时，必须先抓 TikTok 信息，再进入 FastMoss 详情页。
 - 打开 FastMoss 商品详情页后必须先截图，再抓取销量信息。
+- 单条更新默认直开 FastMoss 商品详情页；如果详情页要求登录，则自动补登录后继续执行。
 
 ## 关键词搜索入口
 
@@ -136,7 +136,8 @@ metadata:
 
 ## 运行时处理规则
 
-- 如果同一批次里已经做过 FastMoss 登录校验，后续步骤复用 `--skip-fastmoss-login-validation`。
+- 定时更新默认不做 FastMoss 前置登录校验，直接进入详情补全；如果详情页要求登录，依赖详情抓取链路自动补登录。
+- 关键词批次如果已经做过 FastMoss 登录校验，后续步骤继续复用 `--skip-fastmoss-login-validation`。
 - 如果为了稳定性需要拆成多个内部子任务，默认自动继续，不要等待用户追加同类指令。
 - 如果 TikTok 遇到安全验证，先给人工介入窗口；窗口结束后仍未解除，再按跳过处理。
 - 结束前依然输出 `__OPENCLAW_RESULT__ <json>`。

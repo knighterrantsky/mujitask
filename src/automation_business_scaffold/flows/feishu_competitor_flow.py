@@ -605,7 +605,7 @@ def _build_single_row_settings(params: dict[str, Any]) -> dict[str, Any]:
         "login_settle_sec": max(0.0, _coerce_float(params.get("login_settle_sec"), 8.0)),
         "verify_fastmoss_login": _coerce_bool(
             params.get("verify_fastmoss_login", params.get("fastmoss_verify_login")),
-            default=True,
+            default=False,
         ),
         "apply_mutations": _should_apply_mutations(run_mode),
     }

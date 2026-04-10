@@ -1,6 +1,6 @@
 # OpenClaw Skills
 
-更新时间：`2026-04-07`
+更新时间：`2026-04-10`
 
 本文件面向 OpenClaw skill 配置与运行，描述 skill 的设计原则、编排边界与运行约束。
 
@@ -86,6 +86,10 @@ skill 名称继续沿用：
 - `start_browser_cdp.sh`
 - `start_browser_cdp.ps1`
 
+其中：
+
+- `run_fastmoss_login_check_step.sh` 保留用于关键词批次前置校验和人工排障，不再是定时更新默认必经步骤。
+
 ### 2.2 v3.0 目标结构
 
 v3.0 的 skill 结构逻辑上分为三层：
@@ -158,6 +162,11 @@ v3.0 的本地配置项应包含：
 1. 链接标准化去重
 2. 识别待更新行
 3. 对待更新行逐条执行商品详情更新流
+
+补充规则：
+
+- 定时更新入口默认不先执行 FastMoss 账户中心登录校验。
+- 单条详情更新默认直接打开 FastMoss 商品详情页；如果详情页要求登录，则在详情抓取过程中自动补登录并继续执行。
 
 ### 4.2 关键词搜索入口
 
@@ -269,6 +278,7 @@ skill 执行定时更新模式时，规则固定为：
 4. 对每条待更新记录执行商品详情更新流。
 5. 商品详情更新流中必须先抓 TikTok 信息，再进入 FastMoss 详情页。
 6. 打开 FastMoss 详情页后先截图，再抓取销量信息。
+7. 默认不先执行 FastMoss 账户中心登录校验，而是直接进入详情页；如详情页处于游客态，则自动补登录后继续抓取。
 
 ### 6.2 关键词搜索模式
 
@@ -290,6 +300,7 @@ skill 执行关键词搜索模式时，规则固定为：
 
 - 当前定时更新链路已经拆成 `cleanup -> pending_rows_scan -> single_row_update`。
 - 当前 skill 已同时提供定时更新与关键词找品所需的 step 脚本。
+- `run_fastmoss_login_check_step.sh` 当前保留用于关键词批次前置校验和人工排障。
 - 当前 skill 本地配置已经包含 FastMoss 登录信息。
 - 当前输出 helper 以单次 run-summary 为主，组合阶段摘要仍由上层入口决定。
 
@@ -352,3 +363,7 @@ v3.0 目标：
 - [03-部署文档.md](./03-部署文档.md)
 - [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md)
 - [../../skills/mujitask-tiktok-feishu-sync/SKILL.md](../../skills/mujitask-tiktok-feishu-sync/SKILL.md)
+
+## 12. 变更记录
+
+- `2026-04-10`：定时更新默认去掉 FastMoss 前置登录校验，改为 `cleanup -> pending_rows -> single_row_update`；关键词链路继续保留前置登录校验；补充 `run_fastmoss_login_check_step.sh` 的角色说明。
