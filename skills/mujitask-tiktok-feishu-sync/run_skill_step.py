@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -222,6 +223,63 @@ def _build_result_json(
     return result.stdout.strip()
 
 
+def _resolve_profile_ref_for_task(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+    ensure_ready: bool,
+) -> str:
+    browser_target = _resolve_browser_target(
+        python_bin=python_bin,
+        install_dir=install_dir,
+        requested_profile_ref=requested_profile_ref,
+        fallback_profile_ref=fallback_profile_ref,
+    )
+    if ensure_ready:
+        _ensure_browser_ready(
+            python_bin=python_bin,
+            script_dir=SCRIPT_DIR,
+            browser_target=browser_target,
+        )
+    return str(browser_target["profile_ref"])
+
+
+def _single_row_submit_params(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+    record_id: str,
+    product_url: str,
+    sku_id: str,
+    skip_fastmoss_login_validation: bool,
+    ensure_ready: bool,
+) -> list[str]:
+    resolved_profile_ref = _resolve_profile_ref_for_task(
+        python_bin=python_bin,
+        install_dir=install_dir,
+        requested_profile_ref=requested_profile_ref,
+        fallback_profile_ref=fallback_profile_ref,
+        ensure_ready=ensure_ready,
+    )
+    params = [
+        f"profile_ref={resolved_profile_ref}",
+        f"record_id={record_id}",
+        "fastmoss_phone_env=FASTMOSS_PHONE",
+        "fastmoss_password_env=FASTMOSS_PASSWORD",
+    ]
+    if product_url:
+        params.append(f"product_url={product_url}")
+    if sku_id:
+        params.append(f"sku_id={sku_id}")
+    if skip_fastmoss_login_validation:
+        params.append("verify_fastmoss_login=false")
+    return params
+
+
 def _run_cli_task(
     *,
     install_dir: Path,
@@ -308,6 +366,48 @@ def _run_cli_task(
     return cli_status
 
 
+def _run_cli_task_capture_payload(
+    *,
+    install_dir: Path,
+    python_bin: Path,
+    cli_bin: Path,
+    task_name: str,
+    run_mode: str,
+    params: list[str],
+    stdout_prefix: str,
+    extra_env: dict[str, str],
+) -> tuple[int, dict[str, Any]]:
+    with tempfile.TemporaryDirectory(prefix="mujitask-skill-result-") as temp_dir:
+        result_file = Path(temp_dir) / "result.json"
+        env = dict(extra_env)
+        env["MUJITASK_RESULT_FILE"] = str(result_file)
+        env["MUJITASK_SUPPRESS_RESULT_MARKER"] = "1"
+        status = _run_cli_task(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name=task_name,
+            run_mode=run_mode,
+            params=params,
+            stdout_prefix=stdout_prefix,
+            extra_env=env,
+        )
+        payload = _read_json_file(result_file)
+        return status, payload if isinstance(payload, dict) else {}
+
+
+def _emit_final_result(payload: dict[str, Any]) -> int:
+    result_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if os.getenv("MUJITASK_RESULT_FILE"):
+        Path(os.environ["MUJITASK_RESULT_FILE"]).write_text(f"{result_json}\n", encoding="utf-8")
+    if os.getenv("MUJITASK_SUPPRESS_RESULT_MARKER", "0") != "1":
+        print(f"__OPENCLAW_RESULT__ {result_json}")
+    status = str(payload.get("status", "") or payload.get("execution_status", "") or "").strip().lower()
+    if status in {"failed", "error"}:
+        return 1
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic OpenClaw skill steps.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -329,6 +429,43 @@ def _build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--product-url", default="")
     update_parser.add_argument("--sku-id", default="")
     update_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    submit_parser = subparsers.add_parser("single-row-update-submit")
+    submit_parser.add_argument("--run-mode", default="canary")
+    submit_parser.add_argument("--record-id", required=True)
+    submit_parser.add_argument("--profile-ref", default="")
+    submit_parser.add_argument("--product-url", default="")
+    submit_parser.add_argument("--sku-id", default="")
+    submit_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    status_parser = subparsers.add_parser("single-row-update-status")
+    status_parser.add_argument("--run-mode", default="canary")
+    status_parser.add_argument("--request-id", default="")
+    status_parser.add_argument("--execution-id", default="")
+
+    result_parser = subparsers.add_parser("single-row-update-result")
+    result_parser.add_argument("--run-mode", default="canary")
+    result_parser.add_argument("--request-id", default="")
+    result_parser.add_argument("--execution-id", default="")
+
+    daemon_once_parser = subparsers.add_parser("single-row-update-daemon-once")
+    daemon_once_parser.add_argument("--run-mode", default="canary")
+
+    daemon_loop_parser = subparsers.add_parser("single-row-update-daemon-loop")
+    daemon_loop_parser.add_argument("--run-mode", default="canary")
+    daemon_loop_parser.add_argument("--max-iterations", type=int, default=0)
+    daemon_loop_parser.add_argument("--max-idle-cycles", type=int, default=1)
+    daemon_loop_parser.add_argument("--stop-when-idle", action="store_true")
+
+    submit_then_daemon_parser = subparsers.add_parser("single-row-update-submit-then-daemon-loop")
+    submit_then_daemon_parser.add_argument("--run-mode", default="canary")
+    submit_then_daemon_parser.add_argument("--record-id", required=True)
+    submit_then_daemon_parser.add_argument("--profile-ref", default="")
+    submit_then_daemon_parser.add_argument("--product-url", default="")
+    submit_then_daemon_parser.add_argument("--sku-id", default="")
+    submit_then_daemon_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+    submit_then_daemon_parser.add_argument("--max-iterations", type=int, default=0)
+    submit_then_daemon_parser.add_argument("--max-idle-cycles", type=int, default=1)
 
     keyword_parser = subparsers.add_parser("keyword-candidates")
     keyword_parser.add_argument("--run-mode", default="draft")
@@ -404,27 +541,172 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "single-row-update":
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-step"
-        params.append(f"record_id={args.record_id}")
-        if args.product_url:
-            params.append(f"product_url={args.product_url}")
-        if args.sku_id:
-            params.append(f"sku_id={args.sku_id}")
-        browser_target = _resolve_browser_target(
+        params.extend(
+            _single_row_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                record_id=args.record_id,
+                product_url=args.product_url,
+                sku_id=args.sku_id,
+                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+                ensure_ready=True,
+            )
+        )
+    elif args.command == "single-row-update-submit":
+        task_name = "feishu_single_row_update"
+        prefix = "single-row-update-submit-step"
+        params = ["control_action=submit"]
+        params.extend(
+            _single_row_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                record_id=args.record_id,
+                product_url=args.product_url,
+                sku_id=args.sku_id,
+                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+                ensure_ready=False,
+            )
+        )
+    elif args.command == "single-row-update-status":
+        if not args.request_id and not args.execution_id:
+            raise ValueError("single-row-update-status requires --request-id or --execution-id.")
+        task_name = "feishu_single_row_update"
+        prefix = "single-row-update-status-step"
+        params = ["control_action=status"]
+        if args.request_id:
+            params.append(f"request_id={args.request_id}")
+        if args.execution_id:
+            params.append(f"execution_id={args.execution_id}")
+    elif args.command == "single-row-update-result":
+        if not args.request_id and not args.execution_id:
+            raise ValueError("single-row-update-result requires --request-id or --execution-id.")
+        task_name = "feishu_single_row_update"
+        prefix = "single-row-update-result-step"
+        params = ["control_action=result"]
+        if args.request_id:
+            params.append(f"request_id={args.request_id}")
+        if args.execution_id:
+            params.append(f"execution_id={args.execution_id}")
+    elif args.command == "single-row-update-daemon-once":
+        task_name = "feishu_single_row_update"
+        prefix = "single-row-update-daemon-once-step"
+        params = ["control_action=daemon_once"]
+    elif args.command == "single-row-update-daemon-loop":
+        task_name = "feishu_single_row_update"
+        prefix = "single-row-update-daemon-loop-step"
+        params = [
+            "control_action=daemon_loop",
+            f"execution_control_max_iterations={args.max_iterations}",
+            f"execution_control_max_idle_cycles={args.max_idle_cycles}",
+        ]
+        if args.stop_when_idle:
+            params.append("execution_control_stop_when_idle=true")
+    elif args.command == "single-row-update-submit-then-daemon-loop":
+        resolved_profile_ref = _resolve_profile_ref_for_task(
             python_bin=python_bin,
             install_dir=install_dir,
             requested_profile_ref=args.profile_ref,
             fallback_profile_ref=browser_profile_ref,
+            ensure_ready=True,
         )
-        _ensure_browser_ready(python_bin=python_bin, script_dir=SCRIPT_DIR, browser_target=browser_target)
-        params.append(f"profile_ref={browser_target['profile_ref']}")
-        params.extend(
-            [
-                "fastmoss_phone_env=FASTMOSS_PHONE",
-                "fastmoss_password_env=FASTMOSS_PASSWORD",
-            ]
+        submit_status, submit_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name="feishu_single_row_update",
+            run_mode=args.run_mode,
+            params=[
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=submit",
+                *_single_row_submit_params(
+                    python_bin=python_bin,
+                    install_dir=install_dir,
+                    requested_profile_ref=resolved_profile_ref,
+                    fallback_profile_ref=resolved_profile_ref,
+                    record_id=args.record_id,
+                    product_url=args.product_url,
+                    sku_id=args.sku_id,
+                    skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+                    ensure_ready=False,
+                ),
+            ],
+            stdout_prefix="single-row-update-submit-step",
+            extra_env=extra_env,
         )
-        if args.skip_fastmoss_login_validation:
-            params.append("verify_fastmoss_login=false")
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+
+        request_id = str(submit_payload.get("request_id", "") or "").strip()
+        if not request_id:
+            return _emit_final_result(
+                {
+                    "status": "failed",
+                    "error": "submit did not return request_id",
+                    "task_name": "feishu_single_row_update",
+                }
+            )
+
+        daemon_status, daemon_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name="feishu_single_row_update",
+            run_mode=args.run_mode,
+            params=[
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=daemon_loop",
+                "execution_control_stop_when_idle=true",
+                f"execution_control_max_iterations={args.max_iterations}",
+                f"execution_control_max_idle_cycles={args.max_idle_cycles}",
+            ],
+            stdout_prefix="single-row-update-daemon-loop-step",
+            extra_env=extra_env,
+        )
+        if daemon_status != 0:
+            return _emit_final_result(daemon_payload or {"status": "failed", "error": "daemon loop failed"})
+
+        result_status, result_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name="feishu_single_row_update",
+            run_mode=args.run_mode,
+            params=[
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=result",
+                f"request_id={request_id}",
+            ],
+            stdout_prefix="single-row-update-result-step",
+            extra_env=extra_env,
+        )
+        if result_status != 0:
+            failure_payload = result_payload if isinstance(result_payload, dict) else {}
+            failure_payload["control_action"] = "submit_then_daemon_loop"
+            failure_payload["submit"] = submit_payload
+            failure_payload["daemon"] = daemon_payload
+            if not str(failure_payload.get("error", "")).strip():
+                failure_payload["error"] = "result query failed"
+            if not str(failure_payload.get("status", "")).strip():
+                failure_payload["status"] = "failed"
+            return _emit_final_result(failure_payload)
+        final_payload = result_payload if isinstance(result_payload, dict) else {}
+        final_payload["control_action"] = "submit_then_daemon_loop"
+        final_payload["submit"] = submit_payload
+        final_payload["daemon"] = daemon_payload
+        final_payload["message"] = str(
+            final_payload.get("message", "") or "Submitted request, drained daemon loop, and loaded final result."
+        )
+        return _emit_final_result(final_payload)
     elif args.command == "keyword-candidates":
         task_name = "fastmoss_keyword_candidate_discovery"
         prefix = "keyword-candidates-step"

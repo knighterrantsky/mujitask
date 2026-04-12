@@ -139,3 +139,86 @@ def test_build_run_summary_prefers_emit_summary_when_present(tmp_path):
         "counts": {"updated": 2},
     }
     assert payload["failed_item_count"] == 1
+
+
+def test_build_run_summary_exposes_control_and_artifact_fields_from_single_step_output(tmp_path):
+    module = _load_openclaw_result_module()
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "task_name": "feishu_single_row_update",
+                "run_id": "run-controlled-1",
+                "result": {
+                    "message": "Controlled execution finished.",
+                    "data": {
+                        "workflow_id": "feishu_single_row_update_v1",
+                        "step_outputs": {
+                            "update_single_row": {
+                                "control_action": "daemon_once",
+                                "request_id": "req-123",
+                                "execution_id": "exec-123",
+                                "request_status": "success",
+                                "execution_status": "success",
+                                "resource_code": "browser.tiktok.main",
+                                "queue_position": 0,
+                                "daemon_status": "processed",
+                                "processed_count": 1,
+                                "success_count": 1,
+                                "failed_count": 0,
+                                "artifact_count": 5,
+                                "artifact_uri_prefix": "file:///tmp/object_store/runs/managed-exec-123",
+                                "run_object_key": "runs/managed-exec-123/run.json",
+                                "steps_object_key": "runs/managed-exec-123/steps.json",
+                                "signals_object_key": "runs/managed-exec-123/signals.json",
+                                "stdout_object_key": "runs/managed-exec-123/stdout.log",
+                                "artifacts_dir": "/tmp/object_store/runs/managed-exec-123/artifacts",
+                                "worker_id": "worker-1",
+                                "artifacts": [
+                                    {
+                                        "kind": "run_json",
+                                        "source_path": "/tmp/object_store/runs/managed-exec-123/run.json",
+                                    }
+                                ],
+                                "summary": {"total": 1, "counts": {"updated": 1}},
+                            }
+                        },
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    args = type(
+        "Args",
+        (),
+        {
+            "run_file": str(run_file),
+            "steps_file": "",
+            "signals_file": "",
+            "stdout_file": "",
+            "run_id": "run-controlled-1",
+            "fallback_task": "feishu_single_row_update",
+            "status": "success",
+            "error_message": "",
+        },
+    )()
+
+    payload = module.build_run_summary(args)
+
+    assert payload["control_action"] == "daemon_once"
+    assert payload["request_id"] == "req-123"
+    assert payload["execution_status"] == "success"
+    assert payload["daemon_status"] == "processed"
+    assert payload["artifact_count"] == 5
+    assert payload["run_object_key"] == "runs/managed-exec-123/run.json"
+    assert payload["artifacts_dir"] == "/tmp/object_store/runs/managed-exec-123/artifacts"
+    assert payload["artifacts"] == [
+        {
+            "kind": "run_json",
+            "source_path": "/tmp/object_store/runs/managed-exec-123/run.json",
+        }
+    ]
