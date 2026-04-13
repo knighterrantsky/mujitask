@@ -353,7 +353,25 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         if record_id == "rec-b":
             item = {"record_id": record_id, "status": "skipped_unavailable"}
         else:
-            item = {"record_id": record_id, "status": "updated"}
+            item = {
+                "record_id": record_id,
+                "status": "updated",
+                "source_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                "product_id": "1731098351299629802",
+                "fields": {"Fastmoss价格": "10.19", "记录日期": 1776009600000},
+                "logical_fields": {
+                    "product_id": "1731098351299629802",
+                    "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "title": "Product A",
+                    "price_amount": "9.99",
+                },
+                "fastmoss_snapshot": {
+                    "product_id": "1731098351299629802",
+                    "fastmoss_price_amount": "10.19",
+                    "sales_7d": "499",
+                },
+            }
         return {
             "summary": {"total": 1, "counts": {item["status"]: 1}},
             "item": item,
@@ -446,6 +464,17 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 2
     assert all(len(store.list_artifacts(run_id=record.run_id)) == 5 for record in execution_records)
+    entity = store.find_entity(
+        entity_type="product",
+        canonical_key="tiktok_product:1731098351299629802",
+    )
+    assert entity is not None
+    bindings = store.list_entity_bindings(entity_id=entity.entity_id)
+    assert len(bindings) == 1
+    assert bindings[0].target_type == "feishu_record"
+    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
+    assert len(snapshots) == 1
+    assert snapshots[0].request_id == submitted.data["request_id"]
 
     outbox_once = task.execute_workflow_step(
         _refresh_context(
@@ -470,6 +499,9 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert final_result.data["request_status"] == "success"
     assert final_result.data["outbox"][0]["status"] == "sent"
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
+    assert len(final_result.data["result"]["entities"]) == 1
+    assert final_result.data["result"]["entities"][0]["canonical_key"] == "tiktok_product:1731098351299629802"
+    assert len(final_result.data["result"]["entity_snapshots"]) == 1
 
 
 def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch, tmp_path):
@@ -706,6 +738,154 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
     assert second_executor.data["summary"]["total"] == 1
     assert second_executor.data["summary"]["counts"] == {"deduped_active": 1}
     assert len(second_executor.data["executions"]) == 0
+
+
+def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_tiktok_product_link_cleanup",
+            "run_feishu_pending_rows_scan",
+            "run_feishu_single_row_update",
+            "Phase1RuntimeStore",
+        ],
+    )
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "phase1_entity.sqlite3"
+    versions = iter(
+        [
+            {
+                "fields": {"Fastmoss价格": "10.19", "记录日期": 1776009600000},
+                "logical_fields": {
+                    "product_id": "1731098351299629802",
+                    "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "title": "Product A",
+                    "price_amount": "9.99",
+                },
+                "fastmoss_snapshot": {
+                    "product_id": "1731098351299629802",
+                    "fastmoss_price_amount": "10.19",
+                    "sales_7d": "499",
+                },
+            },
+            {
+                "fields": {"Fastmoss价格": "12.49", "记录日期": 1776096000000},
+                "logical_fields": {
+                    "product_id": "1731098351299629802",
+                    "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "title": "Product A Updated",
+                    "price_amount": "11.99",
+                },
+                "fastmoss_snapshot": {
+                    "product_id": "1731098351299629802",
+                    "fastmoss_price_amount": "12.49",
+                    "sales_7d": "520",
+                },
+            },
+        ]
+    )
+
+    monkeypatch.setattr(
+        module,
+        "run_tiktok_product_link_cleanup",
+        lambda params: {"summary": {"total": 1, "counts": {"keep": 1}}, "items": [{"record_id": "rec-a"}]},
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_pending_rows_scan",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"pending": 1}},
+            "items": [{"record_id": "rec-a", "status": "pending"}],
+            "target_rows": [
+                {
+                    "record_id": "rec-a",
+                    "source_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "sku_id": "1731098351299629802",
+                }
+            ],
+        },
+    )
+
+    def fake_single_row_update(params):
+        version = next(versions)
+        item = {
+            "record_id": "rec-a",
+            "status": "updated",
+            "source_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+            "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+            "product_id": "1731098351299629802",
+            **version,
+        }
+        return {
+            "summary": {"total": 1, "counts": {"updated": 1}},
+            "item": item,
+            "items": [item],
+        }
+
+    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_single_row_update)
+
+    for _ in range(2):
+        submitted = task.execute_workflow_step(
+            _refresh_context(
+                {
+                    "control_action": "submit",
+                    "profile_ref": "main",
+                    "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                    "access_token": "token-demo",
+                    "notification_channel_code": "noop",
+                    "execution_control_db_path": str(db_path),
+                }
+            )
+        )
+        task.execute_workflow_step(
+            _refresh_context(
+                {
+                    "control_action": "executor_once",
+                    "execution_control_db_path": str(db_path),
+                }
+            )
+        )
+        task.execute_workflow_step(
+            _refresh_context(
+                {
+                    "control_action": "browser_loop",
+                    "execution_control_db_path": str(db_path),
+                    "execution_control_stop_when_idle": True,
+                    "execution_control_max_idle_cycles": 1,
+                }
+            )
+        )
+        task.execute_workflow_step(
+            _refresh_context(
+                {
+                    "control_action": "executor_once",
+                    "execution_control_db_path": str(db_path),
+                }
+            )
+        )
+        final_result = task.execute_workflow_step(
+            _refresh_context(
+                {
+                    "control_action": "result",
+                    "request_id": submitted.data["request_id"],
+                    "execution_control_db_path": str(db_path),
+                }
+            )
+        )
+        assert final_result.data["request_status"] == "success"
+
+    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    entity = store.find_entity(
+        entity_type="product",
+        canonical_key="tiktok_product:1731098351299629802",
+    )
+    assert entity is not None
+    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
+    assert len(snapshots) == 2
+    assert snapshots[0].baseline_snapshot_id == ""
+    assert snapshots[1].baseline_snapshot_id == snapshots[0].snapshot_id
+    assert snapshots[1].diff["fields"]["after"]["Fastmoss价格"] == "12.49"
+    assert snapshots[1].diff["logical_fields"]["after"]["title"] == "Product A Updated"
 
 
 def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):

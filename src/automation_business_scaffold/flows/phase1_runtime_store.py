@@ -9,6 +9,9 @@ from typing import Any, Mapping
 from automation_business_scaffold.models.artifact_object import ArtifactObjectRecord
 from automation_business_scaffold.models.execution_control import ResourceLeaseRecord
 from automation_business_scaffold.models.phase1_runtime import (
+    EntityRegistryRecord,
+    EntitySnapshotRecord,
+    ExternalBindingRecord,
     NotificationOutboxRecord,
     Phase1TaskExecutionRecord,
     Phase1TaskRequestRecord,
@@ -214,6 +217,83 @@ class Phase1RuntimeStore:
             CREATE INDEX IF NOT EXISTS idx_artifact_object_run_id
                 ON artifact_object(run_id)
             """,
+            """
+            CREATE TABLE IF NOT EXISTS entity_registry (
+                entity_id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                canonical_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                latest_snapshot_id TEXT NOT NULL DEFAULT '',
+                first_seen_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_registry_entity_type_canonical_key
+                ON entity_registry(entity_type, canonical_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_entity_registry_entity_type_last_seen_at
+                ON entity_registry(entity_type, last_seen_at)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS external_binding (
+                binding_id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_space TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                source_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                first_bound_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_external_binding_target
+                ON external_binding(target_type, target_space, target_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_external_binding_entity_id_status
+                ON external_binding(entity_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_external_binding_source_key
+                ON external_binding(source_key)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS entity_snapshot (
+                snapshot_id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                collected_at REAL NOT NULL,
+                facts_json TEXT NOT NULL DEFAULT '{}',
+                baseline_snapshot_id TEXT NOT NULL DEFAULT '',
+                diff_json TEXT NOT NULL DEFAULT '{}',
+                request_id TEXT NOT NULL DEFAULT '',
+                execution_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_entity_snapshot_entity_id_snapshot_date
+                ON entity_snapshot(entity_id, snapshot_date)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_entity_snapshot_run_id
+                ON entity_snapshot(run_id)
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_snapshot_entity_id_run_id
+                ON entity_snapshot(entity_id, run_id)
+                WHERE run_id <> ''
+            """,
         ]
         with self._engine.begin() as connection:
             for statement in statements:
@@ -323,6 +403,50 @@ class Phase1RuntimeStore:
             content_type=str(row["content_type"] or ""),
             source_path=str(row["source_path"] or ""),
             metadata=_load_json_dict(row["metadata_json"]),
+            created_at=_coerce_float(row["created_at"]),
+        )
+
+    def _entity_from_row(self, row: Mapping[str, Any]) -> EntityRegistryRecord:
+        return EntityRegistryRecord(
+            entity_id=str(row["entity_id"]),
+            entity_type=str(row["entity_type"]),
+            canonical_key=str(row["canonical_key"]),
+            status=str(row["status"] or "active"),
+            latest_snapshot_id=str(row["latest_snapshot_id"] or ""),
+            first_seen_at=_coerce_float(row["first_seen_at"]),
+            last_seen_at=_coerce_float(row["last_seen_at"]),
+            created_at=_coerce_float(row["created_at"]),
+            updated_at=_coerce_float(row["updated_at"]),
+        )
+
+    def _binding_from_row(self, row: Mapping[str, Any]) -> ExternalBindingRecord:
+        return ExternalBindingRecord(
+            binding_id=str(row["binding_id"]),
+            entity_id=str(row["entity_id"]),
+            target_type=str(row["target_type"]),
+            target_space=str(row["target_space"]),
+            target_id=str(row["target_id"]),
+            source_key=str(row["source_key"] or ""),
+            status=str(row["status"] or "active"),
+            metadata=_load_json_dict(row["metadata_json"]),
+            first_bound_at=_coerce_float(row["first_bound_at"]),
+            last_seen_at=_coerce_float(row["last_seen_at"]),
+            created_at=_coerce_float(row["created_at"]),
+            updated_at=_coerce_float(row["updated_at"]),
+        )
+
+    def _snapshot_from_row(self, row: Mapping[str, Any]) -> EntitySnapshotRecord:
+        return EntitySnapshotRecord(
+            snapshot_id=str(row["snapshot_id"]),
+            entity_id=str(row["entity_id"]),
+            snapshot_date=str(row["snapshot_date"]),
+            collected_at=_coerce_float(row["collected_at"]),
+            facts=_load_json_dict(row["facts_json"]),
+            baseline_snapshot_id=str(row["baseline_snapshot_id"] or ""),
+            diff=_load_json_dict(row["diff_json"]),
+            request_id=str(row["request_id"] or ""),
+            execution_id=str(row["execution_id"] or ""),
+            run_id=str(row["run_id"] or ""),
             created_at=_coerce_float(row["created_at"]),
         )
 
@@ -477,6 +601,373 @@ class Phase1RuntimeStore:
                 .all()
             )
             return [self._artifact_from_row(row) for row in rows]
+
+    def find_entity(self, *, entity_type: str, canonical_key: str) -> EntityRegistryRecord | None:
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM entity_registry
+                        WHERE entity_type = :entity_type
+                          AND canonical_key = :canonical_key
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "entity_type": entity_type,
+                        "canonical_key": canonical_key,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+            return self._entity_from_row(row) if row is not None else None
+
+    def get_or_create_entity(
+        self,
+        *,
+        entity_type: str,
+        canonical_key: str,
+        status: str = "active",
+    ) -> EntityRegistryRecord:
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM entity_registry
+                        WHERE entity_type = :entity_type
+                          AND canonical_key = :canonical_key
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "entity_type": entity_type,
+                        "canonical_key": canonical_key,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+            if row is not None:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE entity_registry
+                        SET status = :status,
+                            last_seen_at = :last_seen_at,
+                            updated_at = :updated_at
+                        WHERE entity_id = :entity_id
+                        """
+                    ),
+                    {
+                        "entity_id": row["entity_id"],
+                        "status": status,
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    },
+                )
+                return self._entity_from_row(
+                    {
+                        **row,
+                        "status": status,
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    }
+                )
+            entity_id = uuid.uuid4().hex
+            connection.execute(
+                self._text(
+                    """
+                    INSERT INTO entity_registry (
+                        entity_id, entity_type, canonical_key, status, latest_snapshot_id,
+                        first_seen_at, last_seen_at, created_at, updated_at
+                    ) VALUES (
+                        :entity_id, :entity_type, :canonical_key, :status, '',
+                        :first_seen_at, :last_seen_at, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "entity_id": entity_id,
+                    "entity_type": entity_type,
+                    "canonical_key": canonical_key,
+                    "status": status,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+        return self.find_entity(entity_type=entity_type, canonical_key=canonical_key)  # type: ignore[return-value]
+
+    def list_entity_bindings(self, *, entity_id: str) -> list[ExternalBindingRecord]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM external_binding
+                        WHERE entity_id = :entity_id
+                        ORDER BY created_at ASC
+                        """
+                    ),
+                    {"entity_id": entity_id},
+                )
+                .mappings()
+                .all()
+            )
+            return [self._binding_from_row(row) for row in rows]
+
+    def upsert_external_binding(
+        self,
+        *,
+        entity_id: str,
+        target_type: str,
+        target_space: str,
+        target_id: str,
+        source_key: str = "",
+        metadata: dict[str, Any] | None = None,
+        status: str = "active",
+    ) -> ExternalBindingRecord:
+        now = time.time()
+        metadata = dict(metadata or {})
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM external_binding
+                        WHERE target_type = :target_type
+                          AND target_space = :target_space
+                          AND target_id = :target_id
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "target_type": target_type,
+                        "target_space": target_space,
+                        "target_id": target_id,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+            if row is not None:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE external_binding
+                        SET entity_id = :entity_id,
+                            source_key = :source_key,
+                            status = :status,
+                            metadata_json = :metadata_json,
+                            last_seen_at = :last_seen_at,
+                            updated_at = :updated_at
+                        WHERE binding_id = :binding_id
+                        """
+                    ),
+                    {
+                        "binding_id": row["binding_id"],
+                        "entity_id": entity_id,
+                        "source_key": source_key,
+                        "status": status,
+                        "metadata_json": _json_dumps(metadata),
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    },
+                )
+            else:
+                binding_id = uuid.uuid4().hex
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO external_binding (
+                            binding_id, entity_id, target_type, target_space, target_id,
+                            source_key, status, metadata_json, first_bound_at, last_seen_at,
+                            created_at, updated_at
+                        ) VALUES (
+                            :binding_id, :entity_id, :target_type, :target_space, :target_id,
+                            :source_key, :status, :metadata_json, :first_bound_at, :last_seen_at,
+                            :created_at, :updated_at
+                        )
+                        """
+                    ),
+                    {
+                        "binding_id": binding_id,
+                        "entity_id": entity_id,
+                        "target_type": target_type,
+                        "target_space": target_space,
+                        "target_id": target_id,
+                        "source_key": source_key,
+                        "status": status,
+                        "metadata_json": _json_dumps(metadata),
+                        "first_bound_at": now,
+                        "last_seen_at": now,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM external_binding
+                        WHERE target_type = :target_type
+                          AND target_space = :target_space
+                          AND target_id = :target_id
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "target_type": target_type,
+                        "target_space": target_space,
+                        "target_id": target_id,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            raise ValueError("External binding not found after upsert.")
+        return self._binding_from_row(row)
+
+    def list_entity_snapshots(self, *, entity_id: str) -> list[EntitySnapshotRecord]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM entity_snapshot
+                        WHERE entity_id = :entity_id
+                        ORDER BY collected_at ASC, created_at ASC
+                        """
+                    ),
+                    {"entity_id": entity_id},
+                )
+                .mappings()
+                .all()
+            )
+            return [self._snapshot_from_row(row) for row in rows]
+
+    def load_latest_entity_snapshot(self, *, entity_id: str) -> EntitySnapshotRecord | None:
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM entity_snapshot
+                        WHERE entity_id = :entity_id
+                        ORDER BY collected_at DESC, created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"entity_id": entity_id},
+                )
+                .mappings()
+                .first()
+            )
+            return self._snapshot_from_row(row) if row is not None else None
+
+    def create_entity_snapshot(
+        self,
+        *,
+        entity_id: str,
+        snapshot_date: str,
+        collected_at: float,
+        facts: dict[str, Any],
+        baseline_snapshot_id: str = "",
+        diff: dict[str, Any] | None = None,
+        request_id: str = "",
+        execution_id: str = "",
+        run_id: str = "",
+    ) -> EntitySnapshotRecord:
+        now = time.time()
+        diff = dict(diff or {})
+        with self._engine.begin() as connection:
+            if run_id:
+                row = (
+                    connection.execute(
+                        self._text(
+                            """
+                            SELECT *
+                            FROM entity_snapshot
+                            WHERE entity_id = :entity_id
+                              AND run_id = :run_id
+                            LIMIT 1
+                            """
+                        ),
+                        {"entity_id": entity_id, "run_id": run_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is not None:
+                    return self._snapshot_from_row(row)
+            snapshot_id = uuid.uuid4().hex
+            connection.execute(
+                self._text(
+                    """
+                    INSERT INTO entity_snapshot (
+                        snapshot_id, entity_id, snapshot_date, collected_at, facts_json,
+                        baseline_snapshot_id, diff_json, request_id, execution_id, run_id, created_at
+                    ) VALUES (
+                        :snapshot_id, :entity_id, :snapshot_date, :collected_at, :facts_json,
+                        :baseline_snapshot_id, :diff_json, :request_id, :execution_id, :run_id, :created_at
+                    )
+                    """
+                ),
+                {
+                    "snapshot_id": snapshot_id,
+                    "entity_id": entity_id,
+                    "snapshot_date": snapshot_date,
+                    "collected_at": collected_at,
+                    "facts_json": _json_dumps(facts),
+                    "baseline_snapshot_id": baseline_snapshot_id,
+                    "diff_json": _json_dumps(diff),
+                    "request_id": request_id,
+                    "execution_id": execution_id,
+                    "run_id": run_id,
+                    "created_at": now,
+                },
+            )
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE entity_registry
+                    SET latest_snapshot_id = :latest_snapshot_id,
+                        last_seen_at = :last_seen_at,
+                        updated_at = :updated_at
+                    WHERE entity_id = :entity_id
+                    """
+                ),
+                {
+                    "latest_snapshot_id": snapshot_id,
+                    "last_seen_at": collected_at,
+                    "updated_at": now,
+                    "entity_id": entity_id,
+                },
+            )
+            row = (
+                connection.execute(
+                    self._text("SELECT * FROM entity_snapshot WHERE snapshot_id = :snapshot_id LIMIT 1"),
+                    {"snapshot_id": snapshot_id},
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            raise ValueError("Entity snapshot not found after insert.")
+        return self._snapshot_from_row(row)
 
     def claim_next_task_request(self, *, worker_id: str) -> Phase1TaskRequestRecord | None:
         with self._engine.begin() as connection:

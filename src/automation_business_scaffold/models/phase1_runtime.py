@@ -87,3 +87,56 @@ class NotificationOutboxRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EntityRegistryRecord:
+    entity_id: str
+    entity_type: str
+    canonical_key: str
+    status: str = "active"
+    latest_snapshot_id: str = ""
+    first_seen_at: float = 0.0
+    last_seen_at: float = 0.0
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalBindingRecord:
+    binding_id: str
+    entity_id: str
+    target_type: str
+    target_space: str
+    target_id: str
+    source_key: str = ""
+    status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    first_bound_at: float = 0.0
+    last_seen_at: float = 0.0
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EntitySnapshotRecord:
+    snapshot_id: str
+    entity_id: str
+    snapshot_date: str
+    collected_at: float
+    facts: dict[str, Any] = field(default_factory=dict)
+    baseline_snapshot_id: str = ""
+    diff: dict[str, Any] = field(default_factory=dict)
+    request_id: str = ""
+    execution_id: str = ""
+    run_id: str = ""
+    created_at: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

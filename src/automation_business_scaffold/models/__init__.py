@@ -7,6 +7,9 @@ from .execution_control import (
 )
 from .fastmoss_product import FastMossProductSalesSnapshot
 from .phase1_runtime import (
+    EntityRegistryRecord,
+    EntitySnapshotRecord,
+    ExternalBindingRecord,
     NotificationOutboxRecord,
     Phase1TaskExecutionRecord,
     Phase1TaskRequestRecord,
@@ -17,6 +20,9 @@ from .tiktok_product import TikTokProductRecord
 __all__ = [
     "ArtifactObjectRecord",
     "ControlledExecutionSnapshot",
+    "EntityRegistryRecord",
+    "EntitySnapshotRecord",
+    "ExternalBindingRecord",
     "FastMossProductSalesSnapshot",
     "NotificationOutboxRecord",
     "Phase1TaskExecutionRecord",
