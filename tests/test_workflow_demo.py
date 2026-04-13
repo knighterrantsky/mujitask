@@ -500,6 +500,8 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert final_result.data["outbox"][0]["status"] == "sent"
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
     assert len(final_result.data["result"]["entities"]) == 1
+    assert len(final_result.data["result"]["entity_bindings"]) == 1
+    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
     assert final_result.data["result"]["entities"][0]["canonical_key"] == "tiktok_product:1731098351299629802"
     assert len(final_result.data["result"]["entity_snapshots"]) == 1
 
