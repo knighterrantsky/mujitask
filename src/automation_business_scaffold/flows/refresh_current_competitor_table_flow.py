@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any
 
 from automation_business_scaffold.config import get_execution_control_defaults
+from automation_business_scaffold.flows.artifact_sync import (
+    ArtifactFileSpec,
+    build_artifact_payload as _build_synced_artifact_payload,
+    collect_referenced_artifact_specs,
+    create_store_from_settings,
+    sync_artifact_specs,
+)
 from automation_business_scaffold.flows.execution_control_flow import build_controlled_resource_code
 from automation_business_scaffold.flows.feishu_competitor_flow import (
     run_feishu_pending_rows_scan,
@@ -335,6 +342,15 @@ def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:
         "execution_control_stop_when_idle",
         "execution_control_artifact_root",
         "execution_control_artifact_bucket",
+        "execution_control_artifact_store_provider",
+        "execution_control_artifact_object_prefix",
+        "execution_control_minio_endpoint",
+        "execution_control_minio_access_key",
+        "execution_control_minio_secret_key",
+        "execution_control_minio_region",
+        "execution_control_minio_secure",
+        "execution_control_minio_create_bucket",
+        "execution_control_sync_referenced_files",
         "idempotency_key",
         "notification_channel_code",
         "source_channel_code",
@@ -363,6 +379,17 @@ def _phase1_settings(params: dict[str, Any]) -> dict[str, Any]:
         or params.get("source_channel_code")
         or "noop"
     ).strip()
+    artifact_store_provider = str(
+        params.get("execution_control_artifact_store_provider") or defaults.artifact_store_provider
+    ).strip().lower() or "local"
+    if "execution_control_sync_referenced_files" in params:
+        sync_referenced_files = _read_bool_param(
+            params,
+            "execution_control_sync_referenced_files",
+            defaults.sync_referenced_files,
+        )
+    else:
+        sync_referenced_files = bool(defaults.sync_referenced_files or artifact_store_provider != "local")
     return {
         "db_url": configured_db_url,
         "db_path": configured_db_path,
@@ -370,6 +397,33 @@ def _phase1_settings(params: dict[str, Any]) -> dict[str, Any]:
         "artifact_bucket": str(
             params.get("execution_control_artifact_bucket") or defaults.artifact_bucket
         ),
+        "artifact_store_provider": artifact_store_provider,
+        "artifact_object_prefix": str(
+            params.get("execution_control_artifact_object_prefix") or defaults.artifact_object_prefix
+        ),
+        "minio_endpoint": str(
+            params.get("execution_control_minio_endpoint") or defaults.minio_endpoint
+        ),
+        "minio_access_key": str(
+            params.get("execution_control_minio_access_key") or defaults.minio_access_key
+        ),
+        "minio_secret_key": str(
+            params.get("execution_control_minio_secret_key") or defaults.minio_secret_key
+        ),
+        "minio_region": str(
+            params.get("execution_control_minio_region") or defaults.minio_region
+        ),
+        "minio_secure": _read_bool_param(
+            params,
+            "execution_control_minio_secure",
+            defaults.minio_secure,
+        ),
+        "minio_create_bucket": _read_bool_param(
+            params,
+            "execution_control_minio_create_bucket",
+            defaults.minio_create_bucket,
+        ),
+        "sync_referenced_files": sync_referenced_files,
         "requested_by": requested_by or defaults.requested_by,
         "worker_id": str(params.get("execution_worker_id") or defaults.worker_id),
         "trigger_mode": str(params.get("trigger_mode") or "manual"),
@@ -779,58 +833,63 @@ def _sync_browser_artifacts(
     _write_json_file(signals_file, signals_payload)
     _write_json_file(state_file, state_payload)
 
-    records = [
-        _build_artifact_record(
-            run_id=execution.run_id,
-            step_id=BROWSER_STEP_ID,
+    specs = [
+        ArtifactFileSpec(
             kind="run_json",
-            bucket=str(settings["artifact_bucket"]),
-            object_key=_runtime_object_key(execution.run_id, "run.json"),
+            step_id=BROWSER_STEP_ID,
+            relative_name="run.json",
             path=run_file,
-            created_at=created_at,
         ),
-        _build_artifact_record(
-            run_id=execution.run_id,
-            step_id=BROWSER_STEP_ID,
+        ArtifactFileSpec(
             kind="steps_json",
-            bucket=str(settings["artifact_bucket"]),
-            object_key=_runtime_object_key(execution.run_id, "steps.json"),
+            step_id=BROWSER_STEP_ID,
+            relative_name="steps.json",
             path=steps_file,
-            created_at=created_at,
         ),
-        _build_artifact_record(
-            run_id=execution.run_id,
-            step_id=BROWSER_STEP_ID,
+        ArtifactFileSpec(
             kind="signals_json",
-            bucket=str(settings["artifact_bucket"]),
-            object_key=_runtime_object_key(execution.run_id, "signals.json"),
+            step_id=BROWSER_STEP_ID,
+            relative_name="signals.json",
             path=signals_file,
-            created_at=created_at,
         ),
-        _build_artifact_record(
-            run_id=execution.run_id,
-            step_id=BROWSER_STEP_ID,
+        ArtifactFileSpec(
             kind="stdout_log",
-            bucket=str(settings["artifact_bucket"]),
-            object_key=_runtime_object_key(execution.run_id, "stdout.log"),
-            path=stdout_path,
-            created_at=created_at,
-        ),
-        _build_artifact_record(
-            run_id=execution.run_id,
             step_id=BROWSER_STEP_ID,
+            relative_name="stdout.log",
+            path=stdout_path,
+        ),
+        ArtifactFileSpec(
             kind="state_json",
-            bucket=str(settings["artifact_bucket"]),
-            object_key=_runtime_object_key(execution.run_id, f"artifacts/{BROWSER_STEP_ID}/state.json"),
+            step_id=BROWSER_STEP_ID,
+            relative_name=f"artifacts/{BROWSER_STEP_ID}/state.json",
             path=state_file,
-            created_at=created_at,
         ),
     ]
+    if bool(settings.get("sync_referenced_files", False)):
+        specs.extend(
+            collect_referenced_artifact_specs(
+                result_payload=result_payload,
+                step_id=BROWSER_STEP_ID,
+            )
+        )
+    artifact_store = create_store_from_settings(settings)
+    records, artifact_uri_prefix = sync_artifact_specs(
+        run_id=execution.run_id,
+        request_id=execution.request_id,
+        execution_id=execution.execution_id,
+        artifact_root=artifact_root,
+        artifact_bucket=str(settings["artifact_bucket"]),
+        artifact_object_prefix=str(settings.get("artifact_object_prefix", "") or ""),
+        specs=specs,
+        artifact_store=artifact_store,
+        created_at=created_at,
+    )
     store.replace_artifacts(run_id=execution.run_id, records=records)
-    return _artifact_payload_from_records(
+    return _build_synced_artifact_payload(
         artifact_root=artifact_root,
         run_id=execution.run_id,
         records=records,
+        artifact_uri_prefix=artifact_uri_prefix,
     )
 
 

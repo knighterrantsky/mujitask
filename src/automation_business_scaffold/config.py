@@ -43,6 +43,18 @@ def _read_float_alias(name: str, *aliases: str, default: float) -> float:
         return default
 
 
+def _read_bool_alias(name: str, *aliases: str, default: bool) -> bool:
+    raw = _read_env(name, *aliases, default="")
+    if not raw:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True, slots=True)
 class BusinessDefaults:
     default_run_mode: str
@@ -59,6 +71,15 @@ class ExecutionControlDefaults:
     db_path: str
     artifact_root: str
     artifact_bucket: str
+    artifact_store_provider: str
+    artifact_object_prefix: str
+    minio_endpoint: str
+    minio_access_key: str
+    minio_secret_key: str
+    minio_region: str
+    minio_secure: bool
+    minio_create_bucket: bool
+    sync_referenced_files: bool
     requested_by: str
     worker_id: str
     lease_seconds: float
@@ -116,6 +137,47 @@ def get_execution_control_defaults() -> ExecutionControlDefaults:
             "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET",
             "EXECUTION_CONTROL_ARTIFACT_BUCKET",
             default="local-runtime",
+        ),
+        artifact_store_provider=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER",
+            "EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER",
+            default="local",
+        ).strip().lower()
+        or "local",
+        artifact_object_prefix=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX",
+            "EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX",
+        ).strip().strip("/"),
+        minio_endpoint=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT",
+            "EXECUTION_CONTROL_MINIO_ENDPOINT",
+        ).strip(),
+        minio_access_key=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY",
+            "EXECUTION_CONTROL_MINIO_ACCESS_KEY",
+        ).strip(),
+        minio_secret_key=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY",
+            "EXECUTION_CONTROL_MINIO_SECRET_KEY",
+        ).strip(),
+        minio_region=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_REGION",
+            "EXECUTION_CONTROL_MINIO_REGION",
+        ).strip(),
+        minio_secure=_read_bool_alias(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_SECURE",
+            "EXECUTION_CONTROL_MINIO_SECURE",
+            default=False,
+        ),
+        minio_create_bucket=_read_bool_alias(
+            "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET",
+            "EXECUTION_CONTROL_MINIO_CREATE_BUCKET",
+            default=False,
+        ),
+        sync_referenced_files=_read_bool_alias(
+            "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES",
+            "EXECUTION_CONTROL_SYNC_REFERENCED_FILES",
+            default=False,
         ),
         requested_by=_read_env(
             "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY",

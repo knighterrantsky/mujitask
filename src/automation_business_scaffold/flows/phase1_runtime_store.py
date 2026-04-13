@@ -311,6 +311,8 @@ class Phase1RuntimeStore:
     def _artifact_from_row(self, row: Mapping[str, Any]) -> ArtifactObjectRecord:
         return ArtifactObjectRecord(
             artifact_id=str(row["artifact_id"]),
+            request_id=str(row["request_id"] or ""),
+            execution_id=str(row["execution_id"] or ""),
             run_id=str(row["run_id"]),
             step_id=str(row["step_id"]),
             kind=str(row["kind"]),
@@ -320,6 +322,7 @@ class Phase1RuntimeStore:
             size=int(row["size"] or 0),
             content_type=str(row["content_type"] or ""),
             source_path=str(row["source_path"] or ""),
+            metadata=_load_json_dict(row["metadata_json"]),
             created_at=_coerce_float(row["created_at"]),
         )
 
@@ -1356,14 +1359,16 @@ class Phase1RuntimeStore:
                             bucket, object_key, etag, size, content_type, source_path,
                             metadata_json, created_at
                         ) VALUES (
-                            :artifact_id, '', '', :run_id, :step_id, :kind,
+                            :artifact_id, :request_id, :execution_id, :run_id, :step_id, :kind,
                             :bucket, :object_key, :etag, :size, :content_type, :source_path,
-                            '{}', :created_at
+                            :metadata_json, :created_at
                         )
                         """
                     ),
                     {
                         "artifact_id": record.artifact_id,
+                        "request_id": record.request_id,
+                        "execution_id": record.execution_id,
                         "run_id": record.run_id,
                         "step_id": record.step_id,
                         "kind": record.kind,
@@ -1373,6 +1378,7 @@ class Phase1RuntimeStore:
                         "size": record.size,
                         "content_type": record.content_type,
                         "source_path": record.source_path,
+                        "metadata_json": _json_dumps(record.metadata),
                         "created_at": record.created_at,
                     },
                 )

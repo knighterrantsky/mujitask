@@ -472,6 +472,167 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
 
 
+def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_tiktok_product_link_cleanup",
+            "run_feishu_pending_rows_scan",
+            "run_feishu_single_row_update",
+            "Phase1RuntimeStore",
+        ],
+    )
+    from automation_business_scaffold.flows.artifact_store import StoredArtifact
+
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "phase1_minio.sqlite3"
+    image_path = tmp_path / "main-image.png"
+    product_screenshot_path = tmp_path / "product-page.png"
+    fastmoss_screenshot_path = tmp_path / "fastmoss-page.png"
+    image_path.write_bytes(b"png-image")
+    product_screenshot_path.write_bytes(b"png-product")
+    fastmoss_screenshot_path.write_bytes(b"png-fastmoss")
+    uploaded_keys: list[str] = []
+
+    class FakeArtifactStore:
+        provider_code = "minio"
+
+        def build_uri(self, *, bucket: str, object_key: str) -> str:
+            return f"s3://{bucket}/{object_key}"
+
+        def upload_file(self, *, bucket: str, object_key: str, local_path: Path, content_type: str, metadata=None):
+            uploaded_keys.append(object_key)
+            return StoredArtifact(
+                bucket=bucket,
+                object_key=object_key,
+                etag=f"etag-{local_path.name}",
+                size=local_path.stat().st_size,
+                content_type=content_type,
+                uri=self.build_uri(bucket=bucket, object_key=object_key),
+                metadata={"storage_backend": "minio", "endpoint": "127.0.0.1:9000"},
+            )
+
+    monkeypatch.setattr(module, "create_store_from_settings", lambda _settings: FakeArtifactStore())
+    monkeypatch.setattr(
+        module,
+        "run_tiktok_product_link_cleanup",
+        lambda params: {"summary": {"total": 1, "counts": {"keep": 1}}, "items": [{"record_id": "rec-a"}]},
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_pending_rows_scan",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"pending": 1}},
+            "items": [{"record_id": "rec-a", "status": "pending"}],
+            "target_rows": [{"record_id": "rec-a", "source_url": "https://example.com/a"}],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_single_row_update",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"updated": 1}},
+            "item": {
+                "record_id": str(params["record_id"]),
+                "status": "updated",
+                "fields": {
+                    "图片": {
+                        "type": "local_file",
+                        "path": str(image_path),
+                        "file_name": "main-image.png",
+                        "mime_type": "image/png",
+                    },
+                    "前台截图": {
+                        "type": "local_file",
+                        "path": str(product_screenshot_path),
+                        "file_name": "product-page.png",
+                        "mime_type": "image/png",
+                    },
+                },
+                "logical_fields": {
+                    "main_image_local_path": str(image_path),
+                    "main_image_file_name": "main-image.png",
+                    "main_image_mime_type": "image/png",
+                    "product_page_screenshot_local_path": str(product_screenshot_path),
+                    "product_page_screenshot_file_name": "product-page.png",
+                    "product_page_screenshot_mime_type": "image/png",
+                },
+                "fastmoss_snapshot": {
+                    "detail_page_screenshot_local_path": str(fastmoss_screenshot_path),
+                    "detail_page_screenshot_file_name": "fastmoss-page.png",
+                    "detail_page_screenshot_mime_type": "image/png",
+                },
+            },
+            "items": [
+                {
+                    "record_id": str(params["record_id"]),
+                    "status": "updated",
+                }
+            ],
+        },
+    )
+
+    submitted = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "main",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
+                "execution_control_db_path": str(db_path),
+                "execution_control_artifact_store_provider": "minio",
+                "execution_control_artifact_bucket": "phase2-bucket",
+                "execution_control_artifact_object_prefix": "phase2/demo",
+                "execution_control_sync_referenced_files": True,
+            }
+        )
+    )
+    task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    browser_once = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "browser_once",
+                "execution_control_db_path": str(db_path),
+                "execution_control_artifact_store_provider": "minio",
+                "execution_control_artifact_bucket": "phase2-bucket",
+                "execution_control_artifact_object_prefix": "phase2/demo",
+                "execution_control_sync_referenced_files": True,
+            }
+        )
+    )
+
+    assert browser_once.data["daemon_status"] == "processed"
+    assert browser_once.data["request_id"] == submitted.data["request_id"]
+    assert browser_once.data["artifact_count"] == 8
+    assert browser_once.data["artifact_store_provider"] == "minio"
+    assert browser_once.data["artifact_uri_prefix"].startswith("s3://phase2-bucket/phase2/demo/runs/")
+    assert len(uploaded_keys) == 8
+    assert all(key.startswith("phase2/demo/runs/") for key in uploaded_keys)
+    assert any(key.endswith("/referenced/main_image_file/main-image.png") for key in uploaded_keys)
+    assert any(key.endswith("/referenced/product_page_screenshot_file/product-page.png") for key in uploaded_keys)
+    assert any(key.endswith("/referenced/detail_page_screenshot_file/fastmoss-page.png") for key in uploaded_keys)
+
+    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
+    assert len(execution_records) == 1
+    stored_artifacts = store.list_artifacts(run_id=execution_records[0].run_id)
+    assert len(stored_artifacts) == 8
+    assert {record.request_id for record in stored_artifacts} == {submitted.data["request_id"]}
+    assert {record.execution_id for record in stored_artifacts} == {execution_records[0].execution_id}
+    assert all(record.bucket == "phase2-bucket" for record in stored_artifacts)
+    assert all(record.object_key.startswith("phase2/demo/runs/") for record in stored_artifacts)
+    assert all(record.metadata.get("storage_backend") == "minio" for record in stored_artifacts)
+
+
 def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
     module = __import__(
         "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
