@@ -1,7 +1,9 @@
 from .fastmoss_login_check_v1 import build_fastmoss_login_check_workflow
 from .fastmoss_keyword_candidate_discovery_v1 import build_fastmoss_keyword_candidate_discovery_workflow
 from .fastmoss_product_sales_snapshot_v1 import build_fastmoss_product_sales_snapshot_workflow
+from .feishu_clear_row_by_url_v1 import build_feishu_clear_row_by_url_workflow
 from .feishu_pending_rows_scan_v1 import build_feishu_pending_rows_scan_workflow
+from .refresh_current_competitor_table_v1 import build_refresh_current_competitor_table_workflow
 from .feishu_seed_row_insert_v1 import build_feishu_seed_row_insert_workflow
 from .feishu_single_row_update_v1 import build_feishu_single_row_update_workflow
 from .source_to_target_publish_v1 import build_source_to_target_publish_workflow
@@ -13,7 +15,9 @@ __all__ = [
     "build_fastmoss_login_check_workflow",
     "build_fastmoss_keyword_candidate_discovery_workflow",
     "build_fastmoss_product_sales_snapshot_workflow",
+    "build_feishu_clear_row_by_url_workflow",
     "build_feishu_pending_rows_scan_workflow",
+    "build_refresh_current_competitor_table_workflow",
     "build_feishu_seed_row_insert_workflow",
     "build_feishu_single_row_update_workflow",
     "build_source_to_target_publish_workflow",

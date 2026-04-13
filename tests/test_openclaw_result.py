@@ -222,3 +222,53 @@ def test_build_run_summary_exposes_control_and_artifact_fields_from_single_step_
             "source_path": "/tmp/object_store/runs/managed-exec-123/run.json",
         }
     ]
+
+
+def test_build_run_summary_includes_request_id_in_submit_message(tmp_path):
+    module = _load_openclaw_result_module()
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "task_name": "refresh_current_competitor_table",
+                "run_id": "run-submit-1",
+                "result": {
+                    "message": "Workflow refresh_current_competitor_table_v1 completed.",
+                    "data": {
+                        "workflow_id": "refresh_current_competitor_table_v1",
+                        "step_outputs": {
+                            "orchestrate_refresh_current_competitor_table": {
+                                "control_action": "submit",
+                                "request_id": "req-submit-123",
+                                "request_status": "pending",
+                                "summary": {"total": 1, "counts": {"queued": 1}},
+                            }
+                        },
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    args = type(
+        "Args",
+        (),
+        {
+            "run_file": str(run_file),
+            "steps_file": "",
+            "signals_file": "",
+            "stdout_file": "",
+            "run_id": "run-submit-1",
+            "fallback_task": "refresh_current_competitor_table",
+            "status": "success",
+            "error_message": "",
+        },
+    )()
+
+    payload = module.build_run_summary(args)
+
+    assert payload["request_id"] == "req-submit-123"
+    assert payload["message"].startswith("已成功提交任务，request_id: req-submit-123；")

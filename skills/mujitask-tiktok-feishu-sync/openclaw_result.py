@@ -47,6 +47,27 @@ def _build_summary_text(summary: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _augment_message_with_request_id(payload: dict[str, Any]) -> None:
+    request_id = str(payload.get("request_id", "") or "").strip()
+    if not request_id:
+        return
+    message = str(payload.get("message", "") or "").strip()
+    if request_id in message:
+        return
+
+    control_action = str(payload.get("control_action", "") or "").strip()
+    request_status = str(payload.get("request_status", "") or "").strip()
+
+    if control_action == "submit":
+        prefix = f"已成功提交任务，request_id: {request_id}"
+    elif request_status in {"pending", "running", "waiting_children", "ready_for_summary"}:
+        prefix = f"任务正在执行中，request_id: {request_id}"
+    else:
+        prefix = f"request_id: {request_id}"
+
+    payload["message"] = f"{prefix}；{message}" if message else prefix
+
+
 def _pick_single_step_output(step_outputs: Any) -> dict[str, Any]:
     if not isinstance(step_outputs, dict):
         return {}
@@ -173,6 +194,7 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
     if args.error_message and not str(result_payload.get("error", "")).strip():
         result_payload["error"] = args.error_message
 
+    _augment_message_with_request_id(result_payload)
     result_payload["summary_text"] = _build_summary_text(result_payload.get("summary", {}))
     return result_payload
 

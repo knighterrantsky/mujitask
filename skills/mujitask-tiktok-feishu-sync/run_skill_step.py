@@ -19,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "skill.local.env"
 RESULT_HELPER = SCRIPT_DIR / "openclaw_result.py"
 RESOLVE_BROWSER_TARGET = SCRIPT_DIR / "resolve_browser_target.py"
+DEFAULT_OPENCLAW_AGENT_ID = "tiktok-ops"
 
 
 def _normalize_env_entry(value: str) -> str:
@@ -52,6 +53,122 @@ def _require_env_value(env: dict[str, str], key: str) -> str:
     if not value:
         raise ValueError(f"{key} is required in {ENV_FILE}.")
     return value
+
+
+def _optional_env_value(env: dict[str, str], key: str) -> str:
+    return str(env.get(key, "") or "").strip()
+
+
+def _json_compact(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _openclaw_state_dir(skill_env: dict[str, str]) -> Path:
+    configured = (
+        _optional_env_value(skill_env, "OPENCLAW_STATE_DIR")
+        or str(os.environ.get("OPENCLAW_STATE_DIR", "")).strip()
+    )
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".openclaw"
+
+
+def _discover_openclaw_delivery_context(skill_env: dict[str, str]) -> dict[str, Any]:
+    raw_json = (
+        _optional_env_value(skill_env, "OPENCLAW_DELIVERY_CONTEXT_JSON")
+        or str(os.environ.get("OPENCLAW_DELIVERY_CONTEXT_JSON", "")).strip()
+    )
+    if raw_json:
+        try:
+            payload = json.loads(raw_json)
+        except Exception as exc:
+            raise ValueError("OPENCLAW_DELIVERY_CONTEXT_JSON is not valid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("OPENCLAW_DELIVERY_CONTEXT_JSON must be a JSON object.")
+        return payload
+
+    explicit_channel = (
+        _optional_env_value(skill_env, "OPENCLAW_DELIVERY_CHANNEL")
+        or str(os.environ.get("OPENCLAW_DELIVERY_CHANNEL", "")).strip()
+    )
+    explicit_to = (
+        _optional_env_value(skill_env, "OPENCLAW_DELIVERY_TO")
+        or str(os.environ.get("OPENCLAW_DELIVERY_TO", "")).strip()
+    )
+    explicit_account = (
+        _optional_env_value(skill_env, "OPENCLAW_DELIVERY_ACCOUNT_ID")
+        or str(os.environ.get("OPENCLAW_DELIVERY_ACCOUNT_ID", "")).strip()
+    )
+    explicit_session_id = (
+        _optional_env_value(skill_env, "OPENCLAW_DELIVERY_SESSION_ID")
+        or str(os.environ.get("OPENCLAW_DELIVERY_SESSION_ID", "")).strip()
+    )
+    if explicit_channel and explicit_to:
+        payload = {"channel": explicit_channel, "to": explicit_to}
+        if explicit_account:
+            payload["accountId"] = explicit_account
+        if explicit_session_id:
+            payload["sessionId"] = explicit_session_id
+        return payload
+
+    agent_id = (
+        _optional_env_value(skill_env, "OPENCLAW_AGENT_ID")
+        or str(os.environ.get("OPENCLAW_AGENT_ID", "")).strip()
+        or DEFAULT_OPENCLAW_AGENT_ID
+    )
+    sessions_dir = _openclaw_state_dir(skill_env) / "agents" / agent_id / "sessions"
+    candidate_files = [sessions_dir / "sessions.json"]
+    backups_dir = sessions_dir / "backups"
+    if backups_dir.exists():
+        backup_files = sorted(
+            backups_dir.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        candidate_files.extend(backup_files[:10])
+
+    best_candidate: dict[str, Any] = {}
+    best_updated_at = -1.0
+    for path in candidate_files:
+        sessions_payload = _load_json_object(path)
+        for session_key, session_payload in sessions_payload.items():
+            if not isinstance(session_payload, dict):
+                continue
+            delivery = session_payload.get("deliveryContext")
+            if not isinstance(delivery, dict):
+                delivery = {}
+            channel = str(delivery.get("channel") or session_payload.get("lastChannel") or "").strip()
+            target = str(delivery.get("to") or session_payload.get("lastTo") or "").strip()
+            account_id = str(delivery.get("accountId") or session_payload.get("lastAccountId") or "").strip()
+            session_id = str(session_payload.get("sessionId") or "").strip()
+            if not channel or not target:
+                continue
+            try:
+                updated_at = float(session_payload.get("updatedAt") or 0.0)
+            except (TypeError, ValueError):
+                updated_at = 0.0
+            if updated_at < best_updated_at:
+                continue
+            best_updated_at = updated_at
+            best_candidate = {
+                "channel": channel,
+                "to": target,
+                "accountId": account_id,
+                "sessionId": session_id,
+                "sessionKey": str(session_key),
+                "source": "openclaw_session_store",
+            }
+    return best_candidate
 
 
 def _resolve_browser_target(*, python_bin: Path, install_dir: Path, requested_profile_ref: str, fallback_profile_ref: str) -> dict[str, Any]:
@@ -280,6 +397,60 @@ def _single_row_submit_params(
     return params
 
 
+def _refresh_competitor_submit_params(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+    ensure_ready: bool,
+) -> list[str]:
+    resolved_profile_ref = _resolve_profile_ref_for_task(
+        python_bin=python_bin,
+        install_dir=install_dir,
+        requested_profile_ref=requested_profile_ref,
+        fallback_profile_ref=fallback_profile_ref,
+        ensure_ready=ensure_ready,
+    )
+    return [
+        f"profile_ref={resolved_profile_ref}",
+        "verify_fastmoss_login=false",
+        "fastmoss_phone_env=FASTMOSS_PHONE",
+        "fastmoss_password_env=FASTMOSS_PASSWORD",
+    ]
+
+
+def _append_phase1_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
+    db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
+    db_path = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_PATH")
+    artifact_root = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_ROOT")
+    artifact_bucket = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_BUCKET")
+    requested_by = _optional_env_value(skill_env, "EXECUTION_CONTROL_REQUESTED_BY")
+    notification_channel_code = _optional_env_value(skill_env, "NOTIFICATION_CHANNEL_CODE")
+    delivery_context = _discover_openclaw_delivery_context(skill_env)
+
+    if db_url:
+        params.append(f"execution_control_db_url={db_url}")
+    elif db_path:
+        params.append(f"execution_control_db_path={db_path}")
+    if artifact_root:
+        params.append(f"execution_control_artifact_root={artifact_root}")
+    if artifact_bucket:
+        params.append(f"execution_control_artifact_bucket={artifact_bucket}")
+    if requested_by:
+        params.append(f"requested_by={requested_by}")
+    if notification_channel_code:
+        params.append(f"notification_channel_code={notification_channel_code}")
+    elif delivery_context:
+        params.append("notification_channel_code=openclaw_message")
+    if delivery_context:
+        session_id = str(delivery_context.get("sessionId", "") or "").strip()
+        if session_id:
+            params.append(f"source_session_id={session_id}")
+        params.append(f"reply_target={_json_compact(delivery_context)}")
+    return params
+
+
 def _run_cli_task(
     *,
     install_dir: Path,
@@ -343,8 +514,9 @@ def _run_cli_task(
         task_name=task_name,
         cli_status=cli_status,
     )
-    if os.getenv("MUJITASK_RESULT_FILE"):
-        Path(os.environ["MUJITASK_RESULT_FILE"]).write_text(f"{result_json}\n", encoding="utf-8")
+    result_file_path = str(env.get("MUJITASK_RESULT_FILE", "") or "").strip()
+    if result_file_path:
+        Path(result_file_path).write_text(f"{result_json}\n", encoding="utf-8")
 
     try:
         payload = json.loads(result_json)
@@ -361,7 +533,7 @@ def _run_cli_task(
             f"Inspect {run_file}, {steps_file}, {signals_file}, and {stdout_file} for details."
         )
 
-    if os.getenv("MUJITASK_SUPPRESS_RESULT_MARKER", "0") != "1":
+    if str(env.get("MUJITASK_SUPPRESS_RESULT_MARKER", "0")) != "1":
         print(f"__OPENCLAW_RESULT__ {result_json}")
     return cli_status
 
@@ -418,6 +590,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pending_parser = subparsers.add_parser("pending-rows")
     pending_parser.add_argument("--run-mode", default="draft")
 
+    clear_row_parser = subparsers.add_parser("clear-row-by-url")
+    clear_row_parser.add_argument("--run-mode", default="canary")
+    clear_row_parser.add_argument("--url", required=True)
+
     login_parser = subparsers.add_parser("fastmoss-login-check")
     login_parser.add_argument("--run-mode", default="draft")
     login_parser.add_argument("--profile-ref", default="")
@@ -466,6 +642,23 @@ def _build_parser() -> argparse.ArgumentParser:
     submit_then_daemon_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
     submit_then_daemon_parser.add_argument("--max-iterations", type=int, default=0)
     submit_then_daemon_parser.add_argument("--max-idle-cycles", type=int, default=1)
+
+    refresh_parser = subparsers.add_parser("refresh-current-competitor-table")
+    refresh_parser.add_argument("--run-mode", default="canary")
+    refresh_parser.add_argument("--profile-ref", default="")
+    refresh_parser.add_argument("--max-idle-cycles", type=int, default=1)
+
+    refresh_submit_parser = subparsers.add_parser("refresh-current-competitor-table-submit")
+    refresh_submit_parser.add_argument("--run-mode", default="canary")
+    refresh_submit_parser.add_argument("--profile-ref", default="")
+
+    refresh_status_parser = subparsers.add_parser("refresh-current-competitor-table-status")
+    refresh_status_parser.add_argument("--run-mode", default="canary")
+    refresh_status_parser.add_argument("--request-id", required=True)
+
+    refresh_result_parser = subparsers.add_parser("refresh-current-competitor-table-result")
+    refresh_result_parser.add_argument("--run-mode", default="canary")
+    refresh_result_parser.add_argument("--request-id", required=True)
 
     keyword_parser = subparsers.add_parser("keyword-candidates")
     keyword_parser.add_argument("--run-mode", default="draft")
@@ -523,6 +716,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "pending-rows":
         task_name = "feishu_pending_rows_scan"
         prefix = "pending-rows-step"
+    elif args.command == "clear-row-by-url":
+        task_name = "feishu_clear_row_by_url"
+        prefix = "clear-row-by-url-step"
+        params.append(f"url={args.url}")
     elif args.command == "fastmoss-login-check":
         task_name = "fastmoss_login_check"
         prefix = "fastmoss-login-check-step"
@@ -557,7 +754,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "single-row-update-submit":
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-submit-step"
-        params = ["control_action=submit"]
+        params = _append_phase1_runtime_params(["control_action=submit"], skill_env)
         params.extend(
             _single_row_submit_params(
                 python_bin=python_bin,
@@ -576,7 +773,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("single-row-update-status requires --request-id or --execution-id.")
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-status-step"
-        params = ["control_action=status"]
+        params = _append_phase1_runtime_params(["control_action=status"], skill_env)
         if args.request_id:
             params.append(f"request_id={args.request_id}")
         if args.execution_id:
@@ -586,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("single-row-update-result requires --request-id or --execution-id.")
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-result-step"
-        params = ["control_action=result"]
+        params = _append_phase1_runtime_params(["control_action=result"], skill_env)
         if args.request_id:
             params.append(f"request_id={args.request_id}")
         if args.execution_id:
@@ -594,15 +791,18 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "single-row-update-daemon-once":
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-daemon-once-step"
-        params = ["control_action=daemon_once"]
+        params = _append_phase1_runtime_params(["control_action=daemon_once"], skill_env)
     elif args.command == "single-row-update-daemon-loop":
         task_name = "feishu_single_row_update"
         prefix = "single-row-update-daemon-loop-step"
-        params = [
+        params = _append_phase1_runtime_params(
+            [
             "control_action=daemon_loop",
             f"execution_control_max_iterations={args.max_iterations}",
             f"execution_control_max_idle_cycles={args.max_idle_cycles}",
-        ]
+            ],
+            skill_env,
+        )
         if args.stop_when_idle:
             params.append("execution_control_stop_when_idle=true")
     elif args.command == "single-row-update-submit-then-daemon-loop":
@@ -619,7 +819,8 @@ def main(argv: list[str] | None = None) -> int:
             cli_bin=cli_bin,
             task_name="feishu_single_row_update",
             run_mode=args.run_mode,
-            params=[
+            params=_append_phase1_runtime_params(
+                [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
                 f"url_field_name={DEFAULT_URL_FIELD_NAME}",
@@ -635,7 +836,9 @@ def main(argv: list[str] | None = None) -> int:
                     skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
                     ensure_ready=False,
                 ),
-            ],
+                ],
+                skill_env,
+            ),
             stdout_prefix="single-row-update-submit-step",
             extra_env=extra_env,
         )
@@ -658,7 +861,8 @@ def main(argv: list[str] | None = None) -> int:
             cli_bin=cli_bin,
             task_name="feishu_single_row_update",
             run_mode=args.run_mode,
-            params=[
+            params=_append_phase1_runtime_params(
+                [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
                 f"url_field_name={DEFAULT_URL_FIELD_NAME}",
@@ -666,7 +870,9 @@ def main(argv: list[str] | None = None) -> int:
                 "execution_control_stop_when_idle=true",
                 f"execution_control_max_iterations={args.max_iterations}",
                 f"execution_control_max_idle_cycles={args.max_idle_cycles}",
-            ],
+                ],
+                skill_env,
+            ),
             stdout_prefix="single-row-update-daemon-loop-step",
             extra_env=extra_env,
         )
@@ -679,13 +885,16 @@ def main(argv: list[str] | None = None) -> int:
             cli_bin=cli_bin,
             task_name="feishu_single_row_update",
             run_mode=args.run_mode,
-            params=[
+            params=_append_phase1_runtime_params(
+                [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
                 f"url_field_name={DEFAULT_URL_FIELD_NAME}",
                 "control_action=result",
                 f"request_id={request_id}",
-            ],
+                ],
+                skill_env,
+            ),
             stdout_prefix="single-row-update-result-step",
             extra_env=extra_env,
         )
@@ -707,6 +916,81 @@ def main(argv: list[str] | None = None) -> int:
             final_payload.get("message", "") or "Submitted request, drained daemon loop, and loaded final result."
         )
         return _emit_final_result(final_payload)
+    elif args.command == "refresh-current-competitor-table-submit":
+        task_name = "refresh_current_competitor_table"
+        prefix = "refresh-current-competitor-table-submit-step"
+        params = [
+            f"table_url={table_url}",
+            "access_token_env=FEISHU_ACCESS_TOKEN",
+            f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+        ]
+        params = _append_phase1_runtime_params(params + ["control_action=submit"], skill_env)
+        params.extend(
+            _refresh_competitor_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=False,
+            )
+        )
+    elif args.command == "refresh-current-competitor-table-status":
+        task_name = "refresh_current_competitor_table"
+        prefix = "refresh-current-competitor-table-status-step"
+        params = _append_phase1_runtime_params(
+            [
+                "control_action=status",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "refresh-current-competitor-table-result":
+        task_name = "refresh_current_competitor_table"
+        prefix = "refresh-current-competitor-table-result-step"
+        params = _append_phase1_runtime_params(
+            [
+                "control_action=result",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "refresh-current-competitor-table":
+        submit_params = _append_phase1_runtime_params(
+            [
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _refresh_competitor_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=True,
+            )
+        )
+        submit_status, submit_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name="refresh_current_competitor_table",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="refresh-current-competitor-table-submit-step",
+            extra_env=extra_env,
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+        submit_payload = dict(submit_payload) if isinstance(submit_payload, dict) else {}
+        submit_payload["task_name"] = "refresh_current_competitor_table"
+        submit_payload["message"] = str(
+            submit_payload.get("message", "") or "Refresh task accepted for asynchronous execution."
+        )
+        return _emit_final_result(submit_payload)
     elif args.command == "keyword-candidates":
         task_name = "fastmoss_keyword_candidate_discovery"
         prefix = "keyword-candidates-step"

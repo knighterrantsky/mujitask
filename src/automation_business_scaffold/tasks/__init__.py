@@ -6,6 +6,10 @@ from automation_business_scaffold.tasks.fastmoss_product_sales_snapshot import (
     FastMossProductSalesSnapshotTask,
 )
 from automation_business_scaffold.tasks.feishu_pending_rows_scan import FeishuPendingRowsScanTask
+from automation_business_scaffold.tasks.feishu_clear_row_by_url import FeishuClearRowByUrlTask
+from automation_business_scaffold.tasks.refresh_current_competitor_table import (
+    RefreshCurrentCompetitorTableTask,
+)
 from automation_business_scaffold.tasks.feishu_seed_row_insert import FeishuSeedRowInsertTask
 from automation_business_scaffold.tasks.feishu_single_row_update import FeishuSingleRowUpdateTask
 from automation_business_scaffold.tasks.source_to_target_publish_demo import (
@@ -25,8 +29,10 @@ DEFAULT_TASKS = [
     SourceToTargetPublishDemoTask(),
     FastMossLoginCheckTask(),
     FeishuPendingRowsScanTask(),
+    FeishuClearRowByUrlTask(),
     FeishuSeedRowInsertTask(),
     FeishuSingleRowUpdateTask(),
+    RefreshCurrentCompetitorTableTask(),
     FastMossKeywordCandidateDiscoveryTask(),
     TikTokProductToFeishuTask(),
     TikTokFeishuSingleSyncTask(),
@@ -39,7 +45,9 @@ __all__ = [
     "FastMossLoginCheckTask",
     "FastMossKeywordCandidateDiscoveryTask",
     "FastMossProductSalesSnapshotTask",
+    "FeishuClearRowByUrlTask",
     "FeishuPendingRowsScanTask",
+    "RefreshCurrentCompetitorTableTask",
     "FeishuSeedRowInsertTask",
     "FeishuSingleRowUpdateTask",
     "SourceToTargetPublishDemoTask",

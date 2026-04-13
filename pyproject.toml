@@ -15,7 +15,10 @@ dependencies = [
 
 [project.scripts]
 automation-business-scaffold-agent = "automation_business_scaffold.agent:main"
+automation-business-scaffold-browser-runloop = "automation_business_scaffold.browser_runloop:main"
 automation-business-scaffold-executor = "automation_business_scaffold.executor_daemon:main"
+automation-business-scaffold-outbox-dispatcher = "automation_business_scaffold.outbox_dispatcher:main"
+automation-business-scaffold-phase1-executor = "automation_business_scaffold.phase1_executor_daemon:main"
 automation-business-scaffold-run = "automation_business_scaffold.cli:main"
 
 [project.optional-dependencies]

@@ -10,7 +10,9 @@ from automation_framework.runtime import RunRegistry
 from automation_business_scaffold.cli import list_registered_tasks, run_registered_task
 from automation_business_scaffold.registry import build_task_registry
 from automation_business_scaffold.tasks import (
+    FeishuClearRowByUrlTask,
     FeishuSingleRowUpdateTask,
+    RefreshCurrentCompetitorTableTask,
     SourceToTargetPublishDemoTask,
 )
 
@@ -118,6 +120,15 @@ def test_demo_task_workflow_builder_uses_expected_workflow_id():
     assert workflow.run_mode == "draft"
 
 
+def test_feishu_clear_row_by_url_workflow_builder_uses_expected_workflow_id():
+    task = FeishuClearRowByUrlTask()
+
+    workflow = task.build_workflow({})
+
+    assert workflow.workflow_id == "feishu_clear_row_by_url_v1"
+    assert workflow.run_mode == "draft"
+
+
 def test_cli_runner_executes_registered_workflow_task_and_records_outputs(tmp_path):
     payload = run_registered_task(
         "source_to_target_publish_demo",
@@ -160,6 +171,12 @@ def test_cli_runner_lists_registered_tasks():
             ),
         },
         {
+            "name": "feishu_clear_row_by_url",
+            "description": (
+                "Find one Feishu competitor row by 产品链接 and clear every other field for testing reset flows."
+            ),
+        },
+        {
             "name": "feishu_pending_rows_scan",
             "description": "Scan the Feishu table and return rows whose auto-maintained fields are still incomplete.",
         },
@@ -173,6 +190,13 @@ def test_cli_runner_lists_registered_tasks():
             "name": "feishu_single_row_update",
             "description": (
                 "Update one Feishu competitor row by fetching TikTok fields plus FastMoss screenshot and sales metrics."
+            ),
+        },
+        {
+            "name": "refresh_current_competitor_table",
+            "description": (
+                "Refresh the current Feishu competitor table by running cleanup, scanning pending rows, "
+                "queueing browser updates, and emitting one final summary notification."
             ),
         },
         {
@@ -229,6 +253,13 @@ def _controlled_context(params: dict[str, object]) -> SimpleNamespace:
     )
 
 
+def _refresh_context(params: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        step=SimpleNamespace(step_id="orchestrate_refresh_current_competitor_table"),
+        params=params,
+    )
+
+
 def test_controlled_task_submit_and_status_round_trip(tmp_path):
     task = FeishuSingleRowUpdateTask()
     db_path = tmp_path / "control.sqlite3"
@@ -261,6 +292,458 @@ def test_controlled_task_submit_and_status_round_trip(tmp_path):
     assert status_result.data["request_id"] == submit_result.data["request_id"]
     assert status_result.data["queue_position"] == 1
     assert status_result.data["request"]["payload"]["record_id"] == "rec-001"
+
+
+def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation_error(tmp_path):
+    payload = run_registered_task(
+        "refresh_current_competitor_table",
+        params={
+            "control_action": "submit",
+            "profile_ref": "main",
+            "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+            "access_token": "token-demo",
+            "execution_control_db_path": str(tmp_path / "phase1.sqlite3"),
+        },
+        run_dir=tmp_path / "cli_runs",
+    )
+
+    assert payload["status"] == "success"
+    step_output = payload["result"]["data"]["step_outputs"]["orchestrate_refresh_current_competitor_table"]
+    assert step_output["control_action"] == "submit"
+    assert step_output["request_status"] == "pending"
+    assert step_output["summary"]["total"] == 1
+    assert step_output["summary"]["counts"] == {"queued": 1}
+
+
+def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_tiktok_product_link_cleanup",
+            "run_feishu_pending_rows_scan",
+            "run_feishu_single_row_update",
+            "Phase1RuntimeStore",
+        ],
+    )
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "phase1.sqlite3"
+
+    def fake_cleanup(params):
+        return {
+            "summary": {"total": 3, "counts": {"keep": 3}},
+            "items": [{"record_id": "rec-a"}, {"record_id": "rec-b"}, {"record_id": "rec-c"}],
+        }
+
+    def fake_scan(params):
+        return {
+            "summary": {"total": 3, "counts": {"pending": 2, "skipped_completed": 1}},
+            "items": [
+                {"record_id": "rec-a", "status": "pending"},
+                {"record_id": "rec-b", "status": "pending"},
+                {"record_id": "rec-c", "status": "skipped_completed"},
+            ],
+            "target_rows": [
+                {"record_id": "rec-a", "source_url": "https://example.com/a"},
+                {"record_id": "rec-b", "source_url": "https://example.com/b"},
+            ],
+        }
+
+    def fake_single_row_update(params):
+        record_id = str(params["record_id"])
+        if record_id == "rec-b":
+            item = {"record_id": record_id, "status": "skipped_unavailable"}
+        else:
+            item = {"record_id": record_id, "status": "updated"}
+        return {
+            "summary": {"total": 1, "counts": {item["status"]: 1}},
+            "item": item,
+            "items": [item],
+        }
+
+    monkeypatch.setattr(module, "run_tiktok_product_link_cleanup", fake_cleanup)
+    monkeypatch.setattr(module, "run_feishu_pending_rows_scan", fake_scan)
+    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_single_row_update)
+
+    submitted = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "main",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    assert submitted.data["request_status"] == "pending"
+    assert submitted.data["summary"]["counts"] == {"queued": 1}
+
+    status_payload = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "status",
+                "request_id": submitted.data["request_id"],
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert status_payload.data["request_status"] == "pending"
+
+    executor_once = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert executor_once.data["request_status"] == "waiting_children"
+    assert executor_once.data["current_stage"] == "waiting_children"
+    assert executor_once.data["child_total_count"] == 2
+    assert len(executor_once.data["executions"]) == 2
+
+    browser_loop = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "browser_loop",
+                "execution_control_db_path": str(db_path),
+                "execution_control_stop_when_idle": True,
+                "execution_control_max_idle_cycles": 1,
+            }
+        )
+    )
+    assert browser_loop.data["processed_count"] == 2
+
+    ready_status = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "status",
+                "request_id": submitted.data["request_id"],
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert ready_status.data["request_status"] == "ready_for_summary"
+
+    executor_summary = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert executor_summary.data["request_status"] == "success"
+    assert executor_summary.data["current_stage"] == "completed"
+    assert executor_summary.data["summary"]["total"] == 2
+    assert executor_summary.data["summary"]["counts"] == {"success": 1, "skipped": 1}
+    assert len(executor_summary.data["outbox"]) == 1
+    assert executor_summary.data["outbox"][0]["status"] == "pending"
+
+    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
+    assert len(execution_records) == 2
+    assert all(len(store.list_artifacts(run_id=record.run_id)) == 5 for record in execution_records)
+
+    outbox_once = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "outbox_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert outbox_once.data["dispatcher_status"] == "processed"
+    assert outbox_once.data["summary"]["counts"] == {"sent": 1}
+
+    final_result = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "result",
+                "request_id": submitted.data["request_id"],
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert final_result.data["request_status"] == "success"
+    assert final_result.data["outbox"][0]["status"] == "sent"
+    assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
+
+
+def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_tiktok_product_link_cleanup",
+            "run_feishu_pending_rows_scan",
+        ],
+    )
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "phase1_dedupe.sqlite3"
+
+    monkeypatch.setattr(
+        module,
+        "run_tiktok_product_link_cleanup",
+        lambda params: {"summary": {"total": 1, "counts": {"keep": 1}}, "items": [{"record_id": "rec-a"}]},
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_pending_rows_scan",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"pending": 1}},
+            "items": [{"record_id": "rec-a", "status": "pending"}],
+            "target_rows": [{"record_id": "rec-a", "source_url": "https://example.com/a"}],
+        },
+    )
+
+    first_submit = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "shared",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    first_executor = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert first_executor.data["request_status"] == "waiting_children"
+
+    second_submit = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "shared",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    second_executor = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert second_executor.data["request_id"] == second_submit.data["request_id"]
+    assert second_executor.data["request_status"] == "success"
+    assert second_executor.data["summary"]["total"] == 1
+    assert second_executor.data["summary"]["counts"] == {"deduped_active": 1}
+    assert len(second_executor.data["executions"]) == 0
+
+
+def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_tiktok_product_link_cleanup",
+            "run_feishu_pending_rows_scan",
+            "run_feishu_single_row_update",
+        ],
+    )
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "phase1_outbox.sqlite3"
+    dispatched_commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "run_tiktok_product_link_cleanup",
+        lambda params: {"summary": {"total": 1, "counts": {"keep": 1}}, "items": [{"record_id": "rec-a"}]},
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_pending_rows_scan",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"pending": 1}},
+            "items": [{"record_id": "rec-a", "status": "pending"}],
+            "target_rows": [{"record_id": "rec-a", "source_url": "https://example.com/a"}],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_feishu_single_row_update",
+        lambda params: {
+            "summary": {"total": 1, "counts": {"updated": 1}},
+            "item": {"record_id": str(params["record_id"]), "status": "updated"},
+            "items": [{"record_id": str(params["record_id"]), "status": "updated"}],
+        },
+    )
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/local/bin/openclaw")
+
+    def fake_subprocess_run(command, capture_output, text, check, timeout):
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        assert timeout >= 1
+        dispatched_commands.append(list(command))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"ok": True, "messageId": "msg-001"}, ensure_ascii=False),
+            stderr="",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
+
+    reply_target = json.dumps(
+        {
+            "channel": "feishu",
+            "to": "user:ou_test_user",
+            "accountId": "default",
+            "sessionId": "session-123",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    submitted = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "main",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "openclaw_message",
+                "reply_target": reply_target,
+                "source_session_id": "session-123",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "browser_loop",
+                "execution_control_db_path": str(db_path),
+                "execution_control_stop_when_idle": True,
+                "execution_control_max_idle_cycles": 1,
+            }
+        )
+    )
+    task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    outbox_once = task.execute_workflow_step(
+        _refresh_context(
+            {
+                "control_action": "outbox_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    assert outbox_once.data["dispatcher_status"] == "processed"
+    assert outbox_once.data["summary"]["counts"] == {"sent": 1}
+    assert outbox_once.data["channel_code"] == "openclaw_message"
+    assert len(dispatched_commands) == 1
+    assert dispatched_commands[0] == [
+        "/usr/local/bin/openclaw",
+        "message",
+        "send",
+        "--channel",
+        "feishu",
+        "--target",
+        "user:ou_test_user",
+        "--message",
+        f"任务 {submitted.data['request_id']} 已完成；目标 1 条；success=1",
+        "--json",
+        "--account",
+        "default",
+    ]
+
+
+def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=["dispatch_phase1_outbox_once", "Phase1RuntimeStore"],
+    )
+    db_path = tmp_path / "phase1_feishu_outbox.sqlite3"
+    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    dispatched_messages: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_dispatch_via_feishu_bot_api",
+        lambda *, message_text, reply_target: (
+            dispatched_messages.append({"message_text": message_text, "reply_target": reply_target}) or {"code": 0}
+        ),
+    )
+
+    reply_target = json.dumps(
+        {
+            "channel": "feishu",
+            "to": "user:ou_test_user",
+            "accountId": "default",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    outbox_record = store.create_notification_outbox(
+        channel_code="feishu_bot_api",
+        event_type="task_request.completed",
+        ref_id="request-feishu",
+        reply_target=reply_target,
+        payload={"message_text": "阶段一汇总测试"},
+        dedupe_key="request-feishu:summary",
+    )
+
+    payload = module.dispatch_phase1_outbox_once({"execution_control_db_path": str(db_path)})
+
+    assert payload["dispatcher_status"] == "processed"
+    assert payload["summary"]["counts"] == {"sent": 1}
+    assert payload["outbox_id"] == outbox_record.outbox_id
+    assert dispatched_messages == [
+        {
+            "message_text": "阶段一汇总测试",
+            "reply_target": reply_target,
+        }
+    ]
+
+
+def test_parse_reply_target_accepts_python_dict_repr():
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=["_parse_reply_target"],
+    )
+
+    payload = module._parse_reply_target(
+        "{'channel': 'feishu', 'to': 'user:ou_test_user', 'accountId': 'default'}"
+    )
+
+    assert payload == {
+        "channel": "feishu",
+        "to": "user:ou_test_user",
+        "accountId": "default",
+    }
 
 
 def test_controlled_task_execute_next_runs_requests_in_queue_order(monkeypatch, tmp_path):

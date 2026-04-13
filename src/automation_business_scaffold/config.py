@@ -5,6 +5,14 @@ import socket
 from dataclasses import dataclass
 
 
+def _read_env(name: str, *aliases: str, default: str = "") -> str:
+    for key in (name, *aliases):
+        raw = os.getenv(key)
+        if raw is not None and str(raw).strip():
+            return str(raw)
+    return default
+
+
 def _read_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None:
@@ -18,6 +26,16 @@ def _read_int(name: str, default: int) -> int:
 def _read_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _read_float_alias(name: str, *aliases: str, default: float) -> float:
+    raw = _read_env(name, *aliases, default="")
+    if not raw:
         return default
     try:
         return float(raw)
@@ -64,37 +82,67 @@ def get_business_defaults() -> BusinessDefaults:
 
 
 def get_execution_control_defaults() -> ExecutionControlDefaults:
-    lease_seconds = max(_read_float("BUSINESS_EXECUTION_CONTROL_LEASE_SECONDS", 120.0), 5.0)
-    heartbeat_interval_seconds = _read_float(
+    lease_seconds = max(
+        _read_float_alias(
+            "BUSINESS_EXECUTION_CONTROL_LEASE_SECONDS",
+            "EXECUTION_CONTROL_LEASE_SECONDS",
+            default=120.0,
+        ),
+        5.0,
+    )
+    heartbeat_interval_seconds = _read_float_alias(
         "BUSINESS_EXECUTION_CONTROL_HEARTBEAT_INTERVAL_SECONDS",
-        max(1.0, min(lease_seconds / 3.0, 30.0)),
+        "EXECUTION_CONTROL_HEARTBEAT_INTERVAL_SECONDS",
+        default=max(1.0, min(lease_seconds / 3.0, 30.0)),
     )
     hostname = socket.gethostname().strip() or "localhost"
     default_worker_id = f"{hostname}:{os.getpid()}"
     return ExecutionControlDefaults(
-        db_url=os.getenv("BUSINESS_EXECUTION_CONTROL_DB_URL", "").strip(),
-        db_path=os.getenv(
+        db_url=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_DB_URL",
+            "EXECUTION_CONTROL_DB_URL",
+        ).strip(),
+        db_path=_read_env(
             "BUSINESS_EXECUTION_CONTROL_DB_PATH",
-            "runtime/execution_control/control_plane.sqlite3",
+            "EXECUTION_CONTROL_DB_PATH",
+            default="runtime/execution_control/control_plane.sqlite3",
         ),
-        artifact_root=os.getenv(
+        artifact_root=_read_env(
             "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT",
-            "runtime/execution_control/object_store",
+            "EXECUTION_CONTROL_ARTIFACT_ROOT",
+            default="runtime/execution_control/object_store",
         ),
-        artifact_bucket=os.getenv(
+        artifact_bucket=_read_env(
             "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET",
-            "local-runtime",
+            "EXECUTION_CONTROL_ARTIFACT_BUCKET",
+            default="local-runtime",
         ),
-        requested_by=os.getenv("BUSINESS_EXECUTION_CONTROL_REQUESTED_BY", "local-cli"),
-        worker_id=os.getenv("BUSINESS_EXECUTION_CONTROL_WORKER_ID", default_worker_id),
+        requested_by=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY",
+            "EXECUTION_CONTROL_REQUESTED_BY",
+            default="local-cli",
+        ),
+        worker_id=_read_env(
+            "BUSINESS_EXECUTION_CONTROL_WORKER_ID",
+            "EXECUTION_CONTROL_WORKER_ID",
+            default=default_worker_id,
+        ),
         lease_seconds=lease_seconds,
         heartbeat_interval_seconds=max(1.0, min(heartbeat_interval_seconds, lease_seconds)),
         poll_interval_seconds=max(
-            _read_float("BUSINESS_EXECUTION_CONTROL_POLL_INTERVAL_SECONDS", 1.0),
+            _read_float_alias(
+                "BUSINESS_EXECUTION_CONTROL_POLL_INTERVAL_SECONDS",
+                "EXECUTION_CONTROL_POLL_INTERVAL_SECONDS",
+                default=1.0,
+            ),
             0.05,
         ),
         wait_timeout_seconds=max(
-            _read_float("BUSINESS_EXECUTION_CONTROL_WAIT_TIMEOUT_SECONDS", 300.0),
+            _read_float_alias(
+                "BUSINESS_EXECUTION_CONTROL_WAIT_TIMEOUT_SECONDS",
+                "EXECUTION_CONTROL_WAIT_TIMEOUT_SECONDS",
+                default=300.0,
+            ),
             1.0,
         ),
     )

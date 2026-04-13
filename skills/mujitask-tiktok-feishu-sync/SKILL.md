@@ -53,12 +53,15 @@ metadata:
 
 - 不要输出设计意图、版本目标、历史重构信息。
 - 用户如果要求“写入当前飞书表”，则默认自动执行完整后续流程，不要停在中间步骤等待用户追加指令。
-- 默认在一次用户请求内自动推进到详情补全结束；只有遇到真实错误、安全验证未解除或明确停止条件时，才允许中断。
+- 默认在一次用户请求内自动创建顶层任务并立即返回受理回执；后续详情补全、汇总和通知由后台 executor/browser/outbox 进程继续推进。
 - 用户如果要求“写入当前飞书表”，则不能在只完成 `keyword-candidates` 或 `insert-seed-row` 后回复“已完成”。
-- 定时更新入口必须按这个顺序执行：
-  1. `run_cleanup_step.sh`
-  2. `run_pending_rows_step.sh`
-  3. 对 `target_rows` 执行 `run_single_row_update_step.sh`
+- 定时更新入口默认统一执行：
+  1. `run_refresh_current_competitor_table_step.sh`
+- 上面的顶层入口内部会自动完成：
+  1. 创建顶层 `task_request`
+  2. 立即返回 `request_id`
+  3. 后台继续完成链接标准化与去重、pending rows 扫描、浏览器叶子任务入队与串行消费、最终汇总
+- `run_cleanup_step.sh`、`run_pending_rows_step.sh`、`run_single_row_update_step.sh` 仅用于人工排障，不再作为默认主流程。
 - 关键词搜索入口必须按这个顺序执行：
   1. `run_fastmoss_login_check_step.sh`
   2. `run_keyword_candidate_step.sh`
@@ -72,6 +75,9 @@ metadata:
 - 默认只向用户输出最终结果摘要，不展开内部 step 编排细节。
 - 不要把候选发现、种子写入、内部续跑这些过程当成主要输出内容。
 - 除非用户主动要求详细过程，否则不要把候选数、步骤名、内部子任务分段作为常规输出。
+- 只要进入了异步提交或查询到了顶层任务状态，必须显式输出 `request_id`，不要只说“已经开始”或“任务已完成”。
+- 如果是首次提交回执，优先使用单独一行或单独一句展示：`request_id: <id>`。
+- 首次提交回执不要等待浏览器补全跑完再返回，最终结果由独立通知再次发送到飞书。
 - 如果流程已经完整执行到详情补全结束，可以回复“已完成”。
 - 如果流程因为真实错误或安全验证等原因未能自动完成，才说明未完成原因。
 - 如果内部为了稳定性拆成多个子任务，继续自动衔接执行；除非确实未完成，否则不要把中间分段细节暴露给用户。
@@ -86,11 +92,7 @@ metadata:
 
 推荐步骤：
 
-1. `bash run_cleanup_step.sh`
-2. `bash run_pending_rows_step.sh`
-3. 从 pending 结果中读取 `target_rows`
-4. 对 `target_rows` 继续执行：
-   - `bash run_single_row_update_step.sh --record-id <record_id>`
+1. `bash run_refresh_current_competitor_table_step.sh`
 
 固定规则：
 
