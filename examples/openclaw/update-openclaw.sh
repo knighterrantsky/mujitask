@@ -11,18 +11,52 @@ main() {
   ensure_uv
   ensure_python_311
 
-  local openclaw_skills_dir="$HOME/.openclaw/workspace/skills"
+  local openclaw_skills_dir
+  openclaw_skills_dir="$(resolve_openclaw_skills_dir)"
   local target_skill_dir="$openclaw_skills_dir/mujitask-tiktok-feishu-sync"
   local existing_skill_env="$target_skill_dir/skill.local.env"
   [[ -f "$existing_skill_env" ]] || fail "Missing deployed skill config: $existing_skill_env"
 
-  local install_dir table_url token
+  local install_dir table_url token browser_profile_ref fastmoss_phone fastmoss_password
+  local db_url db_path artifact_root artifact_bucket requested_by notification_channel_code
+  local openclaw_agent_id openclaw_state_dir
   install_dir="$(read_kv_value "$existing_skill_env" "INSTALL_DIR" 2>/dev/null || true)"
   table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
   token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
+  browser_profile_ref="$(read_kv_value "$existing_skill_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
+  fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
+  fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
+  db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
+  db_path="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
+  artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
+  artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
+  requested_by="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_REQUESTED_BY" 2>/dev/null || true)"
+  notification_channel_code="$(read_kv_value "$existing_skill_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
+  openclaw_agent_id="$(read_kv_value "$existing_skill_env" "OPENCLAW_AGENT_ID" 2>/dev/null || true)"
+  openclaw_state_dir="$(read_kv_value "$existing_skill_env" "OPENCLAW_STATE_DIR" 2>/dev/null || true)"
   [[ -n "$install_dir" ]] || fail "INSTALL_DIR is missing in $existing_skill_env."
   [[ -n "$table_url" ]] || fail "TABLE_URL is missing in $existing_skill_env."
   [[ -n "$token" ]] || fail "FEISHU_ACCESS_TOKEN is missing in $existing_skill_env."
+
+  local existing_executor_env="$install_dir/scripts/execution_control/executor.local.env"
+  local artifact_store_provider="" artifact_object_prefix="" minio_endpoint="" minio_access_key="" minio_secret_key="" minio_region="" minio_secure="" minio_create_bucket="" sync_referenced_files=""
+  if [[ -f "$existing_executor_env" ]]; then
+    [[ -n "$db_url" ]] || db_url="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
+    [[ -n "$db_path" ]] || db_path="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
+    [[ -n "$artifact_root" ]] || artifact_root="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
+    [[ -n "$artifact_bucket" ]] || artifact_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
+    artifact_store_provider="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER" 2>/dev/null || true)"
+    artifact_object_prefix="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX" 2>/dev/null || true)"
+    minio_endpoint="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT" 2>/dev/null || true)"
+    minio_access_key="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY" 2>/dev/null || true)"
+    minio_secret_key="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY" 2>/dev/null || true)"
+    minio_region="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_REGION" 2>/dev/null || true)"
+    minio_secure="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_SECURE" 2>/dev/null || true)"
+    minio_create_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET" 2>/dev/null || true)"
+    sync_referenced_files="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES" 2>/dev/null || true)"
+    [[ -n "$requested_by" ]] || requested_by="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY" 2>/dev/null || true)"
+    [[ -n "$notification_channel_code" ]] || notification_channel_code="$(read_kv_value "$existing_executor_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
+  fi
 
   local deploy_state_path="$install_dir/runtime/deployment/openclaw-deploy.env"
   [[ -f "$deploy_state_path" ]] || fail "Missing deployment state: $deploy_state_path"
@@ -125,10 +159,48 @@ main() {
   replace_target_dir "$target_skill_dir"
   cp -R "$source_skill_dir"/. "$target_skill_dir"/
   cp "$previous_skill_env" "$target_skill_dir/skill.local.env"
-  write_skill_local_env "$target_skill_dir" "$install_dir" "$table_url" "$token"
+  write_skill_local_env \
+    "$target_skill_dir" \
+    "$install_dir" \
+    "$table_url" \
+    "$token" \
+    "$browser_profile_ref" \
+    "$fastmoss_phone" \
+    "$fastmoss_password" \
+    "$db_url" \
+    "$db_path" \
+    "$artifact_root" \
+    "$artifact_bucket" \
+    "${requested_by:-openclaw-skill}" \
+    "${notification_channel_code:-feishu_bot_api}" \
+    "${openclaw_agent_id:-tiktok-ops}" \
+    "${openclaw_state_dir:-$HOME/.openclaw}"
+  write_executor_local_env \
+    "$install_dir" \
+    "$db_url" \
+    "$db_path" \
+    "$artifact_root" \
+    "$artifact_bucket" \
+    "${artifact_store_provider:-minio}" \
+    "${artifact_object_prefix:-phase2/local}" \
+    "$minio_endpoint" \
+    "$minio_access_key" \
+    "$minio_secret_key" \
+    "$minio_region" \
+    "${minio_secure:-false}" \
+    "${minio_create_bucket:-true}" \
+    "${sync_referenced_files:-true}" \
+    "${requested_by:-openclaw-skill}" \
+    "$token" \
+    "$browser_profile_ref" \
+    "$fastmoss_phone" \
+    "$fastmoss_password" \
+    "${notification_channel_code:-feishu_bot_api}"
   write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${LAST_FRAMEWORK_ARCHIVE_URL:-}"
+  log "Refreshing launchd agents"
+  bash "$install_dir/scripts/execution_control/install_launch_agents.sh"
 
-  smoke_check "$install_dir" "$target_skill_dir"
+  smoke_check "$install_dir" "$target_skill_dir" "$install_dir/scripts/execution_control/executor.local.env"
 
   log "Update completed."
   log "Installed ref: $resolved_ref"

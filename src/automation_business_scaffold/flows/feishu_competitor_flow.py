@@ -155,7 +155,6 @@ def run_feishu_single_row_update(params: dict[str, Any]) -> dict[str, Any]:
             "item": result_item,
             "items": [result_item],
         }
-
     if not missing_fields:
         result_item = {
             "record_id": settings["record_id"],
@@ -375,6 +374,80 @@ def _log_single_row_timing(*, record_id: str, phase: str, **extra: Any) -> None:
     if detail:
         message = f"{message} {detail}"
     print(message, flush=True)
+
+
+def run_feishu_clear_row_by_url(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _build_clear_row_settings(params)
+    target = _build_table_target(settings["table_url"], settings["access_token"])
+    record_index = _build_existing_record_index(target.client, target)
+    record_id = str(record_index["by_url"].get(settings["normalized_url"], "") or "").strip()
+
+    if not record_id:
+        result_item = {
+            "record_id": "",
+            "source_url": settings["source_url"],
+            "normalized_url": settings["normalized_url"],
+            "status": "not_found",
+            "error": "",
+            "cleared_fields": [],
+            "fields": {},
+        }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+
+    raw_record = _load_feishu_record(target, record_id)
+    fields = raw_record.get("fields", {})
+    if not isinstance(fields, dict):
+        fields = {}
+    clear_fields = _build_clear_row_write_fields(fields, url_field_name=settings["url_field_name"])
+
+    if not clear_fields:
+        result_item = {
+            "record_id": record_id,
+            "source_url": settings["source_url"],
+            "normalized_url": settings["normalized_url"],
+            "status": "skipped_already_cleared",
+            "error": "",
+            "cleared_fields": [],
+            "fields": {},
+        }
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+
+    result_item = {
+        "record_id": record_id,
+        "source_url": settings["source_url"],
+        "normalized_url": settings["normalized_url"],
+        "status": "preview_cleared",
+        "error": "",
+        "cleared_fields": sorted(clear_fields.keys()),
+        "fields": clear_fields,
+    }
+    if not settings["apply_mutations"]:
+        return {
+            "summary": _summarize_status_counts([result_item]),
+            "item": result_item,
+            "items": [result_item],
+        }
+
+    target.client.update_record(
+        target.app_token,
+        target.table_id,
+        record_id,
+        clear_fields,
+    )
+    result_item["status"] = "cleared"
+    return {
+        "summary": _summarize_status_counts([result_item]),
+        "item": result_item,
+        "items": [result_item],
+    }
 
 
 def run_fastmoss_keyword_candidate_discovery(params: dict[str, Any]) -> dict[str, Any]:
@@ -611,6 +684,25 @@ def _build_single_row_settings(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_clear_row_settings(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _build_feishu_table_settings(params)
+    source_url = str(
+        params.get("product_url")
+        or params.get("source_url")
+        or params.get("url")
+        or ""
+    ).strip()
+    if not source_url:
+        raise ValueError("url is required")
+
+    return {
+        **settings,
+        "source_url": source_url,
+        "normalized_url": normalize_tiktok_product_url(source_url),
+        "apply_mutations": _should_apply_mutations(settings["run_mode"]),
+    }
+
+
 def _build_keyword_settings(params: dict[str, Any]) -> dict[str, Any]:
     settings = _build_feishu_table_settings(params)
     search_keyword = str(params.get("search_keyword") or params.get("keyword") or "").strip()
@@ -797,6 +889,23 @@ def _normalize_existing_product_url(value: Any) -> str:
         return normalize_tiktok_product_url(source_url)
     except ValueError:
         return ""
+
+
+def _build_clear_row_write_fields(fields: dict[str, Any], *, url_field_name: str) -> dict[str, Any]:
+    clear_fields: dict[str, Any] = {}
+    for field_name, value in fields.items():
+        if field_name == url_field_name:
+            continue
+        clear_fields[field_name] = _empty_field_value(value)
+    return clear_fields
+
+
+def _empty_field_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return []
+    if isinstance(value, (int, float)):
+        return None
+    return ""
 
 
 def _missing_auto_update_field_names(fields: dict[str, Any]) -> list[str]:

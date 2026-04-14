@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Protocol</key>
+  <string>s3</string>
+  <key>Scheme</key>
+  <string>http</string>
+  <key>Vendor</key>
+  <string>mujitask-local-minio</string>
+  <key>Description</key>
+  <string>Local MinIO (HTTP 9000)</string>
+  <key>Default Nickname</key>
+  <string>Local MinIO</string>
+  <key>Default Hostname</key>
+  <string>127.0.0.1</string>
+  <key>Hostname Configurable</key>
+  <true/>
+  <key>Default Port</key>
+  <string>9000</string>
+  <key>Port Configurable</key>
+  <true/>
+  <key>Username Placeholder</key>
+  <string>Access Key ID</string>
+  <key>Password Placeholder</key>
+  <string>Secret Access Key</string>
+  <key>Region</key>
+  <string>us-east-1</string>
+  <key>Properties</key>
+  <dict>
+    <key>s3.bucket.virtualhost.disable</key>
+    <string>true</string>
+  </dict>
+</dict>
+</plist>

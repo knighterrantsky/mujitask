@@ -47,6 +47,27 @@ def _build_summary_text(summary: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _augment_message_with_request_id(payload: dict[str, Any]) -> None:
+    request_id = str(payload.get("request_id", "") or "").strip()
+    if not request_id:
+        return
+    message = str(payload.get("message", "") or "").strip()
+    if request_id in message:
+        return
+
+    control_action = str(payload.get("control_action", "") or "").strip()
+    request_status = str(payload.get("request_status", "") or "").strip()
+
+    if control_action == "submit":
+        prefix = f"已成功提交任务，request_id: {request_id}"
+    elif request_status in {"pending", "running", "waiting_children", "ready_for_summary"}:
+        prefix = f"任务正在执行中，request_id: {request_id}"
+    else:
+        prefix = f"request_id: {request_id}"
+
+    payload["message"] = f"{prefix}；{message}" if message else prefix
+
+
 def _pick_single_step_output(step_outputs: Any) -> dict[str, Any]:
     if not isinstance(step_outputs, dict):
         return {}
@@ -54,6 +75,16 @@ def _pick_single_step_output(step_outputs: Any) -> dict[str, Any]:
         return {}
     only_value = next(iter(step_outputs.values()), {})
     return only_value if isinstance(only_value, dict) else {}
+
+
+def _pick_detail_payload(result_data: Any) -> dict[str, Any]:
+    if not isinstance(result_data, dict):
+        return {}
+    step_outputs = result_data.get("step_outputs", {})
+    single_step_output = _pick_single_step_output(step_outputs)
+    if single_step_output:
+        return single_step_output
+    return result_data
 
 
 def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
@@ -71,6 +102,27 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "summary_text": "",
         "failed_item_count": 0,
         "error": args.error_message or "",
+        "control_action": "",
+        "request_id": "",
+        "execution_id": "",
+        "request_status": "",
+        "execution_status": "",
+        "resource_code": "",
+        "queue_position": 0,
+        "wait_timed_out": False,
+        "daemon_status": "",
+        "processed_count": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "artifact_count": 0,
+        "artifact_uri_prefix": "",
+        "run_object_key": "",
+        "steps_object_key": "",
+        "signals_object_key": "",
+        "stdout_object_key": "",
+        "artifacts_dir": "",
+        "worker_id": "",
+        "artifacts": [],
     }
 
     if isinstance(payload, dict) and payload:
@@ -79,6 +131,7 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         step_outputs = result_data.get("step_outputs", {}) if isinstance(result_data, dict) else {}
         emit_summary = step_outputs.get("emit_summary", {}) if isinstance(step_outputs, dict) else {}
         single_step_output = _pick_single_step_output(step_outputs)
+        detail_payload = _pick_detail_payload(result_data)
         summary = result_data.get("summary", {}) if isinstance(result_data, dict) else {}
         failed_items = result_data.get("failed_items", []) if isinstance(result_data, dict) else []
 
@@ -109,12 +162,39 @@ def build_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 "failed_item_count": len(failed_items) if isinstance(failed_items, list) else 0,
             }
         )
+        if isinstance(detail_payload, dict):
+            for field in (
+                "control_action",
+                "request_id",
+                "execution_id",
+                "request_status",
+                "execution_status",
+                "resource_code",
+                "queue_position",
+                "wait_timed_out",
+                "daemon_status",
+                "processed_count",
+                "success_count",
+                "failed_count",
+                "artifact_count",
+                "artifact_uri_prefix",
+                "run_object_key",
+                "steps_object_key",
+                "signals_object_key",
+                "stdout_object_key",
+                "artifacts_dir",
+                "worker_id",
+                "artifacts",
+            ):
+                if field in detail_payload:
+                    result_payload[field] = detail_payload[field]
         if isinstance(error, str) and error.strip():
             result_payload["error"] = error.strip()
 
     if args.error_message and not str(result_payload.get("error", "")).strip():
         result_payload["error"] = args.error_message
 
+    _augment_message_with_request_id(result_payload)
     result_payload["summary_text"] = _build_summary_text(result_payload.get("summary", {}))
     return result_payload
 

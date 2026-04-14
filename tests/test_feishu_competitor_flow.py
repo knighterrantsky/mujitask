@@ -5,6 +5,7 @@ from pathlib import Path
 from automation_business_scaffold.flows.feishu_competitor_flow import (
     run_fastmoss_login_check,
     run_fastmoss_keyword_candidate_discovery,
+    run_feishu_clear_row_by_url,
     run_feishu_pending_rows_scan,
     run_feishu_seed_row_insert,
     run_feishu_single_row_update,
@@ -203,6 +204,214 @@ def test_run_feishu_pending_rows_scan_marks_missing_fastmoss_price_as_pending(mo
             "sku_id": "1111111111111111111",
             "missing_fields": ["Fastmoss价格"],
         }
+    ]
+
+
+def test_run_feishu_clear_row_by_url_previews_clear_fields_without_mutation(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_clear_row_by_url"],
+    )
+
+    class FakeClient:
+        def list_all_records(self, *, app_token, table_id, page_size=100, view_id=None):
+            return [
+                {
+                    "record_id": "rec-clear",
+                    "fields": {
+                        "产品链接": {
+                            "link": "https://www.tiktok.com/shop/pdp/1731098351299629802?foo=bar"
+                        },
+                        "SKU-ID": "1731098351299629802",
+                        "图片": [{"file_token": "image-1"}],
+                        "标题": "Sample Title",
+                        "价格": "19.99",
+                        "Fastmoss截图": [{"file_token": "fastmoss-1"}],
+                        "记录日期": "2026/04/13",
+                    },
+                }
+            ]
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            assert record_id == "rec-clear"
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {
+                                "link": "https://www.tiktok.com/shop/pdp/1731098351299629802?foo=bar"
+                            },
+                            "SKU-ID": "1731098351299629802",
+                            "图片": [{"file_token": "image-1"}],
+                            "标题": "Sample Title",
+                            "价格": "19.99",
+                            "Fastmoss截图": [{"file_token": "fastmoss-1"}],
+                            "记录日期": "2026/04/13",
+                        },
+                    }
+                }
+            }
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            raise AssertionError("draft reset should not write to Feishu")
+
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(FakeClient()))
+
+    payload = run_feishu_clear_row_by_url(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "draft",
+            "url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"preview_cleared": 1}
+    assert payload["item"]["record_id"] == "rec-clear"
+    assert payload["item"]["cleared_fields"] == [
+        "Fastmoss截图",
+        "SKU-ID",
+        "价格",
+        "图片",
+        "标题",
+        "记录日期",
+    ]
+    assert payload["item"]["fields"] == {
+        "SKU-ID": "",
+        "图片": [],
+        "标题": "",
+        "价格": "",
+        "Fastmoss截图": [],
+        "记录日期": "",
+    }
+
+
+def test_run_feishu_clear_row_by_url_updates_matching_row_in_canary_mode(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_clear_row_by_url"],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_all_records(self, *, app_token, table_id, page_size=100, view_id=None):
+            return [
+                {
+                    "record_id": "rec-clear",
+                    "fields": {
+                        "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1731098351299629802"},
+                        "标题": "Before Clear",
+                        "图片": [{"file_token": "image-1"}],
+                    },
+                }
+            ]
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1731098351299629802"},
+                            "标题": "Before Clear",
+                            "图片": [{"file_token": "image-1"}],
+                        },
+                    }
+                }
+            }
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(fake_client))
+
+    payload = run_feishu_clear_row_by_url(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "url": "https://www.tiktok.com/shop/pdp/1731098351299629802?abc=1",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"cleared": 1}
+    assert fake_client.updated == [
+        (
+            "rec-clear",
+            {
+                "标题": "",
+                "图片": [],
+            },
+        )
+    ]
+
+
+def test_run_feishu_clear_row_by_url_clears_numeric_datetime_fields_with_null(monkeypatch):
+    module = __import__(
+        "automation_business_scaffold.flows.feishu_competitor_flow",
+        fromlist=["run_feishu_clear_row_by_url"],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_all_records(self, *, app_token, table_id, page_size=100, view_id=None):
+            return [
+                {
+                    "record_id": "rec-clear",
+                    "fields": {
+                        "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1731194997356205027"},
+                        "记录日期": 1776009600000,
+                        "标题": "Before Clear",
+                    },
+                }
+            ]
+
+        def get_record(self, app_token: str, table_id: str, record_id: str):
+            return {
+                "data": {
+                    "record": {
+                        "record_id": record_id,
+                        "fields": {
+                            "产品链接": {"link": "https://www.tiktok.com/shop/pdp/1731194997356205027"},
+                            "记录日期": 1776009600000,
+                            "标题": "Before Clear",
+                        },
+                    }
+                }
+            }
+
+        def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict[str, object]):
+            self.updated.append((record_id, fields))
+            return {"code": 0}
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(module, "_build_table_target", lambda table_url, access_token: _build_fake_target(fake_client))
+
+    payload = run_feishu_clear_row_by_url(
+        {
+            "table_url": "https://my.feishu.cn/base/app999?table=tbl999",
+            "access_token_env": "TOKEN_DIRECT_VALUE",
+            "run_mode": "canary",
+            "url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+        }
+    )
+
+    assert payload["summary"]["counts"] == {"cleared": 1}
+    assert fake_client.updated == [
+        (
+            "rec-clear",
+            {
+                "记录日期": None,
+                "标题": "",
+            },
+        )
     ]
 
 
