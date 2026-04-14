@@ -1,10 +1,16 @@
 # Phase 1 可交付验收与回退说明
 
-更新时间：`2026-04-12`
+更新时间：`2026-04-14`
 
 ## 1. 本文目的
 
-本文把当前 Phase 1 从“代码已开发”收敛成“可以交付”的完整流程。
+本文记录 Phase 1 首次可交付时的验收与回退口径。
+
+补充说明：
+
+- 当前仓库已经继续推进并完成了 Phase 2 的对象存储接入与 Phase 3 的实体快照沉淀。
+- 因此本文件应视为“Phase 1 历史交付基线”，不是当前系统全貌。
+- 当前正式运行形态请以 [03-部署文档.md](./03-%E9%83%A8%E7%BD%B2%E6%96%87%E6%A1%A3.md)、[12-系统架构升级方案.md](./12-%E7%B3%BB%E7%BB%9F%E6%9E%B6%E6%9E%84%E5%8D%87%E7%BA%A7%E6%96%B9%E6%A1%88.md)、[13-系统升级开发目标与推进计划.md](./13-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E5%BC%80%E5%8F%91%E7%9B%AE%E6%A0%87%E4%B8%8E%E6%8E%A8%E8%BF%9B%E8%AE%A1%E5%88%92.md)、[16-系统升级状态流转图与进程交互时序图.md](./16-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E7%8A%B6%E6%80%81%E6%B5%81%E8%BD%AC%E5%9B%BE%E4%B8%8E%E8%BF%9B%E7%A8%8B%E4%BA%A4%E4%BA%92%E6%97%B6%E5%BA%8F%E5%9B%BE.md) 和 [17-系统升级数据库结构设计表.md](./17-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E6%95%B0%E6%8D%AE%E5%BA%93%E7%BB%93%E6%9E%84%E8%AE%BE%E8%AE%A1%E8%A1%A8.md) 为准。
 
 补充说明：
 当前 Phase 1/2 运行时不是“只执行一次 CLI 命令”就结束，而是依赖 3 个常驻守护进程：
@@ -23,7 +29,7 @@
 
 ## 2. Phase 1 交付范围
 
-本阶段只交付 `feishu_single_row_update` 的执行控制闭环，不扩大到达人链或视频链。
+按历史阶段口径，Phase 1 只交付 `feishu_single_row_update` 的执行控制闭环，不扩大到达人链或视频链。
 
 当前交付内容：
 
@@ -36,15 +42,20 @@
 - executor 启动脚本与环境模板
 - 保留旧同步直跑作为 fallback
 
-本阶段仍不包含：
+按 Phase 1 历史边界，本阶段仍不包含：
 
 - MinIO 正式上传
 - `entity_registry / external_binding / entity_snapshot`
 - `notification_outbox`
 
+当前现状说明：
+
+- 以上三项在后续阶段已经补齐
+- 因此如果你现在查看当前代码或线上环境，不应再用这一段判断“当前系统是否具备这些能力”
+
 ## 3. 交付物清单
 
-本次 Phase 1 可交付包由下面几部分组成：
+以下清单记录的是 Phase 1 当时的最小交付物，不等于当前完整系统交付物。
 
 - 控制面代码
   - [execution_control_flow.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/src/automation_business_scaffold/flows/execution_control_flow.py:1)

@@ -43,15 +43,38 @@ main() {
   ensure_uv
   ensure_python_311
 
-  local openclaw_skills_dir="$HOME/.openclaw/workspace/skills"
+  local openclaw_skills_dir
+  openclaw_skills_dir="$(resolve_openclaw_skills_dir)"
   local existing_skill_env="$openclaw_skills_dir/mujitask-tiktok-feishu-sync/skill.local.env"
   local existing_install_dir=""
   existing_install_dir="$(read_kv_value "$existing_skill_env" "INSTALL_DIR" 2>/dev/null || true)"
+  local existing_browser_profile_ref=""
+  local existing_fastmoss_phone=""
+  local existing_fastmoss_password=""
+  local existing_db_url=""
+  local existing_db_path=""
+  local existing_artifact_root=""
+  local existing_artifact_bucket=""
+  local existing_notification_channel_code=""
+  local existing_openclaw_agent_id=""
+  local existing_openclaw_state_dir=""
 
   local repo_url="" tag="" install_dir="" table_url="" token="" archive_url="" github_slug="" resolved_ref="" github_token_input=""
   local default_install_dir="$HOME/apps/mujitask"
   if [[ -n "$existing_install_dir" ]]; then
     default_install_dir="$existing_install_dir"
+  fi
+  if [[ -f "$existing_skill_env" ]]; then
+    existing_browser_profile_ref="$(read_kv_value "$existing_skill_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
+    existing_fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
+    existing_fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
+    existing_db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
+    existing_db_path="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
+    existing_artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
+    existing_artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
+    existing_notification_channel_code="$(read_kv_value "$existing_skill_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
+    existing_openclaw_agent_id="$(read_kv_value "$existing_skill_env" "OPENCLAW_AGENT_ID" 2>/dev/null || true)"
+    existing_openclaw_state_dir="$(read_kv_value "$existing_skill_env" "OPENCLAW_STATE_DIR" 2>/dev/null || true)"
   fi
 
   if [[ -z "$GITHUB_AUTH_TOKEN" ]]; then
@@ -78,6 +101,25 @@ main() {
     token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
   fi
 
+  local existing_executor_env=""
+  if [[ -n "$existing_install_dir" ]]; then
+    existing_executor_env="$existing_install_dir/scripts/execution_control/executor.local.env"
+    if [[ -f "$existing_executor_env" ]]; then
+      [[ -n "$existing_db_url" ]] || existing_db_url="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
+      [[ -n "$existing_db_path" ]] || existing_db_path="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
+      [[ -n "$existing_artifact_root" ]] || existing_artifact_root="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
+      [[ -n "$existing_artifact_bucket" ]] || existing_artifact_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
+      [[ -n "$existing_notification_channel_code" ]] || existing_notification_channel_code="$(read_kv_value "$existing_executor_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
+    fi
+  fi
+
+  local browser_profile_ref="" fastmoss_phone="" fastmoss_password=""
+  local db_url="" db_path="" artifact_root="" artifact_bucket=""
+  local artifact_store_provider="" artifact_object_prefix=""
+  local minio_endpoint="" minio_access_key="" minio_secret_key="" minio_region=""
+  local minio_secure="" minio_create_bucket="" sync_referenced_files=""
+  local requested_by="" notification_channel_code="" openclaw_agent_id="" openclaw_state_dir=""
+
   repo_url="$(prompt "Repo URL")"
 
   if [[ -n "$table_url" ]]; then
@@ -91,6 +133,41 @@ main() {
   else
     token="$(prompt_secret "Feishu access token")"
   fi
+
+  browser_profile_ref="$(prompt "Browser profile ref" "${existing_browser_profile_ref:-roxy-tiktok}")"
+  if [[ -n "$existing_fastmoss_phone" ]]; then
+    log "Reusing existing FastMoss phone from $existing_skill_env"
+    fastmoss_phone="$existing_fastmoss_phone"
+  else
+    fastmoss_phone="$(prompt "FastMoss phone")"
+  fi
+  if [[ -n "$existing_fastmoss_password" ]]; then
+    log "Reusing existing FastMoss password from $existing_skill_env"
+    fastmoss_password="$existing_fastmoss_password"
+  else
+    fastmoss_password="$(prompt_secret "FastMoss password")"
+  fi
+
+  db_url="$(prompt "Execution control DB URL" "${existing_db_url:-postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold}")"
+  db_path="$(prompt_optional "Execution control DB path fallback (optional)" "${existing_db_path:-}")"
+  artifact_root="$(prompt "Artifact root" "${existing_artifact_root:-$install_dir/runtime/execution_control/object_store}")"
+  artifact_bucket="$(prompt "Artifact bucket" "${existing_artifact_bucket:-automation-business-scaffold}")"
+  artifact_store_provider="$(prompt "Artifact store provider" "minio")"
+  artifact_object_prefix="$(prompt_optional "Artifact object prefix" "phase2/local")"
+  minio_endpoint="$(prompt_optional "MinIO endpoint" "127.0.0.1:9000")"
+  minio_access_key="$(prompt_optional "MinIO access key" "minioadmin")"
+  minio_secret_key="$(prompt_secret_optional "MinIO secret key (optional, press Enter to use default)")"
+  if [[ -z "$minio_secret_key" ]]; then
+    minio_secret_key="minioadmin"
+  fi
+  minio_region="$(prompt_optional "MinIO region (optional)" "")"
+  minio_secure="$(prompt_optional "MinIO secure (true/false)" "false")"
+  minio_create_bucket="$(prompt_optional "MinIO create bucket automatically (true/false)" "true")"
+  sync_referenced_files="$(prompt_optional "Sync referenced files to object storage (true/false)" "true")"
+  requested_by="$(prompt_optional "Requested by marker" "openclaw-skill")"
+  notification_channel_code="$(prompt_optional "Notification channel code" "${existing_notification_channel_code:-feishu_bot_api}")"
+  openclaw_agent_id="$(prompt_optional "OpenClaw agent id" "${existing_openclaw_agent_id:-tiktok-ops}")"
+  openclaw_state_dir="$(prompt_optional "OpenClaw state dir" "${existing_openclaw_state_dir:-$HOME/.openclaw}")"
 
   local repo_archive="$TMP_ROOT/project-archive"
   local project_root
@@ -150,7 +227,12 @@ main() {
   log "Installing Playwright Chromium"
   "$venv_python" -m playwright install chromium
 
-  mkdir -p "$install_dir/runtime/cli_runs" "$install_dir/runtime/artifacts" "$install_dir/runtime/downloads"
+  mkdir -p \
+    "$install_dir/runtime/cli_runs" \
+    "$install_dir/runtime/artifacts" \
+    "$install_dir/runtime/downloads" \
+    "$install_dir/runtime/phase1_daemons" \
+    "$install_dir/runtime/execution_control"
   write_browser_profiles_if_missing "$install_dir"
 
   local chrome_bin
@@ -175,10 +257,48 @@ main() {
   if [[ -f "$previous_skill_env" ]]; then
     cp "$previous_skill_env" "$target_skill_dir/skill.local.env"
   fi
-  write_skill_local_env "$target_skill_dir" "$install_dir" "$table_url" "$token"
+  write_skill_local_env \
+    "$target_skill_dir" \
+    "$install_dir" \
+    "$table_url" \
+    "$token" \
+    "$browser_profile_ref" \
+    "$fastmoss_phone" \
+    "$fastmoss_password" \
+    "$db_url" \
+    "$db_path" \
+    "$artifact_root" \
+    "$artifact_bucket" \
+    "$requested_by" \
+    "$notification_channel_code" \
+    "$openclaw_agent_id" \
+    "$openclaw_state_dir"
+  write_executor_local_env \
+    "$install_dir" \
+    "$db_url" \
+    "$db_path" \
+    "$artifact_root" \
+    "$artifact_bucket" \
+    "$artifact_store_provider" \
+    "$artifact_object_prefix" \
+    "$minio_endpoint" \
+    "$minio_access_key" \
+    "$minio_secret_key" \
+    "$minio_region" \
+    "$minio_secure" \
+    "$minio_create_bucket" \
+    "$sync_referenced_files" \
+    "$requested_by" \
+    "$token" \
+    "$browser_profile_ref" \
+    "$fastmoss_phone" \
+    "$fastmoss_password" \
+    "$notification_channel_code"
   write_deploy_state "$install_dir" "$repo_url" "$resolved_ref" "${archive_url:-}" "${LAST_FRAMEWORK_ARCHIVE_URL:-}"
+  log "Installing launchd agents"
+  bash "$install_dir/scripts/execution_control/install_launch_agents.sh"
 
-  smoke_check "$install_dir" "$target_skill_dir"
+  smoke_check "$install_dir" "$target_skill_dir" "$install_dir/scripts/execution_control/executor.local.env"
 
   log "Deployment completed."
   log "Installed ref: $resolved_ref"

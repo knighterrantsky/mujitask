@@ -128,6 +128,16 @@ prompt_secret_optional() {
   printf '%s' "$result"
 }
 
+quote_env_value() {
+  local raw_value="${1-}"
+  "$PYTHON_BIN" - "$raw_value" <<'PY'
+import shlex
+import sys
+
+print(shlex.quote(sys.argv[1]))
+PY
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required."
 }
@@ -315,6 +325,27 @@ print(root)
 PY
 }
 
+resolve_openclaw_skills_dir() {
+  if [[ -n "${OPENCLAW_SKILLS_DIR:-}" ]]; then
+    printf '%s' "${OPENCLAW_SKILLS_DIR}"
+    return 0
+  fi
+
+  local default_dir="$HOME/.openclaw/workspace/skills"
+  local alternate_dir="$HOME/.openclaw/workspace-tiktok/skills"
+
+  if [[ -d "$default_dir" ]]; then
+    printf '%s' "$default_dir"
+    return 0
+  fi
+  if [[ -d "$alternate_dir" ]]; then
+    printf '%s' "$alternate_dir"
+    return 0
+  fi
+
+  printf '%s' "$default_dir"
+}
+
 replace_target_dir() {
   local target_dir="$1"
   if [[ -e "$target_dir" ]]; then
@@ -438,17 +469,103 @@ merge_key_value_file() {
   "$PYTHON_BIN" "${args[@]}"
 }
 
+seed_key_value_file_from_example() {
+  local file_path="$1"
+  local example_path="$2"
+
+  if [[ -f "$file_path" || ! -f "$example_path" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$file_path")"
+  cp "$example_path" "$file_path"
+}
+
 write_skill_local_env() {
   local skill_dir="$1"
   local install_dir="$2"
   local table_url="$3"
   local token="$4"
+  local browser_profile_ref="$5"
+  local fastmoss_phone="$6"
+  local fastmoss_password="$7"
+  local db_url="$8"
+  local db_path="$9"
+  local artifact_root="${10}"
+  local artifact_bucket="${11}"
+  local requested_by="${12}"
+  local notification_channel_code="${13}"
+  local openclaw_agent_id="${14}"
+  local openclaw_state_dir="${15}"
+
+  seed_key_value_file_from_example "$skill_dir/skill.local.env" "$skill_dir/skill.local.env.example"
 
   merge_key_value_file \
     "$skill_dir/skill.local.env" \
-    "INSTALL_DIR=$install_dir" \
-    "TABLE_URL=$table_url" \
-    "FEISHU_ACCESS_TOKEN=$token"
+    "INSTALL_DIR=$(quote_env_value "$install_dir")" \
+    "TABLE_URL=$(quote_env_value "$table_url")" \
+    "FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
+    "BROWSER_PROFILE_REF=$(quote_env_value "$browser_profile_ref")" \
+    "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
+    "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \
+    "EXECUTION_CONTROL_DB_URL=$(quote_env_value "$db_url")" \
+    "EXECUTION_CONTROL_DB_PATH=$(quote_env_value "$db_path")" \
+    "EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "$artifact_root")" \
+    "EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "$artifact_bucket")" \
+    "EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "$requested_by")" \
+    "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "$notification_channel_code")" \
+    "OPENCLAW_AGENT_ID=$(quote_env_value "$openclaw_agent_id")" \
+    "OPENCLAW_STATE_DIR=$(quote_env_value "$openclaw_state_dir")"
+}
+
+write_executor_local_env() {
+  local install_dir="$1"
+  local db_url="$2"
+  local db_path="$3"
+  local artifact_root="$4"
+  local artifact_bucket="$5"
+  local artifact_store_provider="$6"
+  local artifact_object_prefix="$7"
+  local minio_endpoint="$8"
+  local minio_access_key="$9"
+  local minio_secret_key="${10}"
+  local minio_region="${11}"
+  local minio_secure="${12}"
+  local minio_create_bucket="${13}"
+  local sync_referenced_files="${14}"
+  local requested_by="${15}"
+  local token="${16}"
+  local browser_profile_ref="${17}"
+  local fastmoss_phone="${18}"
+  local fastmoss_password="${19}"
+  local notification_channel_code="${20}"
+
+  local executor_env="$install_dir/scripts/execution_control/executor.local.env"
+  local executor_example="$install_dir/scripts/execution_control/executor.local.env.example"
+
+  seed_key_value_file_from_example "$executor_env" "$executor_example"
+
+  merge_key_value_file \
+    "$executor_env" \
+    "BUSINESS_EXECUTION_CONTROL_DB_URL=$(quote_env_value "$db_url")" \
+    "BUSINESS_EXECUTION_CONTROL_DB_PATH=$(quote_env_value "$db_path")" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "$artifact_root")" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "$artifact_bucket")" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER=$(quote_env_value "$artifact_store_provider")" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX=$(quote_env_value "$artifact_object_prefix")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT=$(quote_env_value "$minio_endpoint")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY=$(quote_env_value "$minio_access_key")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY=$(quote_env_value "$minio_secret_key")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_REGION=$(quote_env_value "$minio_region")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_SECURE=$(quote_env_value "$minio_secure")" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET=$(quote_env_value "$minio_create_bucket")" \
+    "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES=$(quote_env_value "$sync_referenced_files")" \
+    "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "$requested_by")" \
+    "FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
+    "BROWSER_PROFILE_REF=$(quote_env_value "$browser_profile_ref")" \
+    "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
+    "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \
+    "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "$notification_channel_code")"
 }
 
 normalize_kv_entry() {
@@ -524,7 +641,8 @@ sync_install_tree() {
     --preserve ".venv" \
     --preserve "runtime" \
     --preserve ".env" \
-    --preserve "config/browser_profiles.json"
+    --preserve "config/browser_profiles.json" \
+    --preserve "scripts/execution_control/executor.local.env"
 }
 
 deploy_state_supports_update() {
@@ -545,24 +663,25 @@ directory_has_entries() {
 smoke_check() {
   local install_dir="$1"
   local target_skill_dir="$2"
+  local executor_env_path="$3"
   local cli_bin="$install_dir/.venv/bin/automation-business-scaffold-run"
+  local python_bin="$install_dir/.venv/bin/python"
   local tasks_json="$TMP_ROOT/tasks.json"
 
   [[ -x "$cli_bin" ]] || fail "Smoke check failed: $cli_bin is missing."
+  [[ -x "$python_bin" ]] || fail "Smoke check failed: $python_bin is missing."
 
   "$cli_bin" list-tasks > "$tasks_json"
 
-  "$PYTHON_BIN" - "$tasks_json" <<'PY'
+  "$python_bin" - "$tasks_json" <<'PY'
 import json
 import sys
 
 required = {
-    "tiktok_product_link_cleanup",
-    "feishu_pending_rows_scan",
+    "refresh_current_competitor_table",
+    "search_keyword_competitor_products",
     "feishu_single_row_update",
-    "feishu_seed_row_insert",
     "fastmoss_keyword_candidate_discovery",
-    "fastmoss_login_check",
 }
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
@@ -577,14 +696,10 @@ PY
     "SKILL.md"
     "skill.local.env"
     "skill.local.env.example"
-    "run_cleanup_step.sh"
-    "run_pending_rows_step.sh"
-    "run_single_row_update_step.sh"
-    "run_keyword_candidate_step.sh"
-    "run_insert_seed_row_step.sh"
-    "run_fastmoss_login_check_step.sh"
-    "start_browser_cdp.sh"
-    "start_browser_cdp.ps1"
+    "run_refresh_current_competitor_table_step.sh"
+    "run_keyword_search_step.sh"
+    "run_skill_step.py"
+    "lightweight_submit.py"
   )
 
   local file_name
@@ -594,4 +709,85 @@ PY
 
   check_skill_frontmatter "$target_skill_dir/SKILL.md" \
     || fail "Smoke check failed: $target_skill_dir/SKILL.md frontmatter is invalid."
+
+  local required_runtime_files=(
+    "$install_dir/scripts/execution_control/install_launch_agents.sh"
+    "$install_dir/scripts/execution_control/run_launchd_agent.sh"
+    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.phase1-executor.plist.template"
+    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template"
+    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template"
+    "$executor_env_path"
+  )
+
+  for file_name in "${required_runtime_files[@]}"; do
+    [[ -f "$file_name" ]] || fail "Smoke check failed: $file_name is missing."
+  done
+
+  if launchctl list | grep -q 'com.happyzhao.mujitask.phase1-executor'; then
+    :
+  else
+    fail "Smoke check failed: launchd service com.happyzhao.mujitask.phase1-executor is not loaded."
+  fi
+  if launchctl list | grep -q 'com.happyzhao.mujitask.browser-runloop'; then
+    :
+  else
+    fail "Smoke check failed: launchd service com.happyzhao.mujitask.browser-runloop is not loaded."
+  fi
+  if launchctl list | grep -q 'com.happyzhao.mujitask.outbox-dispatcher'; then
+    :
+  else
+    fail "Smoke check failed: launchd service com.happyzhao.mujitask.outbox-dispatcher is not loaded."
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$executor_env_path"
+  set +a
+
+  "$python_bin" - <<'PY'
+import os
+from pathlib import Path
+
+from minio import Minio
+from sqlalchemy import create_engine, inspect
+
+db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "").strip()
+db_path = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_PATH", "").strip()
+if not db_url:
+    if not db_path:
+        raise SystemExit("executor.local.env must set BUSINESS_EXECUTION_CONTROL_DB_URL or BUSINESS_EXECUTION_CONTROL_DB_PATH")
+    resolved_path = Path(db_path).expanduser().resolve()
+    db_url = f"sqlite:///{resolved_path}"
+
+engine = create_engine(db_url, future=True, pool_pre_ping=True)
+inspector = inspect(engine)
+required_tables = {
+    "task_request",
+    "task_execution",
+    "resource_lease",
+    "notification_outbox",
+    "artifact_object",
+    "entity_registry",
+    "external_binding",
+    "entity_snapshot",
+}
+names = set(inspector.get_table_names())
+missing = sorted(required_tables - names)
+if missing:
+    raise SystemExit(f"Missing runtime tables: {', '.join(missing)}")
+
+provider = os.environ.get("BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "").strip().lower()
+bucket = os.environ.get("BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET", "").strip()
+if provider == "minio":
+    endpoint = os.environ.get("BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT", "").strip()
+    access_key = os.environ.get("BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY", "").strip()
+    secure = os.environ.get("BUSINESS_EXECUTION_CONTROL_MINIO_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not endpoint or not access_key or not secret_key or not bucket:
+        raise SystemExit("MinIO provider is enabled but endpoint/access_key/secret_key/bucket is incomplete.")
+    client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
+    if not client.bucket_exists(bucket):
+        raise SystemExit(f"Configured MinIO bucket does not exist: {bucket}")
+print("OK")
+PY
 }
