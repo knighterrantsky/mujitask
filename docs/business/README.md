@@ -1,6 +1,6 @@
 # Business 文档总览
 
-更新时间：`2026-04-12`
+更新时间：`2026-04-14`
 
 `docs/business` 当前只保留 9 个主文档和 1 个总览入口。
 
@@ -12,7 +12,7 @@
 4. [04-openclaw-skills.md](./04-openclaw-skills.md)
 5. [05-openclaw-output-protocol.md](./05-openclaw-output-protocol.md)
 6. [06-openclaw-cli-升级方案.md](./06-openclaw-cli-升级方案.md)
-7. [07-版本管理最佳实践.md](./07-版本管理最佳实践.md)
+7. [08-需求池.md](./08-需求池.md)
 8. [12-系统升级收敛方案.md](./12-系统架构升级方案.md)
 9. [13-系统升级开发目标与推进计划.md](./13-系统升级开发目标与推进计划.md)
 
