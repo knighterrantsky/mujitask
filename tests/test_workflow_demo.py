@@ -13,6 +13,7 @@ from automation_business_scaffold.tasks import (
     FeishuClearRowByUrlTask,
     FeishuSingleRowUpdateTask,
     RefreshCurrentCompetitorTableTask,
+    SearchKeywordCompetitorProductsTask,
     SourceToTargetPublishDemoTask,
 )
 
@@ -129,6 +130,15 @@ def test_feishu_clear_row_by_url_workflow_builder_uses_expected_workflow_id():
     assert workflow.run_mode == "draft"
 
 
+def test_search_keyword_competitor_products_workflow_builder_uses_expected_workflow_id():
+    task = SearchKeywordCompetitorProductsTask()
+
+    workflow = task.build_workflow({})
+
+    assert workflow.workflow_id == "search_keyword_competitor_products_v1"
+    assert workflow.run_mode == "draft"
+
+
 def test_cli_runner_executes_registered_workflow_task_and_records_outputs(tmp_path):
     payload = run_registered_task(
         "source_to_target_publish_demo",
@@ -200,6 +210,13 @@ def test_cli_runner_lists_registered_tasks():
             ),
         },
         {
+            "name": "search_keyword_competitor_products",
+            "description": (
+                "Search FastMoss by keyword, insert new Feishu seed rows, queue browser detail updates, "
+                "and emit one final summary notification."
+            ),
+        },
+        {
             "name": "source_to_target_publish_demo",
             "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
         },
@@ -256,6 +273,13 @@ def _controlled_context(params: dict[str, object]) -> SimpleNamespace:
 def _refresh_context(params: dict[str, object]) -> SimpleNamespace:
     return SimpleNamespace(
         step=SimpleNamespace(step_id="orchestrate_refresh_current_competitor_table"),
+        params=params,
+    )
+
+
+def _keyword_search_context(params: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        step=SimpleNamespace(step_id="orchestrate_search_keyword_competitor_products"),
         params=params,
     )
 
@@ -504,6 +528,278 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
     assert final_result.data["result"]["entities"][0]["canonical_key"] == "tiktok_product:1731098351299629802"
     assert len(final_result.data["result"]["entity_snapshots"]) == 1
+
+
+def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=[
+            "run_fastmoss_keyword_candidate_discovery",
+            "run_feishu_seed_row_insert",
+            "run_feishu_single_row_update",
+            "Phase1RuntimeStore",
+        ],
+    )
+    task = SearchKeywordCompetitorProductsTask()
+    db_path = tmp_path / "phase1_keyword.sqlite3"
+
+    def fake_discovery(params):
+        keyword = str(params["search_keyword"])
+        return {
+            "summary": {"total": 3, "counts": {"candidate_new": 2, "skipped_existing": 1}},
+            "items": [
+                {
+                    "product_id": "sku-1",
+                    "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "status": "candidate_new",
+                },
+                {
+                    "product_id": "sku-2",
+                    "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+                    "status": "candidate_new",
+                },
+                {
+                    "product_id": "sku-existing",
+                    "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731000000000000000",
+                    "status": "skipped_existing",
+                    "existing_record_id": "rec-existing",
+                },
+            ],
+            "target_items": [
+                {
+                    "product_id": "sku-1",
+                    "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "search_keyword": keyword,
+                },
+                {
+                    "product_id": "sku-2",
+                    "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+                    "search_keyword": keyword,
+                },
+            ],
+            "settings": {"search_keyword": keyword, "sales_7d_threshold": 200.0},
+        }
+
+    def fake_seed_insert(params):
+        sku_id = str(params["sku_id"])
+        record_id = "rec-a" if sku_id == "sku-1" else "rec-b"
+        return {
+            "summary": {"total": 1, "counts": {"inserted": 1}},
+            "item": {
+                "record_id": record_id,
+                "product_id": sku_id,
+                "normalized_url": str(params.get("product_url", "") or ""),
+                "status": "inserted",
+            },
+            "items": [
+                {
+                    "record_id": record_id,
+                    "product_id": sku_id,
+                    "normalized_url": str(params.get("product_url", "") or ""),
+                    "status": "inserted",
+                }
+            ],
+        }
+
+    def fake_single_row_update(params):
+        record_id = str(params["record_id"])
+        if record_id == "rec-b":
+            item = {
+                "record_id": record_id,
+                "status": "skipped_unavailable",
+                "source_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+                "normalized_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+                "product_id": "sku-2",
+            }
+        else:
+            item = {
+                "record_id": record_id,
+                "status": "updated",
+                "source_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                "product_id": "1731098351299629802",
+                "fields": {"Fastmoss价格": "10.19", "记录日期": 1776009600000},
+                "logical_fields": {
+                    "product_id": "1731098351299629802",
+                    "normalized_url": "https://www.tiktok.com/shop/pdp/1731098351299629802",
+                    "title": "Keyword Product A",
+                    "price_amount": "9.99",
+                },
+                "fastmoss_snapshot": {
+                    "product_id": "1731098351299629802",
+                    "fastmoss_price_amount": "10.19",
+                    "sales_7d": "499",
+                },
+            }
+        return {
+            "summary": {"total": 1, "counts": {item["status"]: 1}},
+            "item": item,
+            "items": [item],
+        }
+
+    monkeypatch.setattr(module, "run_fastmoss_keyword_candidate_discovery", fake_discovery)
+    monkeypatch.setattr(module, "run_feishu_seed_row_insert", fake_seed_insert)
+    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_single_row_update)
+
+    submitted = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "submit",
+                "profile_ref": "main",
+                "search_keyword": "Easter Basket Stuffers",
+                "sales_7d_threshold": "200",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+
+    assert submitted.data["request_status"] == "pending"
+    assert submitted.data["summary"]["counts"] == {"queued": 1}
+
+    executor_once = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert executor_once.data["request_status"] == "waiting_children"
+    assert len(executor_once.data["executions"]) == 1
+    assert executor_once.data["executions"][0]["item_code"] == "fastmoss_keyword_candidate_discovery"
+
+    browser_once = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "browser_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert browser_once.data["processed_count"] == 1
+    assert browser_once.data["execution_status"] == "success"
+
+    executor_resume = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert executor_resume.data["request_status"] == "waiting_children"
+    assert executor_resume.data["result"]["seed_insert"]["summary"]["counts"] == {"inserted": 2}
+
+    browser_loop = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "browser_loop",
+                "execution_control_db_path": str(db_path),
+                "execution_control_stop_when_idle": True,
+                "execution_control_max_idle_cycles": 1,
+            }
+        )
+    )
+    assert browser_loop.data["processed_count"] == 2
+
+    executor_summary = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert executor_summary.data["request_status"] == "success"
+    assert executor_summary.data["summary"]["total"] == 3
+    assert executor_summary.data["summary"]["counts"] == {
+        "candidate_new": 2,
+        "inserted": 2,
+        "skipped": 1,
+        "skipped_existing": 1,
+        "success": 1,
+    }
+
+    outbox_once = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "outbox_once",
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert outbox_once.data["dispatcher_status"] == "processed"
+
+    final_result = task.execute_workflow_step(
+        _keyword_search_context(
+            {
+                "control_action": "result",
+                "request_id": submitted.data["request_id"],
+                "execution_control_db_path": str(db_path),
+            }
+        )
+    )
+    assert final_result.data["request_status"] == "success"
+    assert final_result.data["outbox"][0]["status"] == "sent"
+    assert final_result.data["result"]["discovery"]["summary"]["counts"] == {
+        "candidate_new": 2,
+        "skipped_existing": 1,
+    }
+    assert final_result.data["result"]["seed_insert"]["summary"]["counts"] == {"inserted": 2}
+    assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
+    assert len(final_result.data["result"]["entities"]) == 1
+    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
+
+    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    executions = store.list_task_executions(request_id=submitted.data["request_id"])
+    assert len(executions) == 3
+    assert sum(1 for execution in executions if execution.item_code == "fastmoss_keyword_candidate_discovery") == 1
+    assert sum(1 for execution in executions if execution.item_code == "feishu_single_row_update") == 2
+
+
+def test_keyword_outbox_text_reports_zero_results():
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=["_build_outbox_text"],
+    )
+
+    request = SimpleNamespace(
+        request_id="req-keyword-zero",
+        task_code="search_keyword_competitor_products",
+        payload={"search_keyword": "Halloween decoration"},
+    )
+    summary = {"total": 0, "counts": {}}
+    result = {
+        "discovery": {"summary": {"total": 0, "counts": {}}},
+        "discovery_execution": {"result": {"pages_scanned": 1, "rows_scanned": 0}},
+        "seed_insert": {"summary": {"total": 0, "counts": {}}},
+    }
+
+    message_text = module._build_outbox_text(request, summary, result)
+
+    assert message_text == (
+        "关键词 Halloween decoration 搜索完成；扫描 1 页；命中 0 条候选；未写入新记录"
+    )
+
+
+def test_keyword_failure_outbox_text_includes_keyword():
+    module = __import__(
+        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        fromlist=["_build_failure_outbox_text"],
+    )
+
+    request = SimpleNamespace(
+        request_id="req-keyword-failed",
+        task_code="search_keyword_competitor_products",
+        payload={"search_keyword": "Easter Basket Stuffers"},
+    )
+
+    message_text = module._build_failure_outbox_text(request, "FastMoss login failed")
+
+    assert message_text == "关键词 Easter Basket Stuffers 搜索失败：FastMoss login failed"
 
 
 def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch, tmp_path):

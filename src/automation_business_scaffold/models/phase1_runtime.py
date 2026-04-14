@@ -27,6 +27,9 @@ class Phase1TaskRequestRecord:
     child_success_count: int = 0
     child_failed_count: int = 0
     child_skipped_count: int = 0
+    worker_id: str = ""
+    lease_until: float = 0.0
+    heartbeat_at: float = 0.0
     created_at: float = 0.0
     updated_at: float = 0.0
     started_at: float = 0.0
@@ -80,6 +83,9 @@ class NotificationOutboxRecord:
     retry_count: int = 0
     max_retry_count: int = 10
     next_retry_at: float = 0.0
+    worker_id: str = ""
+    lease_until: float = 0.0
+    heartbeat_at: float = 0.0
     last_error_text: str = ""
     sent_at: float = 0.0
     created_at: float = 0.0

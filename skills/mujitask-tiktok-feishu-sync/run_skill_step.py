@@ -19,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "skill.local.env"
 RESULT_HELPER = SCRIPT_DIR / "openclaw_result.py"
 RESOLVE_BROWSER_TARGET = SCRIPT_DIR / "resolve_browser_target.py"
+LIGHTWEIGHT_SUBMIT_HELPER = SCRIPT_DIR / "lightweight_submit.py"
 DEFAULT_OPENCLAW_AGENT_ID = "tiktok-ops"
 
 
@@ -420,6 +421,36 @@ def _refresh_competitor_submit_params(
     ]
 
 
+def _keyword_search_submit_params(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+    search_keyword: str,
+    sales_7d_threshold: str,
+    skip_fastmoss_login_validation: bool,
+    ensure_ready: bool,
+) -> list[str]:
+    resolved_profile_ref = _resolve_profile_ref_for_task(
+        python_bin=python_bin,
+        install_dir=install_dir,
+        requested_profile_ref=requested_profile_ref,
+        fallback_profile_ref=fallback_profile_ref,
+        ensure_ready=ensure_ready,
+    )
+    params = [
+        f"profile_ref={resolved_profile_ref}",
+        f"search_keyword={search_keyword}",
+        f"sales_7d_threshold={sales_7d_threshold}",
+        "fastmoss_phone_env=FASTMOSS_PHONE",
+        "fastmoss_password_env=FASTMOSS_PASSWORD",
+    ]
+    if skip_fastmoss_login_validation:
+        params.append("verify_fastmoss_login=false")
+    return params
+
+
 def _append_phase1_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
     db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
     db_path = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_PATH")
@@ -449,6 +480,169 @@ def _append_phase1_runtime_params(params: list[str], skill_env: dict[str, str]) 
             params.append(f"source_session_id={session_id}")
         params.append(f"reply_target={_json_compact(delivery_context)}")
     return params
+
+
+def _parse_param_value(raw_value: str) -> Any:
+    try:
+        return json.loads(raw_value)
+    except json.JSONDecodeError:
+        return raw_value
+
+
+def _parse_param_items(items: list[str]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"Invalid param value '{item}'. Expected KEY=VALUE.")
+        key, raw_value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Invalid param value '{item}'. KEY cannot be empty.")
+        params[key] = _parse_param_value(raw_value)
+    return params
+
+
+def _build_summary_text(summary: dict[str, Any]) -> str:
+    if not isinstance(summary, dict):
+        return ""
+    counts = summary.get("counts", {})
+    if not isinstance(counts, dict) or not counts:
+        total = summary.get("total")
+        return f"total={total}" if total is not None else ""
+    parts = [f"{key}={counts[key]}" for key in sorted(counts)]
+    total = summary.get("total")
+    if total is not None:
+        parts.append(f"total={total}")
+    return ", ".join(parts)
+
+
+def _augment_message_with_request_id(payload: dict[str, Any]) -> None:
+    request_id = str(payload.get("request_id", "") or "").strip()
+    if not request_id:
+        return
+    message = str(payload.get("message", "") or "").strip()
+    if request_id in message:
+        return
+    payload["message"] = (
+        f"已成功提交任务，request_id: {request_id}；{message}"
+        if message
+        else f"已成功提交任务，request_id: {request_id}"
+    )
+
+
+def _normalize_lightweight_submit_payload(
+    *,
+    task_name: str,
+    payload: dict[str, Any],
+    accepted_message: str,
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized["status"] = "success"
+    normalized["task_name"] = task_name
+    normalized["control_action"] = str(normalized.get("control_action", "") or "submit")
+    normalized["message"] = str(normalized.get("message", "") or accepted_message)
+    summary = normalized.get("summary")
+    if not isinstance(summary, dict) or not summary:
+        summary = {"total": 1, "counts": {"queued": 1}}
+    normalized["summary"] = summary
+    normalized["summary_text"] = _build_summary_text(summary)
+    normalized["failed_item_count"] = int(normalized.get("failed_item_count", 0) or 0)
+    normalized.setdefault("error", "")
+    normalized.setdefault("run_id", "")
+    normalized.setdefault("run_file", "")
+    normalized.setdefault("steps_file", "")
+    normalized.setdefault("signals_file", "")
+    normalized.setdefault("stdout_file", "")
+    normalized.setdefault("execution_id", "")
+    normalized.setdefault("execution_status", "")
+    normalized.setdefault("resource_code", "")
+    normalized.setdefault("queue_position", 0)
+    normalized.setdefault("wait_timed_out", False)
+    normalized.setdefault("daemon_status", "")
+    normalized.setdefault("processed_count", 0)
+    normalized.setdefault("success_count", 0)
+    normalized.setdefault("failed_count", 0)
+    normalized.setdefault("artifact_count", 0)
+    normalized.setdefault("artifact_uri_prefix", "")
+    normalized.setdefault("run_object_key", "")
+    normalized.setdefault("steps_object_key", "")
+    normalized.setdefault("signals_object_key", "")
+    normalized.setdefault("stdout_object_key", "")
+    normalized.setdefault("artifacts_dir", "")
+    normalized.setdefault("worker_id", "")
+    normalized.setdefault("artifacts", [])
+    _augment_message_with_request_id(normalized)
+    return normalized
+
+
+def _run_lightweight_submit_capture_payload(
+    *,
+    install_dir: Path,
+    python_bin: Path,
+    task_name: str,
+    run_mode: str,
+    params: list[str],
+    stdout_prefix: str,
+    extra_env: dict[str, str],
+    accepted_message: str,
+) -> tuple[int, dict[str, Any]]:
+    parsed_params = _parse_param_items(params)
+    parsed_params["run_mode"] = run_mode
+
+    env = os.environ.copy()
+    env.update(extra_env)
+
+    with tempfile.TemporaryDirectory(prefix="mujitask-lightweight-submit-") as temp_dir:
+        result_file = Path(temp_dir) / "result.json"
+        command = [
+            str(python_bin),
+            str(LIGHTWEIGHT_SUBMIT_HELPER),
+            "--install-dir",
+            str(install_dir),
+            "--task-name",
+            task_name,
+            "--params-json",
+            json.dumps(parsed_params, ensure_ascii=False),
+            "--result-file",
+            str(result_file),
+        ]
+        print(f"[{stdout_prefix}] Running lightweight submit for {task_name}")
+        result = subprocess.run(
+            command,
+            cwd=str(install_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        payload = _read_json_file(result_file)
+        if result.returncode != 0:
+            error_message = str(result.stderr or result.stdout or "").strip()
+            failed_payload = {
+                "status": "failed",
+                "task_name": task_name,
+                "message": f"{task_name} submit failed.",
+                "error": error_message or f"lightweight submit exited with code {result.returncode}",
+            }
+            return result.returncode, failed_payload
+        if not isinstance(payload, dict):
+            failed_payload = {
+                "status": "failed",
+                "task_name": task_name,
+                "message": f"{task_name} submit failed.",
+                "error": "lightweight submit did not return a JSON object payload",
+            }
+            return 1, failed_payload
+        normalized = _normalize_lightweight_submit_payload(
+            task_name=task_name,
+            payload=payload,
+            accepted_message=accepted_message,
+        )
+        print(
+            f"[{stdout_prefix}] Submitted request_id={normalized.get('request_id', '')} "
+            f"request_status={normalized.get('request_status', '') or 'pending'}"
+        )
+        return 0, normalized
 
 
 def _run_cli_task(
@@ -659,6 +853,28 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh_result_parser = subparsers.add_parser("refresh-current-competitor-table-result")
     refresh_result_parser.add_argument("--run-mode", default="canary")
     refresh_result_parser.add_argument("--request-id", required=True)
+
+    keyword_search_parser = subparsers.add_parser("keyword-search")
+    keyword_search_parser.add_argument("--run-mode", default="canary")
+    keyword_search_parser.add_argument("--profile-ref", default="")
+    keyword_search_parser.add_argument("--search-keyword", required=True)
+    keyword_search_parser.add_argument("--sales-7d-threshold", default="200")
+    keyword_search_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    keyword_search_submit_parser = subparsers.add_parser("keyword-search-submit")
+    keyword_search_submit_parser.add_argument("--run-mode", default="canary")
+    keyword_search_submit_parser.add_argument("--profile-ref", default="")
+    keyword_search_submit_parser.add_argument("--search-keyword", required=True)
+    keyword_search_submit_parser.add_argument("--sales-7d-threshold", default="200")
+    keyword_search_submit_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    keyword_search_status_parser = subparsers.add_parser("keyword-search-status")
+    keyword_search_status_parser.add_argument("--run-mode", default="canary")
+    keyword_search_status_parser.add_argument("--request-id", required=True)
+
+    keyword_search_result_parser = subparsers.add_parser("keyword-search-result")
+    keyword_search_result_parser.add_argument("--run-mode", default="canary")
+    keyword_search_result_parser.add_argument("--request-id", required=True)
 
     keyword_parser = subparsers.add_parser("keyword-candidates")
     keyword_parser.add_argument("--run-mode", default="draft")
@@ -917,15 +1133,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return _emit_final_result(final_payload)
     elif args.command == "refresh-current-competitor-table-submit":
-        task_name = "refresh_current_competitor_table"
-        prefix = "refresh-current-competitor-table-submit-step"
-        params = [
-            f"table_url={table_url}",
-            "access_token_env=FEISHU_ACCESS_TOKEN",
-            f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-        ]
-        params = _append_phase1_runtime_params(params + ["control_action=submit"], skill_env)
-        params.extend(
+        submit_params = _append_phase1_runtime_params(
+            [
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
             _refresh_competitor_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
@@ -934,6 +1151,19 @@ def main(argv: list[str] | None = None) -> int:
                 ensure_ready=False,
             )
         )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="refresh_current_competitor_table",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="refresh-current-competitor-table-submit-step",
+            extra_env=extra_env,
+            accepted_message="Refresh task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload)
+        return _emit_final_result(submit_payload)
     elif args.command == "refresh-current-competitor-table-status":
         task_name = "refresh_current_competitor_table"
         prefix = "refresh-current-competitor-table-status-step"
@@ -970,26 +1200,111 @@ def main(argv: list[str] | None = None) -> int:
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
                 fallback_profile_ref=browser_profile_ref,
-                ensure_ready=True,
+                ensure_ready=False,
             )
         )
-        submit_status, submit_payload = _run_cli_task_capture_payload(
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
             install_dir=install_dir,
             python_bin=python_bin,
-            cli_bin=cli_bin,
             task_name="refresh_current_competitor_table",
             run_mode=args.run_mode,
             params=submit_params,
             stdout_prefix="refresh-current-competitor-table-submit-step",
             extra_env=extra_env,
+            accepted_message="Refresh task accepted for asynchronous execution.",
         )
         if submit_status != 0:
             return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        submit_payload = dict(submit_payload) if isinstance(submit_payload, dict) else {}
-        submit_payload["task_name"] = "refresh_current_competitor_table"
-        submit_payload["message"] = str(
-            submit_payload.get("message", "") or "Refresh task accepted for asynchronous execution."
+        return _emit_final_result(submit_payload)
+    elif args.command == "keyword-search-submit":
+        submit_params = _append_phase1_runtime_params(
+            [
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=submit",
+            ],
+            skill_env,
         )
+        submit_params.extend(
+            _keyword_search_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                search_keyword=args.search_keyword,
+                sales_7d_threshold=args.sales_7d_threshold,
+                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="search_keyword_competitor_products",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="keyword-search-submit-step",
+            extra_env=extra_env,
+            accepted_message="Keyword search task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload)
+        return _emit_final_result(submit_payload)
+    elif args.command == "keyword-search-status":
+        task_name = "search_keyword_competitor_products"
+        prefix = "keyword-search-status-step"
+        params = _append_phase1_runtime_params(
+            [
+                "control_action=status",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "keyword-search-result":
+        task_name = "search_keyword_competitor_products"
+        prefix = "keyword-search-result-step"
+        params = _append_phase1_runtime_params(
+            [
+                "control_action=result",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "keyword-search":
+        submit_params = _append_phase1_runtime_params(
+            [
+                f"table_url={table_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _keyword_search_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                search_keyword=args.search_keyword,
+                sales_7d_threshold=args.sales_7d_threshold,
+                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="search_keyword_competitor_products",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="keyword-search-submit-step",
+            extra_env=extra_env,
+            accepted_message="Keyword search task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "keyword-candidates":
         task_name = "fastmoss_keyword_candidate_discovery"

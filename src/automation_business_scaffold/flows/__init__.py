@@ -7,9 +7,12 @@ from .fastmoss_product_flow import (
 from .refresh_current_competitor_table_flow import (
     dispatch_phase1_outbox_once,
     get_refresh_current_competitor_table_status,
+    get_search_keyword_competitor_products_status,
     run_phase1_browser_runloop,
     run_phase1_executor_daemon,
     run_refresh_current_competitor_table,
+    run_search_keyword_competitor_products,
+    submit_search_keyword_competitor_products,
     submit_refresh_current_competitor_table,
 )
 from .execution_control_flow import (
@@ -73,6 +76,7 @@ __all__ = [
     "fetch_tiktok_product_record",
     "fetch_tiktok_product_record_via_browser",
     "get_refresh_current_competitor_table_status",
+    "get_search_keyword_competitor_products_status",
     "get_controlled_feishu_single_row_update_status",
     "infer_tiktok_product_holiday",
     "load_cleanup_records",
@@ -81,6 +85,7 @@ __all__ = [
     "run_phase1_browser_runloop",
     "run_phase1_executor_daemon",
     "run_refresh_current_competitor_table",
+    "run_search_keyword_competitor_products",
     "run_controlled_executor_daemon",
     "run_controlled_feishu_single_row_update",
     "run_feishu_clear_row_by_url",
@@ -94,6 +99,7 @@ __all__ = [
     "sync_single_tiktok_product_url",
     "submit_controlled_feishu_single_row_update",
     "submit_refresh_current_competitor_table",
+    "submit_search_keyword_competitor_products",
     "dispatch_phase1_outbox_once",
     "validate_fastmoss_login_via_browser",
     "write_back_cleanup_records",

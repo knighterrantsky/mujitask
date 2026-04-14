@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+
+def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    src_dir = install_dir / "src"
+    if not src_dir.exists():
+        raise ValueError(f"Cannot find project source directory at {src_dir}.")
+    src_path = str(src_dir)
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+    from automation_business_scaffold.flows import (  # pylint: disable=import-outside-toplevel
+        submit_refresh_current_competitor_table,
+        submit_search_keyword_competitor_products,
+    )
+
+    submitters: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+        "refresh_current_competitor_table": submit_refresh_current_competitor_table,
+        "search_keyword_competitor_products": submit_search_keyword_competitor_products,
+    }
+    submitter = submitters.get(task_name)
+    if submitter is None:
+        available = ", ".join(sorted(submitters))
+        raise ValueError(f"Unsupported lightweight submit task '{task_name}'. Available: {available}")
+    return submitter
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run lightweight Phase 1 submit helpers.")
+    parser.add_argument("--install-dir", required=True)
+    parser.add_argument("--task-name", required=True)
+    parser.add_argument("--params-json", required=True)
+    parser.add_argument("--result-file", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    install_dir = Path(args.install_dir).expanduser().resolve()
+    result_file = Path(args.result_file).expanduser().resolve()
+
+    params = json.loads(args.params_json)
+    if not isinstance(params, dict):
+        raise ValueError("--params-json must decode to a JSON object.")
+
+    submitter = _load_submitter(install_dir, args.task_name)
+    payload = submitter(params)
+    if not isinstance(payload, dict):
+        raise TypeError(f"Lightweight submitter for {args.task_name} must return a dict payload.")
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

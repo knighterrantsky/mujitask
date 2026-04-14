@@ -21,6 +21,7 @@ def test_agent_lists_demo_task():
             "feishu_seed_row_insert",
             "feishu_single_row_update",
             "refresh_current_competitor_table",
+            "search_keyword_competitor_products",
             "source_to_target_publish_demo",
             "tiktok_feishu_single_sync",
             "tiktok_product_link_cleanup",

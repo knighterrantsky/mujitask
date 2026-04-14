@@ -32,17 +32,25 @@ from automation_business_scaffold.flows.entity_service import (
 )
 from automation_business_scaffold.flows.execution_control_flow import build_controlled_resource_code
 from automation_business_scaffold.flows.feishu_competitor_flow import (
+    run_fastmoss_keyword_candidate_discovery,
     run_feishu_pending_rows_scan,
+    run_feishu_seed_row_insert,
     run_feishu_single_row_update,
 )
 from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
 from automation_business_scaffold.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
 from automation_business_scaffold.models import ArtifactObjectRecord
 
-TASK_CODE = "refresh_current_competitor_table"
-ITEM_CODE = "feishu_single_row_update"
-WORKFLOW_CODE = "feishu_single_row_update_v1"
-BROWSER_STEP_ID = "execute_browser_single_row_update"
+REFRESH_TASK_CODE = "refresh_current_competitor_table"
+KEYWORD_TASK_CODE = "search_keyword_competitor_products"
+SINGLE_ROW_UPDATE_ITEM_CODE = "feishu_single_row_update"
+SINGLE_ROW_UPDATE_WORKFLOW_CODE = "feishu_single_row_update_v1"
+KEYWORD_DISCOVERY_ITEM_CODE = "fastmoss_keyword_candidate_discovery"
+KEYWORD_DISCOVERY_WORKFLOW_CODE = "fastmoss_keyword_candidate_discovery_v1"
+BROWSER_SINGLE_ROW_STEP_ID = "execute_browser_single_row_update"
+BROWSER_KEYWORD_DISCOVERY_STEP_ID = "execute_browser_keyword_candidate_discovery"
+KEYWORD_RESUME_DISCOVERY = "process_keyword_discovery"
+KEYWORD_RESUME_DETAILS = "finalize_keyword_detail_updates"
 TERMINAL_REQUEST_STATUSES = {"success", "failed", "cancelled"}
 
 
@@ -593,6 +601,34 @@ class _LeaseHeartbeat:
         self._thread.join(timeout=self._interval_seconds + 1.0)
 
 
+class _CallbackHeartbeat:
+    def __init__(
+        self,
+        *,
+        callback: Any,
+        interval_seconds: float,
+    ):
+        self._callback = callback
+        self._interval_seconds = max(interval_seconds, 0.1)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            try:
+                self._callback()
+            except Exception:
+                return
+
+    def __enter__(self) -> "_CallbackHeartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=self._interval_seconds + 1.0)
+
+
 def _extract_result_item(payload: dict[str, Any]) -> dict[str, Any]:
     item = payload.get("item")
     if isinstance(item, dict) and item:
@@ -615,7 +651,17 @@ def _classify_execution_result(payload: dict[str, Any]) -> str:
     return "success"
 
 
-def _build_enqueue_items(request_payload: dict[str, Any], target_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _browser_step_id_for_execution(execution: Any) -> str:
+    item_code = str(getattr(execution, "item_code", "") or "").strip()
+    if item_code == KEYWORD_DISCOVERY_ITEM_CODE:
+        return BROWSER_KEYWORD_DISCOVERY_STEP_ID
+    return BROWSER_SINGLE_ROW_STEP_ID
+
+
+def _build_refresh_enqueue_items(
+    request_payload: dict[str, Any],
+    target_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     resource_code = build_controlled_resource_code(request_payload)
     profile_ref = str(request_payload.get("profile_ref", "") or "main").strip() or "main"
     items: list[dict[str, Any]] = []
@@ -632,7 +678,58 @@ def _build_enqueue_items(request_payload: dict[str, Any], target_rows: list[dict
         items.append(
             {
                 "business_key": record_id,
-                "dedupe_key": f"{ITEM_CODE}:{profile_ref}:{record_id}",
+                "dedupe_key": f"{SINGLE_ROW_UPDATE_ITEM_CODE}:{profile_ref}:{record_id}",
+                "resource_code": resource_code,
+                "max_attempts": 3,
+                "payload": payload,
+            }
+        )
+    return items
+
+
+def _build_keyword_discovery_items(request_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    resource_code = build_controlled_resource_code(request_payload)
+    search_keyword = str(request_payload.get("search_keyword", "") or request_payload.get("keyword", "")).strip()
+    sales_7d_threshold = str(request_payload.get("sales_7d_threshold", "") or "200").strip() or "200"
+    business_key = f"{search_keyword}:{sales_7d_threshold}"
+    payload = dict(request_payload)
+    return [
+        {
+            "business_key": business_key,
+            "dedupe_key": "",
+            "resource_code": resource_code,
+            "max_attempts": 3,
+            "payload": payload,
+        }
+    ]
+
+
+def _build_keyword_detail_enqueue_items(
+    request_payload: dict[str, Any],
+    seed_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    resource_code = build_controlled_resource_code(request_payload)
+    profile_ref = str(request_payload.get("profile_ref", "") or "main").strip() or "main"
+    items: list[dict[str, Any]] = []
+    for seed in seed_items:
+        if not isinstance(seed, dict):
+            continue
+        record_id = str(seed.get("record_id", "") or "").strip()
+        status = str(seed.get("status", "") or "").strip()
+        if not record_id or status != "inserted":
+            continue
+        payload = dict(request_payload)
+        payload["record_id"] = record_id
+        if seed.get("normalized_url"):
+            payload["source_url"] = seed.get("normalized_url")
+        elif seed.get("source_url"):
+            payload["source_url"] = seed.get("source_url")
+        if seed.get("product_id"):
+            payload["sku_id"] = seed.get("product_id")
+        items.append(
+            {
+                "business_key": record_id,
+                "dedupe_key": f"{SINGLE_ROW_UPDATE_ITEM_CODE}:{profile_ref}:{record_id}",
                 "resource_code": resource_code,
                 "max_attempts": 3,
                 "payload": payload,
@@ -654,7 +751,17 @@ def _summary_counts_only(mapping: dict[str, Any]) -> dict[str, int]:
     return normalized
 
 
-def _build_live_summary(request: Any, executions: list[Any]) -> dict[str, Any]:
+def _summarize_item_status_counts(items: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "") or "").strip() or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return {"total": len(items), "counts": counts}
+
+
+def _build_refresh_live_summary(request: Any, executions: list[Any]) -> dict[str, Any]:
     stage_cursor = request.stage_cursor if isinstance(request.stage_cursor, dict) else {}
     scan_payload = stage_cursor.get("scan", {})
     scan_target_rows = scan_payload.get("target_rows", []) if isinstance(scan_payload, dict) else []
@@ -684,7 +791,60 @@ def _build_live_summary(request: Any, executions: list[Any]) -> dict[str, Any]:
     return {"total": total, "counts": counts}
 
 
-def _build_result_payload(request: Any, executions: list[Any], outbox_records: list[Any]) -> dict[str, Any]:
+def _build_keyword_live_summary(request: Any, executions: list[Any]) -> dict[str, Any]:
+    stage_cursor = request.stage_cursor if isinstance(request.stage_cursor, dict) else {}
+    discovery_payload = stage_cursor.get("discovery", {})
+    discovery_summary = discovery_payload.get("summary", {}) if isinstance(discovery_payload, dict) else {}
+    seed_payload = stage_cursor.get("seed_insert", {})
+    seed_summary = seed_payload.get("summary", {}) if isinstance(seed_payload, dict) else {}
+
+    total = 0
+    counts: dict[str, int] = {}
+    if isinstance(discovery_summary, dict):
+        try:
+            total = max(total, int(discovery_summary.get("total", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        for key, value in _summary_counts_only(discovery_summary).items():
+            counts[key] = counts.get(key, 0) + int(value)
+    if isinstance(seed_summary, dict):
+        for key, value in _summary_counts_only(seed_summary).items():
+            counts[key] = counts.get(key, 0) + int(value)
+    detail_executions = [
+        execution
+        for execution in executions
+        if str(getattr(execution, "item_code", "") or "") == SINGLE_ROW_UPDATE_ITEM_CODE
+    ]
+    detail_success_count = sum(1 for execution in detail_executions if str(execution.status or "") == "success")
+    detail_failed_count = sum(1 for execution in detail_executions if str(execution.status or "") == "failed")
+    detail_skipped_count = sum(1 for execution in detail_executions if str(execution.status or "") == "skipped")
+    active_count = sum(
+        1
+        for execution in executions
+        if str(getattr(execution, "status", "") or "") in {"pending", "running", "retry_wait"}
+    )
+    if detail_success_count > 0:
+        counts["success"] = detail_success_count
+    if detail_failed_count > 0:
+        counts["failed"] = detail_failed_count
+    if detail_skipped_count > 0:
+        counts["skipped"] = detail_skipped_count
+    if request.status in {"pending", "running", "waiting_children", "ready_for_summary"} and active_count > 0:
+        counts["active"] = active_count
+    if request.status == "pending" and not counts:
+        counts["queued"] = 1
+        total = max(total, 1)
+    return {"total": total, "counts": counts}
+
+
+def _build_live_summary(request: Any, executions: list[Any]) -> dict[str, Any]:
+    task_code = str(getattr(request, "task_code", "") or "").strip()
+    if task_code == KEYWORD_TASK_CODE:
+        return _build_keyword_live_summary(request, executions)
+    return _build_refresh_live_summary(request, executions)
+
+
+def _build_refresh_result_payload(request: Any, executions: list[Any], outbox_records: list[Any]) -> dict[str, Any]:
     stage_cursor = request.stage_cursor if isinstance(request.stage_cursor, dict) else {}
     item_results: list[dict[str, Any]] = []
     failed_items: list[dict[str, Any]] = []
@@ -714,7 +874,68 @@ def _build_result_payload(request: Any, executions: list[Any], outbox_records: l
     }
 
 
-def _build_outbox_text(request: Any, summary: dict[str, Any]) -> str:
+def _build_keyword_result_payload(request: Any, executions: list[Any], outbox_records: list[Any]) -> dict[str, Any]:
+    stage_cursor = request.stage_cursor if isinstance(request.stage_cursor, dict) else {}
+    discovery_payload = stage_cursor.get("discovery", {})
+    seed_payload = stage_cursor.get("seed_insert", {})
+    enqueue_updates_payload = stage_cursor.get("enqueue_updates", {})
+    discovery_execution = next(
+        (
+            execution.to_dict()
+            for execution in executions
+            if str(execution.item_code or "") == KEYWORD_DISCOVERY_ITEM_CODE
+        ),
+        {},
+    )
+    detail_executions = [
+        execution
+        for execution in executions
+        if str(execution.item_code or "") == SINGLE_ROW_UPDATE_ITEM_CODE
+    ]
+    item_results: list[dict[str, Any]] = []
+    failed_items: list[dict[str, Any]] = []
+    for execution in detail_executions:
+        item = _extract_result_item(execution.result if isinstance(execution.result, dict) else {})
+        if not item:
+            continue
+        enriched_item = dict(item)
+        enriched_item.setdefault("execution_id", execution.execution_id)
+        enriched_item.setdefault("execution_status", execution.status)
+        item_results.append(enriched_item)
+        if execution.status == "failed":
+            failed_items.append(enriched_item)
+    entities, entity_bindings, entity_snapshots = extract_entity_payloads(item_results)
+    return {
+        "task_request": request.to_dict(),
+        "discovery": discovery_payload,
+        "discovery_execution": discovery_execution,
+        "seed_insert": seed_payload,
+        "enqueue_updates": enqueue_updates_payload,
+        "executions": [execution.to_dict() for execution in executions],
+        "outbox": [record.to_dict() for record in outbox_records],
+        "items": item_results,
+        "failed_items": failed_items,
+        "entities": entities,
+        "entity_bindings": entity_bindings,
+        "entity_snapshots": entity_snapshots,
+    }
+
+
+def _build_result_payload(request: Any, executions: list[Any], outbox_records: list[Any]) -> dict[str, Any]:
+    task_code = str(getattr(request, "task_code", "") or "").strip()
+    if task_code == KEYWORD_TASK_CODE:
+        return _build_keyword_result_payload(request, executions, outbox_records)
+    return _build_refresh_result_payload(request, executions, outbox_records)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_refresh_outbox_text(request: Any, summary: dict[str, Any]) -> str:
     counts = _summary_counts_only(summary)
     total = int(summary.get("total", 0) or 0) if isinstance(summary, dict) else 0
     parts = [f"任务 {request.request_id} 已完成"]
@@ -725,6 +946,74 @@ def _build_outbox_text(request: Any, summary: dict[str, Any]) -> str:
             "，".join(f"{key}={value}" for key, value in sorted(counts.items()))
         )
     return "；".join(parts)
+
+
+def _build_keyword_outbox_text(request: Any, summary: dict[str, Any], result: dict[str, Any]) -> str:
+    payload = request.payload if isinstance(getattr(request, "payload", {}), dict) else {}
+    search_keyword = str(payload.get("search_keyword", "") or "").strip()
+    discovery_payload = result.get("discovery", {}) if isinstance(result, dict) else {}
+    discovery_summary = discovery_payload.get("summary", {}) if isinstance(discovery_payload, dict) else {}
+    discovery_execution = result.get("discovery_execution", {}) if isinstance(result, dict) else {}
+    discovery_result = discovery_execution.get("result", {}) if isinstance(discovery_execution, dict) else {}
+    seed_payload = result.get("seed_insert", {}) if isinstance(result, dict) else {}
+    seed_summary = seed_payload.get("summary", {}) if isinstance(seed_payload, dict) else {}
+
+    discovery_counts = _summary_counts_only(discovery_summary)
+    seed_counts = _summary_counts_only(seed_summary)
+    final_counts = _summary_counts_only(summary)
+
+    pages_scanned = _safe_int(discovery_result.get("pages_scanned", 0) if isinstance(discovery_result, dict) else 0)
+    rows_scanned = _safe_int(discovery_result.get("rows_scanned", 0) if isinstance(discovery_result, dict) else 0)
+    candidate_new = _safe_int(discovery_counts.get("candidate_new", 0))
+    skipped_existing = _safe_int(discovery_counts.get("skipped_existing", 0))
+    inserted = _safe_int(seed_counts.get("inserted", 0))
+    detail_success = _safe_int(final_counts.get("success", 0))
+    detail_failed = _safe_int(final_counts.get("failed", 0))
+    detail_skipped = _safe_int(final_counts.get("skipped", 0))
+
+    parts = [f"关键词 {search_keyword or request.request_id} 搜索完成"]
+    if pages_scanned > 0:
+        parts.append(f"扫描 {pages_scanned} 页")
+    if rows_scanned > 0:
+        parts.append(f"读取 {rows_scanned} 行")
+    if candidate_new > 0:
+        parts.append(f"新候选 {candidate_new} 条")
+    else:
+        parts.append("命中 0 条候选")
+    if skipped_existing > 0:
+        parts.append(f"已存在 {skipped_existing} 条")
+    if inserted > 0:
+        parts.append(f"写入 {inserted} 条")
+    else:
+        parts.append("未写入新记录")
+
+    detail_counts: list[str] = []
+    if detail_success > 0:
+        detail_counts.append(f"success={detail_success}")
+    if detail_failed > 0:
+        detail_counts.append(f"failed={detail_failed}")
+    if detail_skipped > 0:
+        detail_counts.append(f"skipped={detail_skipped}")
+    if detail_counts:
+        parts.append(f"详情补全 {' '.join(detail_counts)}")
+    return "；".join(parts)
+
+
+def _build_outbox_text(request: Any, summary: dict[str, Any], result: dict[str, Any]) -> str:
+    task_code = str(getattr(request, "task_code", "") or "").strip()
+    if task_code == KEYWORD_TASK_CODE:
+        return _build_keyword_outbox_text(request, summary, result if isinstance(result, dict) else {})
+    return _build_refresh_outbox_text(request, summary)
+
+
+def _build_failure_outbox_text(request: Any, error_text: str) -> str:
+    task_code = str(getattr(request, "task_code", "") or "").strip()
+    payload = request.payload if isinstance(getattr(request, "payload", {}), dict) else {}
+    if task_code == KEYWORD_TASK_CODE:
+        search_keyword = str(payload.get("search_keyword", "") or "").strip()
+        prefix = f"关键词 {search_keyword} 搜索失败" if search_keyword else f"任务 {request.request_id} 执行失败"
+        return f"{prefix}：{error_text}" if error_text else prefix
+    return f"任务 {request.request_id} 执行失败"
 
 
 def _build_request_payload(
@@ -780,7 +1069,8 @@ def _sync_browser_artifacts(
 ) -> dict[str, Any]:
     artifact_root = Path(str(settings["artifact_root"])).expanduser()
     run_root = artifact_root / "runs" / execution.run_id
-    artifacts_root = run_root / "artifacts" / BROWSER_STEP_ID
+    step_id = _browser_step_id_for_execution(execution)
+    artifacts_root = run_root / "artifacts" / step_id
     created_at = time.time()
 
     run_payload = {
@@ -799,7 +1089,7 @@ def _sync_browser_artifacts(
     }
     steps_payload = [
         {
-            "step_id": BROWSER_STEP_ID,
+            "step_id": step_id,
             "status": execution.status,
             "started_at": execution.started_at,
             "finished_at": execution.finished_at,
@@ -820,7 +1110,7 @@ def _sync_browser_artifacts(
         {
             "signal_type": "step.completed" if execution.status != "failed" else "step.failed",
             "execution_id": execution.execution_id,
-            "step_id": BROWSER_STEP_ID,
+            "step_id": step_id,
             "run_id": execution.run_id,
             "at": execution.finished_at,
         },
@@ -844,32 +1134,32 @@ def _sync_browser_artifacts(
     specs = [
         ArtifactFileSpec(
             kind="run_json",
-            step_id=BROWSER_STEP_ID,
+            step_id=step_id,
             relative_name="run.json",
             path=run_file,
         ),
         ArtifactFileSpec(
             kind="steps_json",
-            step_id=BROWSER_STEP_ID,
+            step_id=step_id,
             relative_name="steps.json",
             path=steps_file,
         ),
         ArtifactFileSpec(
             kind="signals_json",
-            step_id=BROWSER_STEP_ID,
+            step_id=step_id,
             relative_name="signals.json",
             path=signals_file,
         ),
         ArtifactFileSpec(
             kind="stdout_log",
-            step_id=BROWSER_STEP_ID,
+            step_id=step_id,
             relative_name="stdout.log",
             path=stdout_path,
         ),
         ArtifactFileSpec(
             kind="state_json",
-            step_id=BROWSER_STEP_ID,
-            relative_name=f"artifacts/{BROWSER_STEP_ID}/state.json",
+            step_id=step_id,
+            relative_name=f"artifacts/{step_id}/state.json",
             path=state_file,
         ),
     ]
@@ -877,7 +1167,7 @@ def _sync_browser_artifacts(
         specs.extend(
             collect_referenced_artifact_specs(
                 result_payload=result_payload,
-                step_id=BROWSER_STEP_ID,
+                step_id=step_id,
             )
         )
     artifact_store = create_store_from_settings(settings)
@@ -915,6 +1205,9 @@ def _fail_request(
         error_text=error_text,
         summary={"total": 1, "counts": {"failed": 1}},
         result={"error": error_text},
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
         finished_at=time.time(),
     )
     store.create_notification_outbox(
@@ -923,7 +1216,7 @@ def _fail_request(
         ref_id=request.request_id,
         reply_target=request.reply_target,
         payload={
-            "message_text": f"任务 {request.request_id} 执行失败",
+            "message_text": _build_failure_outbox_text(request, error_text),
             "request_id": request.request_id,
             "summary": request.summary,
             "error": error_text,
@@ -955,6 +1248,9 @@ def _finalize_request_summary(
         summary=provisional_summary,
         result=result,
         error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
         finished_at=time.time(),
     )
     summary_outbox = store.create_notification_outbox(
@@ -963,7 +1259,7 @@ def _finalize_request_summary(
         ref_id=final_request.request_id,
         reply_target=final_request.reply_target,
         payload={
-            "message_text": _build_outbox_text(final_request, provisional_summary),
+            "message_text": _build_outbox_text(final_request, provisional_summary, result),
             "request_id": final_request.request_id,
             "task_code": final_request.task_code,
             "summary": provisional_summary,
@@ -986,7 +1282,7 @@ def submit_refresh_current_competitor_table(params: dict[str, Any]) -> dict[str,
     store = _create_store(settings)
     request = store.submit_task_request(
         project_code="automation-business-scaffold",
-        task_code=TASK_CODE,
+        task_code=REFRESH_TASK_CODE,
         payload=_sanitize_task_payload(params),
         requested_by=str(settings["requested_by"]),
         trigger_mode=str(settings["trigger_mode"]),
@@ -1003,6 +1299,28 @@ def submit_refresh_current_competitor_table(params: dict[str, Any]) -> dict[str,
     )
 
 
+def submit_search_keyword_competitor_products(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code=KEYWORD_TASK_CODE,
+        payload=_sanitize_task_payload(params),
+        requested_by=str(settings["requested_by"]),
+        trigger_mode=str(settings["trigger_mode"]),
+        source_channel_code=str(settings["source_channel_code"]),
+        source_session_id=str(settings["source_session_id"]),
+        reply_target=str(settings["reply_target"]),
+        idempotency_key=str(params.get("idempotency_key", "") or "").strip(),
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=request.request_id,
+        control_action="submit",
+        message="Top-level keyword search task accepted.",
+    )
+
+
 def get_refresh_current_competitor_table_status(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
@@ -1014,10 +1332,267 @@ def get_refresh_current_competitor_table_status(params: dict[str, Any]) -> dict[
     )
 
 
+def get_search_keyword_competitor_products_status(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    return _build_request_payload(
+        store=store,
+        request_id=str(params.get("request_id", "") or ""),
+        control_action="status",
+        message="Loaded top-level keyword search task status.",
+    )
+
+
+def _plan_refresh_request(
+    *,
+    store: Phase1RuntimeStore,
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = dict(claimed_request.payload)
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="cleanup",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    cleanup_payload = run_tiktok_product_link_cleanup(request_payload)
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="pending_rows_scan",
+    )
+    scan_payload = run_feishu_pending_rows_scan(request_payload)
+    target_rows = scan_payload.get("target_rows", [])
+    if not isinstance(target_rows, list):
+        target_rows = []
+    enqueue_payload = store.enqueue_task_executions(
+        request_id=claimed_request.request_id,
+        item_code=SINGLE_ROW_UPDATE_ITEM_CODE,
+        workflow_code=SINGLE_ROW_UPDATE_WORKFLOW_CODE,
+        items=_build_refresh_enqueue_items(request_payload, target_rows),
+    )
+    stage_cursor = {
+        "cleanup": cleanup_payload,
+        "scan": scan_payload,
+        "enqueue": enqueue_payload,
+        "resume_action": "finalize_refresh_summary",
+    }
+    child_total_count = int(enqueue_payload.get("created_count", 0) or 0)
+    if child_total_count > 0:
+        store.update_task_request(
+            request_id=claimed_request.request_id,
+            status="waiting_children",
+            current_stage="waiting_children",
+            stage_cursor=stage_cursor,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+        )
+        return _build_request_payload(
+            store=store,
+            request_id=claimed_request.request_id,
+            control_action="executor_once",
+            message="Top-level executor planned cleanup/scan and queued browser leaf tasks.",
+        )
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status="ready_for_summary",
+        current_stage="ready_for_summary",
+        stage_cursor=stage_cursor,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+    )
+    return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+
+
+def _plan_keyword_request(
+    *,
+    store: Phase1RuntimeStore,
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = dict(claimed_request.payload)
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="keyword_candidate_discovery",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    enqueue_payload = store.enqueue_task_executions(
+        request_id=claimed_request.request_id,
+        item_code=KEYWORD_DISCOVERY_ITEM_CODE,
+        workflow_code=KEYWORD_DISCOVERY_WORKFLOW_CODE,
+        items=_build_keyword_discovery_items(request_payload),
+    )
+    stage_cursor = {
+        "discovery_enqueue": enqueue_payload,
+        "resume_action": KEYWORD_RESUME_DISCOVERY,
+    }
+    if int(enqueue_payload.get("created_count", 0) or 0) > 0:
+        store.update_task_request(
+            request_id=claimed_request.request_id,
+            status="waiting_children",
+            current_stage="waiting_children",
+            stage_cursor=stage_cursor,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+        )
+        return _build_request_payload(
+            store=store,
+            request_id=claimed_request.request_id,
+            control_action="executor_once",
+            message="Top-level executor queued one keyword discovery browser task.",
+        )
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status="ready_for_summary",
+        current_stage="ready_for_summary",
+        stage_cursor=stage_cursor,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+    )
+    return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+
+
+def _resume_keyword_request(
+    *,
+    store: Phase1RuntimeStore,
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = dict(claimed_request.payload)
+    stage_cursor = dict(claimed_request.stage_cursor or {})
+    resume_action = str(stage_cursor.get("resume_action", "") or "")
+    executions = store.list_task_executions(request_id=claimed_request.request_id)
+
+    if resume_action == KEYWORD_RESUME_DISCOVERY:
+        discovery_execution = next(
+            (
+                execution
+                for execution in executions
+                if str(execution.item_code or "") == KEYWORD_DISCOVERY_ITEM_CODE
+            ),
+            None,
+        )
+        if discovery_execution is None:
+            return _fail_request(
+                store=store,
+                request_id=claimed_request.request_id,
+                current_stage="keyword_discovery_missing",
+                error_text="Keyword discovery execution result is missing.",
+            )
+        if discovery_execution.status == "failed":
+            return _fail_request(
+                store=store,
+                request_id=claimed_request.request_id,
+                current_stage="keyword_discovery_failed",
+                error_text=discovery_execution.error_text or "Keyword discovery failed.",
+            )
+
+        discovery_payload = (
+            dict(discovery_execution.result)
+            if isinstance(discovery_execution.result, dict)
+            else {}
+        )
+        target_items = discovery_payload.get("target_items", [])
+        if not isinstance(target_items, list):
+            target_items = []
+
+        seed_items: list[dict[str, Any]] = []
+        for candidate in target_items:
+            if not isinstance(candidate, dict):
+                continue
+            seed_params = dict(request_payload)
+            seed_params["sku_id"] = str(candidate.get("product_id", "") or "").strip()
+            seed_params["search_keyword"] = str(
+                request_payload.get("search_keyword", "") or request_payload.get("keyword", "")
+            ).strip()
+            candidate_url = str(
+                candidate.get("normalized_product_url")
+                or candidate.get("product_url")
+                or candidate.get("normalized_url")
+                or ""
+            ).strip()
+            if candidate_url:
+                seed_params["product_url"] = candidate_url
+            try:
+                seed_payload = run_feishu_seed_row_insert(seed_params)
+                seed_item = _extract_result_item(seed_payload if isinstance(seed_payload, dict) else {})
+                if seed_item:
+                    seed_items.append(seed_item)
+            except Exception as exc:
+                seed_items.append(
+                    {
+                        "record_id": "",
+                        "product_id": str(candidate.get("product_id", "") or "").strip(),
+                        "normalized_url": candidate_url,
+                        "status": "insert_failed",
+                        "error": str(exc),
+                    }
+                )
+
+        seed_summary = _summarize_item_status_counts(seed_items)
+        enqueue_updates_payload = store.enqueue_task_executions(
+            request_id=claimed_request.request_id,
+            item_code=SINGLE_ROW_UPDATE_ITEM_CODE,
+            workflow_code=SINGLE_ROW_UPDATE_WORKFLOW_CODE,
+            items=_build_keyword_detail_enqueue_items(request_payload, seed_items),
+        )
+        stage_cursor.update(
+            {
+                "discovery": discovery_payload,
+                "seed_insert": {
+                    "summary": seed_summary,
+                    "items": seed_items,
+                },
+                "enqueue_updates": enqueue_updates_payload,
+                "resume_action": KEYWORD_RESUME_DETAILS,
+            }
+        )
+        if int(enqueue_updates_payload.get("created_count", 0) or 0) > 0:
+            store.update_task_request(
+                request_id=claimed_request.request_id,
+                status="waiting_children",
+                current_stage="waiting_children",
+                stage_cursor=stage_cursor,
+                error_text="",
+                worker_id="",
+                lease_until=0.0,
+                heartbeat_at=0.0,
+            )
+            return _build_request_payload(
+                store=store,
+                request_id=claimed_request.request_id,
+                control_action="executor_once",
+                message="Top-level executor inserted keyword seed rows and queued detail updates.",
+            )
+        store.update_task_request(
+            request_id=claimed_request.request_id,
+            status="ready_for_summary",
+            current_stage="ready_for_summary",
+            stage_cursor=stage_cursor,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+        )
+        return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+
+    if resume_action == KEYWORD_RESUME_DETAILS:
+        return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+
+    return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+
+
 def execute_phase1_executor_once(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
-    claimed_request = store.claim_next_task_request(worker_id=str(settings["worker_id"]))
+    claimed_request = store.claim_next_task_request(
+        worker_id=str(settings["worker_id"]),
+        lease_seconds=float(settings["lease_seconds"]),
+    )
     if claimed_request is None:
         return {
             "control_action": "executor_once",
@@ -1038,64 +1613,20 @@ def execute_phase1_executor_once(params: dict[str, Any]) -> dict[str, Any]:
     current_stage = str(claimed_request.current_stage or "").strip()
     if current_stage in {"", "submitted"}:
         try:
-            request_payload = dict(claimed_request.payload)
-            store.update_task_request(
-                request_id=claimed_request.request_id,
-                current_stage="cleanup",
-                started_at=claimed_request.started_at or time.time(),
-            )
-            cleanup_payload = run_tiktok_product_link_cleanup(request_payload)
-            store.update_task_request(
-                request_id=claimed_request.request_id,
-                current_stage="pending_rows_scan",
-            )
-            scan_payload = run_feishu_pending_rows_scan(request_payload)
-            target_rows = scan_payload.get("target_rows", [])
-            if not isinstance(target_rows, list):
-                target_rows = []
-            enqueue_payload = store.enqueue_task_executions(
-                request_id=claimed_request.request_id,
-                item_code=ITEM_CODE,
-                workflow_code=WORKFLOW_CODE,
-                items=_build_enqueue_items(request_payload, target_rows),
-            )
-            stage_cursor = {
-                "cleanup": cleanup_payload,
-                "scan": scan_payload,
-                "enqueue": enqueue_payload,
-            }
-            child_total_count = int(enqueue_payload.get("created_count", 0) or 0)
-            if child_total_count > 0:
-                store.update_task_request(
+            with _CallbackHeartbeat(
+                callback=lambda: store.heartbeat_task_request(
                     request_id=claimed_request.request_id,
-                    status="waiting_children",
-                    current_stage="waiting_children",
-                    stage_cursor=stage_cursor,
-                    error_text="",
-                )
-                payload = _build_request_payload(
-                    store=store,
-                    request_id=claimed_request.request_id,
-                    control_action="executor_once",
-                    message="Top-level executor planned cleanup/scan and queued browser leaf tasks.",
-                )
-                payload.update(
-                    {
-                        "daemon_status": "processed",
-                        "processed_count": 1,
-                        "success_count": 1,
-                        "failed_count": 0,
-                    }
-                )
-                return payload
-            store.update_task_request(
-                request_id=claimed_request.request_id,
-                status="ready_for_summary",
-                current_stage="ready_for_summary",
-                stage_cursor=stage_cursor,
-                error_text="",
-            )
-            payload = _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+                    lease_seconds=float(settings["lease_seconds"]),
+                ),
+                interval_seconds=min(
+                    float(settings["heartbeat_interval_seconds"]),
+                    float(settings["lease_seconds"]),
+                ),
+            ):
+                if str(claimed_request.task_code or "") == KEYWORD_TASK_CODE:
+                    payload = _plan_keyword_request(store=store, claimed_request=claimed_request)
+                else:
+                    payload = _plan_refresh_request(store=store, claimed_request=claimed_request)
             payload.update(
                 {
                     "daemon_status": "processed",
@@ -1125,7 +1656,20 @@ def execute_phase1_executor_once(params: dict[str, Any]) -> dict[str, Any]:
 
     if current_stage == "ready_for_summary":
         try:
-            payload = _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+            with _CallbackHeartbeat(
+                callback=lambda: store.heartbeat_task_request(
+                    request_id=claimed_request.request_id,
+                    lease_seconds=float(settings["lease_seconds"]),
+                ),
+                interval_seconds=min(
+                    float(settings["heartbeat_interval_seconds"]),
+                    float(settings["lease_seconds"]),
+                ),
+            ):
+                if str(claimed_request.task_code or "") == KEYWORD_TASK_CODE:
+                    payload = _resume_keyword_request(store=store, claimed_request=claimed_request)
+                else:
+                    payload = _finalize_request_summary(store=store, request_id=claimed_request.request_id)
             payload.update(
                 {
                     "daemon_status": "processed",
@@ -1183,7 +1727,7 @@ def _run_browser_execution_once(
             with contextlib.redirect_stdout(tee_stdout), contextlib.redirect_stderr(tee_stderr):
                 print(
                     f"[phase1-browser] execution_id={execution.execution_id} "
-                    f"request_id={execution.request_id} run_id={run_id} status=running"
+                    f"request_id={execution.request_id} run_id={run_id} item_code={execution.item_code} status=running"
                 )
                 with _LeaseHeartbeat(
                     store=store,
@@ -1191,16 +1735,22 @@ def _run_browser_execution_once(
                     lease_seconds=float(settings["lease_seconds"]),
                     interval_seconds=float(settings["heartbeat_interval_seconds"]),
                 ):
-                    result_payload = run_feishu_single_row_update(dict(execution.payload))
+                    if str(execution.item_code or "") == KEYWORD_DISCOVERY_ITEM_CODE:
+                        result_payload = run_fastmoss_keyword_candidate_discovery(dict(execution.payload))
+                    elif str(execution.item_code or "") == SINGLE_ROW_UPDATE_ITEM_CODE:
+                        result_payload = run_feishu_single_row_update(dict(execution.payload))
+                    else:
+                        raise RuntimeError(f"Unsupported browser item_code '{execution.item_code}'.")
                 terminal_status = _classify_execution_result(result_payload)
                 if terminal_status == "success":
                     try:
-                        persist_product_entity_snapshot(
-                            store=store,
-                            execution=execution,
-                            result_payload=result_payload,
-                            extract_result_item=_extract_result_item,
-                        )
+                        if str(execution.item_code or "") == SINGLE_ROW_UPDATE_ITEM_CODE:
+                            persist_product_entity_snapshot(
+                                store=store,
+                                execution=execution,
+                                result_payload=result_payload,
+                                extract_result_item=_extract_result_item,
+                            )
                     except Exception as entity_exc:
                         item = _extract_result_item(result_payload)
                         if item:
@@ -1230,7 +1780,7 @@ def _run_browser_execution_once(
                     )
                 print(
                     f"[phase1-browser] execution_id={execution.execution_id} "
-                    f"run_id={run_id} status={finalized_execution.status}"
+                    f"run_id={run_id} item_code={execution.item_code} status={finalized_execution.status}"
                 )
     except Exception as exc:
         error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -1322,7 +1872,10 @@ def execute_phase1_browser_once(params: dict[str, Any]) -> dict[str, Any]:
 def dispatch_phase1_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
-    outbox = store.claim_next_outbox()
+    outbox = store.claim_next_outbox(
+        worker_id=str(settings["worker_id"]),
+        lease_seconds=float(settings["lease_seconds"]),
+    )
     if outbox is None:
         return {
             "control_action": "outbox_once",
@@ -1337,29 +1890,39 @@ def dispatch_phase1_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
         }
     channel_code = str(outbox.channel_code or "noop").strip() or "noop"
     try:
-        payload = outbox.payload if isinstance(outbox.payload, dict) else {}
-        message_text = str(payload.get("message_text", "") or _json_dumps(payload))
-        if channel_code in {"noop", "disabled"}:
-            sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-        elif channel_code in {"console", "stdout"}:
-            print(message_text)
-            sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-        elif channel_code in {"feishu_bot_api", "feishu_direct_api"}:
-            transport_payload = _dispatch_via_feishu_bot_api(
-                message_text=message_text,
-                reply_target=outbox.reply_target,
-            )
-            sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-            payload["transport"] = transport_payload
-        elif channel_code in {"openclaw_message", "feishu_openclaw"}:
-            transport_payload = _dispatch_via_openclaw_message(
-                message_text=message_text,
-                reply_target=outbox.reply_target,
-            )
-            sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-            payload["transport"] = transport_payload
-        else:
-            raise RuntimeError(f"Unsupported outbox channel '{channel_code}'.")
+        with _CallbackHeartbeat(
+            callback=lambda: store.heartbeat_outbox(
+                outbox_id=outbox.outbox_id,
+                lease_seconds=float(settings["lease_seconds"]),
+            ),
+            interval_seconds=min(
+                float(settings["heartbeat_interval_seconds"]),
+                float(settings["lease_seconds"]),
+            ),
+        ):
+            payload = outbox.payload if isinstance(outbox.payload, dict) else {}
+            message_text = str(payload.get("message_text", "") or _json_dumps(payload))
+            if channel_code in {"noop", "disabled"}:
+                sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
+            elif channel_code in {"console", "stdout"}:
+                print(message_text)
+                sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
+            elif channel_code in {"feishu_bot_api", "feishu_direct_api"}:
+                transport_payload = _dispatch_via_feishu_bot_api(
+                    message_text=message_text,
+                    reply_target=outbox.reply_target,
+                )
+                sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
+                payload["transport"] = transport_payload
+            elif channel_code in {"openclaw_message", "feishu_openclaw"}:
+                transport_payload = _dispatch_via_openclaw_message(
+                    message_text=message_text,
+                    reply_target=outbox.reply_target,
+                )
+                sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
+                payload["transport"] = transport_payload
+            else:
+                raise RuntimeError(f"Unsupported outbox channel '{channel_code}'.")
         return {
             "control_action": "outbox_once",
             "dispatcher_status": "processed",
@@ -1510,6 +2073,36 @@ def _run_phase1_synchronously(params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _run_keyword_phase1_synchronously(params: dict[str, Any]) -> dict[str, Any]:
+    submitted = submit_search_keyword_competitor_products(params)
+    request_id = str(submitted["request_id"])
+    executor_params = dict(params)
+    executor_params["request_id"] = request_id
+    while True:
+        executor_payload = execute_phase1_executor_once(executor_params)
+        request_status = str(executor_payload.get("request_status", "") or "")
+        if request_status == "waiting_children":
+            browser_params = dict(params)
+            browser_params["execution_control_stop_when_idle"] = True
+            browser_params["execution_control_max_idle_cycles"] = 1
+            run_phase1_browser_runloop(browser_params)
+            continue
+        break
+    outbox_params = dict(params)
+    outbox_params["execution_control_stop_when_idle"] = True
+    outbox_params["execution_control_max_idle_cycles"] = 1
+    run_phase1_outbox_dispatcher(outbox_params)
+    result = get_search_keyword_competitor_products_status(
+        {
+            **params,
+            "request_id": request_id,
+        }
+    )
+    result["control_action"] = "run"
+    result["message"] = "Phase 1 keyword search task finished in synchronous compatibility mode."
+    return result
+
+
 def run_refresh_current_competitor_table(params: dict[str, Any]) -> dict[str, Any]:
     action = str(params.get("control_action", "run") or "run").strip().lower()
     if action == "submit":
@@ -1529,3 +2122,24 @@ def run_refresh_current_competitor_table(params: dict[str, Any]) -> dict[str, An
     if action == "outbox_loop":
         return run_phase1_outbox_dispatcher(params)
     return _run_phase1_synchronously(params)
+
+
+def run_search_keyword_competitor_products(params: dict[str, Any]) -> dict[str, Any]:
+    action = str(params.get("control_action", "run") or "run").strip().lower()
+    if action == "submit":
+        return submit_search_keyword_competitor_products(params)
+    if action in {"status", "result"}:
+        return get_search_keyword_competitor_products_status(params)
+    if action == "executor_once":
+        return execute_phase1_executor_once(params)
+    if action == "executor_loop":
+        return run_phase1_executor_daemon(params)
+    if action == "browser_once":
+        return execute_phase1_browser_once(params)
+    if action == "browser_loop":
+        return run_phase1_browser_runloop(params)
+    if action == "outbox_once":
+        return dispatch_phase1_outbox_once(params)
+    if action == "outbox_loop":
+        return run_phase1_outbox_dispatcher(params)
+    return _run_keyword_phase1_synchronously(params)

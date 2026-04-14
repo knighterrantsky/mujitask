@@ -21,6 +21,7 @@ from automation_business_scaffold.models.phase1_runtime import (
 ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
 TERMINAL_EXECUTION_STATUSES = {"success", "failed", "skipped", "cancelled"}
 TERMINAL_REQUEST_STATUSES = {"success", "failed", "cancelled"}
+POSTGRES_SCHEMA_LOCK_KEY = 426319877301
 
 
 def _json_dumps(payload: dict[str, Any]) -> str:
@@ -91,6 +92,9 @@ class Phase1RuntimeStore:
                 child_failed_count INTEGER NOT NULL DEFAULT 0,
                 child_skipped_count INTEGER NOT NULL DEFAULT 0,
                 requested_by TEXT NOT NULL DEFAULT '',
+                worker_id TEXT NOT NULL DEFAULT '',
+                lease_until REAL,
+                heartbeat_at REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 started_at REAL,
@@ -176,6 +180,9 @@ class Phase1RuntimeStore:
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 max_retry_count INTEGER NOT NULL DEFAULT 10,
                 next_retry_at REAL,
+                worker_id TEXT NOT NULL DEFAULT '',
+                lease_until REAL,
+                heartbeat_at REAL,
                 last_error_text TEXT NOT NULL DEFAULT '',
                 sent_at REAL,
                 created_at REAL NOT NULL,
@@ -296,8 +303,101 @@ class Phase1RuntimeStore:
             """,
         ]
         with self._engine.begin() as connection:
-            for statement in statements:
-                connection.exec_driver_sql(statement)
+            dialect_name = str(connection.dialect.name or "").lower()
+            has_postgres_lock = False
+            if dialect_name.startswith("postgres"):
+                connection.exec_driver_sql(f"SELECT pg_advisory_lock({POSTGRES_SCHEMA_LOCK_KEY})")
+                has_postgres_lock = True
+            try:
+                for statement in statements:
+                    connection.exec_driver_sql(statement)
+                self._ensure_column(
+                    connection,
+                    table_name="task_request",
+                    column_name="worker_id",
+                    column_definition="TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="task_request",
+                    column_name="lease_until",
+                    column_definition="REAL",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="task_request",
+                    column_name="heartbeat_at",
+                    column_definition="REAL",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="notification_outbox",
+                    column_name="worker_id",
+                    column_definition="TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="notification_outbox",
+                    column_name="lease_until",
+                    column_definition="REAL",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="notification_outbox",
+                    column_name="heartbeat_at",
+                    column_definition="REAL",
+                )
+                connection.exec_driver_sql(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_task_request_status_lease_until
+                        ON task_request(status, lease_until)
+                    """
+                )
+                connection.exec_driver_sql(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_lease_until
+                        ON notification_outbox(status, lease_until)
+                    """
+                )
+            finally:
+                if has_postgres_lock:
+                    connection.exec_driver_sql(f"SELECT pg_advisory_unlock({POSTGRES_SCHEMA_LOCK_KEY})")
+
+    def _has_column(self, connection: Any, *, table_name: str, column_name: str) -> bool:
+        dialect_name = str(connection.dialect.name or "").lower()
+        if dialect_name == "sqlite":
+            rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").mappings().all()
+            return any(str(row["name"]) == column_name for row in rows)
+        row = (
+            connection.execute(
+                self._text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = :table_name
+                      AND column_name = :column_name
+                    LIMIT 1
+                    """
+                ),
+                {"table_name": table_name, "column_name": column_name},
+            )
+            .first()
+        )
+        return row is not None
+
+    def _ensure_column(
+        self,
+        connection: Any,
+        *,
+        table_name: str,
+        column_name: str,
+        column_definition: str,
+    ) -> None:
+        if self._has_column(connection, table_name=table_name, column_name=column_name):
+            return
+        connection.exec_driver_sql(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
 
     def _request_from_row(self, row: Mapping[str, Any]) -> Phase1TaskRequestRecord:
         return Phase1TaskRequestRecord(
@@ -322,6 +422,9 @@ class Phase1RuntimeStore:
             child_success_count=int(row["child_success_count"] or 0),
             child_failed_count=int(row["child_failed_count"] or 0),
             child_skipped_count=int(row["child_skipped_count"] or 0),
+            worker_id=str(row.get("worker_id", "") or ""),
+            lease_until=_coerce_float(row.get("lease_until")),
+            heartbeat_at=_coerce_float(row.get("heartbeat_at")),
             created_at=_coerce_float(row["created_at"]),
             updated_at=_coerce_float(row["updated_at"]),
             started_at=_coerce_float(row["started_at"]),
@@ -382,6 +485,9 @@ class Phase1RuntimeStore:
             retry_count=int(row["retry_count"] or 0),
             max_retry_count=int(row["max_retry_count"] or 0),
             next_retry_at=_coerce_float(row["next_retry_at"]),
+            worker_id=str(row.get("worker_id", "") or ""),
+            lease_until=_coerce_float(row.get("lease_until")),
+            heartbeat_at=_coerce_float(row.get("heartbeat_at")),
             last_error_text=str(row["last_error_text"] or ""),
             sent_at=_coerce_float(row["sent_at"]),
             created_at=_coerce_float(row["created_at"]),
@@ -969,8 +1075,60 @@ class Phase1RuntimeStore:
             raise ValueError("Entity snapshot not found after insert.")
         return self._snapshot_from_row(row)
 
-    def claim_next_task_request(self, *, worker_id: str) -> Phase1TaskRequestRecord | None:
+    def _requeue_expired_task_request_claims(self, connection: Any, *, now: float) -> None:
+        expired_rows = (
+            connection.execute(
+                self._text(
+                    """
+                    SELECT request_id, current_stage
+                    FROM task_request
+                    WHERE status = 'running'
+                      AND COALESCE(lease_until, 0) <= :now
+                    """
+                ),
+                {"now": now},
+            )
+            .mappings()
+            .all()
+        )
+        for row in expired_rows:
+            request_id = str(row["request_id"])
+            current_stage = str(row["current_stage"] or "").strip()
+            reset_status = "ready_for_summary" if current_stage == "ready_for_summary" else "pending"
+            reset_stage = "ready_for_summary" if current_stage == "ready_for_summary" else ""
+            reset_cursor = None if current_stage == "ready_for_summary" else "{}"
+            values: dict[str, Any] = {
+                "request_id": request_id,
+                "status": reset_status,
+                "current_stage": reset_stage,
+                "updated_at": now,
+            }
+            assignments = [
+                "status = :status",
+                "current_stage = :current_stage",
+                "updated_at = :updated_at",
+                "worker_id = ''",
+                "lease_until = NULL",
+                "heartbeat_at = NULL",
+            ]
+            if reset_cursor is not None:
+                assignments.append("stage_cursor_json = :stage_cursor_json")
+                values["stage_cursor_json"] = reset_cursor
+            connection.execute(
+                self._text(
+                    f"""
+                    UPDATE task_request
+                    SET {", ".join(assignments)}
+                    WHERE request_id = :request_id
+                    """
+                ),
+                values,
+            )
+
+    def claim_next_task_request(self, *, worker_id: str, lease_seconds: float) -> Phase1TaskRequestRecord | None:
         with self._engine.begin() as connection:
+            now = time.time()
+            self._requeue_expired_task_request_claims(connection, now=now)
             row = (
                 connection.execute(
                     self._text(
@@ -988,21 +1146,39 @@ class Phase1RuntimeStore:
             )
             if row is None:
                 return None
-            now = time.time()
             request = self._request_from_row(row)
             connection.execute(
                 self._text(
                     """
                     UPDATE task_request
                     SET status = 'running',
+                        worker_id = :worker_id,
+                        lease_until = :lease_until,
+                        heartbeat_at = :heartbeat_at,
                         updated_at = :updated_at,
                         started_at = CASE WHEN started_at IS NULL THEN :updated_at ELSE started_at END
                     WHERE request_id = :request_id
                     """
                 ),
-                {"request_id": request.request_id, "updated_at": now},
+                {
+                    "request_id": request.request_id,
+                    "worker_id": worker_id,
+                    "lease_until": now + lease_seconds,
+                    "heartbeat_at": now,
+                    "updated_at": now,
+                },
             )
-            return self.load_task_request(request_id=request.request_id)
+            updated_row = (
+                connection.execute(
+                    self._text("SELECT * FROM task_request WHERE request_id = :request_id LIMIT 1"),
+                    {"request_id": request.request_id},
+                )
+                .mappings()
+                .first()
+            )
+            if updated_row is None:
+                return None
+            return self._request_from_row(updated_row)
 
     def update_task_request(
         self,
@@ -1019,6 +1195,9 @@ class Phase1RuntimeStore:
         child_success_count: int | None = None,
         child_failed_count: int | None = None,
         child_skipped_count: int | None = None,
+        worker_id: str | None = None,
+        lease_until: float | None = None,
+        heartbeat_at: float | None = None,
         started_at: float | None = None,
         finished_at: float | None = None,
     ) -> Phase1TaskRequestRecord:
@@ -1057,6 +1236,15 @@ class Phase1RuntimeStore:
         if child_skipped_count is not None:
             assignments.append("child_skipped_count = :child_skipped_count")
             values["child_skipped_count"] = child_skipped_count
+        if worker_id is not None:
+            assignments.append("worker_id = :worker_id")
+            values["worker_id"] = worker_id
+        if lease_until is not None:
+            assignments.append("lease_until = :lease_until")
+            values["lease_until"] = lease_until
+        if heartbeat_at is not None:
+            assignments.append("heartbeat_at = :heartbeat_at")
+            values["heartbeat_at"] = heartbeat_at
         if started_at is not None:
             assignments.append("started_at = :started_at")
             values["started_at"] = started_at
@@ -1075,6 +1263,28 @@ class Phase1RuntimeStore:
                 values,
             )
         return self.load_task_request(request_id=request_id)
+
+    def heartbeat_task_request(self, *, request_id: str, lease_seconds: float) -> None:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE task_request
+                    SET heartbeat_at = :heartbeat_at,
+                        lease_until = :lease_until,
+                        updated_at = :updated_at
+                    WHERE request_id = :request_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "request_id": request_id,
+                    "heartbeat_at": now,
+                    "lease_until": now + lease_seconds,
+                    "updated_at": now,
+                },
+            )
 
     def enqueue_task_executions(
         self,
@@ -1736,9 +1946,56 @@ class Phase1RuntimeStore:
                 raise ValueError("Outbox record not found.")
             return self._outbox_from_row(row)
 
-    def claim_next_outbox(self) -> NotificationOutboxRecord | None:
+    def _requeue_expired_outbox_claims(self, connection: Any, *, now: float) -> None:
+        rows = (
+            connection.execute(
+                self._text(
+                    """
+                    SELECT outbox_id, retry_count, max_retry_count
+                    FROM notification_outbox
+                    WHERE status = 'sending'
+                      AND COALESCE(lease_until, 0) <= :now
+                    """
+                ),
+                {"now": now},
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            retry_count = int(row["retry_count"] or 0) + 1
+            max_retry_count = int(row["max_retry_count"] or 0)
+            status = "retry_wait" if retry_count < max_retry_count else "failed"
+            next_retry_at = now if status == "retry_wait" else None
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE notification_outbox
+                    SET status = :status,
+                        retry_count = :retry_count,
+                        next_retry_at = :next_retry_at,
+                        worker_id = '',
+                        lease_until = NULL,
+                        heartbeat_at = NULL,
+                        last_error_text = :last_error_text,
+                        updated_at = :updated_at
+                    WHERE outbox_id = :outbox_id
+                    """
+                ),
+                {
+                    "outbox_id": row["outbox_id"],
+                    "status": status,
+                    "retry_count": retry_count,
+                    "next_retry_at": next_retry_at,
+                    "last_error_text": "Outbox sending lease expired and was reclaimed.",
+                    "updated_at": now,
+                },
+            )
+
+    def claim_next_outbox(self, *, worker_id: str, lease_seconds: float) -> NotificationOutboxRecord | None:
         with self._engine.begin() as connection:
             now = time.time()
+            self._requeue_expired_outbox_claims(connection, now=now)
             row = (
                 connection.execute(
                     self._text(
@@ -1763,13 +2020,54 @@ class Phase1RuntimeStore:
                     """
                     UPDATE notification_outbox
                     SET status = 'sending',
+                        worker_id = :worker_id,
+                        lease_until = :lease_until,
+                        heartbeat_at = :heartbeat_at,
                         updated_at = :updated_at
                     WHERE outbox_id = :outbox_id
                     """
                 ),
-                {"outbox_id": row["outbox_id"], "updated_at": now},
+                {
+                    "outbox_id": row["outbox_id"],
+                    "worker_id": worker_id,
+                    "lease_until": now + lease_seconds,
+                    "heartbeat_at": now,
+                    "updated_at": now,
+                },
             )
-        return self.load_outbox(outbox_id=str(row["outbox_id"]))
+            updated_row = (
+                connection.execute(
+                    self._text("SELECT * FROM notification_outbox WHERE outbox_id = :outbox_id LIMIT 1"),
+                    {"outbox_id": row["outbox_id"]},
+                )
+                .mappings()
+                .first()
+            )
+            if updated_row is None:
+                return None
+            return self._outbox_from_row(updated_row)
+
+    def heartbeat_outbox(self, *, outbox_id: str, lease_seconds: float) -> None:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE notification_outbox
+                    SET heartbeat_at = :heartbeat_at,
+                        lease_until = :lease_until,
+                        updated_at = :updated_at
+                    WHERE outbox_id = :outbox_id
+                      AND status = 'sending'
+                    """
+                ),
+                {
+                    "outbox_id": outbox_id,
+                    "heartbeat_at": now,
+                    "lease_until": now + lease_seconds,
+                    "updated_at": now,
+                },
+            )
 
     def mark_outbox_sent(self, *, outbox_id: str) -> NotificationOutboxRecord:
         with self._engine.begin() as connection:
@@ -1781,6 +2079,9 @@ class Phase1RuntimeStore:
                     SET status = 'sent',
                         sent_at = :sent_at,
                         updated_at = :updated_at,
+                        worker_id = '',
+                        lease_until = NULL,
+                        heartbeat_at = NULL,
                         last_error_text = ''
                     WHERE outbox_id = :outbox_id
                     """
@@ -1819,6 +2120,9 @@ class Phase1RuntimeStore:
                     SET status = :status,
                         retry_count = :retry_count,
                         next_retry_at = :next_retry_at,
+                        worker_id = '',
+                        lease_until = NULL,
+                        heartbeat_at = NULL,
                         last_error_text = :last_error_text,
                         updated_at = :updated_at
                     WHERE outbox_id = :outbox_id

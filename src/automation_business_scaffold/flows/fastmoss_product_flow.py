@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -120,11 +121,13 @@ def fetch_fastmoss_product_sales_via_browser(
     capture_detail_screenshot: bool = True,
     verify_login: bool = False,
 ) -> FastMossProductSalesSnapshot:
+    fetch_started_at = time.time()
     normalized_product_id = _normalize_fastmoss_product_id(product_id)
     phone = _resolve_fastmoss_secret(fastmoss_phone, fastmoss_phone_env)
     password = _resolve_fastmoss_secret(fastmoss_password, fastmoss_password_env)
     detail_url = _build_fastmoss_detail_url(normalized_product_id)
     search_url = _build_fastmoss_search_url(normalized_product_id)
+    _log_fastmoss_timing(product_id=normalized_product_id, phase="fetch_start")
 
     with open_automation_page(
         profile_ref=profile_ref,
@@ -141,8 +144,10 @@ def fetch_fastmoss_product_sales_via_browser(
             verify_login=verify_login,
         )
         session_recovered = False
-        _, recovered_during_open = _run_fastmoss_action_with_relogin(
-            lambda: _open_fastmoss_detail_page(page, detail_url, step_delay_sec=step_delay_sec),
+        _, recovered_during_open = _run_timed_fastmoss_action_with_relogin(
+            step_name="open_detail",
+            product_id=normalized_product_id,
+            action=lambda: _open_fastmoss_detail_page(page, detail_url, step_delay_sec=step_delay_sec),
             page=page,
             phone=phone,
             password=password,
@@ -158,8 +163,10 @@ def fetch_fastmoss_product_sales_via_browser(
             (
                 (screenshot_path, screenshot_name, screenshot_mime),
                 recovered_during_screenshot,
-            ) = _run_fastmoss_action_with_relogin(
-                lambda: _capture_fastmoss_detail_screenshot(
+            ) = _run_timed_fastmoss_action_with_relogin(
+                step_name="detail_screenshot",
+                product_id=normalized_product_id,
+                action=lambda: _capture_fastmoss_detail_screenshot(
                     page,
                     product_id=normalized_product_id,
                 ),
@@ -176,8 +183,10 @@ def fetch_fastmoss_product_sales_via_browser(
             )
             session_recovered = session_recovered or recovered_during_screenshot
 
-        product_title, recovered_during_title = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_product_title(page),
+        product_title, recovered_during_title = _run_timed_fastmoss_action_with_relogin(
+            step_name="product_title",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_product_title(page),
             page=page,
             phone=phone,
             password=password,
@@ -190,8 +199,10 @@ def fetch_fastmoss_product_sales_via_browser(
             ),
         )
         session_recovered = session_recovered or recovered_during_title
-        fastmoss_price_amount, recovered_during_price = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_price_amount(page),
+        fastmoss_price_amount, recovered_during_price = _run_timed_fastmoss_action_with_relogin(
+            step_name="price_amount",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_price_amount(page),
             page=page,
             phone=phone,
             password=password,
@@ -204,8 +215,10 @@ def fetch_fastmoss_product_sales_via_browser(
             ),
         )
         session_recovered = session_recovered or recovered_during_price
-        sales_7d, recovered_during_sales_7d = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec),
+        sales_7d, recovered_during_sales_7d = _run_timed_fastmoss_action_with_relogin(
+            step_name="sales_7d",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_period_sales(page, days="7", step_delay_sec=step_delay_sec),
             page=page,
             phone=phone,
             password=password,
@@ -218,8 +231,10 @@ def fetch_fastmoss_product_sales_via_browser(
             ),
         )
         session_recovered = session_recovered or recovered_during_sales_7d
-        sales_28d, recovered_during_sales_28d = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec),
+        sales_28d, recovered_during_sales_28d = _run_timed_fastmoss_action_with_relogin(
+            step_name="sales_28d",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_period_sales(page, days="28", step_delay_sec=step_delay_sec),
             page=page,
             phone=phone,
             password=password,
@@ -232,8 +247,10 @@ def fetch_fastmoss_product_sales_via_browser(
             ),
         )
         session_recovered = session_recovered or recovered_during_sales_28d
-        sales_90d, recovered_during_sales_90d = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec),
+        sales_90d, recovered_during_sales_90d = _run_timed_fastmoss_action_with_relogin(
+            step_name="sales_90d",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_period_sales(page, days="90", step_delay_sec=step_delay_sec),
             page=page,
             phone=phone,
             password=password,
@@ -247,8 +264,10 @@ def fetch_fastmoss_product_sales_via_browser(
         )
         session_recovered = session_recovered or recovered_during_sales_90d
         preferred_yesterday_date, fallback_yesterday_date = _preferred_fastmoss_yesterday_dates()
-        yesterday_sales, recovered_during_yesterday = _run_fastmoss_action_with_relogin(
-            lambda: _extract_fastmoss_yesterday_sales(
+        yesterday_sales, recovered_during_yesterday = _run_timed_fastmoss_action_with_relogin(
+            step_name="yesterday_sales",
+            product_id=normalized_product_id,
+            action=lambda: _extract_fastmoss_yesterday_sales(
                 page,
                 target_date=preferred_yesterday_date,
                 fallback_target_date=fallback_yesterday_date,
@@ -269,8 +288,7 @@ def fetch_fastmoss_product_sales_via_browser(
 
         if session_recovered:
             login_state = FASTMOSS_SESSION_RECOVERED_LOGIN_STATE
-
-        return FastMossProductSalesSnapshot(
+        snapshot = FastMossProductSalesSnapshot(
             product_id=normalized_product_id,
             search_url=search_url,
             detail_url=detail_url,
@@ -285,6 +303,73 @@ def fetch_fastmoss_product_sales_via_browser(
             detail_page_screenshot_file_name=screenshot_name,
             detail_page_screenshot_mime_type=screenshot_mime,
         )
+        _log_fastmoss_timing(
+            product_id=normalized_product_id,
+            phase="fetch_ready",
+            elapsed_ms=int((time.time() - fetch_started_at) * 1000),
+            login_state=login_state,
+            session_recovered=session_recovered,
+        )
+        return snapshot
+
+
+def _json_dumps(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _log_fastmoss_timing(*, product_id: str, phase: str, **extra: Any) -> None:
+    payload: dict[str, Any] = {
+        "kind": "fastmoss_timing",
+        "ts_ms": int(time.time() * 1000),
+        "product_id": str(product_id or "").strip(),
+        "phase": str(phase or "").strip(),
+    }
+    for key, value in extra.items():
+        if value in (None, ""):
+            continue
+        payload[str(key)] = value
+    print(_json_dumps(payload), flush=True)
+
+
+def _run_timed_fastmoss_action_with_relogin(
+    step_name: str,
+    product_id: str,
+    action: Callable[[], Any],
+    *,
+    page: Any,
+    phone: str | None,
+    password: str | None,
+    step_delay_sec: float,
+    login_settle_sec: float,
+    restore_after_relogin: Callable[[], Any] | None = None,
+) -> tuple[Any, bool]:
+    _log_fastmoss_timing(product_id=product_id, phase=f"{step_name}_start")
+    started_at = time.time()
+    try:
+        result, session_recovered = _run_fastmoss_action_with_relogin(
+            action,
+            page=page,
+            phone=phone,
+            password=password,
+            step_delay_sec=step_delay_sec,
+            login_settle_sec=login_settle_sec,
+            restore_after_relogin=restore_after_relogin,
+        )
+    except Exception as exc:
+        _log_fastmoss_timing(
+            product_id=product_id,
+            phase=f"{step_name}_failed",
+            elapsed_ms=int((time.time() - started_at) * 1000),
+            error=str(exc),
+        )
+        raise
+    _log_fastmoss_timing(
+        product_id=product_id,
+        phase=f"{step_name}_ready",
+        elapsed_ms=int((time.time() - started_at) * 1000),
+        session_recovered=session_recovered,
+    )
+    return result, session_recovered
 
 
 def discover_fastmoss_keyword_candidates_via_browser(

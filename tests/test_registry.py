@@ -13,6 +13,7 @@ def test_build_task_registry_registers_demo_task():
         "feishu_seed_row_insert",
         "feishu_single_row_update",
         "refresh_current_competitor_table",
+        "search_keyword_competitor_products",
         "source_to_target_publish_demo",
         "tiktok_feishu_single_sync",
         "tiktok_product_link_cleanup",
@@ -25,6 +26,7 @@ def test_build_task_registry_registers_demo_task():
     assert registry.get("feishu_pending_rows_scan") is not None
     assert registry.get("feishu_seed_row_insert") is not None
     assert registry.get("feishu_single_row_update") is not None
+    assert registry.get("search_keyword_competitor_products") is not None
     assert registry.get("tiktok_product_to_feishu") is not None
     assert registry.get("tiktok_feishu_single_sync") is not None
     assert registry.get("tiktok_product_link_cleanup") is not None

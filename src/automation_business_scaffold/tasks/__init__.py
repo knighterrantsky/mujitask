@@ -10,6 +10,9 @@ from automation_business_scaffold.tasks.feishu_clear_row_by_url import FeishuCle
 from automation_business_scaffold.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
+from automation_business_scaffold.tasks.search_keyword_competitor_products import (
+    SearchKeywordCompetitorProductsTask,
+)
 from automation_business_scaffold.tasks.feishu_seed_row_insert import FeishuSeedRowInsertTask
 from automation_business_scaffold.tasks.feishu_single_row_update import FeishuSingleRowUpdateTask
 from automation_business_scaffold.tasks.source_to_target_publish_demo import (
@@ -33,6 +36,7 @@ DEFAULT_TASKS = [
     FeishuSeedRowInsertTask(),
     FeishuSingleRowUpdateTask(),
     RefreshCurrentCompetitorTableTask(),
+    SearchKeywordCompetitorProductsTask(),
     FastMossKeywordCandidateDiscoveryTask(),
     TikTokProductToFeishuTask(),
     TikTokFeishuSingleSyncTask(),
@@ -48,6 +52,7 @@ __all__ = [
     "FeishuClearRowByUrlTask",
     "FeishuPendingRowsScanTask",
     "RefreshCurrentCompetitorTableTask",
+    "SearchKeywordCompetitorProductsTask",
     "FeishuSeedRowInsertTask",
     "FeishuSingleRowUpdateTask",
     "SourceToTargetPublishDemoTask",
