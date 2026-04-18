@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.request
@@ -451,6 +450,136 @@ def _keyword_search_submit_params(
     return params
 
 
+def _influencer_pool_sync_env(skill_env: dict[str, str]) -> dict[str, str]:
+    source_table_url = _require_env_value(skill_env, "INFLUENCER_POOL_SOURCE_TABLE_URL")
+    target_table_url = _require_env_value(skill_env, "INFLUENCER_POOL_TARGET_TABLE_URL")
+    feishu_access_token_env = _require_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
+    fastmoss_phone_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
+    fastmoss_password_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
+
+    feishu_access_token = _require_env_value(skill_env, feishu_access_token_env)
+    fastmoss_phone = _require_env_value(skill_env, fastmoss_phone_env)
+    fastmoss_password = _require_env_value(skill_env, fastmoss_password_env)
+
+    return {
+        "source_table_url": source_table_url,
+        "target_table_url": target_table_url,
+        "feishu_access_token_env": feishu_access_token_env,
+        "feishu_access_token": feishu_access_token,
+        "fastmoss_phone_env": fastmoss_phone_env,
+        "fastmoss_phone": fastmoss_phone,
+        "fastmoss_password_env": fastmoss_password_env,
+        "fastmoss_password": fastmoss_password,
+    }
+
+
+def _influencer_pool_sync_submit_params(
+    *,
+    skill_env: dict[str, str],
+    include_submit_control_action: bool = True,
+    max_source_rows: int = 0,
+    max_author_pages: int = 0,
+    max_author_detail_jobs_per_source_row: int = 0,
+    queue_mode: str = "",
+    worker_kinds: str = "",
+    worker_max_iterations: int = 0,
+    worker_stop_when_idle: bool | None = None,
+    include_contact: bool = False,
+    request_delay_min_seconds: float = 1.0,
+    request_delay_max_seconds: float = 3.0,
+) -> tuple[list[str], dict[str, str]]:
+    config = _influencer_pool_sync_env(skill_env)
+    base_params = [
+        f"table_url={config['source_table_url']}",
+        f"target_table_url={config['target_table_url']}",
+        f"access_token_env={config['feishu_access_token_env']}",
+        f"fastmoss_phone_env={config['fastmoss_phone_env']}",
+        f"fastmoss_password_env={config['fastmoss_password_env']}",
+    ]
+    if max_source_rows > 0:
+        base_params.append(f"max_source_rows={max_source_rows}")
+    if max_author_pages > 0:
+        base_params.append(f"max_author_pages={max_author_pages}")
+    if max_author_detail_jobs_per_source_row > 0:
+        base_params.append(
+            f"max_author_detail_jobs_per_source_row={max_author_detail_jobs_per_source_row}"
+        )
+    if queue_mode:
+        base_params.append(f"queue_mode={queue_mode}")
+    if worker_kinds:
+        base_params.append(f"worker_kinds={worker_kinds}")
+    if worker_max_iterations >= 0:
+        base_params.append(f"worker_max_iterations={worker_max_iterations}")
+    if worker_stop_when_idle is not None:
+        base_params.append(f"worker_stop_when_idle={str(bool(worker_stop_when_idle)).lower()}")
+    if include_contact:
+        base_params.append("include_contact=true")
+    base_params.append(f"request_delay_min_seconds={max(request_delay_min_seconds, 0.0)}")
+    base_params.append(f"request_delay_max_seconds={max(request_delay_max_seconds, 0.0)}")
+    if include_submit_control_action:
+        base_params.append("control_action=submit")
+    params = _append_phase1_runtime_params(base_params, skill_env)
+    extra_env = {
+        config["feishu_access_token_env"]: config["feishu_access_token"],
+        config["fastmoss_phone_env"]: config["fastmoss_phone"],
+        config["fastmoss_password_env"]: config["fastmoss_password"],
+    }
+    return params, extra_env
+
+
+def _append_influencer_pool_browser_params(
+    *,
+    params: list[str],
+    skill_env: dict[str, str],
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+) -> list[str]:
+    explicit_provider = _optional_env_value(skill_env, "BROWSER_PROVIDER_NAME")
+    explicit_profile_id = _optional_env_value(skill_env, "BROWSER_PROFILE_ID")
+    explicit_workspace_id = _optional_env_value(skill_env, "BROWSER_WORKSPACE_ID")
+    explicit_profile_ref = requested_profile_ref or fallback_profile_ref
+
+    if explicit_provider and explicit_profile_id and explicit_workspace_id:
+        if explicit_profile_ref:
+            params.append(f"profile_ref={explicit_profile_ref}")
+        params.extend(
+            [
+                f"browser_provider_name={explicit_provider}",
+                f"browser_profile_id={explicit_profile_id}",
+                f"browser_workspace_id={explicit_workspace_id}",
+            ]
+        )
+        return params
+
+    try:
+        browser_target = _resolve_browser_target(
+            python_bin=python_bin,
+            install_dir=install_dir,
+            requested_profile_ref=requested_profile_ref,
+            fallback_profile_ref=fallback_profile_ref,
+        )
+    except Exception as exc:
+        print(
+            "[skill-step] Browser target resolution skipped for influencer-pool-sync; "
+            f"HTTP login fallback remains available. detail={exc}"
+        )
+        return params
+
+    params.append(f"profile_ref={browser_target['profile_ref']}")
+    provider = str(browser_target.get("provider", "") or "").strip()
+    profile_id = str(browser_target.get("profile_id", "") or "").strip()
+    workspace_id = str(browser_target.get("workspace_id", "") or "").strip()
+    if provider:
+        params.append(f"browser_provider_name={provider}")
+    if profile_id:
+        params.append(f"browser_profile_id={profile_id}")
+    if workspace_id:
+        params.append(f"browser_workspace_id={workspace_id}")
+    return params
+
+
 def _append_phase1_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
     db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
     db_path = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_PATH")
@@ -875,6 +1004,41 @@ def _build_parser() -> argparse.ArgumentParser:
     keyword_search_result_parser = subparsers.add_parser("keyword-search-result")
     keyword_search_result_parser.add_argument("--run-mode", default="canary")
     keyword_search_result_parser.add_argument("--request-id", required=True)
+
+    influencer_pool_sync_parser = subparsers.add_parser("influencer-pool-sync")
+    influencer_pool_sync_parser.add_argument("--run-mode", default="canary")
+    influencer_pool_sync_parser.add_argument("--max-source-rows", type=int, default=0)
+    influencer_pool_sync_parser.add_argument("--max-author-pages", type=int, default=0)
+    influencer_pool_sync_parser.add_argument("--max-author-detail-jobs-per-source-row", type=int, default=0)
+    influencer_pool_sync_parser.add_argument("--queue-mode", default="inline")
+    influencer_pool_sync_parser.add_argument("--worker-kinds", default="")
+    influencer_pool_sync_parser.add_argument("--worker-max-iterations", type=int, default=1)
+    influencer_pool_sync_parser.add_argument("--worker-stop-when-idle", action="store_true")
+    influencer_pool_sync_parser.add_argument("--include-contact", action="store_true")
+    influencer_pool_sync_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
+    influencer_pool_sync_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
+
+    influencer_pool_sync_submit_parser = subparsers.add_parser("influencer-pool-sync-submit")
+    influencer_pool_sync_submit_parser.add_argument("--run-mode", default="canary")
+    influencer_pool_sync_submit_parser.add_argument("--max-source-rows", type=int, default=0)
+    influencer_pool_sync_submit_parser.add_argument("--max-author-pages", type=int, default=0)
+    influencer_pool_sync_submit_parser.add_argument("--max-author-detail-jobs-per-source-row", type=int, default=0)
+    influencer_pool_sync_submit_parser.add_argument("--queue-mode", default="inline")
+    influencer_pool_sync_submit_parser.add_argument("--worker-kinds", default="")
+    influencer_pool_sync_submit_parser.add_argument("--worker-max-iterations", type=int, default=1)
+    influencer_pool_sync_submit_parser.add_argument("--worker-stop-when-idle", action="store_true")
+    influencer_pool_sync_submit_parser.add_argument("--include-contact", action="store_true")
+    influencer_pool_sync_submit_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
+    influencer_pool_sync_submit_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
+
+    influencer_pool_worker_parser = subparsers.add_parser("influencer-pool-worker")
+    influencer_pool_worker_parser.add_argument("--run-mode", default="canary")
+    influencer_pool_worker_parser.add_argument("--worker-kinds", default="product,author,finalizer")
+    influencer_pool_worker_parser.add_argument("--worker-max-iterations", type=int, default=1)
+    influencer_pool_worker_parser.add_argument("--worker-stop-when-idle", action="store_true")
+    influencer_pool_worker_parser.add_argument("--include-contact", action="store_true")
+    influencer_pool_worker_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
+    influencer_pool_worker_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
 
     keyword_parser = subparsers.add_parser("keyword-candidates")
     keyword_parser.add_argument("--run-mode", default="draft")
@@ -1306,6 +1470,93 @@ def main(argv: list[str] | None = None) -> int:
         if submit_status != 0:
             return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
+    elif args.command == "influencer-pool-sync-submit":
+        task_name = "sync_tk_influencer_pool"
+        prefix = "influencer-pool-sync-submit-step"
+        submit_params, influencer_pool_env = _influencer_pool_sync_submit_params(
+            skill_env=skill_env,
+            include_submit_control_action=True,
+            max_source_rows=max(args.max_source_rows, 0),
+            max_author_pages=max(args.max_author_pages, 0),
+            max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
+            queue_mode=str(args.queue_mode or "inline"),
+            worker_kinds=str(args.worker_kinds or ""),
+            worker_max_iterations=max(args.worker_max_iterations, 0),
+            worker_stop_when_idle=bool(args.worker_stop_when_idle),
+            include_contact=bool(args.include_contact),
+            request_delay_min_seconds=float(args.request_delay_min_seconds),
+            request_delay_max_seconds=float(args.request_delay_max_seconds),
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name=task_name,
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix=prefix,
+            extra_env={**extra_env, **influencer_pool_env},
+            accepted_message="Influencer pool sync submit placeholder accepted. Use influencer-pool-sync to execute immediately.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+        return _emit_final_result(submit_payload)
+    elif args.command == "influencer-pool-sync":
+        task_name = "sync_tk_influencer_pool"
+        prefix = "influencer-pool-sync-step"
+        params, influencer_pool_env = _influencer_pool_sync_submit_params(
+            skill_env=skill_env,
+            include_submit_control_action=False,
+            max_source_rows=max(args.max_source_rows, 0),
+            max_author_pages=max(args.max_author_pages, 0),
+            max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
+            queue_mode=str(args.queue_mode or "inline"),
+            worker_kinds=str(args.worker_kinds or ""),
+            worker_max_iterations=max(args.worker_max_iterations, 0),
+            worker_stop_when_idle=bool(args.worker_stop_when_idle),
+            include_contact=bool(args.include_contact),
+            request_delay_min_seconds=float(args.request_delay_min_seconds),
+            request_delay_max_seconds=float(args.request_delay_max_seconds),
+        )
+        cli_status, cli_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name=task_name,
+            run_mode=args.run_mode,
+            params=params,
+            stdout_prefix=prefix,
+            extra_env={**extra_env, **influencer_pool_env},
+        )
+        if cli_status != 0:
+            return _emit_final_result(cli_payload or {"status": "failed", "error": "run failed"})
+        return _emit_final_result(cli_payload)
+    elif args.command == "influencer-pool-worker":
+        task_name = "sync_tk_influencer_pool"
+        prefix = "influencer-pool-worker-step"
+        params, influencer_pool_env = _influencer_pool_sync_submit_params(
+            skill_env=skill_env,
+            include_submit_control_action=False,
+            queue_mode="worker",
+            worker_kinds=str(args.worker_kinds or "product,author,finalizer"),
+            worker_max_iterations=max(args.worker_max_iterations, 0),
+            worker_stop_when_idle=bool(args.worker_stop_when_idle),
+            include_contact=bool(args.include_contact),
+            request_delay_min_seconds=float(args.request_delay_min_seconds),
+            request_delay_max_seconds=float(args.request_delay_max_seconds),
+        )
+        cli_status, cli_payload = _run_cli_task_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            cli_bin=cli_bin,
+            task_name=task_name,
+            run_mode=args.run_mode,
+            params=params,
+            stdout_prefix=prefix,
+            extra_env={**extra_env, **influencer_pool_env},
+        )
+        if cli_status != 0:
+            return _emit_final_result(cli_payload or {"status": "failed", "error": "run failed"})
+        return _emit_final_result(cli_payload)
     elif args.command == "keyword-candidates":
         task_name = "fastmoss_keyword_candidate_discovery"
         prefix = "keyword-candidates-step"

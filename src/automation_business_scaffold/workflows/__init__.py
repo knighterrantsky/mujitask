@@ -5,6 +5,7 @@ from .feishu_clear_row_by_url_v1 import build_feishu_clear_row_by_url_workflow
 from .feishu_pending_rows_scan_v1 import build_feishu_pending_rows_scan_workflow
 from .refresh_current_competitor_table_v1 import build_refresh_current_competitor_table_workflow
 from .search_keyword_competitor_products_v1 import build_search_keyword_competitor_products_workflow
+from .sync_tk_influencer_pool_v1 import build_sync_tk_influencer_pool_workflow
 from .feishu_seed_row_insert_v1 import build_feishu_seed_row_insert_workflow
 from .feishu_single_row_update_v1 import build_feishu_single_row_update_workflow
 from .source_to_target_publish_v1 import build_source_to_target_publish_workflow
@@ -20,6 +21,7 @@ __all__ = [
     "build_feishu_pending_rows_scan_workflow",
     "build_refresh_current_competitor_table_workflow",
     "build_search_keyword_competitor_products_workflow",
+    "build_sync_tk_influencer_pool_workflow",
     "build_feishu_seed_row_insert_workflow",
     "build_feishu_single_row_update_workflow",
     "build_source_to_target_publish_workflow",
