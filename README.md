@@ -114,17 +114,18 @@ uvicorn automation_business_scaffold.agent:app --app-dir src --host 127.0.0.1 --
 curl http://127.0.0.1:8110/tasks
 ```
 
-执行 demo workflow：
+提交当前竞品表刷新 workflow：
 
 ```bash
 curl -X POST http://127.0.0.1:8110/runs \
   -H 'Content-Type: application/json' \
   -d '{
-    "task_name": "source_to_target_publish_demo",
+    "task_name": "refresh_current_competitor_table",
     "params": {
-      "title": "Demo Vintage Chair",
-      "price": 128,
-      "run_mode": "draft"
+      "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+      "access_token_env": "FEISHU_ACCESS_TOKEN",
+      "profile_ref": "roxy-tiktok",
+      "run_mode": "canary"
     },
     "wait": true
   }'
@@ -179,14 +180,6 @@ automation-business-scaffold-run run \
 - `feishu_pending_rows_scan` 只负责识别待更新行，不会抓取详情也不会写回
 - `feishu_single_row_update` 才是当前单条记录补齐更新入口，会按缺失字段写入 TikTok 和 FastMoss 数据
 
-如果只是单条 URL 调试底层字段构建，可以继续使用：
-
-```bash
-python -m automation_business_scaffold.cli run \
-  --task tiktok_product_to_feishu \
-  --product-url 'https://www.tiktok.com/shop/pdp/1729440407432826887'
-```
-
 这个模式会像 agent 一样写入运行记录和中间数据：
 
 - `runtime/cli_runs/*.json`
@@ -213,11 +206,11 @@ python -m automation_business_scaffold.cli run \
 业务开发默认在这些区域工作：
 
 - `src/automation_business_scaffold/config.py`
-- `src/automation_business_scaffold/tasks/`
-- `src/automation_business_scaffold/workflows/`
-- `src/automation_business_scaffold/flows/`
+- `src/automation_business_scaffold/business/tasks/`
+- `src/automation_business_scaffold/business/workflows/`
+- `src/automation_business_scaffold/business/flows/`
+- `src/automation_business_scaffold/infrastructure/`
 - `src/automation_business_scaffold/models/`
-- `src/automation_business_scaffold/mappers/`
 - `src/automation_business_scaffold/validators/`
 - `docs/business/`
 - `tests/test_registry.py`
@@ -230,11 +223,6 @@ python -m automation_business_scaffold.cli run \
 - `automation_business_scaffold.agent:app`
 - `automation_business_scaffold.registry.build_task_registry()`
 
-内置 demo task：
-
-- task name: `source_to_target_publish_demo`
-- workflow builder: `build_source_to_target_publish_workflow(run_mode="draft")`
-
 当前 TikTok 业务入口：
 
 - `tiktok_product_link_cleanup`
@@ -242,7 +230,10 @@ python -m automation_business_scaffold.cli run \
 - `feishu_single_row_update`
 - `feishu_seed_row_insert`
 - `fastmoss_keyword_candidate_discovery`
-- `tiktok_product_to_feishu`
+- `refresh_current_competitor_table`
+- `search_keyword_competitor_products`
+- `sync_tk_influencer_pool`
+- `tiktok_feishu_single_sync`
 
 ## 5. 新业务怎么从这里开始
 
@@ -251,7 +242,7 @@ python -m automation_business_scaffold.cli run \
 1. 用这个仓库初始化一个新的业务仓库
 2. 替换项目名、包名、README 标题
 3. 在 `tasks/__init__.py` 中替换默认 task 列表
-4. 在 `tasks/`、`workflows/`、`mappers/`、`validators/` 内逐步替换 demo 逻辑
+4. 在 `business/tasks/`、`business/flows/`、`business/workflows/`、`infrastructure/`、`validators/` 内逐步替换业务逻辑
 5. 保留 `.platform/*`、`AGENT.MD`、`docs/framework_contract/*`
 
 注意：
@@ -293,12 +284,12 @@ python -m automation_business_scaffold.cli run \
 推荐步骤：
 
 1. 在 `models/` 补业务模型
-2. 在 `mappers/` 补字段映射
+2. 在 `infrastructure/*` 补请求、mapper、fact ingestion、对象存储等基础设施
 3. 在 `validators/` 补业务校验
-4. 在 `flows/` 补站点交互骨架或数据整形
-5. 在 `workflows/` 用 `WorkflowSpec` 描述 step
-6. 在 `tasks/` 继承 `BaseWorkflowTask`
-7. 在 `tasks/__init__.py` 把新 task 加入默认列表
+4. 在 `business/flows/` 补业务编排
+5. 在 `business/workflows/` 只保留顶层入口或真实多 step 的 `WorkflowSpec`
+6. 在 `business/tasks/` 继承 `BaseWorkflowTask`；叶子任务的单 step `WorkflowSpec` 直接放在 task 内
+7. 在 `business/tasks/__init__.py` 把新 task 加入默认列表
 
 ## 8. 如何替换 framework 依赖
 

@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
 
-from automation_business_scaffold.flows.fastmoss_product_flow import (
+from automation_business_scaffold.business.flows.fastmoss_product_flow import (
     _day_before_yesterday_date_string,
     _extract_fastmoss_price_amount_from_text,
     _extract_sales_value_from_overview_text,
@@ -86,7 +86,7 @@ $59.84
 
 def test_handle_fastmoss_blocked_context_allows_login_prompt_interaction():
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_handle_fastmoss_blocked_context"],
     )
 
@@ -111,7 +111,7 @@ def test_handle_fastmoss_blocked_context_allows_login_prompt_interaction():
 
 def test_handle_fastmoss_blocked_context_keeps_security_challenge_blocked():
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_handle_fastmoss_blocked_context"],
     )
 
@@ -304,7 +304,7 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["fetch_fastmoss_product_sales_via_browser"],
     )
 
@@ -435,7 +435,7 @@ def test_fetch_fastmoss_product_sales_via_browser_opens_detail_directly_and_scre
 
 def test_fetch_fastmoss_product_sales_via_browser_skips_login_verification_by_default(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["fetch_fastmoss_product_sales_via_browser"],
     )
 
@@ -480,7 +480,7 @@ def test_fetch_fastmoss_product_sales_via_browser_relogs_when_session_expires_mi
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["fetch_fastmoss_product_sales_via_browser"],
     )
 
@@ -597,7 +597,7 @@ def test_fetch_fastmoss_product_sales_via_browser_relogs_when_session_expires_mi
 
 def test_validate_fastmoss_login_via_browser_passes_fastmoss_blocked_handling(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["validate_fastmoss_login_via_browser"],
     )
 
@@ -640,7 +640,7 @@ def test_validate_fastmoss_login_via_browser_passes_fastmoss_blocked_handling(mo
 
 def test_extract_fastmoss_yesterday_sales_uses_date_picker_selection(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_yesterday_sales"],
     )
 
@@ -702,7 +702,7 @@ def test_extract_fastmoss_yesterday_sales_falls_back_to_day_before_when_yesterda
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_yesterday_sales"],
     )
 
@@ -763,7 +763,7 @@ def test_extract_fastmoss_yesterday_sales_returns_negative_one_when_target_date_
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_yesterday_sales"],
     )
 
@@ -816,7 +816,7 @@ def test_extract_fastmoss_yesterday_sales_returns_negative_one_when_target_date_
 
 def test_select_fastmoss_overview_date_prefers_precise_locator_click(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_select_fastmoss_overview_date"],
     )
 
@@ -880,7 +880,7 @@ def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_clic
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_click_fastmoss_precise_target"],
     )
 
@@ -902,7 +902,7 @@ def test_click_fastmoss_precise_target_falls_back_to_page_click_when_direct_clic
 
 def test_navigate_fastmoss_datepicker_to_month_clicks_next_until_target_month_visible(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_navigate_fastmoss_datepicker_to_month"],
     )
 
@@ -991,7 +991,7 @@ def test_navigate_fastmoss_datepicker_to_month_clicks_next_until_target_month_vi
 
 def test_find_fastmoss_date_cell_skips_disabled_candidates():
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_find_fastmoss_date_cell"],
     )
 
@@ -1033,7 +1033,7 @@ def test_find_fastmoss_date_cell_skips_disabled_candidates():
 
 def test_extract_fastmoss_period_sales_waits_for_overview_refresh(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_period_sales"],
     )
 
@@ -1095,7 +1095,7 @@ def test_extract_fastmoss_period_sales_allows_steady_metric_after_range_selectio
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_period_sales"],
     )
 
@@ -1161,7 +1161,7 @@ def test_extract_fastmoss_period_sales_allows_steady_metric_when_overview_is_alr
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_extract_fastmoss_period_sales"],
     )
 
@@ -1224,7 +1224,7 @@ def test_extract_fastmoss_period_sales_allows_steady_metric_when_overview_is_alr
 
 def test_wait_for_fastmoss_overview_sales_refresh_requires_metric_refresh(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_wait_for_fastmoss_overview_sales_refresh"],
     )
 
@@ -1257,7 +1257,7 @@ def test_wait_for_fastmoss_overview_sales_refresh_requires_metric_refresh(monkey
 
 def test_wait_for_fastmoss_overview_sales_refresh_waits_for_loading_to_clear(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.fastmoss_product_flow",
+        "automation_business_scaffold.business.flows.fastmoss_product_flow",
         fromlist=["_wait_for_fastmoss_overview_sales_refresh"],
     )
 

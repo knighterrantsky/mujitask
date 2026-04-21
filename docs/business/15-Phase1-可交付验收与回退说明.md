@@ -15,7 +15,7 @@
 补充说明：
 当前 Phase 1/2 运行时不是“只执行一次 CLI 命令”就结束，而是依赖 3 个常驻守护进程：
 
-- `phase1_executor_daemon`
+- `executor_daemon`
 - `browser_runloop`
 - `outbox_dispatcher`
 
@@ -58,9 +58,9 @@
 以下清单记录的是 Phase 1 当时的最小交付物，不等于当前完整系统交付物。
 
 - 控制面代码
-  - [execution_control_flow.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/src/automation_business_scaffold/flows/execution_control_flow.py:1)
-  - [sqlalchemy_execution_control_store.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/src/automation_business_scaffold/flows/sqlalchemy_execution_control_store.py:1)
-  - [executor_daemon.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/src/automation_business_scaffold/executor_daemon.py:1)
+  - `src/automation_business_scaffold/infrastructure/runtime/runtime_store.py`
+  - `src/automation_business_scaffold/business/flows/refresh_current_competitor_table_flow.py`
+  - `src/automation_business_scaffold/executor_daemon.py`
 - 数据库迁移
   - [alembic.ini](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic.ini:1)
   - [env.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic/env.py:1)
@@ -129,7 +129,7 @@ bash scripts/execution_control/run_alembic_upgrade.sh
 历史上 Phase 1 只强调过单个 `executor_daemon`。
 按当前实现，正式部署时应同时启动 3 个常驻进程：
 
-- 顶层任务推进：`phase1_executor_daemon`
+- 顶层任务推进：`executor_daemon`
 - 浏览器叶子任务消费：`browser_runloop`
 - 最终通知发送：`outbox_dispatcher`
 
@@ -179,7 +179,7 @@ bash scripts/execution_control/install_launch_agents.sh
 
 安装后会在当前用户目录生成：
 
-- `~/Library/LaunchAgents/com.happyzhao.mujitask.phase1-executor.plist`
+- `~/Library/LaunchAgents/com.happyzhao.mujitask.executor-daemon.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.browser-runloop.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.outbox-dispatcher.plist`
 
@@ -192,7 +192,7 @@ launchctl list | grep 'com.happyzhao.mujitask'
 查看单个服务详情：
 
 ```bash
-launchctl print gui/$(id -u)/com.happyzhao.mujitask.phase1-executor
+launchctl print gui/$(id -u)/com.happyzhao.mujitask.executor-daemon
 ```
 
 ### 5.6 守护进程日志路径
@@ -203,8 +203,8 @@ launchctl print gui/$(id -u)/com.happyzhao.mujitask.phase1-executor
 
 如果是 `launchd` 托管，重点看这些文件：
 
-- `phase1_executor.launchd.stdout.log`
-- `phase1_executor.launchd.stderr.log`
+- `executor_daemon.launchd.stdout.log`
+- `executor_daemon.launchd.stderr.log`
 - `browser_runloop.launchd.stdout.log`
 - `browser_runloop.launchd.stderr.log`
 - `outbox_dispatcher.launchd.stdout.log`
@@ -212,18 +212,19 @@ launchctl print gui/$(id -u)/com.happyzhao.mujitask.phase1-executor
 
 ## 6. 标准操作流
 
-推荐 Phase 1 的标准操作流固定为：
+当前标准操作流已经从“单行任务入队”升级为“顶层 workflow 入队”：
 
-1. `submit`
-2. `daemon_loop`
-3. `result`
+1. Skill 提交顶层 `task_request`
+2. `executor_daemon` 拆解确定性步骤并写入浏览器叶子任务
+3. `browser_runloop` 消费浏览器叶子任务
+4. `executor_daemon` 汇总父任务并写入 outbox
+5. `outbox_dispatcher` 发送最终通知
 
-Skill 侧可以直接用组合命令：
+Skill 侧示例：
 
 ```bash
 python3 skills/mujitask-tiktok-feishu-sync/run_skill_step.py \
-  single-row-update-submit-then-daemon-loop \
-  --record-id recXXXX \
+  refresh-current-competitor-table \
   --profile-ref main
 ```
 
@@ -231,9 +232,8 @@ CLI 直连模式也可以分开执行：
 
 ```bash
 automation-business-scaffold-run run \
-  --task feishu_single_row_update \
+  --task refresh_current_competitor_table \
   --param control_action=submit \
-  --param record_id=recXXXX \
   --param profile_ref=main
 ```
 
@@ -243,7 +243,7 @@ automation-business-scaffold-executor --stop-when-idle --max-idle-cycles 1
 
 ```bash
 automation-business-scaffold-run run \
-  --task feishu_single_row_update \
+  --task refresh_current_competitor_table \
   --param control_action=result \
   --param request_id=<submit 返回的 request_id>
 ```
@@ -285,7 +285,7 @@ automation-business-scaffold-run run \
 如果当前环境使用 `launchd` 托管，停服务建议执行：
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.phase1-executor.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.executor-daemon.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.browser-runloop.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.outbox-dispatcher.plist
 ```

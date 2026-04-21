@@ -139,7 +139,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 当前 skill 与后台运行时的关系如下：
 
 1. skill 提交顶层 `task_request`
-2. `phase1_executor_daemon` 推进顶层阶段
+2. `executor_daemon` 推进顶层阶段
 3. `browser_runloop` 消费浏览器叶子任务
 4. `outbox_dispatcher` 发送最终通知
 

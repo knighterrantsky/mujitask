@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from automation_business_scaffold.flows import (
+from automation_business_scaffold.business.flows import (
+    TikTokRateLimitError,
     build_feishu_bitable_record,
     download_tiktok_product_main_image,
     extract_tiktok_product_from_html,
@@ -15,6 +16,7 @@ from automation_business_scaffold.flows import (
     infer_tiktok_product_holiday,
     normalize_tiktok_product_url,
 )
+from automation_business_scaffold.infrastructure.rate_limit.request_pacer import RequestPacer, RequestPacerConfig
 from automation_business_scaffold.validators import validate_tiktok_product_url
 
 
@@ -102,6 +104,29 @@ class _FakeImageSession:
 
     def close(self) -> None:
         return None
+
+
+class _FakeProductPageResponse:
+    def __init__(self, *, status_code: int = 200, content: bytes | None = None) -> None:
+        self.status_code = status_code
+        self.url = "https://www.tiktok.com/shop/pdp/1729732615040962895"
+        self.headers = {"Content-Type": "text/html; charset=utf-8"}
+        self.content = content if content is not None else SAMPLE_HTML.encode("utf-8")
+        self.text = self.content.decode("utf-8", errors="replace")
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise TikTokRateLimitError(f"HTTP {self.status_code}")
+
+
+class _FakeProductPageSession:
+    def __init__(self, response: _FakeProductPageResponse | None = None) -> None:
+        self.response = response or _FakeProductPageResponse()
+        self.requested_urls: list[str] = []
+
+    def get(self, url: str, *_args, **_kwargs) -> _FakeProductPageResponse:
+        self.requested_urls.append(url)
+        return self.response
 
 
 class _FakeLocator:
@@ -406,6 +431,38 @@ def test_extract_tiktok_product_from_html_returns_expected_fields():
     assert product.shop_url == "https://shop.tiktok.com/us/store/sample-shop/123"
 
 
+def test_fetch_tiktok_product_record_uses_request_pacer_between_http_requests():
+    sleeps: list[float] = []
+    pacer = RequestPacer(
+        RequestPacerConfig(min_delay_seconds=1.5, max_delay_seconds=1.5),
+        sleep_factory=sleeps.append,
+        monotonic_factory=lambda: 1.0,
+    )
+    session = _FakeProductPageSession()
+
+    first = __import__(
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record"],
+    ).fetch_tiktok_product_record(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895",
+        session=session,
+        request_pacer=pacer,
+    )
+    second = __import__(
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record"],
+    ).fetch_tiktok_product_record(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895",
+        session=session,
+        request_pacer=pacer,
+    )
+
+    assert first.product_id == "1729732615040962895"
+    assert second.product_id == "1729732615040962895"
+    assert sleeps == [1.5]
+    assert len(session.requested_urls) == 2
+
+
 def test_download_tiktok_product_main_image_stores_local_file(tmp_path):
     product = extract_tiktok_product_from_html(
         SAMPLE_HTML,
@@ -465,7 +522,7 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
 
@@ -513,7 +570,7 @@ def test_fetch_tiktok_product_record_via_browser_captures_main_image_and_page_sc
 
 def test_fetch_tiktok_product_record_via_browser_passes_blocked_handler(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
     captured_kwargs: dict[str, object] = {}
@@ -560,7 +617,7 @@ def test_fetch_tiktok_product_record_via_browser_passes_blocked_handler(monkeypa
 
 def test_handle_tiktok_blocked_context_dismisses_login_promo_with_escape(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_handle_tiktok_blocked_context"],
     )
     delays = iter([960, 340])
@@ -624,7 +681,7 @@ def test_handle_tiktok_blocked_context_force_continues_after_dismiss_when_produc
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_handle_tiktok_blocked_context"],
     )
     delays = iter([1010, 410])
@@ -686,7 +743,7 @@ def test_handle_tiktok_blocked_context_force_continues_after_dismiss_when_produc
 
 def test_is_tiktok_login_promo_blocker_matches_early_body_probe():
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_is_tiktok_login_promo_blocker"],
     )
     event = type(
@@ -714,7 +771,7 @@ def test_is_tiktok_login_promo_blocker_matches_early_body_probe():
 
 def test_is_tiktok_login_promo_blocker_uses_dom_summary_dialog_text():
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_is_tiktok_login_promo_blocker"],
     )
     event = type(
@@ -743,7 +800,7 @@ def test_is_tiktok_login_promo_blocker_uses_dom_summary_dialog_text():
 
 def test_handle_tiktok_blocked_context_force_continues_when_promo_is_non_blocking(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_handle_tiktok_blocked_context"],
     )
     delays = iter([930, 330, 220, 360])
@@ -812,7 +869,7 @@ def test_handle_tiktok_blocked_context_force_continues_when_promo_is_non_blockin
 
 def test_handle_tiktok_blocked_context_dismisses_early_body_probe_with_blank_click(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_handle_tiktok_blocked_context"],
     )
     delays = iter([880, 310, 210, 350])
@@ -890,7 +947,7 @@ def test_fetch_tiktok_product_record_via_browser_falls_back_to_html_data_and_dow
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
 
@@ -943,7 +1000,7 @@ def test_fetch_tiktok_product_record_via_browser_exits_early_when_router_data_an
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
     page = _FakeRouterCaptureReadyPage()
@@ -995,7 +1052,7 @@ def test_fetch_tiktok_product_record_via_browser_falls_back_to_matching_dom_imag
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
 
@@ -1034,7 +1091,7 @@ def test_fetch_tiktok_product_record_via_browser_falls_back_to_matching_dom_imag
 
 def test_build_record_from_browser_state_prefers_router_main_image_url_over_generic_dom_image():
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_build_record_from_browser_state"],
     )
 
@@ -1060,7 +1117,7 @@ def test_fetch_tiktok_product_record_via_browser_waits_for_login_toast_to_clear(
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
     page = _FakeLoginToastPage([True, True, False, False])
@@ -1095,7 +1152,7 @@ def test_fetch_tiktok_product_record_via_browser_waits_for_login_toast_to_clear(
 
 def test_wait_for_login_toast_to_settle_raises_when_toast_never_disappears():
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_wait_for_login_toast_to_settle"],
     )
     page = _FakeLoginToastPage([True, True, True, True, True])
@@ -1114,7 +1171,7 @@ def test_fetch_tiktok_product_record_via_browser_raises_security_check_error_whe
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
 
@@ -1148,7 +1205,7 @@ def test_fetch_tiktok_product_record_via_browser_raises_security_check_error_whe
 
 def test_detect_browser_security_check_ignores_html_only_captcha_loader_on_product_page(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_detect_browser_security_check"],
     )
     monkeypatch.setattr(
@@ -1173,7 +1230,7 @@ def test_detect_browser_security_check_ignores_html_only_captcha_loader_on_produ
 
 def test_detect_browser_security_check_uses_html_fallback_when_page_is_not_product_like(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_detect_browser_security_check"],
     )
     monkeypatch.setattr(module, "_safe_body_text", lambda _page: "")
@@ -1195,7 +1252,7 @@ def test_fetch_tiktok_product_record_via_browser_continues_when_security_check_c
     monkeypatch,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["fetch_tiktok_product_record_via_browser"],
     )
 
@@ -1233,7 +1290,7 @@ def test_fetch_tiktok_product_record_via_browser_continues_when_security_check_c
 
 def test_wait_for_product_page_ready_preserves_timeout_when_capture_is_never_ready(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_product_flow",
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
         fromlist=["_wait_for_product_page_ready"],
     )
 

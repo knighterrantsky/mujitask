@@ -21,7 +21,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from automation_business_scaffold.extend_script.feishu_api import (  # noqa: E402
+from automation_business_scaffold.infrastructure.feishu.api import (  # noqa: E402
     FeishuBitableClient,
     parse_table_url,
 )

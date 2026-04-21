@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from automation_framework.core import TaskRegistry
 
-from automation_business_scaffold.tasks import DEFAULT_TASKS
+from automation_business_scaffold.business.tasks import DEFAULT_TASKS
 
 
 def build_task_registry() -> TaskRegistry:

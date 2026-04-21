@@ -229,23 +229,13 @@ runs/<run_id>/artifacts/execute_controlled_single_row_update/state.json
 3. 把本地对象目录上传到 MinIO
 4. 用 `artifact_object` 保存正式对象索引
 
-## 11. 当前 Skill 已接入的命令
+## 11. 当前 Skill 接入口径
 
-当前 `skills/mujitask-tiktok-feishu-sync/run_skill_step.py` 已支持这些命令：
+本文件记录的是早期 Pilot。当前 `skills/mujitask-tiktok-feishu-sync/run_skill_step.py` 已经收敛为：
 
-- `single-row-update`
-- `single-row-update-submit`
-- `single-row-update-status`
-- `single-row-update-result`
-- `single-row-update-daemon-once`
-- `single-row-update-daemon-loop`
-- `single-row-update-submit-then-daemon-loop`
+- `single-row-update`：只作为手动直跑排障入口
+- `refresh-current-competitor-table` / `refresh-current-competitor-table-submit`：提交顶层刷新 workflow
+- `keyword-search` / `keyword-search-submit`：提交顶层关键词搜索 workflow
+- `influencer-pool-sync` / `influencer-pool-sync-submit`：达人池同步入口
 
-其中：
-
-- `single-row-update` 对应同步兼容执行
-- `single-row-update-submit` 对应只入队
-- `single-row-update-status` / `single-row-update-result` 对应查询
-- `single-row-update-daemon-once` 对应执行器单次轮询
-- `single-row-update-daemon-loop` 对应执行器循环轮询
-- `single-row-update-submit-then-daemon-loop` 对应“先提交，再排空 daemon，再读取最终结果”
+旧的单行异步控制命令已经移除，正式异步路径统一由顶层 workflow 提交后交给 `executor_daemon` 推进。

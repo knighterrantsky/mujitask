@@ -713,7 +713,7 @@ PY
   local required_runtime_files=(
     "$install_dir/scripts/execution_control/install_launch_agents.sh"
     "$install_dir/scripts/execution_control/run_launchd_agent.sh"
-    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.phase1-executor.plist.template"
+    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.executor-daemon.plist.template"
     "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template"
     "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template"
     "$executor_env_path"
@@ -723,10 +723,10 @@ PY
     [[ -f "$file_name" ]] || fail "Smoke check failed: $file_name is missing."
   done
 
-  if launchctl list | grep -q 'com.happyzhao.mujitask.phase1-executor'; then
+  if launchctl list | grep -q 'com.happyzhao.mujitask.executor-daemon'; then
     :
   else
-    fail "Smoke check failed: launchd service com.happyzhao.mujitask.phase1-executor is not loaded."
+    fail "Smoke check failed: launchd service com.happyzhao.mujitask.executor-daemon is not loaded."
   fi
   if launchctl list | grep -q 'com.happyzhao.mujitask.browser-runloop'; then
     :

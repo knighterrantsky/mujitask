@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any
 
-from automation_business_scaffold.flows.refresh_current_competitor_table_flow import (
+from automation_business_scaffold.business.flows.refresh_current_competitor_table_flow import (
     dispatch_phase1_outbox_once,
     run_phase1_outbox_dispatcher,
 )

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from automation_business_scaffold.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
+from automation_business_scaffold.business.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
 
 
 def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
+        "automation_business_scaffold.business.flows.tiktok_feishu_sync_flow",
         fromlist=["run_tiktok_product_link_cleanup"],
     )
 
@@ -94,7 +94,7 @@ def test_run_tiktok_product_link_cleanup_draft_previews_duplicate_deletions(monk
 
 def test_run_tiktok_product_link_cleanup_canary_deletes_duplicates_and_updates_only_url(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.tiktok_feishu_sync_flow",
+        "automation_business_scaffold.business.flows.tiktok_feishu_sync_flow",
         fromlist=["run_tiktok_product_link_cleanup"],
     )
 

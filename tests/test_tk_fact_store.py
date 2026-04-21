@@ -4,13 +4,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
-from automation_business_scaffold.flows.influencer_pool_support import persist_influencer_fact_bundle
-from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
-from automation_business_scaffold.flows.tk_fact_store import TKFactStore, extract_fact_payloads
+from automation_business_scaffold.business.flows.influencer_pool_support import persist_influencer_fact_bundle
+from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore, extract_fact_payloads
 
 
 def test_tk_fact_schema_replaces_legacy_entity_tables(tmp_path):
-    store = Phase1RuntimeStore(db_path=tmp_path / "tk-facts.sqlite3")
+    store = RuntimeStore(db_path=tmp_path / "tk-facts.sqlite3")
     fact_store = TKFactStore(runtime_store=store)
 
     table_names = fact_store.table_names()
@@ -47,7 +48,7 @@ def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_en
 
 
 def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(tmp_path):
-    store = Phase1RuntimeStore(db_path=tmp_path / "tk-facts-upsert.sqlite3")
+    store = RuntimeStore(db_path=tmp_path / "tk-facts-upsert.sqlite3")
     fact_store = TKFactStore(runtime_store=store)
 
     product_a = fact_store.upsert_product(product_id="1729440407432826887", title="Rose Bear")
@@ -96,7 +97,7 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(tmp_path):
 
 
 def test_persist_influencer_fact_bundle_writes_creator_product_shop_and_media(tmp_path):
-    store = Phase1RuntimeStore(db_path=tmp_path / "tk-influencer-facts.sqlite3")
+    store = RuntimeStore(db_path=tmp_path / "tk-influencer-facts.sqlite3")
     execution = type(
         "Execution",
         (),
@@ -132,6 +133,79 @@ def test_persist_influencer_fact_bundle_writes_creator_product_shop_and_media(tm
         creator_id="creator-1",
         product_id="1729440407432826887",
     )
+    assert payload["fact_media_assets"]
+    assert payload["raw_api_responses"]
+
+
+def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(tmp_path):
+    store = RuntimeStore(db_path=tmp_path / "tk-ingestion.sqlite3")
+    service = TKFactIngestionService(runtime_store=store)
+
+    payload = service.ingest_api_response(
+        source_platform="fastmoss",
+        source_endpoint="goods.detail.bundle",
+        request_params={"product_id": "1729440407432826887"},
+        response_payload={"ok": True},
+        products=[
+            {
+                "product_id": "1729440407432826887",
+                "title": "Rose Bear",
+                "shop_name": "Holiday Shop",
+            }
+        ],
+        creators=[
+            {
+                "creator_id": "creator-1",
+                "uid": "7094679250578015274",
+                "nickname": "Holiday Creator",
+            }
+        ],
+        videos=[
+            {
+                "video_id": "7623147954093690143",
+                "creator_id": "creator-1",
+                "product_id": "1729440407432826887",
+                "title": "Gift video",
+            }
+        ],
+        media_assets=[
+            {
+                "entity_type": "video",
+                "entity_external_id": "video:7623147954093690143",
+                "media_role": "video_cover",
+                "source_url": "https://example.com/video-cover.png",
+                "source_platform": "fastmoss",
+            }
+        ],
+        relations={
+            "creator_products": [
+                {
+                    "creator_id": "creator-1",
+                    "product_id": "1729440407432826887",
+                    "sold_count": 99,
+                }
+            ],
+            "shop_creators": [
+                {
+                    "shop_name": "Holiday Shop",
+                    "creator_id": "creator-1",
+                }
+            ],
+        },
+    )
+    fact_store = TKFactStore(runtime_store=store)
+
+    assert any(entity.get("product_id") == "1729440407432826887" for entity in payload["fact_entities"])
+    assert any(entity.get("creator_key") == "creator_id:creator-1" for entity in payload["fact_entities"])
+    assert any(entity.get("video_key") == "video:7623147954093690143" for entity in payload["fact_entities"])
+    assert any(
+        relation.get("product_id") == "1729440407432826887"
+        and relation.get("shop_key") == "shop_name:Holiday Shop"
+        for relation in payload["fact_relations"]
+    )
+    assert any(relation.get("sold_count") == 99 for relation in payload["fact_relations"])
+    assert any(relation.get("video_key") == "video:7623147954093690143" for relation in payload["fact_relations"])
+    assert fact_store.creator_has_product(creator_id="creator-1", product_id="1729440407432826887")
     assert payload["fact_media_assets"]
     assert payload["raw_api_responses"]
 
