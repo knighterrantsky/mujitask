@@ -27,6 +27,41 @@ def test_search_keyword_competitor_products_workflow_builder_uses_expected_workf
 
     assert workflow.workflow_id == "search_keyword_competitor_products_v1"
     assert workflow.run_mode == "draft"
+    assert [step.step_id for step in workflow.steps] == [
+        "submit_keyword_request",
+        "enqueue_keyword_discovery",
+        "run_keyword_discovery_browser",
+        "process_keyword_candidates",
+        "run_keyword_detail_updates",
+        "finalize_keyword_summary",
+        "dispatch_keyword_outbox",
+        "load_keyword_result",
+    ]
+
+
+def test_refresh_current_competitor_table_workflow_builder_splits_business_steps():
+    task = RefreshCurrentCompetitorTableTask()
+
+    workflow = task.build_workflow({})
+
+    assert workflow.workflow_id == "refresh_current_competitor_table_v1"
+    assert workflow.run_mode == "draft"
+    assert [step.step_id for step in workflow.steps] == [
+        "submit_refresh_request",
+        "plan_refresh_work",
+        "run_refresh_browser_updates",
+        "finalize_refresh_summary",
+        "dispatch_refresh_outbox",
+        "load_refresh_result",
+    ]
+
+
+def test_refresh_current_competitor_table_control_action_keeps_single_action_workflow():
+    task = RefreshCurrentCompetitorTableTask()
+
+    workflow = task.build_workflow({"control_action": "submit"})
+
+    assert [step.step_id for step in workflow.steps] == ["orchestrate_refresh_current_competitor_table"]
 
 
 def test_cli_runner_lists_registered_tasks():
