@@ -15,8 +15,7 @@ from automation_business_scaffold.extend_script.feishu_api import (
     FeishuBitableClient,
     parse_table_url,
 )
-from automation_business_scaffold.flows.entity_service import build_binding_target_space, build_snapshot_diff
-from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
+from automation_business_scaffold.flows.tk_fact_store import TKFactStore
 
 
 FEISHU_FIELD_TYPE_TEXT = 1
@@ -259,7 +258,6 @@ def prepare_remote_attachment_field(
 def build_influencer_record_index(
     records: Sequence[Mapping[str, Any]] | None = None,
     *,
-    snapshots: Sequence[Mapping[str, Any]] | None = None,
     influencer_id_field_name: str = DEFAULT_INFLUENCER_ID_FIELD_NAME,
 ) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
@@ -269,15 +267,6 @@ def build_influencer_record_index(
             raw_record,
             influencer_id_field_name=influencer_id_field_name,
         )
-        if not state:
-            continue
-        influencer_id = str(state.get("influencer_id", "") or "").strip()
-        if not influencer_id:
-            continue
-        index[influencer_id] = merge_influencer_facts(index.get(influencer_id), state)
-
-    for raw_snapshot in snapshots or []:
-        state = _normalize_influencer_state_from_snapshot(raw_snapshot)
         if not state:
             continue
         influencer_id = str(state.get("influencer_id", "") or "").strip()
@@ -301,9 +290,7 @@ def merge_influencer_facts(
         "influencer_id",
         "record_id",
         "target_record_id",
-        "entity_id",
         "table_url",
-        "target_space",
         "source_key",
     ):
         value = str(incoming.get(key, "") or "").strip()
@@ -484,11 +471,12 @@ def build_influencer_snapshot_facts(influencer_state: Mapping[str, Any] | None) 
         return {}
     return {
         "influencer_id": str(normalized.get("influencer_id", "") or "").strip(),
+        "uid": str(normalized.get("uid", "") or "").strip(),
+        "unique_id": str(normalized.get("unique_id", "") or "").strip(),
+        "nickname": str(normalized.get("nickname", "") or "").strip(),
         "record_id": str(normalized.get("record_id", "") or "").strip(),
         "target_record_id": str(normalized.get("target_record_id", "") or "").strip(),
-        "entity_id": str(normalized.get("entity_id", "") or "").strip(),
         "table_url": str(normalized.get("table_url", "") or "").strip(),
-        "target_space": str(normalized.get("target_space", "") or "").strip(),
         "source_key": str(normalized.get("source_key", "") or "").strip(),
         "source_product_ids": list(normalized.get("source_product_ids") or []),
         "source_product_sales_by_id": dict(normalized.get("source_product_sales_by_id") or {}),
@@ -509,9 +497,9 @@ def build_influencer_snapshot_facts(influencer_state: Mapping[str, Any] | None) 
     }
 
 
-def persist_influencer_entity_snapshot(
+def persist_influencer_fact_bundle(
     *,
-    store: Phase1RuntimeStore,
+    store: Any,
     execution: Any,
     influencer_state: Mapping[str, Any],
     table_url: str,
@@ -523,64 +511,147 @@ def persist_influencer_entity_snapshot(
     if not influencer_id:
         return {}
 
-    canonical_key = f"tiktok_influencer:{influencer_id}"
-    entity = store.get_or_create_entity(
-        entity_type="influencer",
-        canonical_key=canonical_key,
-    )
-
-    table_space = build_binding_target_space(table_url)
-    binding = None
-    effective_source_key = str(source_key or normalized_state.get("source_key", "") or influencer_id).strip()
-    if target_record_id and table_space:
-        binding = store.upsert_external_binding(
-            entity_id=entity.entity_id,
-            target_type="feishu_record",
-            target_space=table_space,
-            target_id=target_record_id,
-            source_key=effective_source_key,
-            metadata={
-                "table_url": table_url,
-                "influencer_id": influencer_id,
-            },
-        )
-
-    collected_at = time.time()
+    fact_store = TKFactStore(runtime_store=store)
     facts = build_influencer_snapshot_facts(
-        {
-            **normalized_state,
-            "target_record_id": target_record_id,
-            "table_url": table_url,
-            "target_space": table_space,
-            "entity_id": entity.entity_id,
-            "source_key": effective_source_key,
-        }
+        {**normalized_state, "target_record_id": target_record_id, "table_url": table_url}
     )
-    baseline_snapshot = store.load_latest_entity_snapshot(entity_id=entity.entity_id)
-    baseline_snapshot_id = ""
-    diff: dict[str, Any] = {}
-    if baseline_snapshot is not None:
-        baseline_snapshot_id = baseline_snapshot.snapshot_id
-        diff = build_snapshot_diff(baseline_snapshot.facts, facts)
-
-    snapshot = store.create_entity_snapshot(
-        entity_id=entity.entity_id,
-        snapshot_date=_build_snapshot_date(normalized_state, collected_at=collected_at),
-        collected_at=collected_at,
+    creator = fact_store.upsert_creator(
+        creator_id=influencer_id,
+        uid=str(normalized_state.get("uid", "") or ""),
+        unique_id=str(normalized_state.get("unique_id", "") or influencer_id),
+        nickname=str(normalized_state.get("nickname", "") or ""),
+        source_platform="fastmoss",
         facts=facts,
-        baseline_snapshot_id=baseline_snapshot_id,
-        diff=diff,
+    )
+    creator_key = str(creator.get("creator_key") or "")
+    fact_entities: list[dict[str, Any]] = []
+    fact_relations: list[dict[str, Any]] = []
+    fact_media_assets: list[dict[str, Any]] = []
+    raw_api_responses: list[dict[str, Any]] = []
+    if creator:
+        fact_entities.append(creator)
+
+    avatar_asset = fact_store.upsert_media_asset(
+        source_url=_first_non_empty(normalized_state.get("avatar")),
+        source_platform="fastmoss",
+        metadata={"media_role": "creator_avatar"},
+    )
+    if avatar_asset:
+        fact_media_assets.append(avatar_asset)
+        avatar_link = fact_store.link_media_asset(
+            entity_type="creator",
+            entity_external_id=creator_key,
+            asset_id=str(avatar_asset.get("asset_id") or ""),
+            media_role="creator_avatar",
+            metadata={"influencer_id": influencer_id},
+        )
+        if avatar_link:
+            fact_media_assets.append(avatar_link)
+
+    product_ids = [str(value or "").strip() for value in normalized_state.get("source_product_ids") or []]
+    sales_by_product = dict(normalized_state.get("source_product_sales_by_id") or {})
+    image_refs_by_product = dict(normalized_state.get("source_product_image_refs_by_id") or {})
+    holiday_names = list(normalized_state.get("holiday_names") or [])
+    primary_holiday = str(holiday_names[0] if holiday_names else "")
+    for product_id in product_ids:
+        if not product_id:
+            continue
+        product = fact_store.upsert_product(
+            product_id=product_id,
+            holiday=primary_holiday,
+            source_platform="fastmoss",
+            facts={"source": "influencer_pool", "influencer_id": influencer_id},
+        )
+        if product:
+            fact_entities.append(product)
+        relation = fact_store.upsert_creator_product_relation(
+            creator_key=creator_key,
+            creator_id=influencer_id,
+            product_id=product_id,
+            source_record_id=str(source_key or ""),
+            target_record_id=target_record_id,
+            holiday_name=primary_holiday,
+            sold_count=sales_by_product.get(product_id, 0),
+            source_platform="fastmoss",
+            metadata={"table_url": table_url},
+        )
+        if relation:
+            fact_relations.append(relation)
+        for image_ref in _normalize_attachment_items(image_refs_by_product.get(product_id)):
+            if not isinstance(image_ref, Mapping):
+                continue
+            asset = fact_store.upsert_media_asset(
+                source_url=_first_non_empty(
+                    image_ref.get("tmp_url"),
+                    image_ref.get("url"),
+                    image_ref.get("link"),
+                    image_ref.get("download_url"),
+                ),
+                file_token=_first_non_empty(image_ref.get("file_token")),
+                local_path=_first_non_empty(image_ref.get("path"), image_ref.get("local_path")),
+                source_platform="feishu",
+                metadata={"media_role": "source_product_image"},
+            )
+            if asset:
+                fact_media_assets.append(asset)
+                link = fact_store.link_media_asset(
+                    entity_type="product",
+                    entity_external_id=product_id,
+                    asset_id=str(asset.get("asset_id") or ""),
+                    media_role="source_product_image",
+                    metadata={"influencer_id": influencer_id},
+                )
+                if link:
+                    fact_media_assets.append(link)
+
+    for shop_name in normalized_state.get("cooperation_shop_names") or []:
+        shop_name = str(shop_name or "").strip()
+        if not shop_name:
+            continue
+        shop = fact_store.upsert_shop(
+            shop_name=shop_name,
+            source_platform="fastmoss",
+            facts={"source": "influencer_pool", "influencer_id": influencer_id},
+        )
+        if not shop:
+            continue
+        fact_entities.append(shop)
+        relation = fact_store.upsert_shop_creator_relation(
+            shop_key=str(shop.get("shop_key") or ""),
+            creator_key=creator_key,
+            shop_name=shop_name,
+            creator_id=influencer_id,
+            source_platform="fastmoss",
+            metadata={"table_url": table_url},
+        )
+        if relation:
+            fact_relations.append(relation)
+
+    raw = fact_store.record_raw_api_response(
+        source_platform="fastmoss",
+        source_endpoint="influencer_pool.author_result",
+        request_params={"influencer_id": influencer_id, "target_record_id": target_record_id},
+        response_payload=facts,
         request_id=str(getattr(execution, "request_id", "") or ""),
         execution_id=str(getattr(execution, "execution_id", "") or ""),
-        run_id=str(getattr(execution, "run_id", "") or f"managed-{getattr(execution, 'execution_id', '')}"),
+        run_id=str(getattr(execution, "run_id", "") or ""),
     )
+    if raw:
+        raw_api_responses.append(raw)
+        raw_link = fact_store.link_raw_entity(
+            raw_response_id=str(raw.get("raw_response_id") or ""),
+            entity_type="creator",
+            entity_external_id=creator_key,
+            link_role="primary_creator",
+        )
+        if raw_link:
+            raw_api_responses.append(raw_link)
 
-    entity_payload = entity.to_dict()
-    entity_payload["latest_snapshot_id"] = snapshot.snapshot_id
     persisted = {
-        "entity": entity_payload,
-        "binding": binding.to_dict() if binding is not None else {},
-        "entity_snapshot": snapshot.to_dict(),
+        "fact_entities": fact_entities,
+        "fact_relations": fact_relations,
+        "fact_media_assets": fact_media_assets,
+        "raw_api_responses": raw_api_responses,
     }
     return persisted
 
@@ -783,11 +854,16 @@ def _normalize_influencer_state(record: Mapping[str, Any] | None) -> dict[str, A
             record.get("达人ID"),
             record.get("unique_id"),
         ),
+        "uid": _first_non_empty(record.get("uid")),
+        "unique_id": _first_non_empty(
+            record.get("unique_id"),
+            record.get("influencer_id"),
+            record.get("达人ID"),
+        ),
+        "nickname": _first_non_empty(record.get("nickname"), record.get("nick_name"), record.get("达人名称")),
         "record_id": _first_non_empty(record.get("record_id"), record.get("id")),
         "target_record_id": _first_non_empty(record.get("target_record_id")),
-        "entity_id": _first_non_empty(record.get("entity_id")),
         "table_url": _first_non_empty(record.get("table_url")),
-        "target_space": _first_non_empty(record.get("target_space")),
         "source_key": _first_non_empty(record.get("source_key")),
         "source_product_ids": _normalize_name_list(record.get("source_product_ids")),
         "source_product_sales_by_id": _normalize_mapping_of_numbers(record.get("source_product_sales_by_id")),
@@ -825,44 +901,21 @@ def _normalize_influencer_state_from_record(
     if not isinstance(fields, Mapping):
         fields = record
 
-    snapshot = record.get("entity_snapshot")
-    snapshot_facts = snapshot.get("facts") if isinstance(snapshot, Mapping) else {}
-    if not isinstance(snapshot_facts, Mapping):
-        snapshot_facts = {}
-
     state = _normalize_influencer_state(
         {
             **dict(fields),
-            **dict(snapshot_facts),
             "influencer_id": _first_non_empty(
                 fields.get(influencer_id_field_name),
-                snapshot_facts.get("influencer_id"),
                 record.get("influencer_id"),
             ),
-            "record_id": _first_non_empty(record.get("record_id"), snapshot.get("record_id") if isinstance(snapshot, Mapping) else None),
+            "record_id": _first_non_empty(record.get("record_id")),
             "target_record_id": _first_non_empty(record.get("record_id")),
-            "entity_id": _first_non_empty(
-                record.get("entity", {}).get("entity_id") if isinstance(record.get("entity"), Mapping) else None,
-                snapshot.get("entity_id") if isinstance(snapshot, Mapping) else None,
-            ),
         }
     )
 
     state["record_id"] = _first_non_empty(record.get("record_id"), state.get("record_id"))
     state["target_record_id"] = _first_non_empty(record.get("record_id"), state.get("target_record_id"))
     state["latest_fields"] = dict(fields)
-    state["latest_snapshot"] = dict(snapshot) if isinstance(snapshot, Mapping) else {}
-    return state
-
-
-def _normalize_influencer_state_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    facts = snapshot.get("facts")
-    if not isinstance(facts, Mapping):
-        facts = snapshot
-    state = _normalize_influencer_state(dict(facts))
-    state["entity_snapshot"] = dict(snapshot)
-    state["snapshot_id"] = _first_non_empty(snapshot.get("snapshot_id"))
-    state["entity_id"] = _first_non_empty(snapshot.get("entity_id"), state.get("entity_id"))
     return state
 
 
@@ -1010,13 +1063,6 @@ def _extract_contact_items(raw_contact_payload: Any) -> list[Any]:
     if isinstance(raw_contact_payload, Sequence) and not isinstance(raw_contact_payload, (str, bytes, bytearray)):
         return list(raw_contact_payload)
     return []
-
-
-def _build_snapshot_date(influencer_state: Mapping[str, Any], *, collected_at: float) -> str:
-    record_time_ms = _coerce_datetime_timestamp_ms(influencer_state.get("record_time_ms"))
-    if record_time_ms:
-        return time.strftime("%Y-%m-%d", time.localtime(record_time_ms / 1000.0))
-    return time.strftime("%Y-%m-%d", time.localtime(collected_at))
 
 
 def _build_record_time_timestamp_ms(value: Any) -> int:

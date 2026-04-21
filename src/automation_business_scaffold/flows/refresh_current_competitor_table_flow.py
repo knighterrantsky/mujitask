@@ -26,10 +26,6 @@ from automation_business_scaffold.flows.artifact_sync import (
     create_store_from_settings,
     sync_artifact_specs,
 )
-from automation_business_scaffold.flows.entity_service import (
-    extract_entity_payloads,
-    persist_product_entity_snapshot,
-)
 from automation_business_scaffold.flows.execution_control_flow import build_controlled_resource_code
 from automation_business_scaffold.flows.feishu_competitor_flow import (
     run_fastmoss_keyword_candidate_discovery,
@@ -38,6 +34,8 @@ from automation_business_scaffold.flows.feishu_competitor_flow import (
     run_feishu_single_row_update,
 )
 from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
+from automation_business_scaffold.flows.tk_fact_service import persist_product_fact_bundle
+from automation_business_scaffold.flows.tk_fact_store import extract_fact_payloads
 from automation_business_scaffold.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
 from automation_business_scaffold.models import ArtifactObjectRecord
 
@@ -858,7 +856,7 @@ def _build_refresh_result_payload(request: Any, executions: list[Any], outbox_re
         item_results.append(enriched_item)
         if execution.status == "failed":
             failed_items.append(enriched_item)
-    entities, entity_bindings, entity_snapshots = extract_entity_payloads(item_results)
+    fact_payloads = extract_fact_payloads(item_results)
     return {
         "task_request": request.to_dict(),
         "cleanup": stage_cursor.get("cleanup", {}),
@@ -868,9 +866,7 @@ def _build_refresh_result_payload(request: Any, executions: list[Any], outbox_re
         "outbox": [record.to_dict() for record in outbox_records],
         "items": item_results,
         "failed_items": failed_items,
-        "entities": entities,
-        "entity_bindings": entity_bindings,
-        "entity_snapshots": entity_snapshots,
+        **fact_payloads,
     }
 
 
@@ -904,7 +900,7 @@ def _build_keyword_result_payload(request: Any, executions: list[Any], outbox_re
         item_results.append(enriched_item)
         if execution.status == "failed":
             failed_items.append(enriched_item)
-    entities, entity_bindings, entity_snapshots = extract_entity_payloads(item_results)
+    fact_payloads = extract_fact_payloads(item_results)
     return {
         "task_request": request.to_dict(),
         "discovery": discovery_payload,
@@ -915,9 +911,7 @@ def _build_keyword_result_payload(request: Any, executions: list[Any], outbox_re
         "outbox": [record.to_dict() for record in outbox_records],
         "items": item_results,
         "failed_items": failed_items,
-        "entities": entities,
-        "entity_bindings": entity_bindings,
-        "entity_snapshots": entity_snapshots,
+        **fact_payloads,
     }
 
 
@@ -1745,7 +1739,7 @@ def _run_browser_execution_once(
                 if terminal_status == "success":
                     try:
                         if str(execution.item_code or "") == SINGLE_ROW_UPDATE_ITEM_CODE:
-                            persist_product_entity_snapshot(
+                            persist_product_fact_bundle(
                                 store=store,
                                 execution=execution,
                                 result_payload=result_payload,

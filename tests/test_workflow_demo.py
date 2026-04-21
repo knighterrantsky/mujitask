@@ -8,6 +8,7 @@ from automation_framework.agent.server import create_app
 from automation_framework.runtime import RunRegistry
 
 from automation_business_scaffold.cli import list_registered_tasks, run_registered_task
+from automation_business_scaffold.flows.tk_fact_store import TKFactStore
 from automation_business_scaffold.registry import build_task_registry
 from automation_business_scaffold.tasks import (
     FeishuClearRowByUrlTask,
@@ -492,17 +493,11 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 2
     assert all(len(store.list_artifacts(run_id=record.run_id)) == 5 for record in execution_records)
-    entity = store.find_entity(
-        entity_type="product",
-        canonical_key="tiktok_product:1731098351299629802",
-    )
-    assert entity is not None
-    bindings = store.list_entity_bindings(entity_id=entity.entity_id)
-    assert len(bindings) == 1
-    assert bindings[0].target_type == "feishu_record"
-    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
-    assert len(snapshots) == 1
-    assert snapshots[0].request_id == submitted.data["request_id"]
+    fact_store = TKFactStore(runtime_store=store)
+    product = fact_store.get_product(product_id="1731098351299629802")
+    assert product["product_id"] == "1731098351299629802"
+    assert product["title"] == "Product A"
+    assert "entity_snapshot" not in fact_store.table_names()
 
     outbox_once = task.execute_workflow_step(
         _refresh_context(
@@ -527,11 +522,10 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert final_result.data["request_status"] == "success"
     assert final_result.data["outbox"][0]["status"] == "sent"
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
-    assert len(final_result.data["result"]["entities"]) == 1
-    assert len(final_result.data["result"]["entity_bindings"]) == 1
-    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
-    assert final_result.data["result"]["entities"][0]["canonical_key"] == "tiktok_product:1731098351299629802"
-    assert len(final_result.data["result"]["entity_snapshots"]) == 1
+    assert len(final_result.data["result"]["fact_entities"]) >= 1
+    assert final_result.data["result"]["fact_entities"][0]["product_id"] == "1731098351299629802"
+    assert len(final_result.data["result"]["raw_api_responses"]) >= 1
+    assert "entity_snapshots" not in final_result.data["result"]
 
 
 def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
@@ -754,8 +748,9 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
     }
     assert final_result.data["result"]["seed_insert"]["summary"]["counts"] == {"inserted": 2}
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
-    assert len(final_result.data["result"]["entities"]) == 1
-    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
+    assert len(final_result.data["result"]["fact_entities"]) >= 1
+    assert final_result.data["result"]["fact_entities"][0]["product_id"] == "1731098351299629802"
+    assert "entity_bindings" not in final_result.data["result"]
 
     store = module.Phase1RuntimeStore(db_path=str(db_path))
     executions = store.list_task_executions(request_id=submitted.data["request_id"])
@@ -993,7 +988,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
         },
     )
 
-    first_submit = task.execute_workflow_step(
+    task.execute_workflow_step(
         _refresh_context(
             {
                 "control_action": "submit",
@@ -1177,17 +1172,12 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
         assert final_result.data["request_status"] == "success"
 
     store = module.Phase1RuntimeStore(db_path=str(db_path))
-    entity = store.find_entity(
-        entity_type="product",
-        canonical_key="tiktok_product:1731098351299629802",
-    )
-    assert entity is not None
-    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
-    assert len(snapshots) == 2
-    assert snapshots[0].baseline_snapshot_id == ""
-    assert snapshots[1].baseline_snapshot_id == snapshots[0].snapshot_id
-    assert snapshots[1].diff["fields"]["after"]["Fastmoss价格"] == "12.49"
-    assert snapshots[1].diff["logical_fields"]["after"]["title"] == "Product A Updated"
+    fact_store = TKFactStore(runtime_store=store)
+    product = fact_store.get_product(product_id="1731098351299629802")
+    assert product["title"] == "Product A Updated"
+    assert product["facts"]["fields"]["Fastmoss价格"] == "12.49"
+    assert product["facts"]["logical_fields"]["title"] == "Product A Updated"
+    assert "entity_snapshot" not in fact_store.table_names()
 
 
 def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):

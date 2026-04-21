@@ -36,9 +36,10 @@ from automation_business_scaffold.flows.influencer_pool_support import (
     influencer_state_has_source_product,
     load_table_schema,
     merge_influencer_facts,
-    persist_influencer_entity_snapshot,
+    persist_influencer_fact_bundle,
 )
 from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
+from automation_business_scaffold.flows.tk_fact_store import TKFactStore, extract_fact_payloads
 
 RUN_MODES_WITH_MUTATIONS = {"canary", "full_auto"}
 UNAVAILABLE_PRODUCT_STATUS_VALUE = "已下架/区域不可售"
@@ -179,10 +180,8 @@ def run_sync_tk_influencer_pool(params: dict[str, Any]) -> dict[str, Any]:
         view_id=target_target.view_id or None,
     )
 
-    snapshot_records = _load_influencer_snapshot_records(store, target_records)
     influencer_index = build_influencer_record_index(
         target_records,
-        snapshots=snapshot_records,
         influencer_id_field_name=DEFAULT_INFLUENCER_ID_FIELD_NAME,
     )
 
@@ -210,6 +209,7 @@ def run_sync_tk_influencer_pool(params: dict[str, Any]) -> dict[str, Any]:
 
     summary = _summarize_status_counts(items)
     write_summary = _build_write_summary(items, failed_items)
+    fact_payloads = extract_fact_payloads(items)
     outbox: list[dict[str, Any]] = []
     outbox_error = ""
     try:
@@ -233,6 +233,7 @@ def run_sync_tk_influencer_pool(params: dict[str, Any]) -> dict[str, Any]:
         "items": items,
         "failed_items": failed_items,
         "failed_item_count": len(failed_items),
+        **fact_payloads,
         "outbox": outbox,
         "outbox_error": outbox_error,
         "settings": {
@@ -394,10 +395,8 @@ def _run_influencer_pool_worker_daemon(
         page_size=100,
         view_id=target_target.view_id or None,
     )
-    snapshot_records = _load_influencer_snapshot_records(store, target_records)
     influencer_index = build_influencer_record_index(
         target_records,
-        snapshots=snapshot_records,
         influencer_id_field_name=DEFAULT_INFLUENCER_ID_FIELD_NAME,
     )
 
@@ -499,6 +498,7 @@ def _run_influencer_pool_worker_daemon(
 
     summary = _summarize_status_counts(items)
     write_summary = _build_write_summary(items, failed_items)
+    fact_payloads = extract_fact_payloads(items)
     return {
         "status": "success",
         "message": f"Processed {len(items)} influencer-pool queue worker items.",
@@ -514,6 +514,7 @@ def _run_influencer_pool_worker_daemon(
         "items": items,
         "failed_items": failed_items,
         "failed_item_count": len(failed_items),
+        **fact_payloads,
         "settings": {
             "run_mode": settings["run_mode"],
             "table_url": settings["table_url"],
@@ -1409,6 +1410,9 @@ def _run_one_influencer_pool_author_worker(
                 reason="source_product_ids already contains product_id",
             )
         merged_state = outcome["merged_state"]
+        for fact_key in ("fact_entities", "fact_relations", "fact_media_assets", "raw_api_responses"):
+            if isinstance(merged_state.get(fact_key), list):
+                item[fact_key] = merged_state[fact_key]
         if outcome["action"] != "skipped_checkpoint":
             influencer_index[influencer_id] = merge_influencer_facts(
                 influencer_index.get(influencer_id),
@@ -1419,11 +1423,7 @@ def _run_one_influencer_pool_author_worker(
                 author_job=author_job,
                 run_id=str(execution.run_id or ""),
                 target_record_id=str(merged_state.get("target_record_id") or ""),
-                snapshot_id=str(
-                    (merged_state.get("entity_snapshot") or {}).get("snapshot_id")
-                    if isinstance(merged_state.get("entity_snapshot"), Mapping)
-                    else ""
-                ),
+                snapshot_id="",
             )
         _reactivate_product_finalizer(
             store=store,
@@ -1910,6 +1910,9 @@ def _process_source_record(
                     already_synced_author_count += 1
                     already_synced_influencer_ids.append(influencer_id)
                 merged_state = outcome["merged_state"]
+                for fact_key in ("fact_entities", "fact_relations", "fact_media_assets", "raw_api_responses"):
+                    if isinstance(merged_state.get(fact_key), list):
+                        result_item[fact_key] = merged_state[fact_key]
                 if outcome["action"] != "skipped_checkpoint":
                     influencer_index[influencer_id] = merge_influencer_facts(
                         influencer_index.get(influencer_id),
@@ -1931,11 +1934,7 @@ def _process_source_record(
                         author_job=author_job,
                         run_id=str(getattr(execution, "run_id", "") or ""),
                         target_record_id=str(merged_state.get("target_record_id") or ""),
-                        snapshot_id=str(
-                            (merged_state.get("entity_snapshot") or {}).get("snapshot_id")
-                            if isinstance(merged_state.get("entity_snapshot"), Mapping)
-                            else ""
-                        ),
+                        snapshot_id="",
                     )
             except Exception as exc:
                 failure_detail = _build_influencer_failure_detail(
@@ -2452,7 +2451,16 @@ def _process_author_detail_job(
         default=False,
     )
 
-    if not force_author_refresh and influencer_state_has_source_product(existing_state, product_id):
+    fact_store = TKFactStore(runtime_store=store)
+    already_linked_in_fact_store = fact_store.creator_has_product(
+        creator_id=influencer_id,
+        uid=str(uid or ""),
+        unique_id=influencer_id,
+        product_id=product_id,
+    )
+    if not force_author_refresh and (
+        influencer_state_has_source_product(existing_state, product_id) or already_linked_in_fact_store
+    ):
         return {
             "influencer_id": influencer_id,
             "action": "skipped_checkpoint",
@@ -2488,6 +2496,8 @@ def _process_author_detail_job(
         source_images=source_images,
         bundle=bundle,
     )
+    incoming_state["uid"] = str(uid or "")
+    incoming_state["unique_id"] = influencer_id
     merged_state = merge_influencer_facts(existing_state, incoming_state)
     target_record_id = str(
         merged_state.get("target_record_id", "") or merged_state.get("record_id", "") or ""
@@ -2525,7 +2535,7 @@ def _process_author_detail_job(
             merged_state["record_id"] = target_record_id
             merged_state["target_record_id"] = target_record_id
 
-    persisted = persist_influencer_entity_snapshot(
+    persisted = persist_influencer_fact_bundle(
         store=store,
         execution=execution,
         influencer_state=merged_state,
@@ -2533,10 +2543,9 @@ def _process_author_detail_job(
         target_record_id=target_record_id,
         source_key=influencer_id,
     )
-    if isinstance(persisted.get("entity_snapshot"), Mapping):
-        merged_state["entity_snapshot"] = persisted.get("entity_snapshot")
-    if isinstance(persisted.get("entity"), Mapping):
-        merged_state["entity"] = persisted.get("entity")
+    for key in ("fact_entities", "fact_relations", "fact_media_assets", "raw_api_responses"):
+        if isinstance(persisted.get(key), list):
+            merged_state[key] = persisted.get(key)
     if target_record_id:
         merged_state["target_record_id"] = target_record_id
         merged_state["record_id"] = target_record_id
@@ -2706,32 +2715,6 @@ def _create_runtime_store(params: Mapping[str, Any]) -> Phase1RuntimeStore:
     db_url = str(params.get("execution_control_db_url") or defaults.db_url).strip()
     db_path = str(params.get("execution_control_db_path") or defaults.db_path).strip()
     return Phase1RuntimeStore(db_url=db_url, db_path=db_path)
-
-
-def _load_influencer_snapshot_records(
-    store: Phase1RuntimeStore,
-    target_records: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    snapshots: list[dict[str, Any]] = []
-    seen_entity_ids: set[str] = set()
-    for raw_record in target_records:
-        fields = raw_record.get("fields")
-        if not isinstance(fields, Mapping):
-            continue
-        influencer_id = str(fields.get(DEFAULT_INFLUENCER_ID_FIELD_NAME, "") or "").strip()
-        if not influencer_id:
-            continue
-        entity = store.get_or_create_entity(
-            entity_type="influencer",
-            canonical_key=f"tiktok_influencer:{influencer_id}",
-        )
-        if entity.entity_id in seen_entity_ids:
-            continue
-        seen_entity_ids.add(entity.entity_id)
-        snapshot = store.load_latest_entity_snapshot(entity_id=entity.entity_id)
-        if snapshot is not None:
-            snapshots.append(snapshot.to_dict())
-    return snapshots
 
 
 def _is_candidate_source_record(raw_record: Mapping[str, Any]) -> bool:
