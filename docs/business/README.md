@@ -1,6 +1,6 @@
 # Business 文档总览
 
-更新时间：`2026-04-17`
+更新时间：`2026-04-21`
 
 `docs/business` 当前保留主文档、专题文档和 1 个总览入口。
 
@@ -21,6 +21,8 @@
 
 - [fastmoss已知接口.md](./fastmoss已知接口.md)
 - [fastmoss可视化分析.md](./fastmoss可视化分析.md)
+- [19-FastMoss四主体接口与关系设计.md](./19-FastMoss四主体接口与关系设计.md)
+- [20-事实数据库ERD与表结构设计.md](./20-事实数据库ERD与表结构设计.md)
 
 ## 实际可用的 Skill 文件
 

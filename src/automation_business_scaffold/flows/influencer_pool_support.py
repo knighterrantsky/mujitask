@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -447,6 +448,11 @@ def build_influencer_write_fields(
     if shop_values and _is_writable_field(field_name_to_meta, DEFAULT_INFLUENCER_SHOP_FIELD_NAME):
         writable_fields[DEFAULT_INFLUENCER_SHOP_FIELD_NAME] = shop_values
 
+    wan_unit_display_fields = {
+        DEFAULT_INFLUENCER_FOLLOWER_FIELD_NAME,
+        DEFAULT_INFLUENCER_VIDEO_GMV_FIELD_NAME,
+        DEFAULT_INFLUENCER_LIVE_GMV_FIELD_NAME,
+    }
     for field_name, state_key in (
         (DEFAULT_INFLUENCER_SALES_FIELD_NAME, "total_source_product_sales"),
         (DEFAULT_INFLUENCER_FOLLOWER_FIELD_NAME, "follower_count"),
@@ -460,12 +466,10 @@ def build_influencer_write_fields(
             continue
         if not _is_writable_field(field_name_to_meta, field_name):
             continue
-        writable_fields[field_name] = _stringify_scalar_field(value)
-
-    if _is_writable_field(field_name_to_meta, DEFAULT_INFLUENCER_PRODUCT_COUNT_FIELD_NAME):
-        writable_fields[DEFAULT_INFLUENCER_PRODUCT_COUNT_FIELD_NAME] = str(
-            int(normalized_state.get("source_product_count") or 0)
-        )
+        if field_name in wan_unit_display_fields:
+            writable_fields[field_name] = _format_w_unit_display_field(value)
+        else:
+            writable_fields[field_name] = _stringify_scalar_field(value)
 
     record_time_ms = normalized_state.get("record_time_ms")
     if _is_writable_field(field_name_to_meta, DEFAULT_INFLUENCER_RECORD_TIME_FIELD_NAME):
@@ -1043,10 +1047,59 @@ def _coerce_number(value: Any) -> float:
         return 0.0
     if isinstance(value, bool):
         return float(int(value))
-    try:
+    if isinstance(value, (int, float)):
         return float(value)
+    text = str(value).strip().replace(",", "").replace(" ", "")
+    if not text:
+        return 0.0
+    multiplier = 1.0
+    lower_text = text.lower()
+    suffix_multipliers = (
+        ("亿", 100_000_000.0),
+        ("万", 10_000.0),
+        ("w", 10_000.0),
+        ("b", 1_000_000_000.0),
+        ("m", 1_000_000.0),
+        ("k", 1_000.0),
+    )
+    for suffix, suffix_multiplier in suffix_multipliers:
+        if lower_text.endswith(suffix):
+            multiplier = suffix_multiplier
+            text = text[: -len(suffix)]
+            break
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(0)) * multiplier
     except (TypeError, ValueError):
         return 0.0
+
+
+def _format_w_unit_display_field(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    number = _coerce_number(value)
+    if number == 0 and not _looks_like_zero(value):
+        return _stringify_scalar_field(value)
+    if abs(number) >= 10_000:
+        return f"{_format_trimmed_decimal(number / 10_000, max_digits=2)}W"
+    return _format_trimmed_decimal(number, max_digits=2)
+
+
+def _format_trimmed_decimal(value: float, *, max_digits: int) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.{max_digits}f}".rstrip("0").rstrip(".")
+
+
+def _looks_like_zero(value: Any) -> bool:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) == 0
+    text = str(value).strip().replace(",", "").replace(" ", "").lower()
+    if text in {"0", "0.0", "0.00"}:
+        return True
+    return bool(re.fullmatch(r"[-+]?0+(?:\.0+)?(?:万|亿|w|k|m|b)?", text))
 
 
 def _coerce_int(value: Any, *, default: int = 0) -> int:

@@ -9,3 +9,4 @@ dist/
 build/
 *.egg-info/
 scripts/execution_control/executor.local.env
+scripts/deploy/macos/deploy.local.env

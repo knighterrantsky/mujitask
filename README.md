@@ -40,6 +40,29 @@
 
 ## 2. 快速启动
 
+### macOS 一键部署模式
+
+当前正式部署先收窄为 `macOS + launchd + Homebrew 本机 Postgres/MinIO`。
+运行前需要 Homebrew 已安装；部署脚本会安装缺失的 `postgresql@17` / `minio` formula。
+现场实施时必须显式确认两个目录：`MUJITASK_INSTALL_DIR` 是项目安装路径，`MUJITASK_SKILLS_DIR` 是目标 agent 读取 skills 的根目录。OpenClaw、Hermes Agent 或其他 agent 都通过这个 skills 根目录接入，不再由脚本猜 workspace。
+
+```bash
+cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.local.env
+# 填写 deploy.local.env 中的项目安装路径、skills 安装路径、飞书、FastMoss 和浏览器配置
+bash scripts/deploy/macos/preflight.sh
+bash scripts/deploy/macos/deploy.sh
+```
+
+这条路径会完成：
+
+- 创建/更新 `.venv`
+- 安装 pinned `automation-framework` 与项目运行依赖
+- 安装并启动本机 Postgres 和 MinIO
+- 生成 `<MUJITASK_INSTALL_DIR>/scripts/execution_control/executor.local.env`
+- 安装 skill bundle 到 `<MUJITASK_SKILLS_DIR>/mujitask-tiktok-feishu-sync`
+- 安装并刷新 3 个 `launchd` 守护进程
+- 执行 smoke check
+
 ### 标准模式
 
 这是默认模式，也是对外必须保证成立的模式。
@@ -131,7 +154,7 @@ automation-business-scaffold-run run \
   }'
 ```
 
-当前表驱动更新链路已经拆成 3 个 task，由 OpenClaw skill 负责编排：
+当前表驱动更新链路已经拆成 3 个 task，由 agent skill 负责编排：
 
 - `tiktok_product_link_cleanup`
 - `feishu_pending_rows_scan`
