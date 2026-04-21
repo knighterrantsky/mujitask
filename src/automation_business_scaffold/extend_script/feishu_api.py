@@ -135,6 +135,48 @@ class FeishuBitableClient:
             params=params,
         )
 
+    def list_fields(
+        self,
+        app_token: str,
+        table_id: str,
+        page_size: int = 100,
+        page_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        return self._request(
+            "GET",
+            f"/apps/{app_token}/tables/{table_id}/fields",
+            params=params,
+        )
+
+    def list_all_fields(
+        self,
+        app_token: str,
+        table_id: str,
+        page_size: int = 100,
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+
+        while True:
+            data = self.list_fields(
+                app_token,
+                table_id,
+                page_size=page_size,
+                page_token=page_token,
+            )
+            payload = data.get("data", {})
+            items.extend(payload.get("items", []))
+            if not payload.get("has_more"):
+                break
+            page_token = payload.get("page_token")
+            if not page_token:
+                break
+
+        return items
+
     def list_all_records(
         self,
         app_token: str,

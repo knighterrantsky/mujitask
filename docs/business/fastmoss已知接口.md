@@ -1,6 +1,6 @@
 # FastMoss 已知接口
 
-更新时间：`2026-04-14`
+更新时间：`2026-04-17`
 
 ## 1. 说明
 
@@ -14,6 +14,7 @@
 本次验证使用的样例：
 
 - 商品详情页：`https://www.fastmoss.com/zh/e-commerce/detail/1729679758111249333`
+- 商品详情页补充样例：`https://www.fastmoss.com/zh/e-commerce/detail/1729440407432826887`
 - 达人搜索页：`https://www.fastmoss.com/zh/influencer/search?shop_window=1&page=1&words=anonymousbillionaires&words_search_type=1`
 - 达人详情页：`https://www.fastmoss.com/zh/influencer/detail/7228697870020199470`
 - 达人搜索关键词：`anonymousbillionaires`
@@ -169,6 +170,33 @@ https://www.fastmoss.com/api/goods/v3/overview?product_id=1729679758111249333&d_
 - 已观察到的关键字段：
   - `data.overview`: `sold_count`, `sale_amount`, `real_sold_count`, `real_sale_amount`, `author_count`, `aweme_count`, `live_count`, `video_sale_amount`, `live_sale_amount`
   - `data.chart_list[]`: `dt`, `sold_count`, `sale_amount`, `author_count`, `aweme_count`, `live_count`, `inc_sold_count`, `inc_sale_amount`
+  - `data.ads_distribution`: 成交投放占比，包含广告流量 / 非广告流量的销量与 GMV 占比。
+  - `data.channel_distribution`: 成交渠道占比，包含商品卡 / 店铺自播或店铺账号 / 达人联盟等来源的销量与 GMV 占比。
+  - `data.content_distribution`: 成交内容占比，包含短视频 / 直播 / 商品卡等内容类型的销量与 GMV 占比。
+
+- 三类成交占比字段结构：
+  - `*.units_sold.total_count`: 当前时间窗口内该分布口径的总销量。
+  - `*.units_sold.list[]`: 销量分布明细，常见字段为 `category` 或 `source`, `propotion`, `sold_count`, `sold_count_show`。
+  - `*.gmv.total_count`: 当前时间窗口内该分布口径的总 GMV。
+  - `*.gmv.list[]`: GMV 分布明细，常见字段为 `category` 或 `source`, `propotion`, `sale_amount`, `currency`, `sale_amount_show`。
+  - 注意字段名是 FastMoss 原始拼写 `propotion`，不是 `proportion`。
+
+- `d_type=28` 在补充样例 `1729440407432826887` 上实测到的三类成交占比：
+
+| 口径 | 原始字段 | 明细 key | 销量占比示例 | GMV 占比示例 |
+| --- | --- | --- | --- | --- |
+| 成交投放占比 | `ads_distribution` | `category` | `common.goods.adTraffic` 54% / `common.goods.otherTraffic` 46% | `common.goods.adTraffic` 55% / `common.goods.otherTraffic` 45% |
+| 成交渠道占比 | `channel_distribution` | `source` | `common.goods.affiliate` 87% / `common.goods.product_card` 12% / `common.goods.shop_account` 1% | `common.goods.affiliate` 89% / `common.goods.product_card` 10% / `common.goods.shop_account` 1% |
+| 成交内容占比 | `content_distribution` | `category` | `video.name` 85% / `common.goods.product_card` 12% / `live.name` 3% | `video.name` 86% / `common.goods.product_card` 10% / `live.name` 4% |
+
+- 建议业务映射：
+  - `video.name` -> `短视频`
+  - `live.name` -> `直播`
+  - `common.goods.product_card` -> `商品卡` 或当前飞书表里的 `自然流量`
+  - `common.goods.affiliate` -> `达人橱窗` / `达人联盟`
+  - `common.goods.shop_account` -> `店铺账号`
+  - `common.goods.adTraffic` -> `广告`
+  - `common.goods.otherTraffic` -> `非广告流量`
 
 - 备注：
   - 商品详情页的 `7天 / 28天 / 90天 / 昨天销量` 都可以从这个接口拿。
@@ -206,8 +234,71 @@ https://www.fastmoss.com/api/goods/v3/productSku?product_id=1729679758111249333&
 
 - 已观察到的关键字段：
   - `data.sku_list[]`: `sku_id`, `real_price`, `original_price`, `discount`, `stock`, `sku_sale_props`
+  - `data.sku_detail[]`: 规格维度定义，例如 `prop_name=quantity`, `sale_prop_values[]`。
 
-### 3.4 商品关联达人列表 `/api/goods/v3/author`
+- 备注：
+  - 这个 `v3` 接口适合拿完整 SKU 清单、规格属性、价格、库存。
+  - 真实验证中，`v3` 接口没有直接返回 SKU 级销量 / GMV 占比；SKU 销量占比需要看旧版 `/api/goods/productSku`。
+
+### 3.4 商品 SKU 销量 / GMV / 库存分布 `/api/goods/productSku`
+
+- 来源：`页面实抓`
+- 方法：`GET`
+- 登录依赖：必须依赖有效的 `fd_tk` Cookie；未携带 `fd_tk` 时会退回游客态或受限预览。
+- 真实页面请求示例：
+
+```text
+https://www.fastmoss.com/api/goods/productSku?product_id=1729440407432826887&d_type=28&_time=<unix_ts>&cnonce=<nonce>
+```
+
+- 最小可用调用参数：
+  - `product_id`
+
+- 建议调用参数：
+  - `product_id`
+  - `d_type=28`
+
+- 返回结构：
+
+```json
+{
+  "code": "200",
+  "msg": "success",
+  "data": {
+    "sku_list": [],
+    "sku_detail": [],
+    "sku_stock": {},
+    "sku_units_sold": {},
+    "sku_gmv": {},
+    "best_sku": {}
+  },
+  "ext": {}
+}
+```
+
+- 已观察到的关键字段：
+  - `data.sku_list[]`: 与 `/api/goods/v3/productSku` 类似，包含 `sku_id`, `real_price`, `original_price`, `stock`, `sku_sale_props`。
+  - `data.sku_units_sold.<规格名>.total_count`: 当前时间窗口内 SKU 分布可归因销量合计。
+  - `data.sku_units_sold.<规格名>.list[]`: SKU 销量占比明细，字段包含 `source`, `propotion`, `sold_count`, `sold_count_show`。
+  - `data.sku_gmv.<规格名>.total_count`: 当前时间窗口内 SKU 分布可归因 GMV 合计。
+  - `data.sku_gmv.<规格名>.list[]`: SKU GMV 占比明细，字段包含 `source`, `propotion`, `sale_amount`, `currency`, `sale_amount_show`。
+  - `data.sku_stock.<规格名>.list[]`: SKU 库存占比明细，字段包含 `source`, `propotion`, `sold_count`, `sold_count_show`；这里的 `sold_count` 实际表示库存数量。
+  - `data.best_sku`: 当前窗口主销规格，字段包含 `sku_name`, `sku_value`, `sold_count`, `sale_amount`, `currency`, `price`, `stock`。
+
+- `d_type=28` 在补充样例 `1729440407432826887` 上实测：
+  - `best_sku.sku_value=60pcs`
+  - `best_sku.sold_count=416`
+  - `best_sku.sale_amount=13312`
+  - `sku_units_sold.quantity.total_count=2627`
+  - `sku_units_sold.quantity.list[]` Top 项包含 `60pcs`, `200pcs`, `144Pcs`, `48pcs`, `Other`
+  - `sku_gmv.quantity.list[]` Top 项包含 `144Pcs`, `200pcs`, `60pcs`, `160pcs`, `Other`
+
+- 备注：
+  - 页面也会请求不带 `d_type` 的 `/api/goods/productSku?product_id=...`，但补充样例里不带 `d_type` 时销量与 GMV 分布为 0；做近 28 天 SKU 占比时应显式传 `d_type=28`。
+  - `sku_units_sold.total_count` 可能小于 `/api/goods/v3/overview` 的 `overview.sold_count`，代表 FastMoss 当前 SKU 分布接口可归因到规格的销量口径，不要强行等同于商品总销量。
+  - `Other` 是 FastMoss 的聚合项，不对应单一 `sku_id`；写入飞书规格表时建议单独建一个聚合规格或只写备注。
+
+### 3.5 商品关联达人列表 `/api/goods/v3/author`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -249,7 +340,7 @@ https://www.fastmoss.com/api/goods/v3/author?product_id=1729679758111249333&orde
   - 这个接口已经确认能拿到商品关联的达人 ID 列表。
   - 当前未登录或低权限状态下更像“预览列表”，翻页是否稳定全量返回要继续看登录态。
 
-### 3.5 商品关联达人分布 `/api/goods/v3/authorChart`
+### 3.6 商品关联达人分布 `/api/goods/v3/authorChart`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -270,15 +361,19 @@ https://www.fastmoss.com/api/goods/v3/authorChart?product_id=1729679758111249333
   "code": "MAG_AUTH_3017 | 200",
   "msg": "...",
   "data": {
-    "level_distribution": {},
-    "type_distribution": {},
+    "level_distribution": [],
+    "type_distribution": [],
     "update_at": 0
   },
   "ext": {}
 }
 ```
 
-### 3.6 商品带货视频列表 `/api/goods/v3/video`
+- 已观察到的关键字段：
+  - `data.level_distribution[]`: 达人粉丝量级分布，字段包含 `follower_level`, `follower_count`, `follower_count_show`。
+  - `data.type_distribution[]`: 达人类型分布，字段包含 `type`, `percent`, `percent_show`。
+
+### 3.7 商品带货视频列表 `/api/goods/v3/video`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -316,7 +411,7 @@ https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=172967975811124933
 - 已观察到的关键字段：
   - `data.list[]`: `video_id`, `video`, `author`, `uid`, `product_id`, `play_count`, `digg_count`, `comment_count`, `share_count`, `sold_count`, `sale_amount`, `engagement_rate`, `create_date`, `is_ad`
 
-### 3.7 商品带货直播列表 `/api/goods/v3/live`
+### 3.8 商品带货直播列表 `/api/goods/v3/live`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -356,7 +451,7 @@ https://www.fastmoss.com/api/goods/v3/live?product_id=1729679758111249333&page=1
 - 已观察到的关键字段：
   - `data.list[]`: `room_id`, `uid`, `author`, `title`, `cover_oss`, `create_time`, `finish_time`, `product_count`, `sold_count`, `sale_amount`, `user_count`, `max_user_count`, `total_user`
 
-### 3.8 商品投放概览 `/api/goods/V3/investment`
+### 3.9 商品投放概览 `/api/goods/V3/investment`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -379,15 +474,22 @@ https://www.fastmoss.com/api/goods/V3/investment?product_id=1729679758111249333&
   "msg": "...",
   "data": {
     "overview": {},
-    "summary": {},
-    "trends": {},
+    "trends": [],
     "update_at": 0
   },
   "ext": {}
 }
 ```
 
-### 3.9 商品广告视频列表 `/api/goods/V3/adsVideo`
+- 已观察到的关键字段：
+  - `data.overview`: `sold_count`, `sale_amount`, `total_sale_amount`, `ad_sale_percent`, `estimate_cost_amount`, `avg_estimate_cost_amount`, `play_count`, `avg_play_count`, `video_count`, `roas`, `currency`。
+  - `data.trends[]`: `dt`, `sold_count`, `sale_amount`, `estimate_cost_amount`, `play_count`, `video_count`, `roas`, `currency`。
+
+- 备注：
+  - 这个接口描述的是广告投放相关表现，不等同于 `/api/goods/v3/overview` 里的 `ads_distribution`。
+  - 如果只需要“成交投放占比”，优先使用 `/api/goods/v3/overview` 的 `ads_distribution`；如果需要投放成本、ROAS、广告视频趋势，再用本接口。
+
+### 3.10 商品广告视频列表 `/api/goods/V3/adsVideo`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -423,7 +525,7 @@ https://www.fastmoss.com/api/goods/V3/adsVideo?product_id=1729679758111249333&d_
 - 已观察到的关键字段：
   - `data.list[]`: `id`, `video_id`, `uid`, `advertiser`, `cover`, `desc`, `estimate_cost_amount`, `sale_amount`, `play_count`, `roas`, `tiktok_url`
 
-### 3.10 商品评论列表 `/api/goods/reviewList`
+### 3.11 商品评论列表 `/api/goods/reviewList`
 
 - 来源：`页面实抓`
 - 方法：`GET`
@@ -456,6 +558,24 @@ https://www.fastmoss.com/api/goods/reviewList?product_id=1729679758111249333&pag
   "ext": {}
 }
 ```
+
+### 3.12 商品详情页辅助接口清单
+
+以下接口在商品详情页打开时也会出现，当前先记录用途，不作为选品复盘主数据源：
+
+| 接口 | 方法 | 已观察用途 |
+| --- | --- | --- |
+| `/api/info/handle` | `GET` | 页面配置 / 信息流辅助数据 |
+| `/api/collect/collectStatus` | `GET` | 商品收藏状态，参数包含 `id`, `type` |
+| `/api/ai/productReviewExample/getConsumerPortrait` | `GET` | 商品评论 / 消费者画像相关 AI 辅助内容 |
+| `/api/info/pagerInfo` | `GET` | 页面辅助信息 |
+| `/api/user/index/userInfo` | `GET` | 当前登录态检查 |
+| `/api/author/index/country` | `GET` | 国家 / 地区选项 |
+| `/api/user/user` | `GET` | 当前用户信息 |
+| `/api/ai/omni/getUserCards` | `GET` | AI 卡片 / 账户权益辅助信息 |
+| `/api/user/userPayTrial` | `GET` | 试用 / 付费权益状态 |
+| `/api/export/getExportTimes` | `GET` | 导出次数 / 导出权限检查 |
+| `/api/notify/index` | `POST` | 站内通知 |
 
 ## 4. 达人搜索与达人详情接口
 
@@ -883,10 +1003,20 @@ https://www.fastmoss.com/api/author/v3/detail/goodsList?page=1&uid=7228697870020
 - 来源：`页面实抓`
 - 方法：`GET`
 - 登录依赖：必须依赖有效的 `fd_tk` Cookie；未携带 `fd_tk` 时会退回游客态或受限预览。
-- 真实页面请求示例：
+- 真实页面默认 `TOP 5 合作店铺` 请求示例：
 
 ```text
-https://www.fastmoss.com/api/author/v3/detail/shopList?page=1&uid=7228697870020199470&region=US&order=sold_count,2&pagesize=5&_time=<unix_ts>&cnonce=<nonce>
+https://www.fastmoss.com/api/author/v3/detail/shopList?page=1&uid=7292741711510946859&region=US&order=sold_count,2&pagesize=5&_time=<unix_ts>&cnonce=<nonce>
+```
+
+- 这次通过 `Roxy` 在真实达人页 `https://www.fastmoss.com/zh/influencer/detail/7292741711510946859` 抓到的排序切换请求：
+
+```text
+# 默认 Top 5 合作店铺：按带货总销量倒序
+https://www.fastmoss.com/api/author/v3/detail/shopList?page=1&uid=7292741711510946859&region=US&order=sold_count,2&pagesize=5&_time=<unix_ts>&cnonce=<nonce>
+
+# 点击“合作商品数”列头后：按合作商品数倒序
+https://www.fastmoss.com/api/author/v3/detail/shopList?page=1&uid=7292741711510946859&region=US&order=product_count,2&pagesize=5&_time=<unix_ts>&cnonce=<nonce>
 ```
 
 - 最小可用调用参数：
@@ -914,6 +1044,8 @@ https://www.fastmoss.com/api/author/v3/detail/shopList?page=1&uid=72286978700201
   - `data.list[]`: `id`, `name`, `img`, `product_count`, `product_cnt`, `sold_count`, `sale_amount`, `author_cnt`, `aweme_cnt`, `shop_rating`, `region`
 
 - 备注：
+  - 当前页面的 `TOP 5 合作店铺` 默认就是这条接口，固定用 `order=sold_count,2` 和 `pagesize=5`。
+  - 真实请求头里会带：`referer=https://www.fastmoss.com/zh/influencer/detail/{uid}`、`lang=ZH_CN`、`source=pc`、`region=US`、`fm-sign=<动态签名>`。
   - `合作店铺` 可以从 `name` 拿。
   - `合作商品数` 如果要按店铺维度，也可以从 `product_count / product_cnt` 拿。
 
@@ -1752,6 +1884,125 @@ user_info = session.get(
     timeout=30,
 ).json()
 ```
+
+### 9.12 商品页滑块风控实抓结论
+
+`2026-04-15` 已在 `roxy-tiktok` 的真实 FastMoss 页面中，针对商品详情页反复触发并实抓一次完整的滑块风控流程。
+
+本轮实抓商品示例：
+
+- `https://www.fastmoss.com/zh/e-commerce/detail/1729421576573456391`
+
+#### 9.12.1 触发顺序
+
+实抓到的顺序不是“先弹滑块、再接口报错”，而是：
+
+1. 商品详情核心接口先返回风控业务码 `MSG_SAFE_0001`
+2. 页面随后开始加载腾讯验证码资源
+3. 页面弹出滑块验证层
+4. 用户完成滑块后，FastMoss 再调用自己的验证码确认接口
+5. 商品核心接口恢复 `code=200`
+
+#### 9.12.2 风控触发时的核心接口表现
+
+本轮在登录态正常的前提下，商品页刚进入时抓到：
+
+- `GET /api/goods/v3/base` -> `code=MSG_SAFE_0001`
+- `GET /api/goods/v3/author` -> `code=MSG_SAFE_0001`
+- `GET /api/goods/v3/overview` -> `code=MSG_SAFE_0001`
+- `GET /api/goods/v3/authorChart` -> `code=MAG_AUTH_3017`
+
+同时返回体里还出现了统一的风控标识：
+
+```json
+{
+  "code": "MSG_SAFE_0001",
+  "data": {
+    "id": 132611
+  }
+}
+```
+
+这里的 `data.id=132611` 本轮多次复现，表现上更像一次风险校验会话 ID。
+
+#### 9.12.3 滑块相关真实网络特征
+
+当 `MSG_SAFE_0001` 出现后，页面会继续发起这组验证码链路：
+
+- `GET https://turing.captcha.qcloud.com/TJCaptcha.js`
+- `GET https://turing.captcha.gtimg.com/...`
+- `POST /api/captcha/config`
+- `GET cap_union_prehandle`
+- `GET cap_union_new_getcapbysig`
+- `GET tdc.js`
+
+其中最关键的是：
+
+- 商品接口出现 `MSG_SAFE_0001`
+- 紧接着页面发出 `POST /api/captcha/config`
+
+本轮可以把这组组合明确视为：
+
+- `MSG_SAFE_0001 + /api/captcha/config` => 进入滑块风控
+
+#### 9.12.4 页面 DOM 特征
+
+滑块出现时，页面可稳定命中：
+
+- `[class*="slider"]`
+- `[id*="captcha"]`
+- `[role="dialog"]`
+- `[aria-modal="true"]`
+
+可见文案示例：
+
+- `Slide to complete the puzzle`
+- `Generated by AI Verification`
+
+#### 9.12.5 用户完成滑块后的请求
+
+本轮人工完成滑块后，页面抓到的关键确认请求是：
+
+- `POST https://turing.captcha.qcloud.com/cap_union_new_verify`
+- `POST https://www.fastmoss.com/api/captcha/verify`
+
+随后商品核心接口恢复：
+
+- `GET /api/goods/v3/base` -> `code=200`
+- `GET /api/goods/v3/author` -> `code=200`
+- `GET /api/goods/v3/overview` -> `code=200`
+
+但：
+
+- `GET /api/goods/v3/authorChart` 仍然可能保持 `MAG_AUTH_3017`
+
+#### 9.12.6 一个容易误判的点
+
+本轮还确认了一个很关键的前端行为：
+
+- 滑块验证通过后，商品核心接口可能已经恢复 `code=200`
+- 但滑块 DOM 不一定会立刻消失
+
+因此更可靠的“风控已解除”判断标准应是：
+
+- `POST /api/captcha/verify` 已发出
+- 且 `/api/goods/v3/base`、`/api/goods/v3/author` 等核心接口恢复 `code=200`
+
+而不是只看：
+
+- 滑块弹层是否已经从 DOM 中完全移除
+
+#### 9.12.7 当前代码侧的判定建议
+
+对当前纯 HTTP 方案，可以先用两层规则判断：
+
+1. 纯 HTTP 直接判定：
+   - 如果商品详情核心接口返回 `MSG_SAFE_0001`，应先归类为 `fastmoss_risk_control`
+   - 如果命中的是 `/api/goods/v3/*`，可进一步标记为 `likely_slider_captcha`
+
+2. 浏览器侧确认判定：
+   - 如果同时看到 `MSG_SAFE_0001 + /api/captcha/config`
+   - 可以明确判定为“已进入滑块风控”
 
 ## 10. 纯 HTTP 匿名态实测结果
 

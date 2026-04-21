@@ -23,6 +23,7 @@ def test_agent_lists_demo_task():
             "refresh_current_competitor_table",
             "search_keyword_competitor_products",
             "source_to_target_publish_demo",
+            "sync_tk_influencer_pool",
             "tiktok_feishu_single_sync",
             "tiktok_product_link_cleanup",
             "tiktok_product_to_feishu",

@@ -221,6 +221,10 @@ def test_cli_runner_lists_registered_tasks():
             "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
         },
         {
+            "name": "sync_tk_influencer_pool",
+            "description": "Synchronize pending competitor products into the TK influencer pool via FastMoss HTTP APIs.",
+        },
+        {
             "name": "tiktok_feishu_single_sync",
             "description": (
                 "Fetch one TikTok Shop product URL and insert one Feishu Bitable row; "
