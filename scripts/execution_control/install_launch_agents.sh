@@ -9,7 +9,7 @@ ENV_FILE="${ROOT_DIR}/scripts/execution_control/executor.local.env"
 UID_VALUE="$(id -u)"
 
 LABELS=(
-  "com.happyzhao.mujitask.phase1-executor"
+  "com.happyzhao.mujitask.executor-daemon"
   "com.happyzhao.mujitask.browser-runloop"
   "com.happyzhao.mujitask.outbox-dispatcher"
 )
@@ -29,11 +29,11 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 "${ROOT_DIR}/.venv/bin/python" - <<'PY'
 import os
-from automation_business_scaffold.flows.phase1_runtime_store import Phase1RuntimeStore
+from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "")
 db_path = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_PATH", "")
-Phase1RuntimeStore(db_url=db_url, db_path=db_path)
+RuntimeStore(db_url=db_url, db_path=db_path)
 print("schema_ready")
 PY
 
@@ -52,7 +52,7 @@ for template_path in sorted(template_dir.glob("*.plist.template")):
     print(dest_path)
 PY
 
-pkill -f 'automation_business_scaffold.phase1_executor_daemon' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.executor_daemon' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.browser_runloop' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.outbox_dispatcher' >/dev/null 2>&1 || true
 

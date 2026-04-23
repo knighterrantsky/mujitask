@@ -1,0 +1,119 @@
+# 入口与输出契约设计
+
+日期: 2026-04-23
+
+## 1. 定位
+
+本文描述 OpenClaw / CLI / Skill 入口与系统输出契约。它承接旧 OpenClaw 输出协议文档中的技术协议部分；客户需求和业务验收仍以 `docs/business` 为准。
+
+核心原则:
+
+> 入口层只负责识别意图、提取参数、提交顶层 Task，并返回可追踪的 `request_id`；长流程执行、结果汇总和通知分发由 Runtime DB、executor、worker 和 outbox 完成。
+
+## 2. 入口层职责
+
+入口层包括:
+
+- OpenClaw skill 脚本
+- CLI 调用
+- 定时任务触发器
+- 未来可能的 webhook/API submitter
+
+入口层只应该做:
+
+- 参数提取和最小校验。
+- 选择 `task_code`。
+- 构造 `payload_json`。
+- 写入或提交 `task_request`。
+- 同步返回 `request_id`、当前状态和简短说明。
+
+入口层不应该做:
+
+- 陪跑完整长任务。
+- 直接执行浏览器或批量 API 采集。
+- 直接判断父子任务完成。
+- 直接发送最终通知。
+- 持有只能存在于进程内存中的任务状态。
+
+## 3. 同步返回契约
+
+入口层同步返回必须短小、可机读、可追踪。
+
+推荐最小字段:
+
+| 字段 | 说明 |
+| --- | --- |
+| `ok` | submit 是否成功 |
+| `request_id` | Runtime DB 顶层任务 ID |
+| `task_code` | 顶层任务类型 |
+| `status` | 当前任务状态，通常为 `pending` 或 `waiting_children` |
+| `message` | 面向调用方的简短说明 |
+| `result_url` | 可选，后续查询或回执入口 |
+| `reply_target` | 可选，最终通知目标 |
+
+CLI / OpenClaw 兼容输出可继续使用 `__OPENCLAW_RESULT__` 作为最终一行机器可读 JSON，但该 JSON 不应塞入完整运行细节。
+
+## 4. 异步结果契约
+
+长流程最终结果由 executor 汇总并写入:
+
+- `task_request.summary_json`
+- `task_request.result_json`
+- `notification_outbox.payload_json`
+
+最终通知由 `outbox_dispatcher` 发送。通知失败不反向污染主业务成功状态。
+
+推荐最终 result 包含:
+
+| 字段 | 说明 |
+| --- | --- |
+| `request_id` | 顶层任务 |
+| `task_code` | 任务类型 |
+| `final_status` | `success / failed / partial_success` |
+| `summary` | 业务摘要 |
+| `counts` | 成功、失败、跳过、去重等计数 |
+| `failed_items` | 失败明细摘要，不放超大 payload |
+| `artifact_uri_prefix` | 可选，运行产物入口 |
+| `run_object_key` / `steps_object_key` / `stdout_object_key` | 可选，关键 artifact 索引 |
+
+## 5. 查询契约
+
+入口提交后，状态查询应以 Runtime DB 为准:
+
+```text
+request_id -> task_request -> child jobs -> artifacts -> outbox
+```
+
+建议保留三类动作:
+
+| 动作 | 说明 |
+| --- | --- |
+| `submit` | 创建或提交顶层 Task |
+| `status` | 查询当前任务状态和进度摘要 |
+| `result` | 查询终态结果和 artifact 索引 |
+
+这些动作可以由 CLI、Skill 或未来 API 承载，但语义必须一致。
+
+## 6. 错误契约
+
+同步 submit 失败只表示任务没有成功进入 Runtime DB，常见原因:
+
+- 参数缺失。
+- `task_code` 不支持。
+- Runtime DB 不可用。
+- 幂等键冲突且无法返回已有任务。
+
+异步执行失败表示任务已进入 Runtime DB，但 workflow 或 job 执行失败。异步失败应写入:
+
+- `task_request.error_text`
+- job `error_text` / `last_error_text`
+- `error_type`
+- `error_code`
+- `artifact_object` 中的排障产物
+
+## 7. 与其他架构文档关系
+
+- Task / Workflow / Job 拆分规则见 [workflow-design-guidelines.md](./workflow-design-guidelines.md)。
+- Runtime 状态和队列表见 [runtime-db-schema-design.md](./runtime-db-schema-design.md)。
+- Outbox 和整体进程关系见 [current-system-architecture-design.md](./current-system-architecture-design.md)。
+- Artifact 输出和 MinIO 规则见 [storage-architecture-design.md](./storage-architecture-design.md)。

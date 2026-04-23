@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 
 def _load_run_skill_step_module():
@@ -21,10 +20,10 @@ def _load_run_skill_step_module():
     return module
 
 
-def test_append_phase1_runtime_params_uses_explicit_openclaw_delivery_context():
+def test_append_runtime_params_uses_explicit_openclaw_delivery_context():
     module = _load_run_skill_step_module()
 
-    params = module._append_phase1_runtime_params(
+    params = module._append_runtime_params(
         ["control_action=submit"],
         {
             "NOTIFICATION_CHANNEL_CODE": "",
@@ -48,7 +47,7 @@ def test_append_phase1_runtime_params_uses_explicit_openclaw_delivery_context():
     }
 
 
-def test_append_phase1_runtime_params_falls_back_to_openclaw_session_store(tmp_path):
+def test_append_runtime_params_falls_back_to_openclaw_session_store(tmp_path):
     module = _load_run_skill_step_module()
     sessions_dir = tmp_path / "agents" / "tiktok-ops" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -79,7 +78,7 @@ def test_append_phase1_runtime_params_falls_back_to_openclaw_session_store(tmp_p
         encoding="utf-8",
     )
 
-    params = module._append_phase1_runtime_params(
+    params = module._append_runtime_params(
         ["control_action=submit"],
         {
             "NOTIFICATION_CHANNEL_CODE": "",

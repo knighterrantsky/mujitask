@@ -518,7 +518,7 @@ def _influencer_pool_sync_submit_params(
     base_params.append(f"request_delay_max_seconds={max(request_delay_max_seconds, 0.0)}")
     if include_submit_control_action:
         base_params.append("control_action=submit")
-    params = _append_phase1_runtime_params(base_params, skill_env)
+    params = _append_runtime_params(base_params, skill_env)
     extra_env = {
         config["feishu_access_token_env"]: config["feishu_access_token"],
         config["fastmoss_phone_env"]: config["fastmoss_phone"],
@@ -580,7 +580,7 @@ def _append_influencer_pool_browser_params(
     return params
 
 
-def _append_phase1_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
+def _append_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
     db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
     db_path = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_PATH")
     artifact_root = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_ROOT")
@@ -929,43 +929,6 @@ def _build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--sku-id", default="")
     update_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
-    submit_parser = subparsers.add_parser("single-row-update-submit")
-    submit_parser.add_argument("--run-mode", default="canary")
-    submit_parser.add_argument("--record-id", required=True)
-    submit_parser.add_argument("--profile-ref", default="")
-    submit_parser.add_argument("--product-url", default="")
-    submit_parser.add_argument("--sku-id", default="")
-    submit_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
-
-    status_parser = subparsers.add_parser("single-row-update-status")
-    status_parser.add_argument("--run-mode", default="canary")
-    status_parser.add_argument("--request-id", default="")
-    status_parser.add_argument("--execution-id", default="")
-
-    result_parser = subparsers.add_parser("single-row-update-result")
-    result_parser.add_argument("--run-mode", default="canary")
-    result_parser.add_argument("--request-id", default="")
-    result_parser.add_argument("--execution-id", default="")
-
-    daemon_once_parser = subparsers.add_parser("single-row-update-daemon-once")
-    daemon_once_parser.add_argument("--run-mode", default="canary")
-
-    daemon_loop_parser = subparsers.add_parser("single-row-update-daemon-loop")
-    daemon_loop_parser.add_argument("--run-mode", default="canary")
-    daemon_loop_parser.add_argument("--max-iterations", type=int, default=0)
-    daemon_loop_parser.add_argument("--max-idle-cycles", type=int, default=1)
-    daemon_loop_parser.add_argument("--stop-when-idle", action="store_true")
-
-    submit_then_daemon_parser = subparsers.add_parser("single-row-update-submit-then-daemon-loop")
-    submit_then_daemon_parser.add_argument("--run-mode", default="canary")
-    submit_then_daemon_parser.add_argument("--record-id", required=True)
-    submit_then_daemon_parser.add_argument("--profile-ref", default="")
-    submit_then_daemon_parser.add_argument("--product-url", default="")
-    submit_then_daemon_parser.add_argument("--sku-id", default="")
-    submit_then_daemon_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
-    submit_then_daemon_parser.add_argument("--max-iterations", type=int, default=0)
-    submit_then_daemon_parser.add_argument("--max-idle-cycles", type=int, default=1)
-
     refresh_parser = subparsers.add_parser("refresh-current-competitor-table")
     refresh_parser.add_argument("--run-mode", default="canary")
     refresh_parser.add_argument("--profile-ref", default="")
@@ -1131,173 +1094,8 @@ def main(argv: list[str] | None = None) -> int:
                 ensure_ready=True,
             )
         )
-    elif args.command == "single-row-update-submit":
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-submit-step"
-        params = _append_phase1_runtime_params(["control_action=submit"], skill_env)
-        params.extend(
-            _single_row_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                record_id=args.record_id,
-                product_url=args.product_url,
-                sku_id=args.sku_id,
-                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
-                ensure_ready=False,
-            )
-        )
-    elif args.command == "single-row-update-status":
-        if not args.request_id and not args.execution_id:
-            raise ValueError("single-row-update-status requires --request-id or --execution-id.")
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-status-step"
-        params = _append_phase1_runtime_params(["control_action=status"], skill_env)
-        if args.request_id:
-            params.append(f"request_id={args.request_id}")
-        if args.execution_id:
-            params.append(f"execution_id={args.execution_id}")
-    elif args.command == "single-row-update-result":
-        if not args.request_id and not args.execution_id:
-            raise ValueError("single-row-update-result requires --request-id or --execution-id.")
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-result-step"
-        params = _append_phase1_runtime_params(["control_action=result"], skill_env)
-        if args.request_id:
-            params.append(f"request_id={args.request_id}")
-        if args.execution_id:
-            params.append(f"execution_id={args.execution_id}")
-    elif args.command == "single-row-update-daemon-once":
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-daemon-once-step"
-        params = _append_phase1_runtime_params(["control_action=daemon_once"], skill_env)
-    elif args.command == "single-row-update-daemon-loop":
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-daemon-loop-step"
-        params = _append_phase1_runtime_params(
-            [
-            "control_action=daemon_loop",
-            f"execution_control_max_iterations={args.max_iterations}",
-            f"execution_control_max_idle_cycles={args.max_idle_cycles}",
-            ],
-            skill_env,
-        )
-        if args.stop_when_idle:
-            params.append("execution_control_stop_when_idle=true")
-    elif args.command == "single-row-update-submit-then-daemon-loop":
-        resolved_profile_ref = _resolve_profile_ref_for_task(
-            python_bin=python_bin,
-            install_dir=install_dir,
-            requested_profile_ref=args.profile_ref,
-            fallback_profile_ref=browser_profile_ref,
-            ensure_ready=True,
-        )
-        submit_status, submit_payload = _run_cli_task_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            cli_bin=cli_bin,
-            task_name="feishu_single_row_update",
-            run_mode=args.run_mode,
-            params=_append_phase1_runtime_params(
-                [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=submit",
-                *_single_row_submit_params(
-                    python_bin=python_bin,
-                    install_dir=install_dir,
-                    requested_profile_ref=resolved_profile_ref,
-                    fallback_profile_ref=resolved_profile_ref,
-                    record_id=args.record_id,
-                    product_url=args.product_url,
-                    sku_id=args.sku_id,
-                    skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
-                    ensure_ready=False,
-                ),
-                ],
-                skill_env,
-            ),
-            stdout_prefix="single-row-update-submit-step",
-            extra_env=extra_env,
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-
-        request_id = str(submit_payload.get("request_id", "") or "").strip()
-        if not request_id:
-            return _emit_final_result(
-                {
-                    "status": "failed",
-                    "error": "submit did not return request_id",
-                    "task_name": "feishu_single_row_update",
-                }
-            )
-
-        daemon_status, daemon_payload = _run_cli_task_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            cli_bin=cli_bin,
-            task_name="feishu_single_row_update",
-            run_mode=args.run_mode,
-            params=_append_phase1_runtime_params(
-                [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=daemon_loop",
-                "execution_control_stop_when_idle=true",
-                f"execution_control_max_iterations={args.max_iterations}",
-                f"execution_control_max_idle_cycles={args.max_idle_cycles}",
-                ],
-                skill_env,
-            ),
-            stdout_prefix="single-row-update-daemon-loop-step",
-            extra_env=extra_env,
-        )
-        if daemon_status != 0:
-            return _emit_final_result(daemon_payload or {"status": "failed", "error": "daemon loop failed"})
-
-        result_status, result_payload = _run_cli_task_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            cli_bin=cli_bin,
-            task_name="feishu_single_row_update",
-            run_mode=args.run_mode,
-            params=_append_phase1_runtime_params(
-                [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=result",
-                f"request_id={request_id}",
-                ],
-                skill_env,
-            ),
-            stdout_prefix="single-row-update-result-step",
-            extra_env=extra_env,
-        )
-        if result_status != 0:
-            failure_payload = result_payload if isinstance(result_payload, dict) else {}
-            failure_payload["control_action"] = "submit_then_daemon_loop"
-            failure_payload["submit"] = submit_payload
-            failure_payload["daemon"] = daemon_payload
-            if not str(failure_payload.get("error", "")).strip():
-                failure_payload["error"] = "result query failed"
-            if not str(failure_payload.get("status", "")).strip():
-                failure_payload["status"] = "failed"
-            return _emit_final_result(failure_payload)
-        final_payload = result_payload if isinstance(result_payload, dict) else {}
-        final_payload["control_action"] = "submit_then_daemon_loop"
-        final_payload["submit"] = submit_payload
-        final_payload["daemon"] = daemon_payload
-        final_payload["message"] = str(
-            final_payload.get("message", "") or "Submitted request, drained daemon loop, and loaded final result."
-        )
-        return _emit_final_result(final_payload)
     elif args.command == "refresh-current-competitor-table-submit":
-        submit_params = _append_phase1_runtime_params(
+        submit_params = _append_runtime_params(
             [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
@@ -1331,7 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-current-competitor-table-status":
         task_name = "refresh_current_competitor_table"
         prefix = "refresh-current-competitor-table-status-step"
-        params = _append_phase1_runtime_params(
+        params = _append_runtime_params(
             [
                 "control_action=status",
                 f"request_id={args.request_id}",
@@ -1341,7 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-current-competitor-table-result":
         task_name = "refresh_current_competitor_table"
         prefix = "refresh-current-competitor-table-result-step"
-        params = _append_phase1_runtime_params(
+        params = _append_runtime_params(
             [
                 "control_action=result",
                 f"request_id={args.request_id}",
@@ -1349,7 +1147,7 @@ def main(argv: list[str] | None = None) -> int:
             skill_env,
         )
     elif args.command == "refresh-current-competitor-table":
-        submit_params = _append_phase1_runtime_params(
+        submit_params = _append_runtime_params(
             [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
@@ -1381,7 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
             return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "keyword-search-submit":
-        submit_params = _append_phase1_runtime_params(
+        submit_params = _append_runtime_params(
             [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",
@@ -1418,7 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "keyword-search-status":
         task_name = "search_keyword_competitor_products"
         prefix = "keyword-search-status-step"
-        params = _append_phase1_runtime_params(
+        params = _append_runtime_params(
             [
                 "control_action=status",
                 f"request_id={args.request_id}",
@@ -1428,7 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "keyword-search-result":
         task_name = "search_keyword_competitor_products"
         prefix = "keyword-search-result-step"
-        params = _append_phase1_runtime_params(
+        params = _append_runtime_params(
             [
                 "control_action=result",
                 f"request_id={args.request_id}",
@@ -1436,7 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
             skill_env,
         )
     elif args.command == "keyword-search":
-        submit_params = _append_phase1_runtime_params(
+        submit_params = _append_runtime_params(
             [
                 f"table_url={table_url}",
                 "access_token_env=FEISHU_ACCESS_TOKEN",

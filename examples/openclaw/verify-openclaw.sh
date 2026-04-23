@@ -168,7 +168,7 @@ main() {
   check_file "$EXECUTOR_ENV_FILE"
   check_file "$INSTALL_DIR/scripts/execution_control/install_launch_agents.sh"
   check_file "$INSTALL_DIR/scripts/execution_control/run_launchd_agent.sh"
-  check_file "$INSTALL_DIR/config/deployment/launchd/com.happyzhao.mujitask.phase1-executor.plist.template"
+  check_file "$INSTALL_DIR/config/deployment/launchd/com.happyzhao.mujitask.executor-daemon.plist.template"
   check_file "$INSTALL_DIR/config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template"
   check_file "$INSTALL_DIR/config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template"
   if [[ -f "$INSTALL_DIR/config/browser_profiles.json" ]]; then
@@ -224,7 +224,7 @@ PY
 
   log "Checking launchd installation"
   local labels=(
-    "com.happyzhao.mujitask.phase1-executor"
+    "com.happyzhao.mujitask.executor-daemon"
     "com.happyzhao.mujitask.browser-runloop"
     "com.happyzhao.mujitask.outbox-dispatcher"
   )

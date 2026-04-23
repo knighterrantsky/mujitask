@@ -2,123 +2,13 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-from fastapi.testclient import TestClient
-from automation_framework.agent.server import create_app
-from automation_framework.runtime import RunRegistry
-
 from automation_business_scaffold.cli import list_registered_tasks, run_registered_task
-from automation_business_scaffold.registry import build_task_registry
-from automation_business_scaffold.tasks import (
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+from automation_business_scaffold.business.tasks import (
     FeishuClearRowByUrlTask,
-    FeishuSingleRowUpdateTask,
     RefreshCurrentCompetitorTableTask,
     SearchKeywordCompetitorProductsTask,
-    SourceToTargetPublishDemoTask,
 )
-
-
-def test_demo_task_runs_and_records_steps_signals_and_artifacts(tmp_path):
-    registry = build_task_registry()
-    run_registry = RunRegistry(str(tmp_path / "runs"))
-    app = create_app(registry, run_registry=run_registry)
-    client = TestClient(app)
-
-    response = client.post(
-        "/runs",
-        json={
-            "task_name": "source_to_target_publish_demo",
-            "params": {
-                "title": "Demo Vintage Chair",
-                "price": 128,
-                "run_mode": "draft",
-            },
-            "wait": True,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "success"
-
-    steps_payload = client.get(f"/runs/{payload['run_id']}/steps").json()
-    assert [item["step_id"] for item in steps_payload] == [
-        "extract_source_item",
-        "map_publish_payload",
-        "fill_target_form",
-        "save_target_draft",
-    ]
-    assert all(item["status"] == "success" for item in steps_payload)
-    assert Path(steps_payload[0]["artifacts"]["state_dump"]).exists()
-    assert Path(steps_payload[2]["artifacts"]["html_snapshot"]).exists()
-
-    signals_payload = client.get(f"/runs/{payload['run_id']}/signals").json()
-    assert [item["signal_type"] for item in signals_payload] == [
-        "step.completed",
-        "step.completed",
-        "step.completed",
-        "step.completed",
-    ]
-
-    artifacts_payload = client.get(f"/runs/{payload['run_id']}/artifacts").json()
-    assert [item["step_id"] for item in artifacts_payload] == [
-        "extract_source_item",
-        "map_publish_payload",
-        "fill_target_form",
-        "save_target_draft",
-    ]
-
-
-def test_demo_task_submit_effect_is_blocked_in_draft_mode(tmp_path):
-    registry = build_task_registry()
-    run_registry = RunRegistry(str(tmp_path / "runs"))
-    app = create_app(registry, run_registry=run_registry)
-    client = TestClient(app)
-
-    response = client.post(
-        "/runs",
-        json={
-            "task_name": "source_to_target_publish_demo",
-            "params": {
-                "title": "Demo Vintage Chair",
-                "price": 128,
-                "run_mode": "draft",
-                "include_submit": True,
-            },
-            "wait": True,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "failed"
-
-    steps_payload = client.get(f"/runs/{payload['run_id']}/steps").json()
-    assert [item["step_id"] for item in steps_payload] == [
-        "extract_source_item",
-        "map_publish_payload",
-        "fill_target_form",
-        "submit_target_publish",
-    ]
-    assert steps_payload[-1]["status"] == "failed"
-    assert steps_payload[-1]["validation"]["code"] == "RUN_MODE_BLOCKED"
-
-    signals_payload = client.get(f"/runs/{payload['run_id']}/signals").json()
-    assert [item["signal_type"] for item in signals_payload] == [
-        "step.completed",
-        "step.completed",
-        "step.completed",
-        "run_mode.blocked",
-    ]
-
-
-def test_demo_task_workflow_builder_uses_expected_workflow_id():
-    task = SourceToTargetPublishDemoTask()
-
-    workflow = task.build_workflow({})
-
-    assert workflow.workflow_id == "source_to_target_publish_demo_v1"
-    assert workflow.run_mode == "draft"
 
 
 def test_feishu_clear_row_by_url_workflow_builder_uses_expected_workflow_id():
@@ -137,25 +27,41 @@ def test_search_keyword_competitor_products_workflow_builder_uses_expected_workf
 
     assert workflow.workflow_id == "search_keyword_competitor_products_v1"
     assert workflow.run_mode == "draft"
+    assert [step.step_id for step in workflow.steps] == [
+        "submit_keyword_request",
+        "enqueue_keyword_discovery",
+        "run_keyword_discovery_browser",
+        "process_keyword_candidates",
+        "run_keyword_detail_updates",
+        "finalize_keyword_summary",
+        "dispatch_keyword_outbox",
+        "load_keyword_result",
+    ]
 
 
-def test_cli_runner_executes_registered_workflow_task_and_records_outputs(tmp_path):
-    payload = run_registered_task(
-        "source_to_target_publish_demo",
-        params={
-            "title": "CLI Demo Chair",
-            "price": 128,
-            "run_mode": "draft",
-        },
-        run_dir=tmp_path / "cli_runs",
-    )
+def test_refresh_current_competitor_table_workflow_builder_splits_business_steps():
+    task = RefreshCurrentCompetitorTableTask()
 
-    assert payload["status"] == "success"
-    assert Path(payload["run_file"]).exists()
-    assert Path(payload["steps_file"]).exists()
-    assert Path(payload["signals_file"]).exists()
-    assert Path(payload["artifacts_dir"]).exists()
-    assert payload["result"]["data"]["workflow_id"] == "source_to_target_publish_demo_v1"
+    workflow = task.build_workflow({})
+
+    assert workflow.workflow_id == "refresh_current_competitor_table_v1"
+    assert workflow.run_mode == "draft"
+    assert [step.step_id for step in workflow.steps] == [
+        "submit_refresh_request",
+        "plan_refresh_work",
+        "run_refresh_browser_updates",
+        "finalize_refresh_summary",
+        "dispatch_refresh_outbox",
+        "load_refresh_result",
+    ]
+
+
+def test_refresh_current_competitor_table_control_action_keeps_single_action_workflow():
+    task = RefreshCurrentCompetitorTableTask()
+
+    workflow = task.build_workflow({"control_action": "submit"})
+
+    assert [step.step_id for step in workflow.steps] == ["orchestrate_refresh_current_competitor_table"]
 
 
 def test_cli_runner_lists_registered_tasks():
@@ -217,10 +123,6 @@ def test_cli_runner_lists_registered_tasks():
             ),
         },
         {
-            "name": "source_to_target_publish_demo",
-            "description": "Demo workflow showing extract -> map -> fill -> draft/submit on top of automation-framework.",
-        },
-        {
             "name": "sync_tk_influencer_pool",
             "description": "Synchronize pending competitor products into the TK influencer pool via FastMoss HTTP APIs.",
         },
@@ -238,40 +140,7 @@ def test_cli_runner_lists_registered_tasks():
                 "and delete duplicate rows."
             ),
         },
-        {
-            "name": "tiktok_product_to_feishu",
-            "description": "Fetch a TikTok Shop product page and prepare Feishu Bitable fields for the item.",
-        },
     ]
-
-
-def test_cli_runner_supports_controlled_submit_without_workflow_validation_error(tmp_path):
-    payload = run_registered_task(
-        "feishu_single_row_update",
-        params={
-            "control_action": "submit",
-            "record_id": "rec-cli-submit",
-            "profile_ref": "main",
-            "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
-            "access_token": "token-demo",
-            "execution_control_db_path": str(tmp_path / "control.sqlite3"),
-        },
-        run_dir=tmp_path / "cli_runs",
-    )
-
-    assert payload["status"] == "success"
-    step_output = payload["result"]["data"]["step_outputs"]["update_single_row"]
-    assert step_output["control_action"] == "submit"
-    assert step_output["summary"]["total"] == 1
-    assert step_output["summary"]["counts"] == {"queued": 1}
-    assert step_output["request_status"] == "queued"
-
-
-def _controlled_context(params: dict[str, object]) -> SimpleNamespace:
-    return SimpleNamespace(
-        step=SimpleNamespace(step_id="update_single_row"),
-        params=params,
-    )
 
 
 def _refresh_context(params: dict[str, object]) -> SimpleNamespace:
@@ -286,40 +155,6 @@ def _keyword_search_context(params: dict[str, object]) -> SimpleNamespace:
         step=SimpleNamespace(step_id="orchestrate_search_keyword_competitor_products"),
         params=params,
     )
-
-
-def test_controlled_task_submit_and_status_round_trip(tmp_path):
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control.sqlite3"
-
-    submit_result = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-001",
-                "profile_ref": "main",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    assert submit_result.data["request_status"] == "queued"
-    assert submit_result.data["execution_status"] == "queued"
-    assert submit_result.data["resource_code"] == "browser.tiktok.main"
-
-    status_result = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "status",
-                "request_id": submit_result.data["request_id"],
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    assert status_result.data["request_id"] == submit_result.data["request_id"]
-    assert status_result.data["queue_position"] == 1
-    assert status_result.data["request"]["payload"]["record_id"] == "rec-001"
 
 
 def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation_error(tmp_path):
@@ -345,12 +180,12 @@ def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation
 
 def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_tiktok_product_link_cleanup",
             "run_feishu_pending_rows_scan",
             "run_feishu_single_row_update",
-            "Phase1RuntimeStore",
+            "RuntimeStore",
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
@@ -488,21 +323,15 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert len(executor_summary.data["outbox"]) == 1
     assert executor_summary.data["outbox"][0]["status"] == "pending"
 
-    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_path=str(db_path))
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 2
     assert all(len(store.list_artifacts(run_id=record.run_id)) == 5 for record in execution_records)
-    entity = store.find_entity(
-        entity_type="product",
-        canonical_key="tiktok_product:1731098351299629802",
-    )
-    assert entity is not None
-    bindings = store.list_entity_bindings(entity_id=entity.entity_id)
-    assert len(bindings) == 1
-    assert bindings[0].target_type == "feishu_record"
-    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
-    assert len(snapshots) == 1
-    assert snapshots[0].request_id == submitted.data["request_id"]
+    fact_store = TKFactStore(runtime_store=store)
+    product = fact_store.get_product(product_id="1731098351299629802")
+    assert product["product_id"] == "1731098351299629802"
+    assert product["title"] == "Product A"
+    assert "entity_snapshot" not in fact_store.table_names()
 
     outbox_once = task.execute_workflow_step(
         _refresh_context(
@@ -527,21 +356,20 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert final_result.data["request_status"] == "success"
     assert final_result.data["outbox"][0]["status"] == "sent"
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
-    assert len(final_result.data["result"]["entities"]) == 1
-    assert len(final_result.data["result"]["entity_bindings"]) == 1
-    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
-    assert final_result.data["result"]["entities"][0]["canonical_key"] == "tiktok_product:1731098351299629802"
-    assert len(final_result.data["result"]["entity_snapshots"]) == 1
+    assert len(final_result.data["result"]["fact_entities"]) >= 1
+    assert final_result.data["result"]["fact_entities"][0]["product_id"] == "1731098351299629802"
+    assert len(final_result.data["result"]["raw_api_responses"]) >= 1
+    assert "entity_snapshots" not in final_result.data["result"]
 
 
 def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_fastmoss_keyword_candidate_discovery",
             "run_feishu_seed_row_insert",
             "run_feishu_single_row_update",
-            "Phase1RuntimeStore",
+            "RuntimeStore",
         ],
     )
     task = SearchKeywordCompetitorProductsTask()
@@ -754,10 +582,11 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
     }
     assert final_result.data["result"]["seed_insert"]["summary"]["counts"] == {"inserted": 2}
     assert {item["record_id"] for item in final_result.data["items"]} == {"rec-a", "rec-b"}
-    assert len(final_result.data["result"]["entities"]) == 1
-    assert final_result.data["result"]["entity_bindings"][0]["target_id"] == "rec-a"
+    assert len(final_result.data["result"]["fact_entities"]) >= 1
+    assert final_result.data["result"]["fact_entities"][0]["product_id"] == "1731098351299629802"
+    assert "entity_bindings" not in final_result.data["result"]
 
-    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_path=str(db_path))
     executions = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(executions) == 3
     assert sum(1 for execution in executions if execution.item_code == "fastmoss_keyword_candidate_discovery") == 1
@@ -766,7 +595,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
 
 def test_keyword_outbox_text_reports_zero_results():
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=["_build_outbox_text"],
     )
 
@@ -791,7 +620,7 @@ def test_keyword_outbox_text_reports_zero_results():
 
 def test_keyword_failure_outbox_text_includes_keyword():
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=["_build_failure_outbox_text"],
     )
 
@@ -808,15 +637,15 @@ def test_keyword_failure_outbox_text_includes_keyword():
 
 def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_tiktok_product_link_cleanup",
             "run_feishu_pending_rows_scan",
             "run_feishu_single_row_update",
-            "Phase1RuntimeStore",
+            "RuntimeStore",
         ],
     )
-    from automation_business_scaffold.flows.artifact_store import StoredArtifact
+    from automation_business_scaffold.infrastructure.artifacts.artifact_store import StoredArtifact
 
     task = RefreshCurrentCompetitorTableTask()
     db_path = tmp_path / "phase1_minio.sqlite3"
@@ -955,7 +784,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
     assert any(key.endswith("/referenced/product_page_screenshot_file/product-page.png") for key in uploaded_keys)
     assert any(key.endswith("/referenced/detail_page_screenshot_file/fastmoss-page.png") for key in uploaded_keys)
 
-    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_path=str(db_path))
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 1
     stored_artifacts = store.list_artifacts(run_id=execution_records[0].run_id)
@@ -969,7 +798,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
 
 def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_tiktok_product_link_cleanup",
             "run_feishu_pending_rows_scan",
@@ -993,7 +822,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
         },
     )
 
-    first_submit = task.execute_workflow_step(
+    task.execute_workflow_step(
         _refresh_context(
             {
                 "control_action": "submit",
@@ -1044,12 +873,12 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
 
 def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_tiktok_product_link_cleanup",
             "run_feishu_pending_rows_scan",
             "run_feishu_single_row_update",
-            "Phase1RuntimeStore",
+            "RuntimeStore",
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
@@ -1176,23 +1005,18 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
         )
         assert final_result.data["request_status"] == "success"
 
-    store = module.Phase1RuntimeStore(db_path=str(db_path))
-    entity = store.find_entity(
-        entity_type="product",
-        canonical_key="tiktok_product:1731098351299629802",
-    )
-    assert entity is not None
-    snapshots = store.list_entity_snapshots(entity_id=entity.entity_id)
-    assert len(snapshots) == 2
-    assert snapshots[0].baseline_snapshot_id == ""
-    assert snapshots[1].baseline_snapshot_id == snapshots[0].snapshot_id
-    assert snapshots[1].diff["fields"]["after"]["Fastmoss价格"] == "12.49"
-    assert snapshots[1].diff["logical_fields"]["after"]["title"] == "Product A Updated"
+    store = module.RuntimeStore(db_path=str(db_path))
+    fact_store = TKFactStore(runtime_store=store)
+    product = fact_store.get_product(product_id="1731098351299629802")
+    assert product["title"] == "Product A Updated"
+    assert product["facts"]["fields"]["Fastmoss价格"] == "12.49"
+    assert product["facts"]["logical_fields"]["title"] == "Product A Updated"
+    assert "entity_snapshot" not in fact_store.table_names()
 
 
 def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
             "run_tiktok_product_link_cleanup",
             "run_feishu_pending_rows_scan",
@@ -1326,11 +1150,11 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
 
 def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
-        fromlist=["dispatch_phase1_outbox_once", "Phase1RuntimeStore"],
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
+        fromlist=["dispatch_phase1_outbox_once", "RuntimeStore"],
     )
     db_path = tmp_path / "phase1_feishu_outbox.sqlite3"
-    store = module.Phase1RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_path=str(db_path))
     dispatched_messages: list[dict[str, str]] = []
 
     monkeypatch.setattr(
@@ -1374,7 +1198,7 @@ def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path):
 
 def test_parse_reply_target_accepts_python_dict_repr():
     module = __import__(
-        "automation_business_scaffold.flows.refresh_current_competitor_table_flow",
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=["_parse_reply_target"],
     )
 
@@ -1389,359 +1213,40 @@ def test_parse_reply_target_accepts_python_dict_repr():
     }
 
 
-def test_controlled_task_execute_next_runs_requests_in_queue_order(monkeypatch, tmp_path):
-    module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
-    )
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control.sqlite3"
-    executed_record_ids: list[str] = []
-
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
-        executed_record_ids.append(record_id)
-        return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
-        }
-
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
-
-    first_submit = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-first",
-                "profile_ref": "shared",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    second_submit = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-second",
-                "profile_ref": "shared",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    queued_status = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "status",
-                "request_id": second_submit.data["request_id"],
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    assert queued_status.data["queue_position"] == 2
-
-    first_run = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "execute_next",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    assert first_run.data["request_id"] == first_submit.data["request_id"]
-    assert first_run.data["execution_status"] == "success"
-
-    second_status = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "status",
-                "request_id": second_submit.data["request_id"],
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    assert second_status.data["execution_status"] == "queued"
-    assert second_status.data["queue_position"] == 1
-
-    second_run = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "execute_next",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    assert second_run.data["request_id"] == second_submit.data["request_id"]
-    assert second_run.data["execution_status"] == "success"
-    assert executed_record_ids == ["rec-first", "rec-second"]
-
-
-def test_controlled_task_daemon_once_reports_processed_execution(monkeypatch, tmp_path):
-    module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
-    )
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control.sqlite3"
-
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
-        return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
-        }
-
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
-
-    submitted = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-daemon-once",
-                "profile_ref": "shared",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    daemon_once = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "daemon_once",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    assert daemon_once.data["control_action"] == "daemon_once"
-    assert daemon_once.data["daemon_status"] == "processed"
-    assert daemon_once.data["processed_count"] == 1
-    assert daemon_once.data["request_id"] == submitted.data["request_id"]
-    assert daemon_once.data["execution_status"] == "success"
-    assert daemon_once.data["last_execution"]["request_id"] == submitted.data["request_id"]
-    assert daemon_once.data["artifact_count"] == 5
-    assert daemon_once.data["run_object_key"].endswith("/run.json")
-    assert daemon_once.data["stdout_object_key"].endswith("/stdout.log")
-    assert all(Path(item["source_path"]).exists() for item in daemon_once.data["artifacts"])
-
-
-def test_controlled_task_daemon_loop_drains_queue_until_idle(monkeypatch, tmp_path):
-    module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
-    )
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control.sqlite3"
-    executed_record_ids: list[str] = []
-
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
-        executed_record_ids.append(record_id)
-        return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
-        }
-
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
-
-    first_submit = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-loop-first",
-                "profile_ref": "shared",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    second_submit = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-loop-second",
-                "profile_ref": "shared",
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    daemon_loop = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "daemon_loop",
-                "execution_control_db_path": str(db_path),
-                "execution_control_stop_when_idle": True,
-                "execution_control_max_idle_cycles": 1,
-            }
-        )
-    )
-
-    assert daemon_loop.data["control_action"] == "daemon_loop"
-    assert daemon_loop.data["daemon_status"] == "completed"
-    assert daemon_loop.data["processed_count"] == 2
-    assert daemon_loop.data["success_count"] == 2
-    assert daemon_loop.data["failed_count"] == 0
-    assert executed_record_ids == ["rec-loop-first", "rec-loop-second"]
-    assert daemon_loop.data["last_execution"]["request_id"] == second_submit.data["request_id"]
-
-    first_status = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "status",
-                "request_id": first_submit.data["request_id"],
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-    second_status = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "status",
-                "request_id": second_submit.data["request_id"],
-                "execution_control_db_path": str(db_path),
-            }
-        )
-    )
-
-    assert first_status.data["execution_status"] == "success"
-    assert second_status.data["execution_status"] == "success"
-
-
-def test_controlled_task_run_executes_and_returns_result(monkeypatch, tmp_path):
-    module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
-    )
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control.sqlite3"
-
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
-        return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
-        }
-
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
-
-    run_result = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "record_id": "rec-direct",
-                "profile_ref": "pilot",
-                "execution_control_db_path": str(db_path),
-                "execution_poll_interval_seconds": 0.01,
-                "execution_wait_timeout_seconds": 2,
-            }
-        )
-    )
-
-    assert run_result.data["control_action"] == "run"
-    assert run_result.data["execution_status"] == "success"
-    assert run_result.data["summary"]["counts"] == {"updated": 1}
-    assert run_result.data["result"]["item"]["record_id"] == "rec-direct"
-    assert run_result.data["artifact_count"] == 5
-    assert run_result.data["artifact_uri_prefix"].startswith("file://")
-    assert run_result.data["run_object_key"].endswith("/run.json")
-    assert run_result.data["steps_object_key"].endswith("/steps.json")
-    assert run_result.data["signals_object_key"].endswith("/signals.json")
-    assert run_result.data["stdout_object_key"].endswith("/stdout.log")
-    assert {item["kind"] for item in run_result.data["artifacts"]} == {
-        "run_json",
-        "signals_json",
-        "state_json",
-        "steps_json",
-        "stdout_log",
-    }
-    assert all(Path(item["source_path"]).exists() for item in run_result.data["artifacts"])
-
-
-def test_controlled_task_supports_sqlalchemy_db_url(monkeypatch, tmp_path):
-    pytest.importorskip("sqlalchemy")
-    module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
-    )
-    task = FeishuSingleRowUpdateTask()
-    db_url = f"sqlite:///{(tmp_path / 'control_sqlalchemy.sqlite3').resolve()}"
-
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
-        return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
-        }
-
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
-
-    submitted = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "submit",
-                "record_id": "rec-sqlalchemy-url",
-                "profile_ref": "main",
-                "execution_control_db_url": db_url,
-            }
-        )
-    )
-
-    daemon_once = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "daemon_once",
-                "execution_control_db_url": db_url,
-            }
-        )
-    )
-
-    result_payload = task.execute_workflow_step(
-        _controlled_context(
-            {
-                "control_action": "result",
-                "request_id": submitted.data["request_id"],
-                "execution_control_db_url": db_url,
-            }
-        )
-    )
-
-    assert daemon_once.data["daemon_status"] == "processed"
-    assert daemon_once.data["request_id"] == submitted.data["request_id"]
-    assert result_payload.data["execution_status"] == "success"
-    assert result_payload.data["artifact_count"] == 5
-    assert result_payload.data["result"]["item"]["record_id"] == "rec-sqlalchemy-url"
-
-
 def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys):
     module = __import__(
-        "automation_business_scaffold.flows.execution_control_flow",
-        fromlist=["run_feishu_single_row_update"],
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
+        fromlist=["run_tiktok_product_link_cleanup", "run_feishu_pending_rows_scan"],
     )
     from automation_business_scaffold.executor_daemon import main as executor_main
 
-    task = FeishuSingleRowUpdateTask()
-    db_path = tmp_path / "control_executor.sqlite3"
+    task = RefreshCurrentCompetitorTableTask()
+    db_path = tmp_path / "workflow_executor.sqlite3"
 
-    def fake_run_feishu_single_row_update(params):
-        record_id = str(params["record_id"])
+    def fake_cleanup(params):
         return {
-            "summary": {"total": 1, "counts": {"updated": 1}},
-            "item": {"record_id": record_id, "status": "updated"},
-            "items": [{"record_id": record_id, "status": "updated"}],
+            "summary": {"total": 0, "counts": {}},
+            "items": [],
         }
 
-    monkeypatch.setattr(module, "run_feishu_single_row_update", fake_run_feishu_single_row_update)
+    def fake_scan(params):
+        return {
+            "summary": {"total": 0, "counts": {}},
+            "items": [],
+            "target_rows": [],
+        }
+
+    monkeypatch.setattr(module, "run_tiktok_product_link_cleanup", fake_cleanup)
+    monkeypatch.setattr(module, "run_feishu_pending_rows_scan", fake_scan)
 
     submitted = task.execute_workflow_step(
-        _controlled_context(
+        _refresh_context(
             {
                 "control_action": "submit",
-                "record_id": "rec-cli-daemon",
                 "profile_ref": "main",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
+                "access_token": "token-demo",
+                "notification_channel_code": "noop",
                 "execution_control_db_path": str(db_path),
             }
         )
@@ -1754,4 +1259,5 @@ def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys
     assert exit_code == 0
     assert payload["daemon_status"] == "processed"
     assert payload["request_id"] == submitted.data["request_id"]
-    assert payload["execution_status"] == "success"
+    assert payload["request_status"] == "success"
+    assert payload["current_stage"] == "completed"

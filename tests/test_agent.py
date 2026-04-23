@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from automation_business_scaffold.agent import app
 
 
-def test_agent_lists_demo_task():
+def test_agent_lists_current_tasks():
     client = TestClient(app)
 
     response = client.get("/tasks")
@@ -22,10 +22,8 @@ def test_agent_lists_demo_task():
             "feishu_single_row_update",
             "refresh_current_competitor_table",
             "search_keyword_competitor_products",
-            "source_to_target_publish_demo",
             "sync_tk_influencer_pool",
             "tiktok_feishu_single_sync",
             "tiktok_product_link_cleanup",
-            "tiktok_product_to_feishu",
         ]
     }

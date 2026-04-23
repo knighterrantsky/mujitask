@@ -1,0 +1,57 @@
+from automation_business_scaffold.business.tasks.fastmoss_login_check import FastMossLoginCheckTask
+from automation_business_scaffold.business.tasks.fastmoss_keyword_candidate_discovery import (
+    FastMossKeywordCandidateDiscoveryTask,
+)
+from automation_business_scaffold.business.tasks.fastmoss_product_sales_snapshot import (
+    FastMossProductSalesSnapshotTask,
+)
+from automation_business_scaffold.business.tasks.feishu_pending_rows_scan import FeishuPendingRowsScanTask
+from automation_business_scaffold.business.tasks.feishu_clear_row_by_url import FeishuClearRowByUrlTask
+from automation_business_scaffold.business.tasks.refresh_current_competitor_table import (
+    RefreshCurrentCompetitorTableTask,
+)
+from automation_business_scaffold.business.tasks.search_keyword_competitor_products import (
+    SearchKeywordCompetitorProductsTask,
+)
+from automation_business_scaffold.business.tasks.sync_tk_influencer_pool import (
+    SyncTKInfluencerPoolTask,
+)
+from automation_business_scaffold.business.tasks.feishu_seed_row_insert import FeishuSeedRowInsertTask
+from automation_business_scaffold.business.tasks.feishu_single_row_update import FeishuSingleRowUpdateTask
+from automation_business_scaffold.business.tasks.tiktok_feishu_single_sync import (
+    TikTokFeishuSingleSyncTask,
+)
+from automation_business_scaffold.business.tasks.tiktok_product_link_cleanup import (
+    TikTokProductLinkCleanupTask,
+)
+
+DEFAULT_TASKS = [
+    FastMossLoginCheckTask(),
+    FeishuPendingRowsScanTask(),
+    FeishuClearRowByUrlTask(),
+    FeishuSeedRowInsertTask(),
+    FeishuSingleRowUpdateTask(),
+    RefreshCurrentCompetitorTableTask(),
+    SearchKeywordCompetitorProductsTask(),
+    SyncTKInfluencerPoolTask(),
+    FastMossKeywordCandidateDiscoveryTask(),
+    TikTokFeishuSingleSyncTask(),
+    TikTokProductLinkCleanupTask(),
+    FastMossProductSalesSnapshotTask(),
+]
+
+__all__ = [
+    "DEFAULT_TASKS",
+    "FastMossLoginCheckTask",
+    "FastMossKeywordCandidateDiscoveryTask",
+    "FastMossProductSalesSnapshotTask",
+    "FeishuClearRowByUrlTask",
+    "FeishuPendingRowsScanTask",
+    "RefreshCurrentCompetitorTableTask",
+    "SearchKeywordCompetitorProductsTask",
+    "SyncTKInfluencerPoolTask",
+    "FeishuSeedRowInsertTask",
+    "FeishuSingleRowUpdateTask",
+    "TikTokFeishuSingleSyncTask",
+    "TikTokProductLinkCleanupTask",
+]

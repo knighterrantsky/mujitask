@@ -22,7 +22,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
 
-    from automation_business_scaffold.flows import (  # pylint: disable=import-outside-toplevel
+    from automation_business_scaffold.business.flows import (  # pylint: disable=import-outside-toplevel
         submit_refresh_current_competitor_table,
         submit_search_keyword_competitor_products,
     )

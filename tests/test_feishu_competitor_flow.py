@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from automation_business_scaffold.flows.feishu_competitor_flow import (
+from automation_business_scaffold.business.flows.feishu_competitor_flow import (
     run_fastmoss_login_check,
     run_fastmoss_keyword_candidate_discovery,
     run_feishu_clear_row_by_url,
@@ -76,7 +76,7 @@ def _sample_snapshot(*, product_id: str, tmp_path: Path) -> FastMossProductSales
 
 def test_run_feishu_pending_rows_scan_only_checks_auto_update_fields(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_pending_rows_scan"],
     )
 
@@ -158,7 +158,7 @@ def test_run_feishu_pending_rows_scan_only_checks_auto_update_fields(monkeypatch
 
 def test_run_feishu_pending_rows_scan_marks_missing_fastmoss_price_as_pending(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_pending_rows_scan"],
     )
 
@@ -209,7 +209,7 @@ def test_run_feishu_pending_rows_scan_marks_missing_fastmoss_price_as_pending(mo
 
 def test_run_feishu_clear_row_by_url_previews_clear_fields_without_mutation(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_clear_row_by_url"],
     )
 
@@ -289,7 +289,7 @@ def test_run_feishu_clear_row_by_url_previews_clear_fields_without_mutation(monk
 
 def test_run_feishu_clear_row_by_url_updates_matching_row_in_canary_mode(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_clear_row_by_url"],
     )
 
@@ -353,7 +353,7 @@ def test_run_feishu_clear_row_by_url_updates_matching_row_in_canary_mode(monkeyp
 
 def test_run_feishu_clear_row_by_url_clears_numeric_datetime_fields_with_null(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_clear_row_by_url"],
     )
 
@@ -417,7 +417,7 @@ def test_run_feishu_clear_row_by_url_clears_numeric_datetime_fields_with_null(mo
 
 def test_run_feishu_single_row_update_canary_writes_tiktok_and_fastmoss_fields(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -490,7 +490,7 @@ def test_run_feishu_single_row_update_canary_writes_tiktok_and_fastmoss_fields(m
 
 def test_run_feishu_single_row_update_can_skip_fastmoss_login_validation(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -547,7 +547,7 @@ def test_run_feishu_single_row_update_defaults_fastmoss_login_verification_to_fa
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -606,7 +606,7 @@ def test_run_feishu_single_row_update_skips_fastmoss_when_only_tiktok_fields_are
     tmp_path,
 ):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -688,7 +688,7 @@ def test_run_feishu_single_row_update_skips_fastmoss_when_only_tiktok_fields_are
 
 def test_run_feishu_single_row_update_skips_follow_up_when_tiktok_security_check_detected(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -740,7 +740,7 @@ def test_run_feishu_single_row_update_skips_follow_up_when_tiktok_security_check
 
 def test_run_feishu_single_row_update_preserves_existing_non_exempt_fields(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -824,7 +824,7 @@ def test_run_feishu_single_row_update_preserves_existing_non_exempt_fields(monke
 
 def test_run_feishu_single_row_update_does_not_write_when_no_fields_are_missing(monkeypatch, tmp_path):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -900,7 +900,7 @@ def test_run_feishu_single_row_update_does_not_write_when_no_fields_are_missing(
 
 def test_run_feishu_single_row_update_skips_completed_row_before_fetch(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_single_row_update"],
     )
 
@@ -955,7 +955,7 @@ def test_run_feishu_single_row_update_skips_completed_row_before_fetch(monkeypat
 
 def test_run_fastmoss_keyword_candidate_discovery_applies_two_level_dedup(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_fastmoss_keyword_candidate_discovery"],
     )
 
@@ -1028,7 +1028,7 @@ def test_run_fastmoss_keyword_candidate_discovery_applies_two_level_dedup(monkey
 
 def test_run_fastmoss_keyword_candidate_discovery_can_skip_fastmoss_login_validation(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_fastmoss_keyword_candidate_discovery"],
     )
 
@@ -1065,7 +1065,7 @@ def test_run_fastmoss_keyword_candidate_discovery_can_skip_fastmoss_login_valida
 
 def test_run_fastmoss_login_check_returns_validated_payload(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_fastmoss_login_check"],
     )
 
@@ -1094,7 +1094,7 @@ def test_run_fastmoss_login_check_returns_validated_payload(monkeypatch):
 
 def test_run_feishu_seed_row_insert_creates_seed_fields(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.flows.feishu_competitor_flow",
+        "automation_business_scaffold.business.flows.feishu_competitor_flow",
         fromlist=["run_feishu_seed_row_insert"],
     )
 
