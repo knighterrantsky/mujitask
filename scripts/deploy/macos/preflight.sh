@@ -92,9 +92,8 @@ if [[ "${RUNTIME_MODE}" == "native" ]]; then
 elif [[ "${RUNTIME_MODE}" == "external" ]]; then
   log "Runtime mode is external; deploy.sh will not start local Postgres/MinIO."
   EXTERNAL_DB_URL="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "")"
-  EXTERNAL_DB_PATH="$(config_value MUJITASK_DB_PATH BUSINESS_EXECUTION_CONTROL_DB_PATH "")"
-  if [[ -z "${EXTERNAL_DB_URL}" && -z "${EXTERNAL_DB_PATH}" ]]; then
-    error "MUJITASK_RUNTIME_MODE=external requires MUJITASK_DB_URL / BUSINESS_EXECUTION_CONTROL_DB_URL or MUJITASK_DB_PATH / BUSINESS_EXECUTION_CONTROL_DB_PATH."
+  if [[ -z "${EXTERNAL_DB_URL}" ]]; then
+    error "MUJITASK_RUNTIME_MODE=external requires MUJITASK_DB_URL / BUSINESS_EXECUTION_CONTROL_DB_URL."
   fi
   EXTERNAL_ARTIFACT_PROVIDER="$(config_value MUJITASK_ARTIFACT_STORE_PROVIDER BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER "minio")"
   if [[ "${EXTERNAL_ARTIFACT_PROVIDER}" == "minio" ]]; then

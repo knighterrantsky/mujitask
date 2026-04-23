@@ -19,7 +19,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--once", action="store_true", help="Dispatch at most one outbox message.")
     parser.add_argument("--db-url")
-    parser.add_argument("--db-path")
     parser.add_argument("--poll-interval-seconds", type=float)
     parser.add_argument("--stop-when-idle", action="store_true")
     parser.add_argument("--max-idle-cycles", type=int, default=1)
@@ -31,8 +30,6 @@ def _build_params(args: argparse.Namespace) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if args.db_url:
         params["execution_control_db_url"] = args.db_url
-    if args.db_path:
-        params["execution_control_db_path"] = args.db_path
     if args.poll_interval_seconds is not None:
         params["execution_control_poll_interval_seconds"] = args.poll_interval_seconds
     if not args.once:

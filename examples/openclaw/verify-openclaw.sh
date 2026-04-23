@@ -243,18 +243,13 @@ PY
     set +a
     "$python_bin" - <<'PY'
 import os
-from pathlib import Path
 
 from minio import Minio
 from sqlalchemy import create_engine, inspect
 
 db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "").strip()
-db_path = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_PATH", "").strip()
 if not db_url:
-    if not db_path:
-        raise SystemExit("executor.local.env must set BUSINESS_EXECUTION_CONTROL_DB_URL or BUSINESS_EXECUTION_CONTROL_DB_PATH")
-    resolved_path = Path(db_path).expanduser().resolve()
-    db_url = f"sqlite:///{resolved_path}"
+    raise SystemExit("executor.local.env must set BUSINESS_EXECUTION_CONTROL_DB_URL")
 
 engine = create_engine(db_url, future=True, pool_pre_ping=True)
 inspector = inspect(engine)

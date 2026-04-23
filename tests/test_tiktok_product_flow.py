@@ -34,6 +34,9 @@ SAMPLE_ROUTER_DATA = {
                                 "product_model": {
                                     "product_id": "1729732615040962895",
                                     "sold_count": "94151",
+                                    "rating_score": "4.7",
+                                    "review_count": "1.2K",
+                                    "comment_count": "345",
                                     "name": "Sample TikTok Product",
                                     "images": [
                                         {
@@ -42,6 +45,47 @@ SAMPLE_ROUTER_DATA = {
                                             "uri": "tos-sample/image-1",
                                             "url_list": [
                                                 "https://example.com/main-image.webp",
+                                            ],
+                                        },
+                                        {
+                                            "height": 1400,
+                                            "width": 1400,
+                                            "uri": "tos-sample/image-2",
+                                            "url_list": [
+                                                "https://example.com/side-image.webp",
+                                            ],
+                                        }
+                                    ],
+                                    "sku_property_image_map": {
+                                        "Color:Pink": {
+                                            "height": 800,
+                                            "width": 800,
+                                            "uri": "tos-sample/sku-pink",
+                                            "url_list": [
+                                                "https://example.com/sku-pink.webp",
+                                            ],
+                                        }
+                                    },
+                                    "sku_sale_props": [
+                                        {
+                                            "prop_name": "Color",
+                                            "sale_prop_values": [
+                                                {
+                                                    "prop_value": "Pink",
+                                                    "prop_value_id": "pink-id",
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                    "sku_list": [
+                                        {
+                                            "sku_id": "sku-pink",
+                                            "sku_sale_props": [
+                                                {
+                                                    "prop_name": "Color",
+                                                    "prop_value": "Pink",
+                                                    "prop_value_id": "pink-id",
+                                                }
                                             ],
                                         }
                                     ],
@@ -272,6 +316,186 @@ class _FakeGenericImageSelectorPage(_FakePage):
         raise AssertionError(f"Unexpected evaluate payload: {script}")
 
 
+class _FakeSkuDomPage(_FakePage):
+    def content(self) -> str:
+        return "<html><body><h1>SOFITEN Ascend Toy foam blaster set</h1></body></html>"
+
+    def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and "toastSelectors" in arg:
+            return {
+                "visible": False,
+                "text": "",
+                "selector": "",
+                "matched_keyword": "",
+            }
+        if "visible_signal_count" in script:
+            if "collectVisibleSkuOptions" in script:
+                assert "skuCardForImage" in script
+                assert "nearestOptionLabel" in script
+                assert "collectVisibleTextSkuOptions" in script
+                assert "buildSkuOptionGroups" in script
+                assert "sku_images: skuImages" in script
+                assert "sku_options: skuOptions" in script
+            return {
+                "title_text": "SOFITEN Ascend Toy foam blaster set",
+                "title_selector": "h1",
+                "price_text": "$4*",
+                "price_selector": '[data-mujitask-price-fallback="1"]',
+                "shop_name": "Sofiten US",
+                "shop_selector": "a[href*='/shop/']",
+                "main_image_url": "https://example.com/main-white.webp",
+                "main_image_selector": '[data-mujitask-main-image-fallback="1"]',
+                "main_image_loaded": True,
+                "gallery_image_urls": [
+                    "https://example.com/gallery-1.webp",
+                    "https://example.com/gallery-2.webp",
+                ],
+                "sku_images": [
+                    {
+                        "option_name": "Color",
+                        "option_value": "WHITE",
+                        "sku_property_key": "Color:WHITE",
+                        "source_url": "https://example.com/sku-white.webp",
+                        "display_order": 0,
+                        "selected": True,
+                    },
+                    {
+                        "option_name": "Color",
+                        "option_value": "BLACK",
+                        "sku_property_key": "Color:BLACK",
+                        "source_url": "https://example.com/sku-black.webp",
+                        "display_order": 1,
+                        "selected": False,
+                    },
+                    {
+                        "option_name": "Color",
+                        "option_value": "Army",
+                        "sku_property_key": "Color:Army",
+                        "source_url": "https://example.com/sku-army.webp",
+                        "display_order": 2,
+                        "selected": False,
+                    },
+                ],
+                "sku_options": [
+                    {
+                        "name": "Color",
+                        "values": [
+                            {
+                                "value": "WHITE",
+                                "image_url": "https://example.com/sku-white.webp",
+                                "sku_property_key": "Color:WHITE",
+                                "selected": True,
+                            },
+                            {
+                                "value": "BLACK",
+                                "image_url": "https://example.com/sku-black.webp",
+                                "sku_property_key": "Color:BLACK",
+                                "selected": False,
+                            },
+                            {
+                                "value": "Army",
+                                "image_url": "https://example.com/sku-army.webp",
+                                "sku_property_key": "Color:Army",
+                                "selected": False,
+                            },
+                        ],
+                        "source_platform": "tiktok",
+                    }
+                ],
+                "skus": [
+                    {
+                        "sku_id": "",
+                        "sku_name": "WHITE",
+                        "spec_name": "Color: WHITE",
+                        "properties": [
+                            {
+                                "name": "Color",
+                                "value": "WHITE",
+                                "sku_property_key": "Color:WHITE",
+                                "image_url": "https://example.com/sku-white.webp",
+                            }
+                        ],
+                        "sku_property_keys": ["Color:WHITE"],
+                        "source_platform": "tiktok",
+                    },
+                    {
+                        "sku_id": "",
+                        "sku_name": "BLACK",
+                        "spec_name": "Color: BLACK",
+                        "properties": [
+                            {
+                                "name": "Color",
+                                "value": "BLACK",
+                                "sku_property_key": "Color:BLACK",
+                                "image_url": "https://example.com/sku-black.webp",
+                            }
+                        ],
+                        "sku_property_keys": ["Color:BLACK"],
+                        "source_platform": "tiktok",
+                    },
+                ],
+                "rating_score": 4.7,
+                "review_count": 257,
+                "comment_count": 257,
+                "sales_count": 4000,
+                "visible_signal_count": 3,
+            }
+        if "loaded" in script:
+            return {"selector": '[data-mujitask-main-image-fallback="1"]', "loaded": True}
+        raise AssertionError(f"Unexpected evaluate payload: {script}")
+
+
+class _FakeMultiSkuDomPage(_FakeSkuDomPage):
+    def evaluate(self, script: str, arg=None):
+        payload = super().evaluate(script, arg)
+        if not ("visible_signal_count" in script and isinstance(payload, dict)):
+            return payload
+        payload = dict(payload)
+        payload["sku_images"] = [
+            image for image in payload["sku_images"] if image["option_value"] in {"WHITE", "BLACK"}
+        ]
+        payload["sku_options"] = [
+            {
+                "name": "Color",
+                "values": [
+                    {
+                        "value": "WHITE",
+                        "image_url": "https://example.com/sku-white.webp",
+                        "sku_property_key": "Color:WHITE",
+                        "selected": True,
+                    },
+                    {
+                        "value": "BLACK",
+                        "image_url": "https://example.com/sku-black.webp",
+                        "sku_property_key": "Color:BLACK",
+                        "selected": False,
+                    },
+                ],
+                "source_platform": "tiktok",
+            },
+            {
+                "name": "Quantity",
+                "values": [
+                    {
+                        "value": "1 Pack",
+                        "image_url": "",
+                        "sku_property_key": "Quantity:1 Pack",
+                        "selected": False,
+                    },
+                    {
+                        "value": "2 Pack",
+                        "image_url": "",
+                        "sku_property_key": "Quantity:2 Pack",
+                        "selected": True,
+                    },
+                ],
+                "source_platform": "tiktok",
+            },
+        ]
+        payload["skus"] = []
+        return payload
+
+
 class _FakeLoginToastPage(_FakePage):
     def __init__(self, visibility_sequence: list[bool]) -> None:
         super().__init__()
@@ -427,8 +651,89 @@ def test_extract_tiktok_product_from_html_returns_expected_fields():
     assert product.price_currency == "USD"
     assert product.price_text == "$24.99"
     assert product.sales_count == 94151
+    assert product.rating_score == 4.7
+    assert product.review_count == 1200
+    assert product.comment_count == 345
+    assert [image["source_url"] for image in product.gallery_images] == [
+        "https://example.com/main-image.webp",
+        "https://example.com/side-image.webp",
+    ]
+    assert product.sku_images[0]["source_url"] == "https://example.com/sku-pink.webp"
+    assert product.sku_images[0]["sku_property_key"] == "Color:Pink"
+    assert product.sku_options == [
+        {
+            "name": "Color",
+            "values": [
+                {
+                    "value": "Pink",
+                    "value_id": "pink-id",
+                    "image_url": "https://example.com/sku-pink.webp",
+                    "sku_property_key": "Color:Pink",
+                }
+            ],
+            "source_platform": "tiktok",
+        }
+    ]
+    assert product.skus == [
+        {
+            "product_id": "1729732615040962895",
+            "sku_id": "sku-pink",
+            "sku_name": "Pink",
+            "spec_name": "Color: Pink",
+            "properties": [
+                {
+                    "name": "Color",
+                    "value": "Pink",
+                    "value_id": "pink-id",
+                    "sku_property_key": "Color:Pink",
+                    "image_url": "",
+                }
+            ],
+            "sku_property_keys": ["Color:Pink"],
+            "source_platform": "tiktok",
+        }
+    ]
     assert product.shop_name == "Sample Shop"
     assert product.shop_url == "https://shop.tiktok.com/us/store/sample-shop/123"
+
+
+def test_extract_tiktok_product_from_html_prefers_product_rating_label():
+    sample_router_data = json.loads(json.dumps(SAMPLE_ROUTER_DATA))
+    component_data = sample_router_data["loaderData"]["(region)/pdp/(product_name_slug$)/(product_id)/page"][
+        "page_config"
+    ]["components_map"][1]["component_data"]
+    product_model = component_data["product_info"]["product_model"]
+    product_model.pop("rating_score")
+    product_model.pop("review_count")
+    product_model.pop("comment_count")
+    component_data["product_info"]["review_model"] = {
+        "product_overall_score": 4.4,
+        "product_review_count": "392",
+    }
+    component_data["review_info"] = {
+        "total_reviews": "392",
+        "review_ratings": {
+            "review_count": "392",
+            "overall_score": 4.3,
+            "rating_result": {"1": "40", "2": "14", "3": "13", "4": "34", "5": "291"},
+        },
+    }
+    html = (
+        "<html><body>"
+        '<script id="__MODERN_ROUTER_DATA__" type="application/json">'
+        f"{json.dumps(sample_router_data, ensure_ascii=True)}"
+        "</script>"
+        "</body></html>"
+    )
+
+    product = extract_tiktok_product_from_html(
+        html,
+        source_url="https://shop.tiktok.com/view/product/1729732615040962895",
+    )
+
+    assert product.rating_score == 4.4
+    assert product.review_count == 392
+    assert product.comment_count == 392
 
 
 def test_fetch_tiktok_product_record_uses_request_pacer_between_http_requests():
@@ -1110,6 +1415,180 @@ def test_build_record_from_browser_state_prefers_router_main_image_url_over_gene
     )
 
     assert product.main_image_url == "https://example.com/main-image.webp"
+
+
+def test_build_record_from_browser_state_extracts_sku_image_mapping_from_dom_snapshot():
+    module = __import__(
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
+        fromlist=["_build_record_from_browser_state"],
+    )
+    dom_snapshot = _FakeSkuDomPage().evaluate("visible_signal_count")
+
+    product = module._build_record_from_browser_state(
+        html="<html><body>rendered pdp</body></html>",
+        dom_snapshot=dom_snapshot,
+        source_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+        resolved_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+    )
+
+    assert product.price_amount == "4"
+    assert product.rating_score == 4.7
+    assert product.review_count == 257
+    assert product.sales_count == 4000
+    assert [image["sku_property_key"] for image in product.sku_images] == [
+        "Color:WHITE",
+        "Color:BLACK",
+        "Color:Army",
+    ]
+    assert [image["source_url"] for image in product.sku_images] == [
+        "https://example.com/sku-white.webp",
+        "https://example.com/sku-black.webp",
+        "https://example.com/sku-army.webp",
+    ]
+    assert product.sku_options == [
+        {
+            "name": "Color",
+            "values": [
+                {
+                    "value": "WHITE",
+                    "image_url": "https://example.com/sku-white.webp",
+                    "sku_property_key": "Color:WHITE",
+                },
+                {
+                    "value": "BLACK",
+                    "image_url": "https://example.com/sku-black.webp",
+                    "sku_property_key": "Color:BLACK",
+                },
+                {
+                    "value": "Army",
+                    "image_url": "https://example.com/sku-army.webp",
+                    "sku_property_key": "Color:Army",
+                },
+            ],
+            "source_platform": "tiktok",
+        }
+    ]
+    assert [sku["spec_name"] for sku in product.skus] == [
+        "Color: WHITE",
+        "Color: BLACK",
+        "Color: Army",
+    ]
+    assert product.skus[0]["properties"][0]["image_url"] == "https://example.com/sku-white.webp"
+
+
+def test_build_record_from_browser_state_preserves_multi_level_sku_options_without_synthetic_combinations():
+    module = __import__(
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
+        fromlist=["_build_record_from_browser_state"],
+    )
+    dom_snapshot = _FakeMultiSkuDomPage().evaluate("visible_signal_count")
+
+    product = module._build_record_from_browser_state(
+        html="<html><body>rendered multi sku pdp</body></html>",
+        dom_snapshot=dom_snapshot,
+        source_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+        resolved_url="https://www.tiktok.com/shop/pdp/1729732615040962895",
+    )
+
+    assert [image["sku_property_key"] for image in product.sku_images] == [
+        "Color:WHITE",
+        "Color:BLACK",
+    ]
+    assert product.sku_options == [
+        {
+            "name": "Color",
+            "values": [
+                {
+                    "value": "WHITE",
+                    "image_url": "https://example.com/sku-white.webp",
+                    "sku_property_key": "Color:WHITE",
+                },
+                {
+                    "value": "BLACK",
+                    "image_url": "https://example.com/sku-black.webp",
+                    "sku_property_key": "Color:BLACK",
+                },
+            ],
+            "source_platform": "tiktok",
+        },
+        {
+            "name": "Quantity",
+            "values": [
+                {
+                    "value": "1 Pack",
+                    "image_url": "",
+                    "sku_property_key": "Quantity:1 Pack",
+                },
+                {
+                    "value": "2 Pack",
+                    "image_url": "",
+                    "sku_property_key": "Quantity:2 Pack",
+                },
+            ],
+            "source_platform": "tiktok",
+        },
+    ]
+    assert product.skus == []
+
+
+def test_fetch_tiktok_product_record_via_browser_preserves_dom_sku_image_mapping(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "automation_business_scaffold.business.flows.tiktok_product_flow",
+        fromlist=["fetch_tiktok_product_record_via_browser"],
+    )
+
+    @contextmanager
+    def fake_open_automation_page(**_kwargs):
+        yield type(
+            "_Session",
+            (),
+            {
+                "provider_name": "chrome_cdp",
+                "target_key": "chrome_cdp:none:local-chrome",
+                "profile_ref": "local-chrome",
+                "session_ref": "local-chrome",
+                "page": _FakeSkuDomPage(),
+            },
+        )()
+
+    def fake_download(product, *, download_dir, timeout=30, session=None):
+        image_dir = Path(download_dir)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = image_dir / f"{product.product_id}-main-image.webp"
+        image_path.write_bytes(b"downloaded-main-image")
+        return replace(
+            product,
+            main_image_local_path=str(image_path),
+            main_image_file_name=image_path.name,
+            main_image_mime_type="image/webp",
+        )
+
+    monkeypatch.setattr(module, "open_automation_page", fake_open_automation_page)
+    monkeypatch.setattr(module, "download_tiktok_product_main_image", fake_download)
+    monkeypatch.setattr(module, "DEFAULT_IMAGE_DOWNLOAD_DIR", str(tmp_path / "images"))
+    monkeypatch.setattr(module, "DEFAULT_PAGE_SCREENSHOT_DIR", str(tmp_path / "pages"))
+
+    product = fetch_tiktok_product_record_via_browser(
+        "https://www.tiktok.com/shop/pdp/1729732615040962895?source=product_detail",
+        profile_ref="local-chrome",
+    )
+
+    assert product.product_id == "1729732615040962895"
+    assert product.main_image_url == "https://example.com/main-white.webp"
+    assert product.gallery_images[0]["source_url"] == "https://example.com/gallery-1.webp"
+    assert [image["sku_property_key"] for image in product.sku_images] == [
+        "Color:WHITE",
+        "Color:BLACK",
+        "Color:Army",
+    ]
+    assert product.sku_options[0]["values"][0]["value"] == "WHITE"
+    assert product.skus[0]["spec_name"] == "Color: WHITE"
+    assert product.skus[0]["sku_property_keys"] == ["Color:WHITE"]
+    assert Path(product.main_image_local_path).read_bytes() == b"downloaded-main-image"
+    assert product.product_page_screenshot_local_path.endswith("1729732615040962895-product-page.png")
 
 
 def test_fetch_tiktok_product_record_via_browser_waits_for_login_toast_to_clear(

@@ -68,7 +68,6 @@ class BusinessDefaults:
 @dataclass(frozen=True, slots=True)
 class ExecutionControlDefaults:
     db_url: str
-    db_path: str
     artifact_root: str
     artifact_bucket: str
     artifact_store_provider: str
@@ -123,11 +122,6 @@ def get_execution_control_defaults() -> ExecutionControlDefaults:
             "BUSINESS_EXECUTION_CONTROL_DB_URL",
             "EXECUTION_CONTROL_DB_URL",
         ).strip(),
-        db_path=_read_env(
-            "BUSINESS_EXECUTION_CONTROL_DB_PATH",
-            "EXECUTION_CONTROL_DB_PATH",
-            default="runtime/execution_control/control_plane.sqlite3",
-        ),
         artifact_root=_read_env(
             "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT",
             "EXECUTION_CONTROL_ARTIFACT_ROOT",

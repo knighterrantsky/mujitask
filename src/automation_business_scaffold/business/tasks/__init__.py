@@ -21,6 +21,9 @@ from automation_business_scaffold.business.tasks.feishu_single_row_update import
 from automation_business_scaffold.business.tasks.tiktok_feishu_single_sync import (
     TikTokFeishuSingleSyncTask,
 )
+from automation_business_scaffold.business.tasks.tiktok_fastmoss_product_ingest import (
+    TikTokFastMossProductIngestTask,
+)
 from automation_business_scaffold.business.tasks.tiktok_product_link_cleanup import (
     TikTokProductLinkCleanupTask,
 )
@@ -35,6 +38,7 @@ DEFAULT_TASKS = [
     SearchKeywordCompetitorProductsTask(),
     SyncTKInfluencerPoolTask(),
     FastMossKeywordCandidateDiscoveryTask(),
+    TikTokFastMossProductIngestTask(),
     TikTokFeishuSingleSyncTask(),
     TikTokProductLinkCleanupTask(),
     FastMossProductSalesSnapshotTask(),
@@ -52,6 +56,7 @@ __all__ = [
     "SyncTKInfluencerPoolTask",
     "FeishuSeedRowInsertTask",
     "FeishuSingleRowUpdateTask",
+    "TikTokFastMossProductIngestTask",
     "TikTokFeishuSingleSyncTask",
     "TikTokProductLinkCleanupTask",
 ]

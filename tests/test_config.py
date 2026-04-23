@@ -6,7 +6,6 @@ from automation_business_scaffold.config import get_execution_control_defaults
 def test_get_execution_control_defaults_accepts_legacy_execution_control_env_names(monkeypatch):
     for key in [
         "BUSINESS_EXECUTION_CONTROL_DB_URL",
-        "BUSINESS_EXECUTION_CONTROL_DB_PATH",
         "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT",
         "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET",
         "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER",

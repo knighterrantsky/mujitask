@@ -490,13 +490,12 @@ write_skill_local_env() {
   local fastmoss_phone="$6"
   local fastmoss_password="$7"
   local db_url="$8"
-  local db_path="$9"
-  local artifact_root="${10}"
-  local artifact_bucket="${11}"
-  local requested_by="${12}"
-  local notification_channel_code="${13}"
-  local openclaw_agent_id="${14}"
-  local openclaw_state_dir="${15}"
+  local artifact_root="$9"
+  local artifact_bucket="${10}"
+  local requested_by="${11}"
+  local notification_channel_code="${12}"
+  local openclaw_agent_id="${13}"
+  local openclaw_state_dir="${14}"
 
   seed_key_value_file_from_example "$skill_dir/skill.local.env" "$skill_dir/skill.local.env.example"
 
@@ -509,7 +508,6 @@ write_skill_local_env() {
     "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \
     "EXECUTION_CONTROL_DB_URL=$(quote_env_value "$db_url")" \
-    "EXECUTION_CONTROL_DB_PATH=$(quote_env_value "$db_path")" \
     "EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "$artifact_root")" \
     "EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "$artifact_bucket")" \
     "EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "$requested_by")" \
@@ -521,24 +519,23 @@ write_skill_local_env() {
 write_executor_local_env() {
   local install_dir="$1"
   local db_url="$2"
-  local db_path="$3"
-  local artifact_root="$4"
-  local artifact_bucket="$5"
-  local artifact_store_provider="$6"
-  local artifact_object_prefix="$7"
-  local minio_endpoint="$8"
-  local minio_access_key="$9"
-  local minio_secret_key="${10}"
-  local minio_region="${11}"
-  local minio_secure="${12}"
-  local minio_create_bucket="${13}"
-  local sync_referenced_files="${14}"
-  local requested_by="${15}"
-  local token="${16}"
-  local browser_profile_ref="${17}"
-  local fastmoss_phone="${18}"
-  local fastmoss_password="${19}"
-  local notification_channel_code="${20}"
+  local artifact_root="$3"
+  local artifact_bucket="$4"
+  local artifact_store_provider="$5"
+  local artifact_object_prefix="$6"
+  local minio_endpoint="$7"
+  local minio_access_key="$8"
+  local minio_secret_key="$9"
+  local minio_region="${10}"
+  local minio_secure="${11}"
+  local minio_create_bucket="${12}"
+  local sync_referenced_files="${13}"
+  local requested_by="${14}"
+  local token="${15}"
+  local browser_profile_ref="${16}"
+  local fastmoss_phone="${17}"
+  local fastmoss_password="${18}"
+  local notification_channel_code="${19}"
 
   local executor_env="$install_dir/scripts/execution_control/executor.local.env"
   local executor_example="$install_dir/scripts/execution_control/executor.local.env.example"
@@ -548,7 +545,6 @@ write_executor_local_env() {
   merge_key_value_file \
     "$executor_env" \
     "BUSINESS_EXECUTION_CONTROL_DB_URL=$(quote_env_value "$db_url")" \
-    "BUSINESS_EXECUTION_CONTROL_DB_PATH=$(quote_env_value "$db_path")" \
     "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "$artifact_root")" \
     "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "$artifact_bucket")" \
     "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER=$(quote_env_value "$artifact_store_provider")" \
@@ -714,6 +710,7 @@ PY
     "$install_dir/scripts/execution_control/install_launch_agents.sh"
     "$install_dir/scripts/execution_control/run_launchd_agent.sh"
     "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.executor-daemon.plist.template"
+    "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.api-worker.plist.template"
     "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template"
     "$install_dir/config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template"
     "$executor_env_path"
@@ -727,6 +724,11 @@ PY
     :
   else
     fail "Smoke check failed: launchd service com.happyzhao.mujitask.executor-daemon is not loaded."
+  fi
+  if launchctl list | grep -q 'com.happyzhao.mujitask.api-worker'; then
+    :
+  else
+    fail "Smoke check failed: launchd service com.happyzhao.mujitask.api-worker is not loaded."
   fi
   if launchctl list | grep -q 'com.happyzhao.mujitask.browser-runloop'; then
     :
@@ -746,18 +748,13 @@ PY
 
   "$python_bin" - <<'PY'
 import os
-from pathlib import Path
 
 from minio import Minio
 from sqlalchemy import create_engine, inspect
 
 db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "").strip()
-db_path = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_PATH", "").strip()
 if not db_url:
-    if not db_path:
-        raise SystemExit("executor.local.env must set BUSINESS_EXECUTION_CONTROL_DB_URL or BUSINESS_EXECUTION_CONTROL_DB_PATH")
-    resolved_path = Path(db_path).expanduser().resolve()
-    db_url = f"sqlite:///{resolved_path}"
+    raise SystemExit("executor.local.env must set BUSINESS_EXECUTION_CONTROL_DB_URL")
 
 engine = create_engine(db_url, future=True, pool_pre_ping=True)
 inspector = inspect(engine)

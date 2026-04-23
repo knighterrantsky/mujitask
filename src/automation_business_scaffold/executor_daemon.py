@@ -19,7 +19,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--once", action="store_true", help="Process at most one top-level task_request.")
     parser.add_argument("--db-url")
-    parser.add_argument("--db-path")
     parser.add_argument("--worker-id")
     parser.add_argument("--artifact-root")
     parser.add_argument("--artifact-bucket")
@@ -35,8 +34,6 @@ def _build_params(args: argparse.Namespace) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if args.db_url:
         params["execution_control_db_url"] = args.db_url
-    if args.db_path:
-        params["execution_control_db_path"] = args.db_path
     if args.worker_id:
         params["execution_worker_id"] = args.worker_id
     if args.artifact_root:

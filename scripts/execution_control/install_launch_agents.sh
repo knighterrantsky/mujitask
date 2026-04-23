@@ -10,6 +10,7 @@ UID_VALUE="$(id -u)"
 
 LABELS=(
   "com.happyzhao.mujitask.executor-daemon"
+  "com.happyzhao.mujitask.api-worker"
   "com.happyzhao.mujitask.browser-runloop"
   "com.happyzhao.mujitask.outbox-dispatcher"
 )
@@ -32,8 +33,7 @@ import os
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "")
-db_path = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_PATH", "")
-RuntimeStore(db_url=db_url, db_path=db_path)
+RuntimeStore(db_url=db_url)
 print("schema_ready")
 PY
 
@@ -53,6 +53,7 @@ for template_path in sorted(template_dir.glob("*.plist.template")):
 PY
 
 pkill -f 'automation_business_scaffold.executor_daemon' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.api_worker_daemon' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.browser_runloop' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.outbox_dispatcher' >/dev/null 2>&1 || true
 

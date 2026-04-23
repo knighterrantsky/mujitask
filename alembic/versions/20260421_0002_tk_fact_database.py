@@ -55,10 +55,10 @@ LEGACY_ENTITY_SCHEMA_STATEMENTS = [
         canonical_key TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         latest_snapshot_id TEXT NOT NULL DEFAULT '',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -79,10 +79,10 @@ LEGACY_ENTITY_SCHEMA_STATEMENTS = [
         source_key TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_bound_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_bound_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -102,14 +102,14 @@ LEGACY_ENTITY_SCHEMA_STATEMENTS = [
         snapshot_id TEXT PRIMARY KEY,
         entity_id TEXT NOT NULL,
         snapshot_date TEXT NOT NULL,
-        collected_at REAL NOT NULL,
+        collected_at DOUBLE PRECISION NOT NULL,
         facts_json TEXT NOT NULL DEFAULT '{}',
         baseline_snapshot_id TEXT NOT NULL DEFAULT '',
         diff_json TEXT NOT NULL DEFAULT '{}',
         request_id TEXT NOT NULL DEFAULT '',
         execution_id TEXT NOT NULL DEFAULT '',
         run_id TEXT NOT NULL DEFAULT '',
-        created_at REAL NOT NULL
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """

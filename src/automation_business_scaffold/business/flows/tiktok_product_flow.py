@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -74,7 +74,6 @@ MAIN_IMAGE_CANDIDATE_SELECTORS = (
     "[data-e2e='product-image'] img",
     "div[data-e2e='pdp-main-image'] img",
     "figure img",
-    "img",
 )
 LOGIN_TOAST_CANDIDATE_SELECTORS = (
     "[data-e2e='toast-container']",
@@ -277,6 +276,9 @@ def fetch_tiktok_product_record_via_browser(
     product_url: str,
     *,
     profile_ref: str | None = None,
+    workspace_id: int | None = None,
+    profile_id: str | None = None,
+    provider_name: str | None = None,
     timeout_ms: int = 30000,
     capture_page_screenshot: bool = True,
     security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
@@ -289,6 +291,9 @@ def fetch_tiktok_product_record_via_browser(
     )
     with open_automation_page(
         profile_ref=profile_ref,
+        workspace_id=workspace_id,
+        profile_id=profile_id,
+        provider_name=provider_name,
         blocked_handling=_tiktok_blocked_handling(),
     ) as browser_page:
         page = browser_page.page
@@ -413,6 +418,21 @@ def extract_tiktok_product_from_html(
     shop_name = str(shop_info.get("shop_name") or seller_model.get("shop_name") or "").strip()
     shop_url = str(shop_info.get("shop_link", "")).strip()
     sales_count = _parse_int(product_model.get("sold_count"))
+    gallery_images = _extract_product_gallery_images(product_model)
+    sku_images = _extract_product_sku_images(product_model)
+    sku_options = _extract_product_sku_options(product_info, product_model)
+    skus = _extract_product_skus(
+        product_info,
+        product_model,
+        promotion_model,
+        sku_options=sku_options,
+        product_id=product_id,
+    )
+    rating_score, review_count, comment_count = _extract_product_review_metrics(
+        component_data,
+        product_info,
+        product_model,
+    )
     normalized_url = _coerce_normalized_url(source_url or resolved_url)
 
     if not product_id:
@@ -437,6 +457,13 @@ def extract_tiktok_product_from_html(
         sales_count=sales_count,
         shop_name=shop_name,
         shop_url=shop_url,
+        gallery_images=gallery_images,
+        sku_images=sku_images,
+        skus=skus,
+        sku_options=sku_options,
+        rating_score=rating_score,
+        review_count=review_count,
+        comment_count=comment_count,
     )
 
 
@@ -502,6 +529,11 @@ def build_feishu_bitable_fields(
         "price_currency": product.price_currency,
         "price_text": product.price_text,
         "sales_count": product.sales_count,
+        "rating_score": product.rating_score,
+        "review_count": product.review_count,
+        "comment_count": product.comment_count,
+        "gallery_images": product.gallery_images,
+        "sku_images": product.sku_images,
         "shop_name": product.shop_name,
         "shop_url": product.shop_url,
         "product_page_screenshot_local_path": product.product_page_screenshot_local_path,
@@ -629,7 +661,7 @@ def _wait_for_product_page_ready(
                 waiting_for="|".join(waiting_for) or "ready",
             )
             last_probe_signature = probe_signature
-        if visible_signal_count >= 2:
+        if title_ready and price_ready and image_ready:
             if trace_id:
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
@@ -758,7 +790,38 @@ def _build_record_from_browser_state(
     price_currency = (router_record.price_currency if router_record else "") or _infer_currency_from_price_text(price_text)
     shop_name = (router_record.shop_name if router_record else "") or str(dom_snapshot.get("shop_name", "")).strip()
     shop_url = router_record.shop_url if router_record else ""
-    sales_count = router_record.sales_count if router_record else 0
+    sales_count = (
+        router_record.sales_count
+        if router_record and router_record.sales_count
+        else _parse_int(dom_snapshot.get("sales_count"))
+    )
+    rating_score = (
+        router_record.rating_score
+        if router_record and router_record.rating_score
+        else _parse_float(dom_snapshot.get("rating_score"))
+    )
+    review_count = (
+        router_record.review_count
+        if router_record and router_record.review_count
+        else _parse_int(dom_snapshot.get("review_count"))
+    )
+    comment_count = (
+        router_record.comment_count
+        if router_record and router_record.comment_count
+        else _parse_int(dom_snapshot.get("comment_count")) or review_count
+    )
+    gallery_images = router_record.gallery_images if router_record else []
+    if not gallery_images:
+        gallery_images = _gallery_images_from_dom_snapshot(dom_snapshot)
+    sku_images = router_record.sku_images if router_record else []
+    if not sku_images:
+        sku_images = _sku_images_from_dom_snapshot(dom_snapshot)
+    sku_options = router_record.sku_options if router_record else []
+    if not sku_options:
+        sku_options = _sku_options_from_dom_snapshot(dom_snapshot)
+    skus = router_record.skus if router_record else []
+    if not skus:
+        skus = _skus_from_dom_snapshot(dom_snapshot, product_id=product_id)
 
     if not product_id:
         raise TikTokProductExtractionError("failed to extract TikTok product id from browser page")
@@ -783,7 +846,142 @@ def _build_record_from_browser_state(
         sales_count=sales_count,
         shop_name=shop_name,
         shop_url=shop_url,
+        gallery_images=gallery_images,
+        sku_images=sku_images,
+        skus=skus,
+        sku_options=sku_options,
+        rating_score=rating_score,
+        review_count=review_count,
+        comment_count=comment_count,
     )
+
+
+def _gallery_images_from_dom_snapshot(dom_snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_urls = dom_snapshot.get("gallery_image_urls")
+    if not isinstance(raw_urls, list):
+        return []
+    images: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for display_order, value in enumerate(raw_urls):
+        source_url = str(value or "").strip()
+        if not source_url or source_url in seen:
+            continue
+        seen.add(source_url)
+        images.append(
+            {
+                "source_url": source_url,
+                "display_order": display_order + 1,
+                "media_role": "product_gallery_image",
+                "source_platform": "tiktok",
+            }
+        )
+    return images
+
+
+def _sku_images_from_dom_snapshot(dom_snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_images = dom_snapshot.get("sku_images")
+    if not isinstance(raw_images, list):
+        return []
+    images: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for display_order, item in enumerate(raw_images):
+        if not isinstance(item, Mapping):
+            continue
+        source_url = str(item.get("source_url") or item.get("url") or item.get("image_url") or "").strip()
+        option_name = str(item.get("option_name") or item.get("name") or "").strip()
+        option_value = str(item.get("option_value") or item.get("value") or "").strip()
+        if not (source_url and option_name and option_value):
+            continue
+        sku_property_key = str(item.get("sku_property_key") or f"{option_name}:{option_value}").strip()
+        dedupe_key = (sku_property_key.lower(), source_url)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        images.append(
+            {
+                "source_url": source_url,
+                "display_order": _parse_int(item.get("display_order")) or display_order,
+                "media_role": "product_sku_image",
+                "source_platform": "tiktok",
+                "sku_property_key": sku_property_key,
+                "option_name": option_name,
+                "option_value": option_value,
+            }
+        )
+    return images
+
+
+def _sku_options_from_dom_snapshot(dom_snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_options = dom_snapshot.get("sku_options")
+    if not isinstance(raw_options, list):
+        return []
+    options: list[dict[str, Any]] = []
+    for option in raw_options:
+        if not isinstance(option, Mapping):
+            continue
+        option_name = str(option.get("name") or "").strip()
+        raw_values = option.get("values")
+        if not option_name or not isinstance(raw_values, list):
+            continue
+        values: list[dict[str, str]] = []
+        seen_values: set[str] = set()
+        for raw_value in raw_values:
+            if not isinstance(raw_value, Mapping):
+                continue
+            option_value = str(raw_value.get("value") or "").strip()
+            if not option_value or option_value.lower() in seen_values:
+                continue
+            seen_values.add(option_value.lower())
+            values.append(
+                {
+                    "value": option_value,
+                    "image_url": str(raw_value.get("image_url") or "").strip(),
+                    "sku_property_key": str(raw_value.get("sku_property_key") or f"{option_name}:{option_value}").strip(),
+                }
+            )
+        if values:
+            options.append(
+                {
+                    "name": option_name,
+                    "values": values,
+                    "source_platform": "tiktok",
+                }
+            )
+    return options
+
+
+def _skus_from_dom_snapshot(dom_snapshot: Mapping[str, Any], *, product_id: str) -> list[dict[str, Any]]:
+    sku_options = _sku_options_from_dom_snapshot(dom_snapshot)
+    if len(sku_options) != 1:
+        return []
+    option_name = str(sku_options[0].get("name") or "").strip()
+    skus: list[dict[str, Any]] = []
+    for value in sku_options[0].get("values") or []:
+        if not isinstance(value, Mapping):
+            continue
+        option_value = str(value.get("value") or "").strip()
+        if not option_value:
+            continue
+        sku_property_key = str(value.get("sku_property_key") or f"{option_name}:{option_value}").strip()
+        skus.append(
+            {
+                "product_id": product_id,
+                "sku_id": "",
+                "sku_name": option_value,
+                "spec_name": f"{option_name}: {option_value}",
+                "properties": [
+                    {
+                        "name": option_name,
+                        "value": option_value,
+                        "sku_property_key": sku_property_key,
+                        "image_url": str(value.get("image_url") or "").strip(),
+                    }
+                ],
+                "sku_property_keys": [sku_property_key],
+                "source_platform": "tiktok",
+            }
+        )
+    return skus
 
 
 def _capture_browser_product_artifacts(
@@ -1231,7 +1429,7 @@ def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
 
 def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
     payload = page.evaluate(
-        """(args) => {
+        r"""(args) => {
             const selectors = {
               title: args.titleSelectors || [],
               price: args.priceSelectors || [],
@@ -1258,12 +1456,56 @@ def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
               return { text: "", selector: "" };
             };
 
+            const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+            const pickVisiblePriceText = () => {
+              const marker = "data-mujitask-price-fallback";
+              for (const previous of document.querySelectorAll(`[${marker}]`)) {
+                previous.removeAttribute(marker);
+              }
+
+              const candidates = [];
+              for (const element of document.querySelectorAll("body *")) {
+                if (!isVisible(element)) continue;
+                const text = normalizeText(element.textContent);
+                if (!text || text.length > 80 || !/\$\s*\d/.test(text)) continue;
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                const textDecoration = String(style.textDecorationLine || style.textDecoration || "");
+                const isStruck = textDecoration.includes("line-through");
+                const hasActionText = /add to cart|buy now|unlock price/i.test(text);
+                const hasLetters = /[A-Za-z]{3,}/.test(text);
+                const compactLengthPenalty = Math.max(text.replace(/\s+/g, "").length - 10, 0);
+                candidates.push({
+                  text,
+                  element,
+                  y: rect.top,
+                  x: rect.left,
+                  score:
+                    (isStruck ? 1000 : 0) +
+                    (hasActionText ? 300 : 0) +
+                    (hasLetters ? 150 : 0) +
+                    compactLengthPenalty +
+                    Math.max(rect.top, 0) / 1000,
+                });
+              }
+              candidates.sort((left, right) => {
+                if (left.score !== right.score) return left.score - right.score;
+                if (left.y !== right.y) return left.y - right.y;
+                return left.x - right.x;
+              });
+              const picked = candidates[0];
+              if (!picked) return { text: "", selector: "" };
+              picked.element.setAttribute(marker, "1");
+              return { text: picked.text, selector: `[${marker}="1"]` };
+            };
+
             const pickImage = (items) => {
               for (const selector of items) {
                 const element = document.querySelector(selector);
                 if (!(element instanceof HTMLImageElement) || !isVisible(element)) continue;
                 const src = (element.currentSrc || element.src || "").trim();
-                if (!src) continue;
+                if (!src || imageLooksLikeUtility(src)) continue;
                 return {
                   src,
                   selector,
@@ -1273,10 +1515,329 @@ def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
               return { src: "", selector: "", loaded: false };
             };
 
+            const imageLooksLikeUtility = (src) => {
+              const lowered = String(src || "").toLowerCase();
+              return !lowered ||
+                lowered.startsWith("data:") ||
+                lowered.includes("logo") ||
+                lowered.includes("avatar") ||
+                lowered.includes("sprite") ||
+                lowered.includes("icon") ||
+                lowered.includes("tiktok_shop_web_mono");
+            };
+
+            const pickVisibleProductImage = () => {
+              const marker = "data-mujitask-main-image-fallback";
+              for (const previous of document.querySelectorAll(`[${marker}]`)) {
+                previous.removeAttribute(marker);
+              }
+
+              const candidates = collectVisibleProductImages({ minSize: 120 });
+              const picked = candidates[0];
+              if (!picked) return { src: "", selector: "", loaded: false };
+              picked.element.setAttribute(marker, "1");
+              return {
+                src: picked.src,
+                selector: `[${marker}="1"]`,
+                loaded: picked.loaded,
+              };
+            };
+
+            const collectVisibleProductImages = ({ minSize = 64 } = {}) => {
+              const candidates = [];
+              const seen = new Set();
+              for (const element of document.querySelectorAll("img")) {
+                if (!(element instanceof HTMLImageElement) || !isVisible(element)) continue;
+                const src = (element.currentSrc || element.src || "").trim();
+                if (!src || imageLooksLikeUtility(src)) continue;
+                if (seen.has(src)) continue;
+                seen.add(src);
+                const rect = element.getBoundingClientRect();
+                const width = Math.max(rect.width, element.naturalWidth || 0);
+                const height = Math.max(rect.height, element.naturalHeight || 0);
+                if (width < minSize || height < minSize) continue;
+                const area = width * height;
+                const hintText = `${src} ${element.alt || ""}`;
+                const hasProductHint = /product|pdp|oec|tos|byteimg|tiktokcdn/i.test(hintText);
+                const rightSidePenalty = rect.left > window.innerWidth * 0.45 ? 50000 : 0;
+                candidates.push({
+                  element,
+                  src,
+                  loaded: Boolean(element.complete && element.naturalWidth > 0),
+                  y: rect.top,
+                  x: rect.left,
+                  score: -area - (hasProductHint ? 50000 : 0) + rightSidePenalty + Math.max(rect.top, 0),
+                });
+              }
+              candidates.sort((left, right) => {
+                if (left.score !== right.score) return left.score - right.score;
+                if (left.y !== right.y) return left.y - right.y;
+                return left.x - right.x;
+              });
+              return candidates;
+            };
+
+            const parseCompactNumber = (value) => {
+              const raw = normalizeText(value).replace(/,/g, "");
+              const match = raw.match(/([0-9]+(?:\.[0-9]+)?)/);
+              if (!match) return 0;
+              let number = Number(match[1]);
+              if (!Number.isFinite(number)) return 0;
+              if (/[Kk]/.test(raw)) number *= 1000;
+              if (/万/.test(raw)) number *= 10000;
+              return Math.round(number);
+            };
+
+            const pickVisibleReviewMetrics = () => {
+              const text = normalizeText(document.body ? document.body.innerText : "");
+              const metrics = {
+                rating_score: 0,
+                review_count: 0,
+                comment_count: 0,
+                sales_count: 0,
+              };
+              const reviewMatch =
+                text.match(/([0-5](?:\.[0-9])?)\s*\(?\s*([0-9][0-9,.Kk万]*)\s*\)?\s*(?:global\s*)?(?:reviews?|ratings?|评价|评论)/i) ||
+                text.match(/([0-5](?:\.[0-9])?)\s*\(\s*([0-9][0-9,.Kk万]*)\s*\)/);
+              if (reviewMatch) {
+                metrics.rating_score = Number(reviewMatch[1]) || 0;
+                metrics.review_count = parseCompactNumber(reviewMatch[2]);
+                metrics.comment_count = metrics.review_count;
+              }
+              const salesMatch =
+                text.match(/([0-9][0-9,.Kk万]*)\s*(?:sold|已售)/i) ||
+                text.match(/(?:sold|已售)\s*([0-9][0-9,.Kk万]*)/i);
+              if (salesMatch) metrics.sales_count = parseCompactNumber(salesMatch[1]);
+              return metrics;
+            };
+
+            const elementTextLines = (element) => String(
+              element && (element.innerText || element.textContent || "") || ""
+            )
+              .split(/\n+/)
+              .map((part) => normalizeText(part))
+              .filter(Boolean);
+
+            const cleanSkuValue = (value, optionName = "") => {
+              const escapeRegex = (text) => String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              let text = normalizeText(value)
+                .replace(/\$\s*[0-9][0-9,.]*/g, " ")
+                .replace(/unlock price|sold out|out of stock|add to cart|buy now/ig, " ");
+              if (optionName) {
+                text = text.replace(new RegExp(`^${escapeRegex(optionName)}\\s*[:：]?\\s*`, "i"), "");
+              }
+              const parts = text
+                .split(/\s+/)
+                .map((part) => part.trim())
+                .filter(Boolean);
+              if (parts.length > 1 && parts.every((part) => part.toLowerCase() === parts[0].toLowerCase())) {
+                return parts[0];
+              }
+              return normalizeText(parts.join(" "));
+            };
+
+            const looksLikeSkuValue = (value) => {
+              const text = normalizeText(value);
+              if (!text || text.length > 40) return false;
+              return !/coupon|center|login|search|quantity|shipping|sold|reviews?|ratings?|unlock|price|cart/i.test(text);
+            };
+
+            const nearestOptionLabel = (element) => {
+              const rect = element.getBoundingClientRect();
+              const labels = [];
+              for (const candidate of document.querySelectorAll("body *")) {
+                if (!isVisible(candidate)) continue;
+                const text = normalizeText(candidate.textContent);
+                const match = text.match(/^([^:：]{1,32})[:：]\s*([^:：]{0,50})$/);
+                if (!match) continue;
+                if (/shipping|sold|reviews?|ratings?|price/i.test(match[1])) continue;
+                const labelRect = candidate.getBoundingClientRect();
+                if (labelRect.bottom > rect.top + 6) continue;
+                if (rect.top - labelRect.bottom > 180) continue;
+                if (Math.abs(labelRect.left - rect.left) > 80 && labelRect.left > rect.left) continue;
+                labels.push({
+                  name: normalizeText(match[1]),
+                  selectedValue: cleanSkuValue(match[2], match[1]),
+                  distance: rect.top - labelRect.bottom + Math.abs(labelRect.left - rect.left) / 10,
+                });
+              }
+              labels.sort((left, right) => left.distance - right.distance);
+              return labels[0] || { name: "", selectedValue: "" };
+            };
+
+            const skuCardForImage = (image) => {
+              let current = image;
+              let best = null;
+              for (let depth = 0; depth < 6 && current; depth += 1) {
+                if (!isVisible(current)) {
+                  current = current.parentElement;
+                  continue;
+                }
+                const rect = current.getBoundingClientRect();
+                const lines = elementTextLines(current);
+                const shortLines = lines.filter((line) => looksLikeSkuValue(line));
+                const hasPointer =
+                  current.tagName === "BUTTON" ||
+                  current.getAttribute("role") === "button" ||
+                  current.getAttribute("tabindex") !== null ||
+                  window.getComputedStyle(current).cursor === "pointer";
+                if (rect.width >= 36 && rect.height >= 36 && rect.width <= 260 && rect.height <= 260 && shortLines.length) {
+                  best = { element: current, lines: shortLines, hasPointer };
+                  if (hasPointer) break;
+                }
+                current = current.parentElement;
+              }
+              return best;
+            };
+
+            const collectVisibleSkuOptions = () => {
+              const rawOptions = [];
+              const seen = new Set();
+              for (const imageElement of document.querySelectorAll("img")) {
+                if (!(imageElement instanceof HTMLImageElement) || !isVisible(imageElement)) continue;
+                const sourceUrl = (imageElement.currentSrc || imageElement.src || "").trim();
+                if (!sourceUrl || imageLooksLikeUtility(sourceUrl)) continue;
+                const imageRect = imageElement.getBoundingClientRect();
+                if (imageRect.width < 32 || imageRect.height < 32 || imageRect.width > 220 || imageRect.height > 220) {
+                  continue;
+                }
+                const card = skuCardForImage(imageElement);
+                if (!card) continue;
+                const label = nearestOptionLabel(card.element);
+                if (!label.name) continue;
+                const valueCandidates = [
+                  ...card.lines,
+                  normalizeText(imageElement.alt),
+                  label.selectedValue,
+                ].map((value) => cleanSkuValue(value, label.name)).filter(looksLikeSkuValue);
+                if (!valueCandidates.length) continue;
+                const optionValue = valueCandidates.sort((left, right) => left.length - right.length)[0];
+                const skuPropertyKey = `${label.name}:${optionValue}`;
+                const dedupeKey = `${skuPropertyKey}|${sourceUrl}`;
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                const rect = card.element.getBoundingClientRect();
+                rawOptions.push({
+                  option_name: label.name,
+                  option_value: optionValue,
+                  sku_property_key: skuPropertyKey,
+                  source_url: sourceUrl,
+                  display_order: rawOptions.length,
+                  selected: Boolean(label.selectedValue) &&
+                    cleanSkuValue(label.selectedValue, label.name).toLowerCase() === optionValue.toLowerCase(),
+                  x: rect.left,
+                  y: rect.top,
+                });
+              }
+              rawOptions.sort((left, right) => {
+                if (left.option_name !== right.option_name) return left.option_name.localeCompare(right.option_name);
+                if (left.y !== right.y) return left.y - right.y;
+                return left.x - right.x;
+              });
+              return rawOptions.map((item, index) => ({ ...item, display_order: index }));
+            };
+
+            const collectVisibleTextSkuOptions = (imageOptions = []) => {
+              const rawOptions = [];
+              const seen = new Set(
+                imageOptions.map((item) => `${item.option_name}:${item.option_value}`.toLowerCase())
+              );
+              const candidates = Array.from(document.querySelectorAll("button,[role='button'],[tabindex]"))
+                .filter((element) => isVisible(element))
+                .filter((element) => !element.querySelector("img"));
+              for (const element of candidates) {
+                const rect = element.getBoundingClientRect();
+                if (rect.width < 32 || rect.height < 24 || rect.width > 260 || rect.height > 120) continue;
+                const label = nearestOptionLabel(element);
+                if (!label.name) continue;
+                const valueCandidates = elementTextLines(element)
+                  .map((value) => cleanSkuValue(value, label.name))
+                  .filter(looksLikeSkuValue);
+                if (!valueCandidates.length) continue;
+                const optionValue = valueCandidates.sort((left, right) => left.length - right.length)[0];
+                if (label.name.toLowerCase() === "quantity" && /^(?:[+\-]|\d+)$/.test(optionValue)) {
+                  continue;
+                }
+                const dedupeKey = `${label.name}:${optionValue}`.toLowerCase();
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                rawOptions.push({
+                  option_name: label.name,
+                  option_value: optionValue,
+                  sku_property_key: `${label.name}:${optionValue}`,
+                  source_url: "",
+                  display_order: rawOptions.length,
+                  selected: Boolean(label.selectedValue) &&
+                    cleanSkuValue(label.selectedValue, label.name).toLowerCase() === optionValue.toLowerCase(),
+                  x: rect.left,
+                  y: rect.top,
+                });
+              }
+              rawOptions.sort((left, right) => {
+                if (left.option_name !== right.option_name) return left.option_name.localeCompare(right.option_name);
+                if (left.y !== right.y) return left.y - right.y;
+                return left.x - right.x;
+              });
+              return rawOptions.map((item, index) => ({ ...item, display_order: index }));
+            };
+
+            const buildSkuOptionGroups = (skuOptions) => {
+              const groups = new Map();
+              for (const item of skuOptions) {
+                if (!groups.has(item.option_name)) {
+                  groups.set(item.option_name, {
+                    name: item.option_name,
+                    values: [],
+                    source_platform: "tiktok",
+                  });
+                }
+                const group = groups.get(item.option_name);
+                if (group.values.some((value) => value.value.toLowerCase() === item.option_value.toLowerCase())) {
+                  continue;
+                }
+                group.values.push({
+                  value: item.option_value,
+                  image_url: item.source_url || "",
+                  sku_property_key: item.sku_property_key,
+                  selected: item.selected,
+                });
+              }
+              return Array.from(groups.values());
+            };
+
+            const buildDomSkus = (skuOptions) => {
+              if (skuOptions.length !== 1) return [];
+              const option = skuOptions[0];
+              return option.values.map((value) => ({
+                product_id: "",
+                sku_id: "",
+                sku_name: value.value,
+                spec_name: `${option.name}: ${value.value}`,
+                properties: [{
+                  name: option.name,
+                  value: value.value,
+                  sku_property_key: value.sku_property_key,
+                  image_url: value.image_url,
+                }],
+                sku_property_keys: [value.sku_property_key],
+                source_platform: "tiktok",
+              }));
+            };
+
             const title = pickText(selectors.title);
-            const price = pickText(selectors.price);
+            let price = pickText(selectors.price);
+            if (!price.text) price = pickVisiblePriceText();
             const shop = pickText(selectors.shop);
-            const image = pickImage(selectors.image);
+            let image = pickImage(selectors.image);
+            if (!image.src) image = pickVisibleProductImage();
+            const reviewMetrics = pickVisibleReviewMetrics();
+            const skuImages = collectVisibleSkuOptions();
+            const textSkuOptions = collectVisibleTextSkuOptions(skuImages);
+            const skuOptions = buildSkuOptionGroups([...skuImages, ...textSkuOptions]);
+            const galleryImageUrls = collectVisibleProductImages({ minSize: 64 })
+              .map((candidate) => candidate.src)
+              .filter((src) => src && src !== image.src)
+              .slice(0, 12);
 
             return {
               title_text: title.text,
@@ -1288,6 +1849,14 @@ def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
               main_image_url: image.src,
               main_image_selector: image.selector,
               main_image_loaded: image.loaded,
+              gallery_image_urls: galleryImageUrls,
+              sku_images: skuImages,
+              sku_options: skuOptions,
+              skus: buildDomSkus(skuOptions),
+              rating_score: reviewMetrics.rating_score,
+              review_count: reviewMetrics.review_count,
+              comment_count: reviewMetrics.comment_count,
+              sales_count: reviewMetrics.sales_count,
               visible_signal_count: [Boolean(title.text), Boolean(price.text), Boolean(image.src)].filter(Boolean).length,
             };
         }""",
@@ -1443,6 +2012,431 @@ def _pick_main_image_url(product_model: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_product_gallery_images(product_model: dict[str, Any]) -> list[dict[str, Any]]:
+    images = product_model.get("images")
+    if not isinstance(images, list):
+        return []
+
+    gallery_images: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for display_order, image in enumerate(images):
+        if not isinstance(image, dict):
+            continue
+        url = _pick_url_from_media(image)
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        gallery_images.append(
+            _media_reference_from_node(
+                image,
+                source_url=url,
+                display_order=display_order,
+                media_role="product_gallery_image",
+            )
+        )
+    return gallery_images
+
+
+def _extract_product_sku_images(product_model: dict[str, Any]) -> list[dict[str, Any]]:
+    sku_property_image_map = product_model.get("sku_property_image_map")
+    if not isinstance(sku_property_image_map, dict):
+        return []
+
+    sku_images: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for display_order, (sku_property_key, image) in enumerate(sku_property_image_map.items()):
+        if not isinstance(image, dict):
+            continue
+        url = _pick_url_from_media(image)
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        media_reference = _media_reference_from_node(
+            image,
+            source_url=url,
+            display_order=display_order,
+            media_role="product_sku_image",
+        )
+        media_reference["sku_property_key"] = str(sku_property_key)
+        sku_images.append(media_reference)
+    return sku_images
+
+
+def _extract_product_sku_options(*payloads: Any) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        image_map = payload.get("sku_property_image_map")
+        if isinstance(image_map, dict):
+            for sku_property_key, image in image_map.items():
+                prop_name, prop_value = _split_sku_property_key(sku_property_key)
+                if prop_name and prop_value:
+                    _add_sku_option(
+                        groups,
+                        {
+                            "name": prop_name,
+                            "value": prop_value,
+                            "image_url": _pick_url_from_media(image),
+                            "sku_property_key": f"{prop_name}:{prop_value}",
+                        },
+                    )
+
+        for node in _walk_json(payload):
+            if not isinstance(node, dict):
+                continue
+            for prop in _sku_prop_assignments(node):
+                _add_sku_option(groups, prop)
+            group_name = _sku_group_name(node)
+            values = _sku_group_values(node)
+            if not group_name or not values:
+                continue
+            for value_node in values:
+                value = _sku_option_value(value_node)
+                if not value:
+                    continue
+                _add_sku_option(
+                    groups,
+                    {
+                        "name": group_name,
+                        "value": value,
+                        "value_id": _sku_option_value_id(value_node),
+                        "image_url": _pick_url_from_media(value_node),
+                        "sku_property_key": f"{group_name}:{value}",
+                    },
+                )
+    return list(groups.values())
+
+
+def _extract_product_skus(
+    *payloads: Any,
+    sku_options: list[dict[str, Any]],
+    product_id: str,
+) -> list[dict[str, Any]]:
+    skus: list[dict[str, Any]] = []
+    for row in _iter_sku_rows(payloads):
+        sku = _sku_from_row(row, product_id=product_id)
+        if sku:
+            skus.append(sku)
+
+    if not skus and len(sku_options) == 1:
+        option = sku_options[0]
+        option_name = _text_value(option.get("name"))
+        for value in option.get("values") or []:
+            if not isinstance(value, dict):
+                continue
+            option_value = _text_value(value.get("value"))
+            if not option_name or not option_value:
+                continue
+            property_pair = {
+                "name": option_name,
+                "value": option_value,
+                "value_id": _text_value(value.get("value_id")),
+                "sku_property_key": _text_value(value.get("sku_property_key")) or f"{option_name}:{option_value}",
+            }
+            skus.append(
+                {
+                    "product_id": product_id,
+                    "sku_id": "",
+                    "sku_name": option_value,
+                    "spec_name": f"{option_name}: {option_value}",
+                    "properties": [property_pair],
+                    "sku_property_keys": [property_pair["sku_property_key"]],
+                    "source_platform": "tiktok",
+                }
+            )
+    return _dedupe_tiktok_skus(skus)
+
+
+def _iter_sku_rows(payloads: tuple[Any, ...]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        for node in _walk_json(payload):
+            if not isinstance(node, dict):
+                continue
+            for key in (
+                "sku_list",
+                "skus",
+                "sku_infos",
+                "sku_items",
+                "product_skus",
+                "sku_info_list",
+            ):
+                value = node.get(key)
+                if isinstance(value, list):
+                    rows.extend(dict(item) for item in value if isinstance(item, dict))
+                elif isinstance(value, dict):
+                    rows.extend(dict(item) for item in value.values() if isinstance(item, dict))
+    return rows
+
+
+def _sku_from_row(row: dict[str, Any], *, product_id: str) -> dict[str, Any]:
+    props = _sku_row_properties(row)
+    sku_id = _text_value(row.get("sku_id") or row.get("id") or row.get("skuId"))
+    sku_name = _text_value(
+        row.get("sku_name")
+        or row.get("name")
+        or row.get("skuName")
+        or _join_sku_prop_values(props)
+        or sku_id
+    )
+    if not (sku_id or sku_name or props):
+        return {}
+    spec_name = _join_sku_prop_pairs(props) or sku_name
+    result = {
+        "product_id": _text_value(row.get("product_id") or row.get("productId")) or product_id,
+        "sku_id": sku_id,
+        "sku_name": sku_name,
+        "spec_name": spec_name,
+        "properties": props,
+        "sku_property_keys": [prop["sku_property_key"] for prop in props if prop.get("sku_property_key")],
+        "source_platform": "tiktok",
+    }
+    for source_key, target_key in (
+        ("real_price", "price_text"),
+        ("format_price", "price_text"),
+        ("price", "price_text"),
+        ("sale_price", "price_text"),
+        ("real_price_value", "price_amount"),
+        ("price_amount", "price_amount"),
+        ("stock", "stock_count"),
+        ("stock_count", "stock_count"),
+    ):
+        value = row.get(source_key)
+        if value not in (None, "") and target_key not in result:
+            result[target_key] = value
+    return result
+
+
+def _sku_row_properties(row: dict[str, Any]) -> list[dict[str, str]]:
+    for key in (
+        "sku_sale_props",
+        "sale_props",
+        "props",
+        "properties",
+        "sale_attributes",
+        "sales_attributes",
+        "sku_properties",
+    ):
+        value = row.get(key)
+        props = _sku_prop_assignments(value)
+        if props:
+            return props
+    props = _sku_prop_assignments(row)
+    return props
+
+
+def _sku_prop_assignments(value: Any) -> list[dict[str, str]]:
+    if isinstance(value, list):
+        props: list[dict[str, str]] = []
+        for item in value:
+            props.extend(_sku_prop_assignments(item))
+        return props
+    if isinstance(value, dict):
+        prop_name = _text_value(
+            value.get("prop_name")
+            or value.get("property_name")
+            or value.get("sale_prop_name")
+            or value.get("sku_property_name")
+            or value.get("attr_name")
+        )
+        prop_value = _text_value(
+            value.get("prop_value")
+            or value.get("value_name")
+            or value.get("property_value")
+            or value.get("sale_prop_value")
+            or value.get("sku_value")
+            or value.get("attr_value")
+            or value.get("value")
+        )
+        if prop_name and prop_value:
+            return [
+                {
+                    "name": prop_name,
+                    "value": prop_value,
+                    "value_id": _text_value(value.get("prop_value_id") or value.get("value_id")),
+                    "sku_property_key": f"{prop_name}:{prop_value}",
+                    "image_url": _pick_url_from_media(value),
+                }
+            ]
+        return []
+    return []
+
+
+def _sku_group_name(node: dict[str, Any]) -> str:
+    return _text_value(
+        node.get("prop_name")
+        or node.get("property_name")
+        or node.get("sale_prop_name")
+        or node.get("sku_property_name")
+        or node.get("attr_name")
+        or node.get("name")
+    )
+
+
+def _sku_group_values(node: dict[str, Any]) -> list[Any]:
+    for key in (
+        "sale_prop_values",
+        "values",
+        "value_list",
+        "sku_values",
+        "options",
+        "property_values",
+        "children",
+    ):
+        value = node.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _sku_option_value(value_node: Any) -> str:
+    if isinstance(value_node, dict):
+        return _text_value(
+            value_node.get("prop_value")
+            or value_node.get("value_name")
+            or value_node.get("property_value")
+            or value_node.get("name")
+            or value_node.get("value")
+        )
+    return _text_value(value_node)
+
+
+def _sku_option_value_id(value_node: Any) -> str:
+    if isinstance(value_node, dict):
+        return _text_value(value_node.get("prop_value_id") or value_node.get("value_id") or value_node.get("id"))
+    return ""
+
+
+def _add_sku_option(groups: dict[str, dict[str, Any]], prop: dict[str, Any]) -> None:
+    name = _text_value(prop.get("name"))
+    value = _text_value(prop.get("value"))
+    if not name or not value or not _looks_like_sku_property_name(name):
+        return
+    group_key = name.strip().lower()
+    group = groups.setdefault(
+        group_key,
+        {
+            "name": name,
+            "values": [],
+            "source_platform": "tiktok",
+        },
+    )
+    values = group["values"]
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        if _text_value(item.get("value")).lower() != value.lower():
+            continue
+        for key in ("value_id", "image_url", "sku_property_key"):
+            if not _text_value(item.get(key)) and _text_value(prop.get(key)):
+                item[key] = _text_value(prop.get(key))
+        return
+    values.append(
+        {
+            "value": value,
+            "value_id": _text_value(prop.get("value_id")),
+            "image_url": _text_value(prop.get("image_url")),
+            "sku_property_key": _text_value(prop.get("sku_property_key")) or f"{name}:{value}",
+        }
+    )
+
+
+def _split_sku_property_key(value: Any) -> tuple[str, str]:
+    text = _text_value(value)
+    if ":" not in text:
+        return "", ""
+    name, prop_value = text.split(":", 1)
+    return name.strip(), prop_value.strip()
+
+
+def _join_sku_prop_values(props: list[dict[str, str]]) -> str:
+    return " / ".join(_text_value(prop.get("value")) for prop in props if _text_value(prop.get("value")))
+
+
+def _join_sku_prop_pairs(props: list[dict[str, str]]) -> str:
+    return " / ".join(
+        f"{_text_value(prop.get('name'))}: {_text_value(prop.get('value'))}"
+        for prop in props
+        if _text_value(prop.get("name")) and _text_value(prop.get("value"))
+    )
+
+
+def _dedupe_tiktok_skus(skus: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sku in skus:
+        key = _text_value(sku.get("sku_id")) or _text_value(sku.get("spec_name")) or _text_value(sku.get("sku_name"))
+        normalized = re.sub(r"\s+", "", key.lower())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(sku)
+    return deduped
+
+
+def _walk_json(value: Any, *, max_depth: int = 8) -> list[Any]:
+    values: list[Any] = []
+
+    def walk(node: Any, depth: int) -> None:
+        if depth > max_depth:
+            return
+        values.append(node)
+        if isinstance(node, dict):
+            for item in node.values():
+                if isinstance(item, (dict, list)):
+                    walk(item, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    walk(item, depth + 1)
+
+    walk(value, 0)
+    return values
+
+
+def _looks_like_sku_property_name(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value.strip().lower())
+    return normalized not in {
+        "",
+        "productid",
+        "productname",
+        "title",
+        "name",
+        "image",
+        "images",
+        "price",
+        "stock",
+        "soldcount",
+        "reviewcount",
+    }
+
+
+def _text_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _media_reference_from_node(
+    media: dict[str, Any],
+    *,
+    source_url: str,
+    display_order: int,
+    media_role: str,
+) -> dict[str, Any]:
+    reference: dict[str, Any] = {
+        "source_url": source_url,
+        "display_order": display_order,
+        "media_role": media_role,
+    }
+    for key in ("uri", "width", "height"):
+        if key in media and media.get(key) not in (None, ""):
+            reference[key] = media[key]
+    uri = str(media.get("uri") or "").strip()
+    if uri:
+        reference["file_token"] = f"tiktok_uri:{uri}"
+    return reference
+
+
 def _pick_url_from_media(media: Any) -> str:
     if not isinstance(media, dict):
         return ""
@@ -1454,7 +2448,117 @@ def _pick_url_from_media(media: Any) -> str:
     uri = media.get("uri")
     if isinstance(uri, str):
         return uri.strip()
+    for nested_key in ("image", "cover", "origin_image", "main_image", "image_info"):
+        url = _pick_url_from_media(media.get(nested_key))
+        if url:
+            return url
     return ""
+
+
+def _extract_product_review_metrics(*payloads: Any) -> tuple[float, int, int]:
+    rating_value = _first_metric_value(
+        _path_value(payloads, "product_info", "review_model", "product_overall_score"),
+        _path_value(payloads, "product_info", "review_model", "overall_score"),
+        _path_value(payloads, "product_info", "review_model", "rating_score"),
+        _path_value(payloads, "product_info", "product_model", "rating_score"),
+        _path_value(payloads, "rating_score"),
+        _path_value(payloads, "review_info", "product_overall_score"),
+        _path_value(payloads, "review_info", "review_ratings", "overall_score"),
+        _find_first_nested_value(
+            payloads,
+            {
+                "rating",
+                "ratingscore",
+                "reviewscore",
+                "avgrating",
+                "averagerating",
+                "overallscore",
+                "productoverallscore",
+                "starrating",
+                "productrating",
+                "ratingstar",
+                "reviewstar",
+            },
+        ),
+    )
+    review_count_value = _first_metric_value(
+        _path_value(payloads, "product_info", "review_model", "product_review_count"),
+        _path_value(payloads, "product_info", "review_model", "review_count"),
+        _path_value(payloads, "review_info", "review_ratings", "review_count"),
+        _path_value(payloads, "review_info", "total_reviews"),
+        _find_first_nested_value(
+            payloads,
+            {
+                "reviewcount",
+                "reviewscount",
+                "ratingcount",
+                "ratingscount",
+                "productreviewcount",
+                "productreviews",
+                "totalreviews",
+            },
+        ),
+    )
+    comment_count_value = _first_metric_value(
+        _path_value(payloads, "review_info", "review_ratings", "review_count"),
+        _path_value(payloads, "review_info", "total_reviews"),
+        _find_first_nested_value(
+            payloads,
+            {
+                "commentcount",
+                "commentscount",
+                "commentnum",
+                "comments",
+            },
+        ),
+    )
+    review_count = _parse_int(review_count_value)
+    comment_count = _parse_int(comment_count_value) or review_count
+    return _parse_float(rating_value), review_count, comment_count
+
+
+def _path_value(values: Any, *path: str) -> Any:
+    roots = values if isinstance(values, (list, tuple)) else (values,)
+    for root in roots:
+        current = root
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if current not in (None, "", [], {}):
+            return current
+    return None
+
+
+def _first_metric_value(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _find_first_nested_value(values: Any, normalized_keys: set[str], *, depth: int = 0) -> Any:
+    if depth > 8:
+        return None
+    if isinstance(values, dict):
+        for key, value in values.items():
+            if _normalize_metric_key(key) in normalized_keys and value not in (None, "", [], {}):
+                return value
+        for value in values.values():
+            found = _find_first_nested_value(value, normalized_keys, depth=depth + 1)
+            if found not in (None, "", [], {}):
+                return found
+    elif isinstance(values, (list, tuple)):
+        for value in values:
+            found = _find_first_nested_value(value, normalized_keys, depth=depth + 1)
+            if found not in (None, "", [], {}):
+                return found
+    return None
+
+
+def _normalize_metric_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
 
 def _parse_int(value: Any) -> int:
@@ -1465,10 +2569,25 @@ def _parse_int(value: Any) -> int:
     if isinstance(value, float):
         return int(value)
     if isinstance(value, str):
-        digits = value.replace(",", "").strip()
-        if digits.isdigit():
-            return int(digits)
+        normalized = value.replace(",", "").strip().lower()
+        match = re.search(r"(\d+(?:\.\d+)?)\s*([km])?", normalized)
+        if match:
+            multiplier = {"k": 1_000, "m": 1_000_000}.get(match.group(2), 1)
+            return int(float(match.group(1)) * multiplier)
     return 0
+
+
+def _parse_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.replace(",", "").strip()
+        match = re.search(r"(\d+(?:\.\d+)?)", normalized)
+        if match:
+            return float(match.group(1))
+    return 0.0
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

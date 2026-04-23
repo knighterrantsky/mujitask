@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
@@ -22,10 +21,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_platform TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         facts_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_products_last_seen_at ON tk_products(last_seen_at)",
@@ -38,12 +37,12 @@ TK_FACT_SCHEMA_STATEMENTS = [
         sku_name TEXT NOT NULL DEFAULT '',
         spec_name TEXT NOT NULL DEFAULT '',
         price_text TEXT NOT NULL DEFAULT '',
-        stock_count REAL NOT NULL DEFAULT 0,
+        stock_count DOUBLE PRECISION NOT NULL DEFAULT 0,
         facts_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_product_skus_product_id ON tk_product_skus(product_id)",
@@ -59,10 +58,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_platform TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         facts_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_shops_shop_name ON tk_shops(shop_name)",
@@ -80,10 +79,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_platform TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         facts_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_creators_unique_id ON tk_creators(unique_id)",
@@ -101,10 +100,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_platform TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         facts_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_videos_creator_key ON tk_videos(creator_key)",
@@ -121,10 +120,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         mime_type TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -136,10 +135,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         asset_id TEXT NOT NULL,
         media_role TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -157,10 +156,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         relation_role TEXT NOT NULL DEFAULT 'seller',
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_product_shop_product ON tk_product_shop_relations(product_id)",
@@ -175,13 +174,13 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_record_id TEXT NOT NULL DEFAULT '',
         target_record_id TEXT NOT NULL DEFAULT '',
         holiday_name TEXT NOT NULL DEFAULT '',
-        sold_count REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -200,10 +199,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         video_key TEXT NOT NULL,
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -214,10 +213,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         product_id TEXT NOT NULL,
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -230,10 +229,10 @@ TK_FACT_SCHEMA_STATEMENTS = [
         creator_id TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        first_seen_at REAL NOT NULL,
-        last_seen_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        first_seen_at DOUBLE PRECISION NOT NULL,
+        last_seen_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -248,8 +247,8 @@ TK_FACT_SCHEMA_STATEMENTS = [
         request_id TEXT NOT NULL DEFAULT '',
         execution_id TEXT NOT NULL DEFAULT '',
         run_id TEXT NOT NULL DEFAULT '',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -264,7 +263,7 @@ TK_FACT_SCHEMA_STATEMENTS = [
         entity_external_id TEXT NOT NULL,
         link_role TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at REAL NOT NULL
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -277,14 +276,14 @@ TK_FACT_SCHEMA_STATEMENTS = [
         product_id TEXT NOT NULL,
         metric_date TEXT NOT NULL,
         source_platform TEXT NOT NULL DEFAULT '',
-        sold_count REAL NOT NULL DEFAULT 0,
-        sale_amount REAL NOT NULL DEFAULT 0,
-        price_amount REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sale_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        price_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
         currency TEXT NOT NULL DEFAULT '',
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL,
         UNIQUE(product_id, metric_date, source_platform)
     )
     """,
@@ -299,9 +298,9 @@ TK_FACT_SCHEMA_STATEMENTS = [
         window_start TEXT NOT NULL DEFAULT '',
         window_end TEXT NOT NULL DEFAULT '',
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL,
         UNIQUE(product_id, source_platform, source_endpoint, window_days)
     )
     """,
@@ -317,8 +316,8 @@ TK_FACT_SCHEMA_STATEMENTS = [
         observation_reason TEXT NOT NULL DEFAULT '',
         is_persisted_snapshot INTEGER NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -330,12 +329,12 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_name TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        metric_value REAL NOT NULL DEFAULT 0,
-        metric_amount REAL NOT NULL DEFAULT 0,
+        metric_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+        metric_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL,
         UNIQUE(product_id, distribution_type, source_key, source_platform, window_days)
     )
     """,
@@ -348,12 +347,12 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_name TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        metric_value REAL NOT NULL DEFAULT 0,
-        metric_amount REAL NOT NULL DEFAULT 0,
+        metric_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+        metric_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
         observation_reason TEXT NOT NULL DEFAULT '',
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -365,13 +364,13 @@ TK_FACT_SCHEMA_STATEMENTS = [
         sku_name TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        sold_count REAL NOT NULL DEFAULT 0,
-        sale_amount REAL NOT NULL DEFAULT 0,
-        stock_count REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sale_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        stock_count DOUBLE PRECISION NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL,
         UNIQUE(product_id, sku_key, source_platform, window_days)
     )
     """,
@@ -384,13 +383,13 @@ TK_FACT_SCHEMA_STATEMENTS = [
         sku_name TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        sold_count REAL NOT NULL DEFAULT 0,
-        sale_amount REAL NOT NULL DEFAULT 0,
-        stock_count REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sale_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+        stock_count DOUBLE PRECISION NOT NULL DEFAULT 0,
         observation_reason TEXT NOT NULL DEFAULT '',
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -401,11 +400,11 @@ TK_FACT_SCHEMA_STATEMENTS = [
         creator_key TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        sold_count REAL NOT NULL DEFAULT 0,
-        sale_amount REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sale_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
     """
@@ -415,11 +414,11 @@ TK_FACT_SCHEMA_STATEMENTS = [
         product_id TEXT NOT NULL,
         source_platform TEXT NOT NULL DEFAULT '',
         window_days INTEGER NOT NULL DEFAULT 0,
-        sold_count REAL NOT NULL DEFAULT 0,
-        sale_amount REAL NOT NULL DEFAULT 0,
+        sold_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        sale_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
-        collected_at REAL NOT NULL,
-        created_at REAL NOT NULL
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
     )
     """,
 ]
@@ -478,7 +477,7 @@ def _coerce_float(value: Any) -> float:
 
 
 class TKFactStore:
-    def __init__(self, *, runtime_store: Any | None = None, db_url: str = "", db_path: str | Path = ""):
+    def __init__(self, *, runtime_store: Any | None = None, db_url: str = ""):
         if runtime_store is not None:
             self._engine = runtime_store._engine  # noqa: SLF001
             self._text = runtime_store._text  # noqa: SLF001
@@ -491,9 +490,11 @@ class TKFactStore:
 
         resolved_db_url = _clean_text(db_url)
         if not resolved_db_url:
-            resolved_path = Path(db_path or "runtime/execution_control/control_plane.sqlite3").expanduser()
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
-            resolved_db_url = f"sqlite:///{resolved_path.resolve()}"
+            raise RuntimeError(
+                "TKFactStore requires db_url or runtime_store. SQLite/db_path fallback has been removed."
+            )
+        if resolved_db_url.lower().startswith("sqlite"):
+            raise RuntimeError("SQLite is no longer supported for TKFactStore; use Postgres.")
         self._text = text
         self._engine = create_engine(resolved_db_url, future=True, pool_pre_ping=True)
         with self._engine.begin() as connection:
@@ -938,6 +939,448 @@ class TKFactStore:
             )
         return self.get_raw_api_response(raw_response_id=raw_response_id)
 
+    def record_product_window_observation(
+        self,
+        *,
+        product_id: str,
+        source_platform: str = "",
+        source_endpoint: str = "",
+        window_days: int = 0,
+        window_start: str = "",
+        window_end: str = "",
+        observation_reason: str = "",
+        is_persisted_snapshot: bool = True,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        if not product_id:
+            return {}
+        now = time.time()
+        observation_id = uuid.uuid4().hex
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_window_observations (
+                            observation_id, product_id, source_platform, source_endpoint,
+                            window_days, window_start, window_end, observation_reason,
+                            is_persisted_snapshot, payload_json, collected_at, created_at
+                        ) VALUES (
+                            :observation_id, :product_id, :source_platform, :source_endpoint,
+                            :window_days, :window_start, :window_end, :observation_reason,
+                            :is_persisted_snapshot, :payload_json, :collected_at, :created_at
+                        )
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "observation_id": observation_id,
+                        "product_id": product_id,
+                        "source_platform": _clean_text(source_platform),
+                        "source_endpoint": _clean_text(source_endpoint),
+                        "window_days": int(window_days or 0),
+                        "window_start": _clean_text(window_start),
+                        "window_end": _clean_text(window_end),
+                        "observation_reason": _clean_text(observation_reason),
+                        "is_persisted_snapshot": 1 if is_persisted_snapshot else 0,
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def upsert_product_window_latest(
+        self,
+        *,
+        product_id: str,
+        source_platform: str = "",
+        source_endpoint: str = "",
+        window_days: int = 0,
+        window_start: str = "",
+        window_end: str = "",
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        if not product_id:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_window_latest (
+                            latest_id, product_id, source_platform, source_endpoint,
+                            window_days, window_start, window_end, payload_json,
+                            collected_at, created_at, updated_at
+                        ) VALUES (
+                            :latest_id, :product_id, :source_platform, :source_endpoint,
+                            :window_days, :window_start, :window_end, :payload_json,
+                            :collected_at, :created_at, :updated_at
+                        )
+                        ON CONFLICT(product_id, source_platform, source_endpoint, window_days)
+                        DO UPDATE SET
+                            window_start = EXCLUDED.window_start,
+                            window_end = EXCLUDED.window_end,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at,
+                            updated_at = EXCLUDED.updated_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "latest_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "source_platform": _clean_text(source_platform),
+                        "source_endpoint": _clean_text(source_endpoint),
+                        "window_days": int(window_days or 0),
+                        "window_start": _clean_text(window_start),
+                        "window_end": _clean_text(window_end),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def upsert_product_daily_metric(
+        self,
+        *,
+        product_id: str,
+        metric_date: str,
+        source_platform: str = "",
+        sold_count: Any = 0,
+        sale_amount: Any = 0,
+        price_amount: Any = 0,
+        currency: str = "",
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        metric_date = _clean_text(metric_date)
+        source_platform = _clean_text(source_platform)
+        if not product_id or not metric_date:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_daily_metrics (
+                            metric_id, product_id, metric_date, source_platform,
+                            sold_count, sale_amount, price_amount, currency,
+                            payload_json, collected_at, created_at, updated_at
+                        ) VALUES (
+                            :metric_id, :product_id, :metric_date, :source_platform,
+                            :sold_count, :sale_amount, :price_amount, :currency,
+                            :payload_json, :collected_at, :created_at, :updated_at
+                        )
+                        ON CONFLICT(product_id, metric_date, source_platform)
+                        DO UPDATE SET
+                            sold_count = EXCLUDED.sold_count,
+                            sale_amount = EXCLUDED.sale_amount,
+                            price_amount = EXCLUDED.price_amount,
+                            currency = EXCLUDED.currency,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at,
+                            updated_at = EXCLUDED.updated_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "metric_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "metric_date": metric_date,
+                        "source_platform": source_platform,
+                        "sold_count": _coerce_float(sold_count),
+                        "sale_amount": _coerce_float(sale_amount),
+                        "price_amount": _coerce_float(price_amount),
+                        "currency": _clean_text(currency),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def record_product_distribution_window_observation(
+        self,
+        *,
+        product_id: str,
+        distribution_type: str,
+        source_key: str = "",
+        source_name: str = "",
+        source_platform: str = "",
+        window_days: int = 0,
+        metric_value: Any = 0,
+        metric_amount: Any = 0,
+        observation_reason: str = "",
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        distribution_type = _clean_text(distribution_type)
+        source_key = _clean_text(source_key)
+        if not product_id or not distribution_type or not source_key:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_distribution_window_observations (
+                            observation_id, product_id, distribution_type, source_key,
+                            source_name, source_platform, window_days, metric_value,
+                            metric_amount, observation_reason, payload_json,
+                            collected_at, created_at
+                        ) VALUES (
+                            :observation_id, :product_id, :distribution_type, :source_key,
+                            :source_name, :source_platform, :window_days, :metric_value,
+                            :metric_amount, :observation_reason, :payload_json,
+                            :collected_at, :created_at
+                        )
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "observation_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "distribution_type": distribution_type,
+                        "source_key": source_key,
+                        "source_name": _clean_text(source_name),
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "metric_value": _coerce_float(metric_value),
+                        "metric_amount": _coerce_float(metric_amount),
+                        "observation_reason": _clean_text(observation_reason),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def upsert_product_distribution_window_latest(
+        self,
+        *,
+        product_id: str,
+        distribution_type: str,
+        source_key: str = "",
+        source_name: str = "",
+        source_platform: str = "",
+        window_days: int = 0,
+        metric_value: Any = 0,
+        metric_amount: Any = 0,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        distribution_type = _clean_text(distribution_type)
+        source_key = _clean_text(source_key)
+        if not product_id or not distribution_type or not source_key:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_distribution_window_latest (
+                            latest_id, product_id, distribution_type, source_key,
+                            source_name, source_platform, window_days, metric_value,
+                            metric_amount, payload_json, collected_at, created_at, updated_at
+                        ) VALUES (
+                            :latest_id, :product_id, :distribution_type, :source_key,
+                            :source_name, :source_platform, :window_days, :metric_value,
+                            :metric_amount, :payload_json, :collected_at, :created_at, :updated_at
+                        )
+                        ON CONFLICT(product_id, distribution_type, source_key, source_platform, window_days)
+                        DO UPDATE SET
+                            source_name = EXCLUDED.source_name,
+                            metric_value = EXCLUDED.metric_value,
+                            metric_amount = EXCLUDED.metric_amount,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at,
+                            updated_at = EXCLUDED.updated_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "latest_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "distribution_type": distribution_type,
+                        "source_key": source_key,
+                        "source_name": _clean_text(source_name),
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "metric_value": _coerce_float(metric_value),
+                        "metric_amount": _coerce_float(metric_amount),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def record_product_sku_window_observation(
+        self,
+        *,
+        product_id: str,
+        sku_key: str = "",
+        sku_id: str = "",
+        sku_name: str = "",
+        source_platform: str = "",
+        window_days: int = 0,
+        sold_count: Any = 0,
+        sale_amount: Any = 0,
+        stock_count: Any = 0,
+        observation_reason: str = "",
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        sku_id = _clean_text(sku_id)
+        sku_name = _clean_text(sku_name)
+        sku_key = _clean_text(sku_key) or f"{product_id}:{sku_id or sku_name}"
+        if not product_id or not sku_key:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_sku_window_observations (
+                            observation_id, product_id, sku_key, sku_id, sku_name,
+                            source_platform, window_days, sold_count, sale_amount,
+                            stock_count, observation_reason, payload_json,
+                            collected_at, created_at
+                        ) VALUES (
+                            :observation_id, :product_id, :sku_key, :sku_id, :sku_name,
+                            :source_platform, :window_days, :sold_count, :sale_amount,
+                            :stock_count, :observation_reason, :payload_json,
+                            :collected_at, :created_at
+                        )
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "observation_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "sku_key": sku_key,
+                        "sku_id": sku_id,
+                        "sku_name": sku_name,
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "sold_count": _coerce_float(sold_count),
+                        "sale_amount": _coerce_float(sale_amount),
+                        "stock_count": _coerce_float(stock_count),
+                        "observation_reason": _clean_text(observation_reason),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def upsert_product_sku_window_latest(
+        self,
+        *,
+        product_id: str,
+        sku_key: str = "",
+        sku_id: str = "",
+        sku_name: str = "",
+        source_platform: str = "",
+        window_days: int = 0,
+        sold_count: Any = 0,
+        sale_amount: Any = 0,
+        stock_count: Any = 0,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        product_id = _clean_text(product_id)
+        sku_id = _clean_text(sku_id)
+        sku_name = _clean_text(sku_name)
+        sku_key = _clean_text(sku_key) or f"{product_id}:{sku_id or sku_name}"
+        if not product_id or not sku_key:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_product_sku_window_latest (
+                            latest_id, product_id, sku_key, sku_id, sku_name,
+                            source_platform, window_days, sold_count, sale_amount,
+                            stock_count, payload_json, collected_at, created_at, updated_at
+                        ) VALUES (
+                            :latest_id, :product_id, :sku_key, :sku_id, :sku_name,
+                            :source_platform, :window_days, :sold_count, :sale_amount,
+                            :stock_count, :payload_json, :collected_at, :created_at, :updated_at
+                        )
+                        ON CONFLICT(product_id, sku_key, source_platform, window_days)
+                        DO UPDATE SET
+                            sku_id = EXCLUDED.sku_id,
+                            sku_name = EXCLUDED.sku_name,
+                            sold_count = EXCLUDED.sold_count,
+                            sale_amount = EXCLUDED.sale_amount,
+                            stock_count = EXCLUDED.stock_count,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at,
+                            updated_at = EXCLUDED.updated_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "latest_id": uuid.uuid4().hex,
+                        "product_id": product_id,
+                        "sku_key": sku_key,
+                        "sku_id": sku_id,
+                        "sku_name": sku_name,
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "sold_count": _coerce_float(sold_count),
+                        "sale_amount": _coerce_float(sale_amount),
+                        "stock_count": _coerce_float(stock_count),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
     def link_raw_entity(
         self,
         *,
@@ -1063,12 +1506,6 @@ class TKFactStore:
 
     def table_names(self) -> set[str]:
         with self._engine.connect() as connection:
-            dialect_name = str(connection.dialect.name or "").lower()
-            if dialect_name == "sqlite":
-                rows = connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).mappings().all()
-                return {str(row["name"]) for row in rows}
             rows = connection.execute(
                 self._text(
                     """
@@ -1245,11 +1682,13 @@ def extract_fact_payloads(items: Sequence[Mapping[str, Any]]) -> dict[str, list[
     fact_entities: list[dict[str, Any]] = []
     fact_relations: list[dict[str, Any]] = []
     fact_media_assets: list[dict[str, Any]] = []
+    fact_metric_observations: list[dict[str, Any]] = []
     raw_api_responses: list[dict[str, Any]] = []
     seen: dict[str, set[str]] = {
         "entities": set(),
         "relations": set(),
         "media": set(),
+        "metrics": set(),
         "raw": set(),
     }
 
@@ -1269,6 +1708,15 @@ def extract_fact_payloads(items: Sequence[Mapping[str, Any]]) -> dict[str, list[
             if key and key not in seen["media"]:
                 seen["media"].add(key)
                 fact_media_assets.append(dict(asset))
+        for metric in (
+            item.get("fact_metric_observations", [])
+            if isinstance(item.get("fact_metric_observations"), list)
+            else []
+        ):
+            key = _fact_identity(metric)
+            if key and key not in seen["metrics"]:
+                seen["metrics"].add(key)
+                fact_metric_observations.append(dict(metric))
         for raw_response in item.get("raw_api_responses", []) if isinstance(item.get("raw_api_responses"), list) else []:
             key = _fact_identity(raw_response)
             if key and key not in seen["raw"]:
@@ -1279,6 +1727,7 @@ def extract_fact_payloads(items: Sequence[Mapping[str, Any]]) -> dict[str, list[
         "fact_entities": fact_entities,
         "fact_relations": fact_relations,
         "fact_media_assets": fact_media_assets,
+        "fact_metric_observations": fact_metric_observations,
         "raw_api_responses": raw_api_responses,
     }
 
@@ -1291,6 +1740,8 @@ def _fact_identity(payload: Mapping[str, Any]) -> str:
         "creator_key",
         "video_key",
         "asset_id",
+        "latest_id",
+        "observation_id",
         "relation_key",
         "raw_response_id",
         "raw_link_id",

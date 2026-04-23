@@ -15,6 +15,7 @@ def test_build_task_registry_registers_current_tasks():
         "refresh_current_competitor_table",
         "search_keyword_competitor_products",
         "sync_tk_influencer_pool",
+        "tiktok_fastmoss_product_ingest",
         "tiktok_feishu_single_sync",
         "tiktok_product_link_cleanup",
     ]
@@ -26,6 +27,7 @@ def test_build_task_registry_registers_current_tasks():
     assert registry.get("feishu_single_row_update") is not None
     assert registry.get("search_keyword_competitor_products") is not None
     assert registry.get("sync_tk_influencer_pool") is not None
+    assert registry.get("tiktok_fastmoss_product_ingest") is not None
     assert registry.get("tiktok_feishu_single_sync") is not None
     assert registry.get("tiktok_product_link_cleanup") is not None
     assert registry.get("fastmoss_product_sales_snapshot") is not None

@@ -23,6 +23,7 @@ def test_agent_lists_current_tasks():
             "refresh_current_competitor_table",
             "search_keyword_competitor_products",
             "sync_tk_influencer_pool",
+            "tiktok_fastmoss_product_ingest",
             "tiktok_feishu_single_sync",
             "tiktok_product_link_cleanup",
         ]

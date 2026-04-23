@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.infrastructure.artifacts.artifact_sync import (
@@ -37,16 +37,48 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 from automation_business_scaffold.infrastructure.facts.tk_fact_service import persist_product_fact_bundle
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import extract_fact_payloads
 from automation_business_scaffold.business.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
+from automation_business_scaffold.business.flows.influencer_pool_sync_flow import (
+    run_sync_tk_influencer_pool as run_sync_tk_influencer_pool_sync,
+)
+from automation_business_scaffold.business.flows.tiktok_fastmoss_product_ingest_flow import (
+    fetch_tiktok_product_via_browser,
+    run_tiktok_fastmoss_product_ingest as run_tiktok_fastmoss_product_ingest_sync,
+)
+from automation_business_scaffold.business.flows.feishu_tk_selection_mapper import (
+    DEFAULT_FEISHU_TK_SELECTION_TABLE_URL,
+    FEISHU_TK_SELECTION_MAPPER_CODE,
+    PRODUCT_STATUS_UNAVAILABLE,
+    read_feishu_tk_selection_table_for_product,
+    writeback_feishu_tk_selection_table,
+)
+from automation_business_scaffold.business.flows.tiktok_product_flow import (
+    TikTokProductExtractionError,
+    TikTokProductUnavailableError,
+)
 from automation_business_scaffold.models import ArtifactObjectRecord
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
 KEYWORD_TASK_CODE = "search_keyword_competitor_products"
+SYNC_TK_INFLUENCER_POOL_TASK_CODE = "sync_tk_influencer_pool"
+TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE = "tiktok_fastmoss_product_ingest"
+TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE = "tiktok_fastmoss_product_ingest"
+FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE = "feishu_tk_selection_table_read"
+FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE = "feishu_tk_selection_table_writeback"
+FEISHU_TK_SELECTION_SKIP_STATUSES = {"skipped_completed", "skipped_unavailable"}
+TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE = "tiktok_product_browser_fetch"
+TIKTOK_PRODUCT_BROWSER_FETCH_WORKFLOW_CODE = "tiktok_product_browser_fetch_v1"
 SINGLE_ROW_UPDATE_ITEM_CODE = "feishu_single_row_update"
 SINGLE_ROW_UPDATE_WORKFLOW_CODE = "feishu_single_row_update_v1"
 KEYWORD_DISCOVERY_ITEM_CODE = "fastmoss_keyword_candidate_discovery"
 KEYWORD_DISCOVERY_WORKFLOW_CODE = "fastmoss_keyword_candidate_discovery_v1"
 BROWSER_SINGLE_ROW_STEP_ID = "execute_browser_single_row_update"
 BROWSER_KEYWORD_DISCOVERY_STEP_ID = "execute_browser_keyword_candidate_discovery"
+BROWSER_TIKTOK_PRODUCT_FETCH_STEP_ID = "execute_browser_tiktok_product_fetch"
+SUPPORTED_BROWSER_ITEM_CODES = (
+    KEYWORD_DISCOVERY_ITEM_CODE,
+    SINGLE_ROW_UPDATE_ITEM_CODE,
+    TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE,
+)
 KEYWORD_RESUME_DISCOVERY = "process_keyword_discovery"
 KEYWORD_RESUME_DETAILS = "finalize_keyword_detail_updates"
 TERMINAL_REQUEST_STATUSES = {"success", "failed", "cancelled"}
@@ -339,7 +371,6 @@ def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:
         "request_id",
         "execution_id",
         "execution_control_db_url",
-        "execution_control_db_path",
         "execution_requested_by",
         "execution_worker_id",
         "execution_lease_seconds",
@@ -375,10 +406,6 @@ def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:
 def _phase1_settings(params: dict[str, Any]) -> dict[str, Any]:
     defaults = get_execution_control_defaults()
     configured_db_url = str(params.get("execution_control_db_url") or defaults.db_url).strip()
-    configured_db_path = str(params.get("execution_control_db_path") or defaults.db_path)
-    if not configured_db_url and "://" in configured_db_path:
-        configured_db_url = configured_db_path
-        configured_db_path = defaults.db_path
     requested_by = str(
         params.get("requested_by")
         or params.get("execution_requested_by")
@@ -402,7 +429,6 @@ def _phase1_settings(params: dict[str, Any]) -> dict[str, Any]:
         sync_referenced_files = bool(defaults.sync_referenced_files or artifact_store_provider != "local")
     return {
         "db_url": configured_db_url,
-        "db_path": configured_db_path,
         "artifact_root": str(params.get("execution_control_artifact_root") or defaults.artifact_root),
         "artifact_bucket": str(
             params.get("execution_control_artifact_bucket") or defaults.artifact_bucket
@@ -468,10 +494,24 @@ def _phase1_settings(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _create_store(settings: dict[str, Any]) -> RuntimeStore:
-    return RuntimeStore(
-        db_url=str(settings.get("db_url", "") or ""),
-        db_path=str(settings.get("db_path", "") or ""),
-    )
+    return RuntimeStore(db_url=str(settings.get("db_url", "") or ""))
+
+
+def _runtime_params_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "execution_control_db_url": settings.get("db_url", ""),
+        "execution_control_artifact_root": settings.get("artifact_root", ""),
+        "execution_control_artifact_bucket": settings.get("artifact_bucket", ""),
+        "execution_control_artifact_store_provider": settings.get("artifact_store_provider", ""),
+        "execution_control_artifact_object_prefix": settings.get("artifact_object_prefix", ""),
+        "execution_control_minio_endpoint": settings.get("minio_endpoint", ""),
+        "execution_control_minio_access_key": settings.get("minio_access_key", ""),
+        "execution_control_minio_secret_key": settings.get("minio_secret_key", ""),
+        "execution_control_minio_region": settings.get("minio_region", ""),
+        "execution_control_minio_secure": settings.get("minio_secure", False),
+        "execution_control_minio_create_bucket": settings.get("minio_create_bucket", False),
+        "execution_control_sync_referenced_files": settings.get("sync_referenced_files", False),
+    }
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -653,6 +693,8 @@ def _browser_step_id_for_execution(execution: Any) -> str:
     item_code = str(getattr(execution, "item_code", "") or "").strip()
     if item_code == KEYWORD_DISCOVERY_ITEM_CODE:
         return BROWSER_KEYWORD_DISCOVERY_STEP_ID
+    if item_code == TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE:
+        return BROWSER_TIKTOK_PRODUCT_FETCH_STEP_ID
     return BROWSER_SINGLE_ROW_STEP_ID
 
 
@@ -700,6 +742,43 @@ def _build_keyword_discovery_items(request_payload: dict[str, Any]) -> list[dict
             "payload": payload,
         }
     ]
+
+
+def _build_tiktok_product_browser_fetch_items(
+    request_payload: dict[str, Any],
+    *,
+    product_url: str,
+    product_id: str,
+    request_id: str,
+    fallback_reason: str,
+) -> list[dict[str, Any]]:
+    payload = dict(request_payload)
+    payload["product_url"] = product_url
+    if product_id:
+        payload["product_id"] = product_id
+    payload["profile_ref"] = _browser_fallback_profile_ref(payload)
+    payload["tiktok_browser_fallback_reason"] = fallback_reason
+    payload["trace_id"] = _first_non_empty_mapping(payload, "trace_id") or request_id
+    resource_code = build_browser_resource_code(payload)
+    business_key = product_id or product_url or request_id
+    return [
+        {
+            "business_key": business_key,
+            "dedupe_key": f"{TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE}:{request_id}",
+            "resource_code": resource_code,
+            "max_attempts": int(payload.get("browser_max_attempts", 3) or 3),
+            "payload": payload,
+        }
+    ]
+
+
+def _browser_fallback_profile_ref(params: Mapping[str, Any]) -> str:
+    return _first_non_empty_mapping(
+        params,
+        "tiktok_browser_profile_ref",
+        "browser_profile_ref",
+        "profile_ref",
+    ) or str(os.environ.get("BROWSER_PROFILE_REF") or "roxy-tiktok").strip() or "roxy-tiktok"
 
 
 def _build_keyword_detail_enqueue_items(
@@ -993,10 +1072,82 @@ def _build_keyword_outbox_text(request: Any, summary: dict[str, Any], result: di
     return "；".join(parts)
 
 
+def _build_product_ingest_outbox_text(request: Any, summary: dict[str, Any], result: dict[str, Any]) -> str:
+    product_id = str(result.get("product_id", "") or "").strip()
+    media_upload = result.get("media_upload", {}) if isinstance(result.get("media_upload"), dict) else {}
+    media_summary = media_upload.get("summary", {}) if isinstance(media_upload, dict) else {}
+    media_counts = _summary_counts_only(media_summary) if isinstance(media_summary, dict) else {}
+    fact_entity_count = 0
+    persisted = result.get("persisted", {}) if isinstance(result.get("persisted"), dict) else {}
+    persisted_summary = persisted.get("summary", {}) if isinstance(persisted, dict) else {}
+    if isinstance(persisted_summary, dict):
+        fact_entity_count = _safe_int(persisted_summary.get("fact_entity_count", 0))
+
+    parts = [f"商品 {product_id or request.request_id} 事实采集完成"]
+    uploaded_count = _safe_int(media_counts.get("uploaded", 0))
+    failed_count = _safe_int(media_counts.get("failed", 0))
+    if uploaded_count > 0:
+        parts.append(f"上传图片 {uploaded_count} 张")
+    if failed_count > 0:
+        parts.append(f"图片失败 {failed_count} 张")
+    if fact_entity_count > 0:
+        parts.append(f"写入实体 {fact_entity_count} 条")
+    return "；".join(parts)
+
+
+def _build_influencer_pool_request_outbox_text(
+    request: Any,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> str:
+    write_summary = result.get("write_summary", {}) if isinstance(result.get("write_summary"), dict) else {}
+    counts = _summary_counts_only(summary)
+    total = _safe_int(summary.get("total", 0))
+    failed_count = _safe_int(
+        write_summary.get(
+            "failed_item_count",
+            result.get("failed_item_count", counts.get("failed", 0)),
+        )
+    )
+    created_count = _safe_int(write_summary.get("created_author_count", 0))
+    updated_count = _safe_int(write_summary.get("updated_author_count", 0))
+    skipped_count = _safe_int(write_summary.get("already_synced_author_count", 0))
+
+    if bool(write_summary.get("hard_stopped")):
+        status_label = "已中断，等待重试"
+    elif failed_count > 0:
+        status_label = "完成但有失败"
+    else:
+        status_label = "完成"
+
+    parts = [f"达人池同步 {status_label}"]
+    if total > 0:
+        parts.append(f"来源记录 {total} 条")
+    if created_count > 0:
+        parts.append(f"新增达人 {created_count}")
+    if updated_count > 0:
+        parts.append(f"更新达人 {updated_count}")
+    if skipped_count > 0:
+        parts.append(f"跳过已同步 {skipped_count}")
+    if failed_count > 0:
+        parts.append(f"失败 {failed_count}")
+    if len(parts) == 1:
+        parts.append(f"request_id={request.request_id}")
+    return "；".join(parts)
+
+
 def _build_outbox_text(request: Any, summary: dict[str, Any], result: dict[str, Any]) -> str:
     task_code = str(getattr(request, "task_code", "") or "").strip()
     if task_code == KEYWORD_TASK_CODE:
         return _build_keyword_outbox_text(request, summary, result if isinstance(result, dict) else {})
+    if task_code == SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+        return _build_influencer_pool_request_outbox_text(
+            request,
+            summary,
+            result if isinstance(result, dict) else {},
+        )
+    if task_code == TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+        return _build_product_ingest_outbox_text(request, summary, result if isinstance(result, dict) else {})
     return _build_refresh_outbox_text(request, summary)
 
 
@@ -1006,6 +1157,13 @@ def _build_failure_outbox_text(request: Any, error_text: str) -> str:
     if task_code == KEYWORD_TASK_CODE:
         search_keyword = str(payload.get("search_keyword", "") or "").strip()
         prefix = f"关键词 {search_keyword} 搜索失败" if search_keyword else f"任务 {request.request_id} 执行失败"
+        return f"{prefix}：{error_text}" if error_text else prefix
+    if task_code == SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+        prefix = "达人池同步失败"
+        return f"{prefix}：{error_text}" if error_text else prefix
+    if task_code == TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+        product_url = str(payload.get("product_url", "") or payload.get("url", "") or "").strip()
+        prefix = f"商品 {product_url or request.request_id} 事实采集失败"
         return f"{prefix}：{error_text}" if error_text else prefix
     return f"任务 {request.request_id} 执行失败"
 
@@ -1019,6 +1177,7 @@ def _build_request_payload(
 ) -> dict[str, Any]:
     request = store.load_task_request(request_id=request_id)
     executions = store.list_task_executions(request_id=request_id)
+    api_worker_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
     outbox_records = store.list_request_outbox(request_id=request_id)
     summary = request.summary if request.summary else _build_live_summary(request, executions)
     result = request.result if request.result else _build_result_payload(request, executions, outbox_records)
@@ -1033,6 +1192,7 @@ def _build_request_payload(
         "result": result,
         "request": request.to_dict(),
         "executions": [execution.to_dict() for execution in executions],
+        "api_worker_jobs": api_worker_jobs,
         "outbox": [record.to_dict() for record in outbox_records],
         "child_total_count": request.child_total_count,
         "child_terminal_count": request.child_terminal_count,
@@ -1315,6 +1475,50 @@ def submit_search_keyword_competitor_products(params: dict[str, Any]) -> dict[st
     )
 
 
+def submit_sync_tk_influencer_pool(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code=SYNC_TK_INFLUENCER_POOL_TASK_CODE,
+        payload=_sanitize_task_payload(params),
+        requested_by=str(settings["requested_by"]),
+        trigger_mode=str(settings["trigger_mode"]),
+        source_channel_code=str(settings["source_channel_code"]),
+        source_session_id=str(settings["source_session_id"]),
+        reply_target=str(settings["reply_target"]),
+        idempotency_key=str(params.get("idempotency_key", "") or "").strip(),
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=request.request_id,
+        control_action="submit",
+        message="Top-level influencer pool sync task accepted.",
+    )
+
+
+def submit_tiktok_fastmoss_product_ingest(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE,
+        payload=_sanitize_task_payload(params),
+        requested_by=str(settings["requested_by"]),
+        trigger_mode=str(settings["trigger_mode"]),
+        source_channel_code=str(settings["source_channel_code"]),
+        source_session_id=str(settings["source_session_id"]),
+        reply_target=str(settings["reply_target"]),
+        idempotency_key=str(params.get("idempotency_key", "") or "").strip(),
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=request.request_id,
+        control_action="submit",
+        message="TikTok and FastMoss product ingest task accepted.",
+    )
+
+
 def get_refresh_current_competitor_table_status(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
@@ -1334,6 +1538,28 @@ def get_search_keyword_competitor_products_status(params: dict[str, Any]) -> dic
         request_id=str(params.get("request_id", "") or ""),
         control_action="status",
         message="Loaded top-level keyword search task status.",
+    )
+
+
+def get_sync_tk_influencer_pool_status(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    return _build_request_payload(
+        store=store,
+        request_id=str(params.get("request_id", "") or ""),
+        control_action="status",
+        message="Loaded top-level influencer pool sync task status.",
+    )
+
+
+def get_tiktok_fastmoss_product_ingest_status(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    return _build_request_payload(
+        store=store,
+        request_id=str(params.get("request_id", "") or ""),
+        control_action="status",
+        message="Loaded TikTok and FastMoss product ingest task status.",
     )
 
 
@@ -1580,6 +1806,1153 @@ def _resume_keyword_request(
     return _finalize_request_summary(store=store, request_id=claimed_request.request_id)
 
 
+def _execute_tiktok_fastmoss_product_ingest_request(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = _tiktok_fastmoss_product_ingest_request_payload(
+        settings=settings,
+        claimed_request=claimed_request,
+    )
+    request_payload["notification_channel_code"] = ""
+    request_payload["reply_target"] = ""
+    if _uses_feishu_tk_selection_table(request_payload):
+        return _dispatch_feishu_tk_selection_table_read_job(
+            store=store,
+            settings=settings,
+            claimed_request=claimed_request,
+            request_payload=request_payload,
+        )
+    return _dispatch_tiktok_fastmoss_product_ingest_api_job(
+        store=store,
+        settings=settings,
+        claimed_request=claimed_request,
+        request_payload=request_payload,
+        stage_cursor={},
+        waiting_stage="waiting_api_worker",
+        message="Executor dispatched the TikTok/FastMoss product ingest API worker job.",
+    )
+
+
+def _tiktok_fastmoss_product_ingest_request_payload(
+    *,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    return {
+        **dict(claimed_request.payload or {}),
+        **_runtime_params_from_settings(settings),
+        "request_id": claimed_request.request_id,
+        "notification_channel_code": "",
+        "reply_target": "",
+    }
+
+
+def _uses_feishu_tk_selection_table(params: Mapping[str, Any]) -> bool:
+    if _read_bool_param(dict(params), "skip_feishu_tk_selection_table", False):
+        return False
+    if _read_bool_param(dict(params), "table_read_required", False):
+        return True
+    if _read_bool_param(dict(params), "feishu_tk_selection_enabled", False):
+        return True
+    if _first_non_empty_mapping(
+        params,
+        "tk_selection_table_url",
+        "feishu_tk_selection_table_url",
+    ):
+        return True
+    if _generic_table_url_is_tk_selection(params) and _first_non_empty_mapping(params, "table_url"):
+        return True
+    return False
+
+
+def _feishu_tk_selection_table_url_from_params(params: Mapping[str, Any]) -> str:
+    explicit_url = _first_non_empty_mapping(
+        params,
+        "tk_selection_table_url",
+        "feishu_tk_selection_table_url",
+    )
+    if explicit_url:
+        return explicit_url
+    if _generic_table_url_is_tk_selection(params):
+        return _first_non_empty_mapping(params, "table_url") or DEFAULT_FEISHU_TK_SELECTION_TABLE_URL
+    return DEFAULT_FEISHU_TK_SELECTION_TABLE_URL
+
+
+def _generic_table_url_is_tk_selection(params: Mapping[str, Any]) -> bool:
+    mapper_code = str(params.get("field_mapper_code", "") or "").strip()
+    if mapper_code == FEISHU_TK_SELECTION_MAPPER_CODE:
+        return True
+    table_kind = str(
+        params.get("feishu_table_kind")
+        or params.get("table_kind")
+        or params.get("table_name")
+        or ""
+    ).strip()
+    return table_kind in {"tk_selection", "TK选品收集"}
+
+
+def _first_non_empty_mapping(params: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(params.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _is_feishu_tk_selection_skip_status(status: Any) -> bool:
+    return str(status or "").strip() in FEISHU_TK_SELECTION_SKIP_STATUSES
+
+
+def _dispatch_feishu_tk_selection_table_read_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+    request_payload: dict[str, Any],
+) -> dict[str, Any]:
+    product_key = str(
+        request_payload.get("product_url")
+        or request_payload.get("source_url")
+        or request_payload.get("url")
+        or claimed_request.request_id
+    ).strip()
+    table_payload = {
+        **request_payload,
+        "tk_selection_table_url": _feishu_tk_selection_table_url_from_params(request_payload),
+        "field_mapper_code": FEISHU_TK_SELECTION_MAPPER_CODE,
+    }
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="dispatch_feishu_tk_selection_table_read",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    enqueue_payload = store.enqueue_api_worker_jobs(
+        request_id=claimed_request.request_id,
+        task_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE,
+        job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+        jobs=[
+            {
+                "business_key": product_key,
+                "dedupe_key": (
+                    f"{FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE}:{claimed_request.request_id}"
+                ),
+                "payload": table_payload,
+                "max_attempts": int(table_payload.get("max_attempts", 3) or 3),
+            }
+        ],
+    )
+    result_payload = _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+        store=store,
+        request_id=claimed_request.request_id,
+        dispatch_payload={"feishu_tk_selection_table_read": enqueue_payload},
+    )
+    job_summary = result_payload.get("api_worker_job_summary", {})
+    if not isinstance(job_summary, Mapping):
+        job_summary = {}
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status="waiting_children",
+        current_stage="waiting_feishu_tk_selection_table_read",
+        summary=result_payload["summary"],
+        result=result_payload,
+        stage_cursor={
+            "feishu_tk_selection": {
+                "table_url": table_payload["tk_selection_table_url"],
+                "mapper_code": FEISHU_TK_SELECTION_MAPPER_CODE,
+            },
+            "table_read_dispatch": enqueue_payload,
+        },
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_api_worker_job_child_counts(job_summary),
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        control_action="executor_once",
+        message="Executor dispatched the Feishu TK selection table read API worker job.",
+    )
+
+
+def _dispatch_tiktok_fastmoss_product_ingest_api_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+    request_payload: dict[str, Any],
+    stage_cursor: Mapping[str, Any],
+    waiting_stage: str,
+    message: str,
+) -> dict[str, Any]:
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="dispatch_tiktok_fastmoss_product_ingest_api_job",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    product_id = str(
+        request_payload.get("sku_id")
+        or request_payload.get("product_id")
+        or request_payload.get("product_url")
+        or claimed_request.request_id
+    )
+    dedupe_suffix = str(request_payload.get("api_job_dedupe_key_suffix", "") or "").strip()
+    dedupe_key = f"{TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE}:{claimed_request.request_id}"
+    if dedupe_suffix:
+        dedupe_key = f"{dedupe_key}:{dedupe_suffix}"
+    enqueue_payload = store.enqueue_api_worker_jobs(
+        request_id=claimed_request.request_id,
+        task_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE,
+        job_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE,
+        jobs=[
+            {
+                "business_key": product_id,
+                "dedupe_key": dedupe_key,
+                "payload": request_payload,
+                "max_attempts": int(request_payload.get("max_attempts", 3) or 3),
+            }
+        ],
+    )
+    result_payload = _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+        store=store,
+        request_id=claimed_request.request_id,
+        dispatch_payload={"tiktok_fastmoss_product_ingest": enqueue_payload},
+    )
+    job_summary = result_payload.get("api_worker_job_summary", {})
+    if not isinstance(job_summary, Mapping):
+        job_summary = {}
+    active_count = int(job_summary.get("active_count") or 0)
+    total_count = int(job_summary.get("total") or 0)
+    next_status = "ready_for_summary" if total_count == 0 or active_count == 0 else "waiting_children"
+    next_stage = "ready_for_summary" if next_status == "ready_for_summary" else waiting_stage
+    updated_stage_cursor = dict(stage_cursor)
+    updated_stage_cursor["product_ingest_dispatch"] = enqueue_payload
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status=next_status,
+        current_stage=next_stage,
+        summary=result_payload["summary"],
+        result=result_payload,
+        stage_cursor=updated_stage_cursor,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_api_worker_job_child_counts(job_summary),
+    )
+    if next_status == "ready_for_summary":
+        return _finalize_tiktok_fastmoss_product_ingest_request(
+            store=store,
+            request_id=claimed_request.request_id,
+        )
+    return _build_request_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        control_action="executor_once",
+        message=message,
+    )
+
+
+def _dispatch_tiktok_product_browser_fallback_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = _tiktok_fastmoss_product_ingest_request_payload(
+        settings=settings,
+        claimed_request=claimed_request,
+    )
+    fallback_result = _latest_tiktok_browser_fallback_required_result(
+        store=store,
+        request_id=claimed_request.request_id,
+    )
+    fallback_item = _as_result_item(fallback_result)
+    if not fallback_result:
+        raise RuntimeError("TikTok browser fallback was requested, but no fallback-required product job result exists.")
+    product_url = (
+        _first_non_empty_mapping(fallback_item, "product_url", "normalized_url", "source_url", "url")
+        or _first_non_empty_mapping(request_payload, "product_url", "normalized_url", "source_url", "url")
+    )
+    if not product_url:
+        raise RuntimeError("TikTok browser fallback requires product_url.")
+    product_id = (
+        _first_non_empty_mapping(fallback_item, "product_id")
+        or _first_non_empty_mapping(request_payload, "product_id", "sku_id")
+    )
+    fallback_reason = _first_non_empty_mapping(fallback_item, "error", "reason") or _first_non_empty_mapping(
+        fallback_result,
+        "error",
+        "reason",
+    )
+    enqueue_payload = store.enqueue_task_executions(
+        request_id=claimed_request.request_id,
+        item_code=TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE,
+        workflow_code=TIKTOK_PRODUCT_BROWSER_FETCH_WORKFLOW_CODE,
+        items=_build_tiktok_product_browser_fetch_items(
+            request_payload,
+            product_url=product_url,
+            product_id=product_id,
+            request_id=claimed_request.request_id,
+            fallback_reason=fallback_reason,
+        ),
+    )
+    stage_cursor = {
+        **dict(claimed_request.stage_cursor or {}),
+        "tiktok_browser_fallback_required": fallback_result,
+        "tiktok_browser_fallback_dispatch": enqueue_payload,
+    }
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status="waiting_children",
+        current_stage="waiting_tiktok_product_browser_fetch",
+        summary={"total": 1, "counts": {"waiting_tiktok_browser_fallback": 1}},
+        stage_cursor=stage_cursor,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        control_action="executor_once",
+        message="Executor dispatched the TikTok product browser fallback job.",
+    )
+
+
+def _api_worker_job_child_counts(job_summary: Mapping[str, Any]) -> dict[str, int]:
+    total = int(job_summary.get("total") or 0)
+    active = int(job_summary.get("active_count") or 0)
+    success = int(job_summary.get("success_count") or 0)
+    failed = int(job_summary.get("failed_count") or 0)
+    terminal = max(total - active, 0)
+    return {
+        "child_total_count": total,
+        "child_terminal_count": terminal,
+        "child_success_count": success,
+        "child_failed_count": failed,
+        "child_skipped_count": 0,
+    }
+
+
+def _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    dispatch_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    job_summary = store.summarize_api_worker_jobs_for_request(request_id=request_id)
+    jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
+    executions = store.list_task_executions(request_id=request_id)
+    browser_fetch_executions = [
+        execution.to_dict()
+        for execution in executions
+        if str(execution.item_code or "") == TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE
+    ]
+    success_jobs = [job for job in jobs if str(job.get("status", "") or "") == "success"]
+    failed_jobs = [job for job in jobs if str(job.get("status", "") or "") == "failed"]
+    success_jobs_by_code: dict[str, list[dict[str, Any]]] = {}
+    for job in success_jobs:
+        success_jobs_by_code.setdefault(str(job.get("job_code", "") or ""), []).append(job)
+    result: dict[str, Any] = {}
+    product_success_jobs = success_jobs_by_code.get(TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE, [])
+    table_read_success_jobs = success_jobs_by_code.get(FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE, [])
+    writeback_success_jobs = success_jobs_by_code.get(FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE, [])
+    if product_success_jobs:
+        job_result = product_success_jobs[-1].get("result", {})
+        if isinstance(job_result, Mapping):
+            result.update(dict(job_result))
+    elif table_read_success_jobs:
+        job_result = table_read_success_jobs[-1].get("result", {})
+        if isinstance(job_result, Mapping):
+            result.update(dict(job_result))
+    if table_read_success_jobs:
+        table_read_result = table_read_success_jobs[-1].get("result", {})
+        if isinstance(table_read_result, Mapping):
+            result["feishu_tk_selection_table_read"] = dict(table_read_result)
+    if writeback_success_jobs:
+        writeback_result = writeback_success_jobs[-1].get("result", {})
+        if isinstance(writeback_result, Mapping):
+            result["feishu_tk_selection_table_writeback"] = dict(writeback_result)
+    if not result:
+        result.update(
+            {
+                "status": "pending" if int(job_summary.get("active_count") or 0) > 0 else "failed",
+                "summary": {
+                    "total": int(job_summary.get("total") or 0),
+                    "counts": dict(job_summary.get("counts") or {}),
+                },
+                "item": {
+                    "request_id": request_id,
+                    "status": "waiting_api_worker"
+                    if int(job_summary.get("active_count") or 0) > 0
+                    else "failed",
+                },
+                "items": [],
+            }
+        )
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else None
+    if summary is None:
+        summary = {
+            "total": int(job_summary.get("total") or 0),
+            "counts": dict(job_summary.get("counts") or {}),
+        }
+        result["summary"] = summary
+    result["api_worker_job_summary"] = job_summary
+    result["feishu_tk_selection_table_read_job_summary"] = store.summarize_api_worker_jobs_for_request(
+        request_id=request_id,
+        job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+    )
+    result["product_ingest_job_summary"] = store.summarize_api_worker_jobs_for_request(
+        request_id=request_id,
+        job_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE,
+    )
+    result["feishu_tk_selection_table_writeback_job_summary"] = store.summarize_api_worker_jobs_for_request(
+        request_id=request_id,
+        job_code=FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE,
+    )
+    result["api_worker_jobs"] = jobs
+    if browser_fetch_executions:
+        result["tiktok_browser_fallback_executions"] = browser_fetch_executions
+    result["failed_items"] = failed_jobs
+    result["failed_item_count"] = len(failed_jobs)
+    result["queue_mode"] = "api_worker"
+    if dispatch_payload:
+        result["dispatch"] = dict(dispatch_payload)
+    return result
+
+
+def _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    if not request_id:
+        return {"updated": False, "request_id": "", "reason": "missing_request_id"}
+    request = store.load_task_request(request_id=request_id)
+    if request.task_code != TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+        return {"updated": False, "request_id": request_id, "reason": "not_product_ingest"}
+    if request.status not in {"waiting_children", "running"}:
+        return {"updated": False, "request_id": request_id, "reason": f"status_{request.status}"}
+    result_payload = _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+        store=store,
+        request_id=request_id,
+    )
+    job_summary = result_payload.get("api_worker_job_summary", {})
+    if not isinstance(job_summary, Mapping):
+        job_summary = {}
+    if int(job_summary.get("total") or 0) > 0 and int(job_summary.get("active_count") or 0) > 0:
+        store.update_task_request(
+            request_id=request_id,
+            status="waiting_children",
+            current_stage=request.current_stage or "waiting_api_worker",
+            summary=result_payload["summary"],
+            result=result_payload,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            **_api_worker_job_child_counts(job_summary),
+        )
+        return {
+            "updated": False,
+            "request_id": request_id,
+            "reason": "active_jobs_remain",
+            "api_worker_job_summary": job_summary,
+        }
+    if request.current_stage in {"waiting_api_worker", "waiting_tiktok_fastmoss_product_ingest"}:
+        fallback_result = _latest_tiktok_browser_fallback_required_result(
+            store=store,
+            request_id=request_id,
+        )
+        if fallback_result and not _latest_successful_tiktok_browser_fetch_result(
+            store=store,
+            request_id=request_id,
+        ):
+            store.update_task_request(
+                request_id=request_id,
+                status="pending",
+                current_stage="dispatch_tiktok_product_browser_fallback",
+                summary=result_payload["summary"],
+                result=result_payload,
+                stage_cursor={
+                    **dict(request.stage_cursor or {}),
+                    "tiktok_browser_fallback_required": fallback_result,
+                },
+                error_text="",
+                worker_id="",
+                lease_until=0.0,
+                heartbeat_at=0.0,
+                **_api_worker_job_child_counts(job_summary),
+            )
+            return {
+                "updated": True,
+                "request_id": request_id,
+                "reason": "tiktok_browser_fallback_required",
+                "next_stage": "dispatch_tiktok_product_browser_fallback",
+                "api_worker_job_summary": job_summary,
+            }
+    if int(job_summary.get("failed_count") or 0) > 0:
+        store.update_task_request(
+            request_id=request_id,
+            status="ready_for_summary",
+            current_stage="ready_for_summary",
+            summary=result_payload["summary"],
+            result=result_payload,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            **_api_worker_job_child_counts(job_summary),
+        )
+        return {
+            "updated": True,
+            "request_id": request_id,
+            "reason": "failed_job_terminal",
+            "api_worker_job_summary": job_summary,
+        }
+    if request.current_stage == "waiting_feishu_tk_selection_table_read":
+        table_read_result = _latest_successful_api_worker_job_result(
+            store=store,
+            request_id=request_id,
+            job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+        )
+        table_read_item = table_read_result.get("item", {}) if isinstance(table_read_result, dict) else {}
+        table_status = str(table_read_item.get("status") or table_read_result.get("status") or "").strip()
+        if _is_feishu_tk_selection_skip_status(table_status):
+            store.update_task_request(
+                request_id=request_id,
+                status="ready_for_summary",
+                current_stage="ready_for_summary",
+                summary=result_payload["summary"],
+                result=result_payload,
+                error_text="",
+                worker_id="",
+                lease_until=0.0,
+                heartbeat_at=0.0,
+                **_api_worker_job_child_counts(job_summary),
+            )
+            return {
+                "updated": True,
+                "request_id": request_id,
+                "reason": f"table_read_{table_status}",
+                "api_worker_job_summary": job_summary,
+            }
+        store.update_task_request(
+            request_id=request_id,
+            status="pending",
+            current_stage="dispatch_tiktok_fastmoss_product_ingest_api_job",
+            summary=result_payload["summary"],
+            result=result_payload,
+            stage_cursor={
+                **dict(request.stage_cursor or {}),
+                "table_read_result": table_read_result,
+            },
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            **_api_worker_job_child_counts(job_summary),
+        )
+        return {
+            "updated": True,
+            "request_id": request_id,
+            "reason": "table_read_needs_ingest",
+            "next_stage": "dispatch_tiktok_fastmoss_product_ingest_api_job",
+            "api_worker_job_summary": job_summary,
+        }
+    if request.current_stage == "waiting_tiktok_fastmoss_product_ingest":
+        store.update_task_request(
+            request_id=request_id,
+            status="pending",
+            current_stage="dispatch_feishu_tk_selection_table_writeback",
+            summary=result_payload["summary"],
+            result=result_payload,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            **_api_worker_job_child_counts(job_summary),
+        )
+        return {
+            "updated": True,
+            "request_id": request_id,
+            "reason": "product_ingest_completed_needs_writeback",
+            "next_stage": "dispatch_feishu_tk_selection_table_writeback",
+            "api_worker_job_summary": job_summary,
+        }
+    store.update_task_request(
+        request_id=request_id,
+        status="ready_for_summary",
+        current_stage="ready_for_summary",
+        summary=result_payload["summary"],
+        result=result_payload,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_api_worker_job_child_counts(job_summary),
+    )
+    return {
+        "updated": True,
+        "request_id": request_id,
+        "reason": "all_jobs_terminal",
+        "api_worker_job_summary": job_summary,
+    }
+
+
+def _latest_successful_api_worker_job_result(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    job_code: str,
+) -> dict[str, Any]:
+    jobs = store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
+    for job in reversed(jobs):
+        if str(job.get("status", "") or "") != "success":
+            continue
+        result = job.get("result", {})
+        return dict(result) if isinstance(result, Mapping) else {}
+    return {}
+
+
+def _latest_successful_api_worker_job(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    job_code: str,
+) -> dict[str, Any]:
+    jobs = store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
+    for job in reversed(jobs):
+        if str(job.get("status", "") or "") == "success":
+            return dict(job)
+    return {}
+
+
+def _latest_tiktok_browser_fallback_required_result(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    jobs = store.list_api_worker_jobs_for_request(
+        request_id=request_id,
+        job_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE,
+    )
+    for job in reversed(jobs):
+        if str(job.get("status", "") or "") != "success":
+            continue
+        result = job.get("result", {})
+        if not isinstance(result, Mapping):
+            continue
+        status = str(result.get("status") or _as_result_item(result).get("status") or "").strip()
+        if status == "tiktok_browser_fallback_required":
+            return dict(result)
+    return {}
+
+
+def _latest_successful_tiktok_browser_fetch_result(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    executions = store.list_task_executions(request_id=request_id)
+    for execution in reversed(executions):
+        if str(execution.item_code or "") != TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE:
+            continue
+        if str(execution.status or "") != "success":
+            continue
+        result = execution.result if isinstance(execution.result, dict) else {}
+        return dict(result) if isinstance(result, Mapping) else {}
+    return {}
+
+
+def _as_result_item(payload: Mapping[str, Any]) -> dict[str, Any]:
+    item = payload.get("item")
+    return dict(item) if isinstance(item, Mapping) else {}
+
+
+def _dispatch_tiktok_fastmoss_product_ingest_after_table_read(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    table_read_result = _latest_successful_api_worker_job_result(
+        store=store,
+        request_id=claimed_request.request_id,
+        job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+    )
+    table_read_item = table_read_result.get("item", {}) if isinstance(table_read_result.get("item"), Mapping) else {}
+    if not table_read_result:
+        raise RuntimeError("Feishu TK selection table-read result is required before product ingest dispatch.")
+    if _is_feishu_tk_selection_skip_status(table_read_item.get("status") or table_read_result.get("status")):
+        store.update_task_request(
+            request_id=claimed_request.request_id,
+            status="ready_for_summary",
+            current_stage="ready_for_summary",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+        )
+        return _finalize_tiktok_fastmoss_product_ingest_request(
+            store=store,
+            request_id=claimed_request.request_id,
+        )
+
+    request_payload = _tiktok_fastmoss_product_ingest_request_payload(
+        settings=settings,
+        claimed_request=claimed_request,
+    )
+    product_payload = {
+        **request_payload,
+        "product_url": _first_non_empty_mapping(table_read_item, "product_url", "normalized_url")
+        or _first_non_empty_mapping(request_payload, "product_url", "source_url", "url"),
+        "product_id": _first_non_empty_mapping(table_read_item, "product_id")
+        or _first_non_empty_mapping(request_payload, "product_id", "sku_id"),
+        "source_record_id": _first_non_empty_mapping(table_read_item, "source_record_id", "record_id"),
+        "field_mapper_code": FEISHU_TK_SELECTION_MAPPER_CODE,
+        "tk_selection_table_url": _first_non_empty_mapping(table_read_item, "table_url")
+        or _feishu_tk_selection_table_url_from_params(request_payload),
+        "table_read_result": table_read_result,
+    }
+    product_payload.setdefault("fastmoss_visualization_enabled", True)
+    product_payload = _attach_tiktok_browser_fallback_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        product_payload=product_payload,
+    )
+    return _dispatch_tiktok_fastmoss_product_ingest_api_job(
+        store=store,
+        settings=settings,
+        claimed_request=claimed_request,
+        request_payload=product_payload,
+        stage_cursor={
+            **dict(claimed_request.stage_cursor or {}),
+            "table_read_result": table_read_result,
+        },
+        waiting_stage="waiting_tiktok_fastmoss_product_ingest",
+        message="Executor dispatched the TikTok/FastMoss product ingest API worker job after Feishu table-read.",
+    )
+
+
+def _attach_tiktok_browser_fallback_payload(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    product_payload: dict[str, Any],
+) -> dict[str, Any]:
+    browser_result = _latest_successful_tiktok_browser_fetch_result(
+        store=store,
+        request_id=request_id,
+    )
+    if not browser_result:
+        return product_payload
+    payload = dict(product_payload)
+    payload["tiktok_payload"] = browser_result
+    payload["tiktok_browser_fallback_result"] = browser_result
+    payload["tiktok_fetch_source"] = "browser"
+    payload["api_job_dedupe_key_suffix"] = "after-browser-fallback"
+    product_id = _first_non_empty_mapping(browser_result, "product_id") or _first_non_empty_mapping(
+        _as_result_item(browser_result),
+        "product_id",
+    )
+    if product_id:
+        payload["product_id"] = product_id
+    return payload
+
+
+def _dispatch_feishu_tk_selection_table_writeback_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = _tiktok_fastmoss_product_ingest_request_payload(
+        settings=settings,
+        claimed_request=claimed_request,
+    )
+    table_read_result = _latest_successful_api_worker_job_result(
+        store=store,
+        request_id=claimed_request.request_id,
+        job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+    )
+    product_ingest_result = _latest_successful_api_worker_job_result(
+        store=store,
+        request_id=claimed_request.request_id,
+        job_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE,
+    )
+    if not table_read_result:
+        raise RuntimeError("Feishu TK selection table-read result is required before writeback dispatch.")
+    if not product_ingest_result:
+        raise RuntimeError("Product ingest result is required before Feishu TK selection writeback dispatch.")
+    table_read_item = table_read_result.get("item", {}) if isinstance(table_read_result.get("item"), Mapping) else {}
+    record_id = _first_non_empty_mapping(table_read_item, "source_record_id", "record_id")
+    product_key = _first_non_empty_mapping(product_ingest_result, "product_id") or record_id or claimed_request.request_id
+    writeback_payload = {
+        **request_payload,
+        "source_record_id": record_id,
+        "field_mapper_code": FEISHU_TK_SELECTION_MAPPER_CODE,
+        "tk_selection_table_url": _first_non_empty_mapping(table_read_item, "table_url")
+        or _feishu_tk_selection_table_url_from_params(request_payload),
+        "table_read_result": table_read_result,
+        "product_ingest_result": product_ingest_result,
+    }
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="dispatch_feishu_tk_selection_table_writeback",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    enqueue_payload = store.enqueue_api_worker_jobs(
+        request_id=claimed_request.request_id,
+        task_code=TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE,
+        job_code=FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE,
+        jobs=[
+            {
+                "business_key": product_key,
+                "dedupe_key": (
+                    f"{FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE}:{claimed_request.request_id}"
+                ),
+                "payload": writeback_payload,
+                "max_attempts": int(writeback_payload.get("max_attempts", 3) or 3),
+            }
+        ],
+    )
+    result_payload = _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+        store=store,
+        request_id=claimed_request.request_id,
+        dispatch_payload={"feishu_tk_selection_table_writeback": enqueue_payload},
+    )
+    job_summary = result_payload.get("api_worker_job_summary", {})
+    if not isinstance(job_summary, Mapping):
+        job_summary = {}
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status="waiting_children",
+        current_stage="waiting_feishu_tk_selection_table_writeback",
+        summary=result_payload["summary"],
+        result=result_payload,
+        stage_cursor={
+            **dict(claimed_request.stage_cursor or {}),
+            "writeback_dispatch": enqueue_payload,
+        },
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_api_worker_job_child_counts(job_summary),
+    )
+    return _build_request_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        control_action="executor_once",
+        message="Executor dispatched the Feishu TK selection table writeback API worker job.",
+    )
+
+
+def _finalize_tiktok_fastmoss_product_ingest_request(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    result_payload = _build_tiktok_fastmoss_product_ingest_result_from_api_jobs(
+        store=store,
+        request_id=request_id,
+    )
+    summary = (
+        dict(result_payload.get("summary"))
+        if isinstance(result_payload.get("summary"), dict)
+        else {"total": 1, "counts": {"success": 1}}
+    )
+    job_summary = result_payload.get("api_worker_job_summary", {})
+    if not isinstance(job_summary, Mapping):
+        job_summary = {}
+    failed_items = result_payload.get("failed_items", [])
+    if not isinstance(failed_items, list):
+        failed_items = []
+    failed_count = int(job_summary.get("failed_count") or 0)
+    final_status = "failed" if failed_count > 0 else "success"
+    error_text = ""
+    if final_status == "failed" and failed_items:
+        first_failed = failed_items[0] if isinstance(failed_items[0], Mapping) else {}
+        error_text = str(first_failed.get("error_text", "") or "TikTok/FastMoss product ingest failed.")
+    final_request = store.update_task_request(
+        request_id=request_id,
+        status=final_status,
+        current_stage="completed" if final_status == "success" else "failed",
+        summary=summary,
+        result=result_payload,
+        error_text=error_text,
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        finished_at=time.time(),
+        **_api_worker_job_child_counts(job_summary),
+    )
+    message_text = (
+        _build_product_ingest_outbox_text(final_request, summary, result_payload)
+        if final_status == "success"
+        else _build_failure_outbox_text(final_request, error_text)
+    )
+    final_request = store.update_task_request(
+        request_id=request_id,
+        result=result_payload,
+    )
+    summary_outbox = store.create_notification_outbox(
+        channel_code=final_request.source_channel_code or "noop",
+        event_type="task_request.completed",
+        ref_id=final_request.request_id,
+        reply_target=final_request.reply_target,
+        payload={
+            "message_text": message_text,
+            "request_id": final_request.request_id,
+            "task_code": final_request.task_code,
+            "summary": summary,
+            "result": result_payload,
+        },
+        dedupe_key=f"task_request.completed:{final_request.request_id}",
+    )
+    result_payload["outbox"] = [summary_outbox.to_dict()]
+    store.update_task_request(request_id=request_id, result=result_payload)
+    return _build_request_payload(
+        store=store,
+        request_id=request_id,
+        control_action="executor_once",
+        message="Executor finalized the TikTok/FastMoss product ingest request.",
+    )
+
+
+def _build_sync_tk_influencer_pool_result_from_jobs(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    dispatch_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    product_summary = store.summarize_influencer_pool_product_jobs_for_request(request_id=request_id)
+    product_jobs = store.list_influencer_pool_product_jobs_for_request(request_id=request_id)
+    counts = dict(product_summary.get("counts") or {})
+    failed_items = [
+        dict(job)
+        for job in product_jobs
+        if str(job.get("status", "") or "") in {"hard_failed", "hard_stopped"}
+    ]
+    summary = {
+        "total": int(product_summary.get("total") or 0),
+        "counts": counts,
+    }
+    write_summary = {
+        "product_job_count": int(product_summary.get("total") or 0),
+        "product_job_success_count": int(product_summary.get("success_count") or 0),
+        "product_job_failed_count": int(product_summary.get("failed_count") or 0),
+        "matched_author_count": int(product_summary.get("matched_author_count") or 0),
+        "queued_author_job_count": int(product_summary.get("queued_author_job_count") or 0),
+        "created_author_count": 0,
+        "updated_author_count": 0,
+        "already_synced_author_count": 0,
+        "failed_item_count": len(failed_items),
+        "hard_stopped": any(str(item.get("status", "") or "") == "hard_stopped" for item in failed_items),
+    }
+    result = {
+        "status": "success",
+        "message": "Influencer pool API worker jobs reached terminal state.",
+        "summary": summary,
+        "write_summary": write_summary,
+        "product_job_summary": product_summary,
+        "items": [dict(job) for job in product_jobs],
+        "failed_items": failed_items,
+        "failed_item_count": len(failed_items),
+        "queue_mode": "api_worker",
+    }
+    if dispatch_payload:
+        result["dispatch"] = dict(dispatch_payload)
+    return result
+
+
+def _sync_tk_influencer_pool_child_counts(product_summary: Mapping[str, Any]) -> dict[str, int]:
+    total = int(product_summary.get("total") or 0)
+    active = int(product_summary.get("active_count") or 0)
+    success = int(product_summary.get("success_count") or 0)
+    failed = int(product_summary.get("failed_count") or 0)
+    terminal = max(total - active, 0)
+    return {
+        "child_total_count": total,
+        "child_terminal_count": terminal,
+        "child_success_count": success,
+        "child_failed_count": failed,
+        "child_skipped_count": 0,
+    }
+
+
+def _mark_sync_tk_influencer_pool_ready_if_done(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    if not request_id:
+        return {"updated": False, "request_id": "", "reason": "missing_request_id"}
+    request = store.load_task_request(request_id=request_id)
+    if request.task_code != SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+        return {"updated": False, "request_id": request_id, "reason": "not_sync_tk_influencer_pool"}
+    if request.status not in {"waiting_children", "running"}:
+        return {"updated": False, "request_id": request_id, "reason": f"status_{request.status}"}
+    product_summary = store.summarize_influencer_pool_product_jobs_for_request(request_id=request_id)
+    if int(product_summary.get("total") or 0) > 0 and int(product_summary.get("active_count") or 0) > 0:
+        result_payload = _build_sync_tk_influencer_pool_result_from_jobs(store=store, request_id=request_id)
+        store.update_task_request(
+            request_id=request_id,
+            status="waiting_children",
+            current_stage="waiting_children",
+            summary=result_payload["summary"],
+            result=result_payload,
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            **_sync_tk_influencer_pool_child_counts(product_summary),
+        )
+        return {
+            "updated": False,
+            "request_id": request_id,
+            "reason": "active_jobs_remain",
+            "product_job_summary": product_summary,
+        }
+    result_payload = _build_sync_tk_influencer_pool_result_from_jobs(store=store, request_id=request_id)
+    store.update_task_request(
+        request_id=request_id,
+        status="ready_for_summary",
+        current_stage="ready_for_summary",
+        summary=result_payload["summary"],
+        result=result_payload,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_sync_tk_influencer_pool_child_counts(product_summary),
+    )
+    return {
+        "updated": True,
+        "request_id": request_id,
+        "reason": "all_jobs_terminal",
+        "product_job_summary": product_summary,
+    }
+
+
+def _finalize_sync_tk_influencer_pool_request(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+) -> dict[str, Any]:
+    existing_request = store.load_task_request(request_id=request_id)
+    existing_result = existing_request.result if isinstance(existing_request.result, dict) else {}
+    dispatch_payload = existing_result.get("dispatch") if isinstance(existing_result.get("dispatch"), Mapping) else None
+    result_payload = _build_sync_tk_influencer_pool_result_from_jobs(
+        store=store,
+        request_id=request_id,
+        dispatch_payload=dispatch_payload,
+    )
+    summary = dict(result_payload["summary"])
+    product_summary = result_payload.get("product_job_summary", {})
+    final_request = store.update_task_request(
+        request_id=request_id,
+        status="success",
+        current_stage="completed",
+        summary=summary,
+        result=result_payload,
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        finished_at=time.time(),
+        **_sync_tk_influencer_pool_child_counts(product_summary if isinstance(product_summary, Mapping) else {}),
+    )
+    summary_outbox = store.create_notification_outbox(
+        channel_code=final_request.source_channel_code or "noop",
+        event_type="task_request.completed",
+        ref_id=final_request.request_id,
+        reply_target=final_request.reply_target,
+        payload={
+            "message_text": _build_influencer_pool_request_outbox_text(final_request, summary, result_payload),
+            "request_id": final_request.request_id,
+            "task_code": final_request.task_code,
+            "summary": summary,
+            "result": result_payload,
+        },
+        dedupe_key=f"task_request.completed:{final_request.request_id}",
+    )
+    result_payload["outbox"] = [summary_outbox.to_dict()]
+    store.update_task_request(request_id=request_id, result=result_payload)
+    return _build_request_payload(
+        store=store,
+        request_id=request_id,
+        control_action="executor_once",
+        message="Executor finalized the influencer pool sync request.",
+    )
+
+
+def _execute_sync_tk_influencer_pool_request(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    claimed_request: Any,
+) -> dict[str, Any]:
+    request_payload = {
+        **dict(claimed_request.payload or {}),
+        **_runtime_params_from_settings(settings),
+        "request_id": claimed_request.request_id,
+    }
+    # The task_request wrapper owns final user notification; suppress the legacy
+    # direct-run summary outbox to avoid duplicate OpenClaw messages.
+    request_payload["notification_channel_code"] = ""
+    request_payload["reply_target"] = ""
+    request_payload["queue_mode"] = "dispatch_only"
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        current_stage="dispatch_influencer_pool_product_jobs",
+        started_at=claimed_request.started_at or time.time(),
+    )
+    result_payload = run_sync_tk_influencer_pool_sync(request_payload)
+    queue_result = _build_sync_tk_influencer_pool_result_from_jobs(
+        store=store,
+        request_id=claimed_request.request_id,
+        dispatch_payload=result_payload,
+    )
+    product_summary = queue_result.get("product_job_summary", {})
+    if not isinstance(product_summary, Mapping):
+        product_summary = {}
+    active_count = int(product_summary.get("active_count") or 0)
+    total_count = int(product_summary.get("total") or 0)
+    next_status = "ready_for_summary" if total_count == 0 or active_count == 0 else "waiting_children"
+    next_stage = "ready_for_summary" if next_status == "ready_for_summary" else "waiting_children"
+    store.update_task_request(
+        request_id=claimed_request.request_id,
+        status=next_status,
+        current_stage=next_stage,
+        summary=queue_result["summary"],
+        result=queue_result,
+        stage_cursor={"dispatch": result_payload},
+        error_text="",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        **_sync_tk_influencer_pool_child_counts(product_summary),
+    )
+    if next_status == "ready_for_summary":
+        return _finalize_sync_tk_influencer_pool_request(
+            store=store,
+            request_id=claimed_request.request_id,
+        )
+    return _build_request_payload(
+        store=store,
+        request_id=claimed_request.request_id,
+        control_action="executor_once",
+        message="Executor dispatched influencer pool product jobs for API worker processing.",
+    )
+
+
 def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
@@ -1617,16 +2990,132 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
                     float(settings["lease_seconds"]),
                 ),
             ):
-                if str(claimed_request.task_code or "") == KEYWORD_TASK_CODE:
+                task_code = str(claimed_request.task_code or "")
+                if task_code == KEYWORD_TASK_CODE:
                     payload = _plan_keyword_request(store=store, claimed_request=claimed_request)
-                else:
+                elif task_code == REFRESH_TASK_CODE:
                     payload = _plan_refresh_request(store=store, claimed_request=claimed_request)
+                elif task_code == SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+                    payload = _execute_sync_tk_influencer_pool_request(
+                        store=store,
+                        settings=settings,
+                        claimed_request=claimed_request,
+                    )
+                elif task_code == TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+                    payload = _execute_tiktok_fastmoss_product_ingest_request(
+                        store=store,
+                        settings=settings,
+                        claimed_request=claimed_request,
+                    )
+                else:
+                    payload = _fail_request(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                        current_stage="unsupported_task_code",
+                        error_text=f"Unsupported task_code '{task_code}'.",
+                    )
+            processed_failed = str(payload.get("request_status", "") or "").strip().lower() == "failed"
             payload.update(
                 {
                     "daemon_status": "processed",
                     "processed_count": 1,
-                    "success_count": 1,
-                    "failed_count": 0,
+                    "success_count": 0 if processed_failed else 1,
+                    "failed_count": 1 if processed_failed else 0,
+                }
+            )
+            return payload
+        except Exception as exc:
+            error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            payload = _fail_request(
+                store=store,
+                request_id=claimed_request.request_id,
+                current_stage="failed",
+                error_text=error_text,
+            )
+            payload.update(
+                {
+                    "daemon_status": "processed",
+                    "processed_count": 1,
+                    "success_count": 0,
+                    "failed_count": 1,
+                }
+            )
+            return payload
+
+    if current_stage in {
+        "dispatch_tiktok_fastmoss_product_ingest_api_job",
+        "dispatch_tiktok_product_browser_fallback",
+        "dispatch_feishu_tk_selection_table_writeback",
+    }:
+        try:
+            with _CallbackHeartbeat(
+                callback=lambda: store.heartbeat_task_request(
+                    request_id=claimed_request.request_id,
+                    lease_seconds=float(settings["lease_seconds"]),
+                ),
+                interval_seconds=min(
+                    float(settings["heartbeat_interval_seconds"]),
+                    float(settings["lease_seconds"]),
+                ),
+            ):
+                task_code = str(claimed_request.task_code or "")
+                if task_code != TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+                    payload = _fail_request(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                        current_stage="unsupported_task_code",
+                        error_text=f"Unsupported task_code '{task_code}' at {current_stage}.",
+                    )
+                elif current_stage == "dispatch_tiktok_product_browser_fallback":
+                    payload = _dispatch_tiktok_product_browser_fallback_job(
+                        store=store,
+                        settings=settings,
+                        claimed_request=claimed_request,
+                    )
+                elif current_stage == "dispatch_tiktok_fastmoss_product_ingest_api_job":
+                    table_read_result = _latest_successful_api_worker_job_result(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                        job_code=FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE,
+                    )
+                    if table_read_result:
+                        payload = _dispatch_tiktok_fastmoss_product_ingest_after_table_read(
+                            store=store,
+                            settings=settings,
+                            claimed_request=claimed_request,
+                        )
+                    else:
+                        request_payload = _tiktok_fastmoss_product_ingest_request_payload(
+                            settings=settings,
+                            claimed_request=claimed_request,
+                        )
+                        request_payload = _attach_tiktok_browser_fallback_payload(
+                            store=store,
+                            request_id=claimed_request.request_id,
+                            product_payload=request_payload,
+                        )
+                        payload = _dispatch_tiktok_fastmoss_product_ingest_api_job(
+                            store=store,
+                            settings=settings,
+                            claimed_request=claimed_request,
+                            request_payload=request_payload,
+                            stage_cursor=dict(claimed_request.stage_cursor or {}),
+                            waiting_stage="waiting_api_worker",
+                            message="Executor dispatched the TikTok/FastMoss product ingest API worker job.",
+                        )
+                else:
+                    payload = _dispatch_feishu_tk_selection_table_writeback_job(
+                        store=store,
+                        settings=settings,
+                        claimed_request=claimed_request,
+                    )
+            processed_failed = str(payload.get("request_status", "") or "").strip().lower() == "failed"
+            payload.update(
+                {
+                    "daemon_status": "processed",
+                    "processed_count": 1,
+                    "success_count": 0 if processed_failed else 1,
+                    "failed_count": 1 if processed_failed else 0,
                 }
             )
             return payload
@@ -1660,16 +3149,35 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
                     float(settings["lease_seconds"]),
                 ),
             ):
-                if str(claimed_request.task_code or "") == KEYWORD_TASK_CODE:
+                task_code = str(claimed_request.task_code or "")
+                if task_code == KEYWORD_TASK_CODE:
                     payload = _resume_keyword_request(store=store, claimed_request=claimed_request)
-                else:
+                elif task_code == REFRESH_TASK_CODE:
                     payload = _finalize_request_summary(store=store, request_id=claimed_request.request_id)
+                elif task_code == SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+                    payload = _finalize_sync_tk_influencer_pool_request(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                    )
+                elif task_code == TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+                    payload = _finalize_tiktok_fastmoss_product_ingest_request(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                    )
+                else:
+                    payload = _fail_request(
+                        store=store,
+                        request_id=claimed_request.request_id,
+                        current_stage="unsupported_task_code",
+                        error_text=f"Unsupported task_code '{task_code}' at ready_for_summary.",
+                    )
+            processed_failed = str(payload.get("request_status", "") or "").strip().lower() == "failed"
             payload.update(
                 {
                     "daemon_status": "processed",
                     "processed_count": 1,
-                    "success_count": 1,
-                    "failed_count": 0,
+                    "success_count": 0 if processed_failed else 1,
+                    "failed_count": 1 if processed_failed else 0,
                 }
             )
             return payload
@@ -1733,6 +3241,8 @@ def _run_browser_execution_once(
                         result_payload = run_fastmoss_keyword_candidate_discovery(dict(execution.payload))
                     elif str(execution.item_code or "") == SINGLE_ROW_UPDATE_ITEM_CODE:
                         result_payload = run_feishu_single_row_update(dict(execution.payload))
+                    elif str(execution.item_code or "") == TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE:
+                        result_payload = fetch_tiktok_product_via_browser(dict(execution.payload))
                     else:
                         raise RuntimeError(f"Unsupported browser item_code '{execution.item_code}'.")
                 terminal_status = _classify_execution_result(result_payload)
@@ -1812,13 +3322,86 @@ def _run_browser_execution_once(
     return finalized_execution, artifact_payload
 
 
+def _mark_tiktok_fastmoss_product_ingest_after_browser_fallback(
+    *,
+    store: RuntimeStore,
+    execution: Any,
+) -> dict[str, Any]:
+    if str(execution.item_code or "") != TIKTOK_PRODUCT_BROWSER_FETCH_ITEM_CODE:
+        return {"updated": False, "request_id": str(execution.request_id or ""), "reason": "not_tiktok_browser_fetch"}
+    request_id = str(execution.request_id or "")
+    if not request_id:
+        return {"updated": False, "request_id": "", "reason": "missing_request_id"}
+    request = store.load_task_request(request_id=request_id)
+    if str(request.task_code or "") != TIKTOK_FASTMOSS_PRODUCT_INGEST_TASK_CODE:
+        return {"updated": False, "request_id": request_id, "reason": "not_product_ingest"}
+
+    execution_status = str(execution.status or "")
+    if execution_status == "success":
+        result_payload = dict(execution.result) if isinstance(execution.result, dict) else {}
+        store.update_task_request(
+            request_id=request_id,
+            status="pending",
+            current_stage="dispatch_tiktok_fastmoss_product_ingest_api_job",
+            stage_cursor={
+                **dict(request.stage_cursor or {}),
+                "tiktok_browser_fallback_result": result_payload,
+                "tiktok_browser_fallback_execution_id": str(execution.execution_id or ""),
+            },
+            error_text="",
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+        )
+        return {
+            "updated": True,
+            "request_id": request_id,
+            "reason": "tiktok_browser_fallback_completed",
+            "next_stage": "dispatch_tiktok_fastmoss_product_ingest_api_job",
+            "execution_id": str(execution.execution_id or ""),
+        }
+
+    if execution_status == "failed":
+        error_text = str(execution.error_text or "TikTok product browser fallback failed.")
+        failed_payload = _fail_request(
+            store=store,
+            request_id=request_id,
+            current_stage="tiktok_browser_fallback_failed",
+            error_text=error_text,
+        )
+        return {
+            "updated": True,
+            "request_id": request_id,
+            "reason": "tiktok_browser_fallback_failed",
+            "execution_id": str(execution.execution_id or ""),
+            "request_status": failed_payload.get("request_status", "failed"),
+        }
+
+    return {
+        "updated": False,
+        "request_id": request_id,
+        "reason": f"browser_execution_{execution_status}",
+        "execution_id": str(execution.execution_id or ""),
+    }
+
+
 def execute_phase1_browser_once(params: dict[str, Any]) -> dict[str, Any]:
     settings = _phase1_settings(params)
     store = _create_store(settings)
-    execution = store.claim_next_browser_execution(
-        worker_id=str(settings["worker_id"]),
-        lease_seconds=float(settings["lease_seconds"]),
-    )
+    execution_id = str(params.get("execution_id", "") or "").strip()
+    if execution_id:
+        execution = store.claim_browser_execution(
+            execution_id=execution_id,
+            worker_id=str(settings["worker_id"]),
+            lease_seconds=float(settings["lease_seconds"]),
+        )
+    else:
+        execution = store.claim_next_browser_execution(
+            worker_id=str(settings["worker_id"]),
+            lease_seconds=float(settings["lease_seconds"]),
+            request_id=str(params.get("request_id", "") or ""),
+            item_codes=SUPPORTED_BROWSER_ITEM_CODES,
+        )
     if execution is None:
         return {
             "control_action": "browser_once",
@@ -1839,6 +3422,10 @@ def execute_phase1_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         settings=settings,
         execution=execution,
     )
+    parent_update = _mark_tiktok_fastmoss_product_ingest_after_browser_fallback(
+        store=store,
+        execution=finalized_execution,
+    )
     payload = {
         "control_action": "browser_once",
         "daemon_status": "processed",
@@ -1858,6 +3445,7 @@ def execute_phase1_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         else [],
         "error": finalized_execution.error_text,
         "worker_id": finalized_execution.worker_id,
+        "parent_updates": [parent_update] if parent_update.get("updated") else [],
         **artifact_payload,
     }
     return payload
@@ -1957,6 +3545,618 @@ def dispatch_phase1_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _should_writeback_unavailable_product_status(
+    *,
+    exc: Exception,
+    job_payload: Mapping[str, Any],
+) -> bool:
+    if not isinstance(exc, TikTokProductUnavailableError):
+        return False
+    if str(job_payload.get("field_mapper_code", "") or "").strip() == FEISHU_TK_SELECTION_MAPPER_CODE:
+        return True
+    if _first_non_empty_mapping(job_payload, "source_record_id", "tk_selection_table_url", "feishu_tk_selection_table_url"):
+        return True
+    return isinstance(job_payload.get("table_read_result"), Mapping)
+
+
+def _should_dispatch_tiktok_browser_fallback(
+    *,
+    exc: Exception,
+    job_payload: Mapping[str, Any],
+) -> bool:
+    if not isinstance(exc, TikTokProductExtractionError):
+        return False
+    if isinstance(exc, TikTokProductUnavailableError):
+        return False
+    if not _read_bool_param(dict(job_payload), "tiktok_browser_fallback_enabled", True):
+        return False
+    if _job_payload_has_tiktok_product_payload(job_payload):
+        return False
+    return bool(
+        _first_non_empty_mapping(job_payload, "product_url", "source_url", "url", "normalized_url")
+        or _first_non_empty_mapping(job_payload, "product_id", "sku_id")
+    )
+
+
+def _job_payload_has_tiktok_product_payload(job_payload: Mapping[str, Any]) -> bool:
+    for key in ("tiktok_payload", "tiktok_product_payload", "tiktok_browser_fallback_result"):
+        payload = job_payload.get(key)
+        if isinstance(payload, Mapping) and isinstance(payload.get("product"), Mapping):
+            return True
+    return False
+
+
+def _build_tiktok_browser_fallback_required_worker_result(
+    *,
+    worker_params: Mapping[str, Any],
+    job_payload: Mapping[str, Any],
+    error: Exception,
+) -> dict[str, Any]:
+    product_url = (
+        _first_non_empty_mapping(job_payload, "product_url", "normalized_url", "source_url", "url")
+        or _first_non_empty_mapping(worker_params, "product_url", "normalized_url", "source_url", "url")
+    )
+    product_id = (
+        _first_non_empty_mapping(job_payload, "product_id", "sku_id")
+        or _first_non_empty_mapping(worker_params, "product_id", "sku_id")
+    )
+    source_record_id = _first_non_empty_mapping(job_payload, "source_record_id")
+    item = {
+        "status": "tiktok_browser_fallback_required",
+        "reason": "tiktok_request_extraction_failed",
+        "error": str(error),
+        "product_id": product_id,
+        "product_url": product_url,
+        "normalized_url": product_url,
+        "source_record_id": source_record_id,
+        "record_id": source_record_id,
+        "fetch_source": "request",
+        "next_fetch_source": "browser",
+    }
+    return {
+        "summary": {"total": 1, "counts": {"tiktok_browser_fallback_required": 1}},
+        "item": item,
+        "items": [item],
+        "status": "tiktok_browser_fallback_required",
+        "reason": "tiktok_request_extraction_failed",
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "product_id": product_id,
+        "product_url": product_url,
+        "normalized_url": product_url,
+        "source_record_id": source_record_id,
+    }
+
+
+def _build_unavailable_product_ingest_worker_result(
+    *,
+    worker_params: Mapping[str, Any],
+    job_payload: Mapping[str, Any],
+    error: Exception,
+) -> dict[str, Any]:
+    table_read_result = job_payload.get("table_read_result", {})
+    if not isinstance(table_read_result, Mapping):
+        table_read_result = {}
+    table_read_item = table_read_result.get("item", {})
+    if not isinstance(table_read_item, Mapping):
+        table_read_item = {}
+    product_url = (
+        _first_non_empty_mapping(job_payload, "product_url", "normalized_url", "source_url", "url")
+        or _first_non_empty_mapping(worker_params, "product_url", "normalized_url", "source_url", "url")
+        or _first_non_empty_mapping(table_read_item, "product_url", "normalized_url")
+    )
+    product_id = (
+        _first_non_empty_mapping(job_payload, "product_id", "sku_id")
+        or _first_non_empty_mapping(worker_params, "product_id", "sku_id")
+        or _first_non_empty_mapping(table_read_item, "product_id")
+    )
+    source_record_id = (
+        _first_non_empty_mapping(job_payload, "source_record_id")
+        or _first_non_empty_mapping(table_read_item, "source_record_id", "record_id")
+    )
+    item = {
+        "status": "product_unavailable",
+        "product_status": PRODUCT_STATUS_UNAVAILABLE,
+        "reason": "tiktok_product_unavailable",
+        "error": str(error),
+        "product_id": product_id,
+        "product_url": product_url,
+        "normalized_url": product_url,
+        "source_record_id": source_record_id,
+        "record_id": source_record_id,
+    }
+    return {
+        "summary": {"total": 1, "counts": {"product_unavailable": 1}},
+        "item": item,
+        "items": [item],
+        "status": "product_unavailable",
+        "product_status": PRODUCT_STATUS_UNAVAILABLE,
+        "product_id": product_id,
+        "product_url": product_url,
+        "normalized_url": product_url,
+        "source_record_id": source_record_id,
+        "error_type": type(error).__name__,
+        "error": str(error),
+    }
+
+
+def _run_tiktok_fastmoss_product_ingest_api_worker_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    params: dict[str, Any],
+    job: Mapping[str, Any],
+) -> dict[str, Any]:
+    job_id = str(job.get("job_id", "") or "")
+    request_id = str(job.get("request_id", "") or "")
+    run_id = str(job.get("run_id", "") or f"api-worker-{job_id}")
+    result_payload: dict[str, Any] = {}
+    job_payload: dict[str, Any] = {}
+    worker_params: dict[str, Any] = {}
+    try:
+        job_payload = job.get("payload", {}) if isinstance(job.get("payload"), dict) else {}
+        worker_params = {
+            **params,
+            **_runtime_params_from_settings(settings),
+            **dict(job_payload),
+            "request_id": request_id,
+            "notification_channel_code": "",
+            "reply_target": "",
+        }
+        with _CallbackHeartbeat(
+            callback=lambda: store.heartbeat_api_worker_job(
+                job_id=job_id,
+                lease_seconds=float(settings["lease_seconds"]),
+            ),
+            interval_seconds=min(
+                float(settings["heartbeat_interval_seconds"]),
+                float(settings["lease_seconds"]),
+            ),
+        ):
+            result_payload = run_tiktok_fastmoss_product_ingest_sync(worker_params)
+        finalized_job = store.mark_api_worker_job_success(
+            job_id=job_id,
+            run_id=run_id,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 1,
+            "failed_count": 0,
+            "message": "API worker processed one TikTok/FastMoss product ingest job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": finalized_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": finalized_job.get("summary", {"total": 1, "counts": {"success": 1}}),
+            "item": finalized_job,
+            "items": [finalized_job],
+        }
+    except Exception as exc:
+        if _should_writeback_unavailable_product_status(exc=exc, job_payload=job_payload):
+            result_payload = _build_unavailable_product_ingest_worker_result(
+                worker_params=worker_params or job_payload,
+                job_payload=job_payload,
+                error=exc,
+            )
+            finalized_job = store.mark_api_worker_job_success(
+                job_id=job_id,
+                run_id=run_id,
+                summary=result_payload["summary"],
+                result=result_payload,
+            )
+            parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+                store=store,
+                request_id=request_id,
+            )
+            return {
+                "control_action": "api_worker_once",
+                "daemon_status": "processed",
+                "processed_count": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "message": "API worker marked one unavailable TikTok product for Feishu writeback.",
+                "request_id": request_id,
+                "api_worker_job_id": job_id,
+                "api_worker_job": finalized_job,
+                "worker_result": result_payload,
+                "parent_updates": [parent_update],
+                "summary": finalized_job.get("summary", {"total": 1, "counts": {"product_unavailable": 1}}),
+                "item": finalized_job,
+                "items": [finalized_job],
+            }
+        if _should_dispatch_tiktok_browser_fallback(exc=exc, job_payload=job_payload):
+            result_payload = _build_tiktok_browser_fallback_required_worker_result(
+                worker_params=worker_params or job_payload,
+                job_payload=job_payload,
+                error=exc,
+            )
+            finalized_job = store.mark_api_worker_job_success(
+                job_id=job_id,
+                run_id=run_id,
+                summary=result_payload["summary"],
+                result=result_payload,
+                stage="browser_fallback_required",
+            )
+            parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+                store=store,
+                request_id=request_id,
+            )
+            return {
+                "control_action": "api_worker_once",
+                "daemon_status": "processed",
+                "processed_count": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "message": "API worker requested TikTok browser fallback for one product ingest job.",
+                "request_id": request_id,
+                "api_worker_job_id": job_id,
+                "api_worker_job": finalized_job,
+                "worker_result": result_payload,
+                "parent_updates": [parent_update],
+                "summary": finalized_job.get(
+                    "summary",
+                    {"total": 1, "counts": {"tiktok_browser_fallback_required": 1}},
+                ),
+                "item": finalized_job,
+                "items": [finalized_job],
+            }
+        error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        failed_job = store.mark_api_worker_job_retry_or_failed(
+            job_id=job_id,
+            run_id=run_id,
+            error_text=error_text,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+            retry_delay_seconds=float(settings["retry_delay_seconds"]),
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        final_failed = str(failed_job.get("status", "") or "") == "failed"
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 0,
+            "failed_count": 1 if final_failed else 0,
+            "message": "API worker failed one TikTok/FastMoss product ingest job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": failed_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": failed_job.get("summary", {"total": 1, "counts": {failed_job.get("status", "failed"): 1}}),
+            "item": failed_job,
+            "items": [failed_job],
+            "error": error_text,
+        }
+
+
+def _run_feishu_tk_selection_table_read_api_worker_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    params: dict[str, Any],
+    job: Mapping[str, Any],
+) -> dict[str, Any]:
+    job_id = str(job.get("job_id", "") or "")
+    request_id = str(job.get("request_id", "") or "")
+    run_id = str(job.get("run_id", "") or f"api-worker-{job_id}")
+    result_payload: dict[str, Any] = {}
+    try:
+        job_payload = job.get("payload", {}) if isinstance(job.get("payload"), dict) else {}
+        worker_params = {
+            **params,
+            **_runtime_params_from_settings(settings),
+            **dict(job_payload),
+            "request_id": request_id,
+            "notification_channel_code": "",
+            "reply_target": "",
+        }
+        with _CallbackHeartbeat(
+            callback=lambda: store.heartbeat_api_worker_job(
+                job_id=job_id,
+                lease_seconds=float(settings["lease_seconds"]),
+            ),
+            interval_seconds=min(
+                float(settings["heartbeat_interval_seconds"]),
+                float(settings["lease_seconds"]),
+            ),
+        ):
+            result_payload = read_feishu_tk_selection_table_for_product(worker_params)
+        finalized_job = store.mark_api_worker_job_success(
+            job_id=job_id,
+            run_id=run_id,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 1,
+            "failed_count": 0,
+            "message": "API worker processed one Feishu TK selection table-read job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": finalized_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": finalized_job.get("summary", {"total": 1, "counts": {"success": 1}}),
+            "item": finalized_job,
+            "items": [finalized_job],
+        }
+    except Exception as exc:
+        error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        failed_job = store.mark_api_worker_job_retry_or_failed(
+            job_id=job_id,
+            run_id=run_id,
+            error_text=error_text,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+            retry_delay_seconds=float(settings["retry_delay_seconds"]),
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        final_failed = str(failed_job.get("status", "") or "") == "failed"
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 0,
+            "failed_count": 1 if final_failed else 0,
+            "message": "API worker failed one Feishu TK selection table-read job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": failed_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": failed_job.get("summary", {"total": 1, "counts": {failed_job.get("status", "failed"): 1}}),
+            "item": failed_job,
+            "items": [failed_job],
+            "error": error_text,
+        }
+
+
+def _run_feishu_tk_selection_table_writeback_api_worker_job(
+    *,
+    store: RuntimeStore,
+    settings: dict[str, Any],
+    params: dict[str, Any],
+    job: Mapping[str, Any],
+) -> dict[str, Any]:
+    job_id = str(job.get("job_id", "") or "")
+    request_id = str(job.get("request_id", "") or "")
+    run_id = str(job.get("run_id", "") or f"api-worker-{job_id}")
+    result_payload: dict[str, Any] = {}
+    try:
+        job_payload = job.get("payload", {}) if isinstance(job.get("payload"), dict) else {}
+        worker_params = {
+            **params,
+            **_runtime_params_from_settings(settings),
+            **dict(job_payload),
+            "request_id": request_id,
+            "notification_channel_code": "",
+            "reply_target": "",
+        }
+        with _CallbackHeartbeat(
+            callback=lambda: store.heartbeat_api_worker_job(
+                job_id=job_id,
+                lease_seconds=float(settings["lease_seconds"]),
+            ),
+            interval_seconds=min(
+                float(settings["heartbeat_interval_seconds"]),
+                float(settings["lease_seconds"]),
+            ),
+        ):
+            result_payload = writeback_feishu_tk_selection_table(worker_params)
+        finalized_job = store.mark_api_worker_job_success(
+            job_id=job_id,
+            run_id=run_id,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 1,
+            "failed_count": 0,
+            "message": "API worker processed one Feishu TK selection table writeback job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": finalized_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": finalized_job.get("summary", {"total": 1, "counts": {"success": 1}}),
+            "item": finalized_job,
+            "items": [finalized_job],
+        }
+    except Exception as exc:
+        error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        failed_job = store.mark_api_worker_job_retry_or_failed(
+            job_id=job_id,
+            run_id=run_id,
+            error_text=error_text,
+            summary=result_payload.get("summary", {}) if isinstance(result_payload, dict) else {},
+            result=result_payload if isinstance(result_payload, dict) else {},
+            retry_delay_seconds=float(settings["retry_delay_seconds"]),
+        )
+        parent_update = _mark_tiktok_fastmoss_product_ingest_ready_if_done(
+            store=store,
+            request_id=request_id,
+        )
+        final_failed = str(failed_job.get("status", "") or "") == "failed"
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 0,
+            "failed_count": 1 if final_failed else 0,
+            "message": "API worker failed one Feishu TK selection table writeback job.",
+            "request_id": request_id,
+            "api_worker_job_id": job_id,
+            "api_worker_job": failed_job,
+            "worker_result": result_payload,
+            "parent_updates": [parent_update],
+            "summary": failed_job.get("summary", {"total": 1, "counts": {failed_job.get("status", "failed"): 1}}),
+            "item": failed_job,
+            "items": [failed_job],
+            "error": error_text,
+        }
+
+
+def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
+    settings = _phase1_settings(params)
+    store = _create_store(settings)
+    request_id = str(params.get("request_id", "") or "").strip()
+    api_job = store.claim_next_api_worker_job(
+        request_id=request_id,
+        worker_id=str(settings["worker_id"]),
+        lease_seconds=float(settings["lease_seconds"]),
+    )
+    if api_job is not None:
+        job_code = str(api_job.get("job_code", "") or "")
+        if job_code == FEISHU_TK_SELECTION_TABLE_READ_API_JOB_CODE:
+            return _run_feishu_tk_selection_table_read_api_worker_job(
+                store=store,
+                settings=settings,
+                params=params,
+                job=api_job,
+            )
+        if job_code == TIKTOK_FASTMOSS_PRODUCT_INGEST_API_JOB_CODE:
+            return _run_tiktok_fastmoss_product_ingest_api_worker_job(
+                store=store,
+                settings=settings,
+                params=params,
+                job=api_job,
+            )
+        if job_code == FEISHU_TK_SELECTION_TABLE_WRITEBACK_API_JOB_CODE:
+            return _run_feishu_tk_selection_table_writeback_api_worker_job(
+                store=store,
+                settings=settings,
+                params=params,
+                job=api_job,
+            )
+        failed_job = store.mark_api_worker_job_retry_or_failed(
+            job_id=str(api_job.get("job_id", "") or ""),
+            run_id=str(api_job.get("run_id", "") or ""),
+            error_text=f"Unsupported API worker job_code '{job_code}'.",
+            retry_delay_seconds=float(settings["retry_delay_seconds"]),
+        )
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 0,
+            "failed_count": 1 if str(failed_job.get("status", "") or "") == "failed" else 0,
+            "message": f"Unsupported API worker job_code '{job_code}'.",
+            "request_id": str(api_job.get("request_id", "") or ""),
+            "api_worker_job_id": str(api_job.get("job_id", "") or ""),
+            "api_worker_job": failed_job,
+            "summary": failed_job.get("summary", {}),
+            "item": failed_job,
+            "items": [failed_job],
+        }
+    if not request_id:
+        request_id = store.find_next_influencer_pool_work_request_id(
+            task_code=SYNC_TK_INFLUENCER_POOL_TASK_CODE,
+        )
+    if not request_id:
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "idle",
+            "processed_count": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "message": "No API worker job is ready to run.",
+            "summary": {"total": 0, "counts": {}},
+            "item": {},
+            "items": [],
+            "request_id": "",
+            "parent_updates": [],
+        }
+
+    request = store.load_task_request(request_id=request_id)
+    if request.task_code != SYNC_TK_INFLUENCER_POOL_TASK_CODE:
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "idle",
+            "processed_count": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "message": "No API worker job is ready to run for this request.",
+            "summary": {"total": 0, "counts": {}},
+            "item": {},
+            "items": [],
+            "request_id": request_id,
+            "parent_updates": [],
+        }
+    worker_params = {
+        **(request.payload if isinstance(request.payload, dict) else {}),
+        **params,
+        **_runtime_params_from_settings(settings),
+        "request_id": request_id,
+        "queue_mode": "worker",
+        "worker_max_iterations": 1,
+        "worker_stop_when_idle": True,
+        "worker_max_idle_cycles": 1,
+        "notification_channel_code": "",
+        "reply_target": "",
+    }
+    result_payload = run_sync_tk_influencer_pool_sync(worker_params)
+    items = result_payload.get("items", []) if isinstance(result_payload.get("items"), list) else []
+    processed_job_count = len(items)
+    touched_request_ids = {
+        str(item.get("request_id", "") or "")
+        for item in items
+        if isinstance(item, Mapping) and str(item.get("request_id", "") or "")
+    }
+    touched_request_ids.add(request_id)
+    parent_updates = [
+        _mark_sync_tk_influencer_pool_ready_if_done(store=store, request_id=touched_request_id)
+        for touched_request_id in sorted(touched_request_ids)
+    ]
+    parent_ready_count = sum(1 for update in parent_updates if update.get("updated"))
+    daemon_status = "processed" if processed_job_count > 0 or parent_ready_count > 0 else "idle"
+    return {
+        "control_action": "api_worker_once",
+        "daemon_status": daemon_status,
+        "processed_count": 1 if daemon_status == "processed" else 0,
+        "success_count": 1 if daemon_status == "processed" else 0,
+        "failed_count": 0,
+        "message": "API worker processed influencer-pool jobs."
+        if daemon_status == "processed"
+        else "No influencer-pool API worker job was processed.",
+        "request_id": request_id,
+        "worker_result": result_payload,
+        "parent_updates": parent_updates,
+        "summary": result_payload.get("summary", {"total": processed_job_count, "counts": {}}),
+        "item": items[0] if items else {"request_id": request_id, "status": daemon_status},
+        "items": items,
+    }
+
+
 def _run_loop(
     *,
     once_func: Any,
@@ -2036,6 +4236,14 @@ def run_phase1_outbox_dispatcher(params: dict[str, Any]) -> dict[str, Any]:
     return _run_loop(
         once_func=dispatch_phase1_outbox_once,
         action_name="outbox_loop",
+        params=params,
+    )
+
+
+def run_api_worker_daemon(params: dict[str, Any]) -> dict[str, Any]:
+    return _run_loop(
+        once_func=execute_api_worker_once,
+        action_name="api_worker_loop",
         params=params,
     )
 
@@ -2137,3 +4345,53 @@ def run_search_keyword_competitor_products(params: dict[str, Any]) -> dict[str, 
     if action == "outbox_loop":
         return run_phase1_outbox_dispatcher(params)
     return _run_keyword_phase1_synchronously(params)
+
+
+def run_sync_tk_influencer_pool_request(params: dict[str, Any]) -> dict[str, Any]:
+    action = str(params.get("control_action", "run") or "run").strip().lower()
+    if action == "submit":
+        return submit_sync_tk_influencer_pool(params)
+    if action in {"status", "result"}:
+        return get_sync_tk_influencer_pool_status(params)
+    if action == "executor_once":
+        return execute_executor_once(params)
+    if action == "executor_loop":
+        return run_executor_daemon(params)
+    if action == "api_worker_once":
+        return execute_api_worker_once(params)
+    if action == "api_worker_loop":
+        return run_api_worker_daemon(params)
+    if action == "browser_once":
+        return execute_phase1_browser_once(params)
+    if action == "browser_loop":
+        return run_phase1_browser_runloop(params)
+    if action == "outbox_once":
+        return dispatch_phase1_outbox_once(params)
+    if action == "outbox_loop":
+        return run_phase1_outbox_dispatcher(params)
+    return run_sync_tk_influencer_pool_sync(params)
+
+
+def run_tiktok_fastmoss_product_ingest_request(params: dict[str, Any]) -> dict[str, Any]:
+    action = str(params.get("control_action", "run") or "run").strip().lower()
+    if action == "submit":
+        return submit_tiktok_fastmoss_product_ingest(params)
+    if action in {"status", "result"}:
+        return get_tiktok_fastmoss_product_ingest_status(params)
+    if action == "executor_once":
+        return execute_executor_once(params)
+    if action == "executor_loop":
+        return run_executor_daemon(params)
+    if action == "api_worker_once":
+        return execute_api_worker_once(params)
+    if action == "api_worker_loop":
+        return run_api_worker_daemon(params)
+    if action == "browser_once":
+        return execute_phase1_browser_once(params)
+    if action == "browser_loop":
+        return run_phase1_browser_runloop(params)
+    if action == "outbox_once":
+        return dispatch_phase1_outbox_once(params)
+    if action == "outbox_loop":
+        return run_phase1_outbox_dispatcher(params)
+    return run_tiktok_fastmoss_product_ingest_sync(params)

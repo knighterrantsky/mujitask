@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 automation-business-scaffold-agent = "automation_business_scaffold.agent:main"
+automation-business-scaffold-api-worker = "automation_business_scaffold.api_worker_daemon:main"
 automation-business-scaffold-browser-runloop = "automation_business_scaffold.browser_runloop:main"
 automation-business-scaffold-executor = "automation_business_scaffold.executor_daemon:main"
 automation-business-scaffold-outbox-dispatcher = "automation_business_scaffold.outbox_dispatcher:main"
@@ -38,6 +39,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+automation_business_scaffold = ["infrastructure/fastmoss/*.mjs"]
 
 [tool.ruff]
 line-length = 100

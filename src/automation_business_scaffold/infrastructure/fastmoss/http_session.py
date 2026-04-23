@@ -145,6 +145,23 @@ def _cookie_value_digest(value: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _coerce_cookie_expires(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        expires = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return expires if expires > 0 else None
+
+
+def _coerce_cookie_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
 def _response_code_text(payload: Mapping[str, Any]) -> str:
     return _coerce_str(payload.get("code")).strip()
 
@@ -207,6 +224,7 @@ class FastMossHTTPSession:
         nonce_factory: Callable[[], str] | None = None,
         sleep_factory: Callable[[float], None] = time.sleep,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        auth_refresh_callback: Callable[["FastMossHTTPSession", dict[str, Any]], None] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -220,6 +238,7 @@ class FastMossHTTPSession:
         self._sleep_factory = sleep_factory
         self._last_request_finished_at: float | None = None
         self._event_callback = event_callback
+        self._auth_refresh_callback = auth_refresh_callback
         self._debug_context: dict[str, Any] = {}
         self.session = requests.Session()
 
@@ -242,6 +261,12 @@ class FastMossHTTPSession:
     def clear_debug_context(self) -> None:
         self._debug_context = {}
 
+    def set_auth_refresh_callback(
+        self,
+        callback: Callable[["FastMossHTTPSession", dict[str, Any]], None] | None,
+    ) -> None:
+        self._auth_refresh_callback = callback
+
     def cookie_snapshot(self, *, domain_keyword: str = "fastmoss.com") -> dict[str, Any]:
         cookie_names: list[str] = []
         fd_tk_digest = ""
@@ -257,6 +282,29 @@ class FastMossHTTPSession:
             "has_fd_tk": bool(fd_tk_digest),
             "fd_tk_digest": fd_tk_digest,
         }
+
+    def export_cookies(self, *, domain_keyword: str = "fastmoss.com") -> list[dict[str, Any]]:
+        """Return serializable cookies for one domain family.
+
+        The returned values include sensitive cookie values and should only be
+        written to the configured session cache, never to logs or task results.
+        """
+
+        exported: list[dict[str, Any]] = []
+        for cookie in self.session.cookies:
+            if not _cookie_domain_matches(cookie.domain or "", domain_keyword):
+                continue
+            exported.append(
+                {
+                    "name": str(cookie.name or ""),
+                    "value": str(cookie.value or ""),
+                    "domain": str(cookie.domain or ""),
+                    "path": str(cookie.path or "/") or "/",
+                    "expires": cookie.expires,
+                    "secure": bool(cookie.secure),
+                }
+            )
+        return exported
 
     def replace_browser_cookies(
         self,
@@ -280,6 +328,8 @@ class FastMossHTTPSession:
                 value,
                 domain=domain or None,
                 path=path,
+                expires=_coerce_cookie_expires(cookie.get("expires")),
+                secure=_coerce_cookie_bool(cookie.get("secure")),
             )
             inserted += 1
         replaced_count = inserted if inserted > 0 else removed
@@ -495,15 +545,33 @@ class FastMossHTTPSession:
             if check_auth and _is_auth_issue(payload):
                 if relogin_on_auth_fail and not login_retried and self._has_credentials():
                     login_retried = True
+                    refresh_context = {
+                        "stage": stage,
+                        "method": method,
+                        "path": path,
+                        "response_code": _coerce_str(response_code).strip(),
+                        "message": _coerce_str(payload.get("msg")).strip(),
+                    }
                     self._emit_event(
                         "http_auth_retry_login",
                         stage=stage,
                         method=method,
                         path=path,
-                        response_code=_coerce_str(response_code).strip(),
+                        response_code=refresh_context["response_code"],
                         **self.cookie_snapshot(),
                     )
-                    self.login()
+                    if self._auth_refresh_callback is not None:
+                        self._auth_refresh_callback(self, refresh_context)
+                    else:
+                        self.login()
+                    self._emit_event(
+                        "http_auth_retry_ready",
+                        stage=stage,
+                        method=method,
+                        path=path,
+                        response_code=refresh_context["response_code"],
+                        **self.cookie_snapshot(),
+                    )
                     continue
                 raise FastMossAuthError(
                     _coerce_str(payload.get("msg")) or "FastMoss login required",
@@ -597,6 +665,27 @@ class FastMossHTTPSession:
             referer=self._build_goods_detail_referer(normalized_product_id),
             region=self.default_region,
             stage="product.skus",
+        )
+        return _extract_data(payload)
+
+    def get_product_sku_distribution(
+        self,
+        product_id: str,
+        *,
+        d_type: int | str = 28,
+    ) -> dict[str, Any]:
+        """Return the `data` object from /api/goods/productSku."""
+
+        normalized_product_id = self._normalize_product_id(product_id)
+        path = "/api/goods/productSku"
+        params = {"product_id": normalized_product_id, "d_type": d_type}
+        payload = self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_goods_detail_referer(normalized_product_id),
+            region=self.default_region,
+            stage="product.sku_distribution",
         )
         return _extract_data(payload)
 

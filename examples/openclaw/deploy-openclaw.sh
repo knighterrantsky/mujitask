@@ -52,7 +52,6 @@ main() {
   local existing_fastmoss_phone=""
   local existing_fastmoss_password=""
   local existing_db_url=""
-  local existing_db_path=""
   local existing_artifact_root=""
   local existing_artifact_bucket=""
   local existing_notification_channel_code=""
@@ -69,7 +68,6 @@ main() {
     existing_fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
     existing_fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
     existing_db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-    existing_db_path="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
     existing_artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
     existing_artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
     existing_notification_channel_code="$(read_kv_value "$existing_skill_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
@@ -106,7 +104,6 @@ main() {
     existing_executor_env="$existing_install_dir/scripts/execution_control/executor.local.env"
     if [[ -f "$existing_executor_env" ]]; then
       [[ -n "$existing_db_url" ]] || existing_db_url="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-      [[ -n "$existing_db_path" ]] || existing_db_path="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
       [[ -n "$existing_artifact_root" ]] || existing_artifact_root="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
       [[ -n "$existing_artifact_bucket" ]] || existing_artifact_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
       [[ -n "$existing_notification_channel_code" ]] || existing_notification_channel_code="$(read_kv_value "$existing_executor_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
@@ -114,7 +111,7 @@ main() {
   fi
 
   local browser_profile_ref="" fastmoss_phone="" fastmoss_password=""
-  local db_url="" db_path="" artifact_root="" artifact_bucket=""
+  local db_url="" artifact_root="" artifact_bucket=""
   local artifact_store_provider="" artifact_object_prefix=""
   local minio_endpoint="" minio_access_key="" minio_secret_key="" minio_region=""
   local minio_secure="" minio_create_bucket="" sync_referenced_files=""
@@ -149,7 +146,6 @@ main() {
   fi
 
   db_url="$(prompt "Execution control DB URL" "${existing_db_url:-postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold}")"
-  db_path="$(prompt_optional "Execution control DB path fallback (optional)" "${existing_db_path:-}")"
   artifact_root="$(prompt "Artifact root" "${existing_artifact_root:-$install_dir/runtime/execution_control/object_store}")"
   artifact_bucket="$(prompt "Artifact bucket" "${existing_artifact_bucket:-automation-business-scaffold}")"
   artifact_store_provider="$(prompt "Artifact store provider" "minio")"
@@ -266,7 +262,6 @@ main() {
     "$fastmoss_phone" \
     "$fastmoss_password" \
     "$db_url" \
-    "$db_path" \
     "$artifact_root" \
     "$artifact_bucket" \
     "$requested_by" \
@@ -276,7 +271,6 @@ main() {
   write_executor_local_env \
     "$install_dir" \
     "$db_url" \
-    "$db_path" \
     "$artifact_root" \
     "$artifact_bucket" \
     "$artifact_store_provider" \

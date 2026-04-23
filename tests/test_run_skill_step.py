@@ -372,3 +372,73 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     assert "search_keyword=Easter Basket Stuffers" in captured_calls[0]["params"]
     assert emitted["request_id"] == "req-keyword-123"
     assert emitted["request_status"] == "pending"
+
+
+def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            "TABLE_URL": "https://example.com/table",
+            "FEISHU_ACCESS_TOKEN": "token",
+            "BROWSER_PROFILE_REF": "roxy-default",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+            "INFLUENCER_POOL_SOURCE_TABLE_URL": "https://example.com/source",
+            "INFLUENCER_POOL_TARGET_TABLE_URL": "https://example.com/target",
+            "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV": "FEISHU_ACCESS_TOKEN",
+            "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
+            "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV": "FASTMOSS_PASSWORD",
+        },
+    )
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-influencer-123",
+                "request_status": "pending",
+                "summary": {"total": 1, "counts": {"queued": 1}},
+            },
+        )
+
+    def fake_run_cli_task_capture_payload(**kwargs):
+        raise AssertionError("influencer-pool-sync must submit asynchronously instead of direct CLI execution")
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_run_cli_task_capture_payload", fake_run_cli_task_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    exit_code = module.main(["influencer-pool-sync", "--run-mode", "canary"])
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "sync_tk_influencer_pool"
+    params = list(captured_calls[0]["params"])
+    assert "control_action=submit" in params
+    assert "table_url=https://example.com/source" in params
+    assert "target_table_url=https://example.com/target" in params
+    assert "access_token_env=FEISHU_ACCESS_TOKEN" in params
+    assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
+    assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
+    assert emitted["request_id"] == "req-influencer-123"
+    assert emitted["request_status"] == "pending"
