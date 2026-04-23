@@ -109,7 +109,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 - 后台启动后只短轮询一次就提前回复
 - 输出“还没吐出 request_id”“我先让它继续跑”这类过渡话术
-- 在 skill 中手工串 `cleanup -> pending_rows -> single_row_update`
+- 在 skill 中手工串旧 leaf steps；skill 只提交顶层 task
 
 ## 6. 当前实现边界
 
@@ -131,9 +131,6 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 - `run_cleanup_step.sh`
 - `run_pending_rows_step.sh`
-- `run_single_row_update_step.sh`
-- `run_keyword_candidate_step.sh`
-- `run_insert_seed_row_step.sh`
 - `run_fastmoss_login_check_step.sh`
 
 ## 7. 与运行时的关系

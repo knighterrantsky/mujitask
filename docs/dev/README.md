@@ -21,6 +21,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [documentation-change-policy.md](./documentation-change-policy.md) | 代码实现时哪些文档可同步修改、哪些需要确认、哪些不应修改 |
 | [openclaw-skills.md](./openclaw-skills.md) | OpenClaw skill 的开发集成边界、入口脚本和调试口径 |
 
 ## 维护规则

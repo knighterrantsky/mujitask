@@ -12,6 +12,8 @@
 
 `docs/arch` 是当前系统设计事实来源。它回答系统如何分层、workflow 如何拆分、Runtime/Fact/Storage 如何设计。
 
+其中 Runtime DB schema、Fact DB schema、handler contract、workflow contract、入口/输出 contract 属于受控契约。它们可以随实现同步更新，但不能作为普通说明文字随意改写；变更必须说明 migration、兼容、权限和回滚边界。
+
 它不是以下内容的事实来源:
 
 - 客户需求、业务字段含义和验收口径: 见 [../business/README.md](../business/README.md)。
@@ -21,8 +23,10 @@
 
 ## 架构总览
 
+- [重构验收契约](./rewrite-acceptance-contract.md)
 - [当前整体系统架构设计](./current-system-architecture-design.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
+- [Handler Contract 设计](./handler-contract-design.md)
 - [入口与输出契约设计](./entry-output-contract-design.md)
 - [数据库架构设计](./database-architecture-design.md)
 - [Storage 架构设计](./storage-architecture-design.md)

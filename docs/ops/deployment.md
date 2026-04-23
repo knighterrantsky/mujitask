@@ -127,16 +127,27 @@
 
 当前正式控制库使用 `Postgres`。
 
-真实运行至少涉及这些表：
+真实运行至少涉及这些 Runtime 表：
 
 - `task_request`
 - `task_execution`
+- `api_worker_job`
 - `resource_lease`
 - `notification_outbox`
 - `artifact_object`
-- `entity_registry`
-- `external_binding`
-- `entity_snapshot`
+- `fastmoss_session_cookie_cache`
+
+历史达人同步专用 job 表属于待迁移实现细节，不作为新部署和新 workflow 设计的目标 Runtime 表。
+
+事实库表以 [../arch/fact-db-schema-design.md](../arch/fact-db-schema-design.md) 为准。
+
+生产数据库账号建议拆分：
+
+| 账号 | 用途 | 权限 |
+| --- | --- | --- |
+| `mujitask_runtime_user` | daemon / worker / dispatcher / watchdog | Runtime/Fact 表读写，不含 DDL |
+| `mujitask_migration_user` | 发布 migration | `CREATE / ALTER / DROP / CREATE INDEX` |
+| `mujitask_readonly_user` | 排障、报表、只读分析 | `SELECT` |
 
 ### 7.2 MinIO
 
@@ -217,9 +228,11 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 
 ### 8.4 初始化数据库
 
-如果当前环境还没有对应 schema，先让 runtime store 建表或执行你们的迁移脚本。
+如果当前环境还没有对应 schema，本地开发可以使用 runtime store bootstrap 或 migration 脚本初始化。
 
-当前本地部署脚本在安装 `launchd` 前会主动触发一次 schema 初始化。
+生产环境不要让 daemon / worker 在正常消费任务时自动建表、改表或删表。生产发布应先使用 migration 账号执行 Alembic migration 或等价迁移脚本，然后让运行进程使用 runtime 账号启动并校验 schema version。
+
+当前本地部署脚本在安装 `launchd` 前会主动触发一次 schema 初始化；这个行为只代表本地部署便利路径，不应等同于生产运行进程拥有 DDL 权限。
 
 ### 8.5 安装 launchd 守护进程
 
@@ -277,8 +290,6 @@ bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh
 2. 任务列表中能看到：
    - `refresh_current_competitor_table`
    - `search_keyword_competitor_products`
-   - `feishu_single_row_update`
-   - `fastmoss_keyword_candidate_discovery`
 3. 目标 agent skills 根目录中 skill 目录存在且包含：
    - `SKILL.md`
    - `skill.local.env`
@@ -319,9 +330,6 @@ scripts/execution_control/run_local_postgres_tests.sh
 
 - `run_cleanup_step.sh`
 - `run_pending_rows_step.sh`
-- `run_single_row_update_step.sh`
-- `run_keyword_candidate_step.sh`
-- `run_insert_seed_row_step.sh`
 - `run_fastmoss_login_check_step.sh`
 
 旧的 `examples/openclaw/*` 脚本也应视为历史部署资产，不应替代当前 `Postgres + MinIO + launchd + top-level task skill` 的正式部署方式。

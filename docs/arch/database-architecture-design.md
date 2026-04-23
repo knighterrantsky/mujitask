@@ -19,6 +19,8 @@
 
 不建议把飞书业务表称为本系统数据库。飞书是外部业务视图和操作台，不是内部状态真相。
 
+数据库 schema 不允许随运行时代码自由修改。生产环境中，daemon / worker / dispatcher / watchdog 只能使用运行账号读写数据；建表、改表、删表、建索引等 DDL 只能由 migration 流程使用 migration 账号执行。
+
 专项 schema 文档:
 
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md): 展开 Runtime 表、状态机、claim/lease/retry/watchdog 规则。
@@ -41,6 +43,45 @@ flowchart TD
     E --> G["MinIO / local object store<br/>文件与运行产物"]
 ```
 
+## 2.1 生产权限与 Schema 发布边界
+
+为了避免“业务代码执行任务时把数据库字段改掉”，生产环境必须从权限层面做隔离。
+
+推荐角色:
+
+| 角色 | 使用场景 | 权限边界 |
+| --- | --- | --- |
+| `mujitask_runtime_user` | `executor_daemon`、`api_worker`、`browser_worker`、`outbox_dispatcher`、`watchdog` | 只允许 Runtime/Fact 表的 `SELECT / INSERT / UPDATE / DELETE` |
+| `mujitask_migration_user` | CI/CD migration、人工发布 migration | 允许 `CREATE / ALTER / DROP / CREATE INDEX` |
+| `mujitask_readonly_user` | 查询、排障、BI | 只允许 `SELECT` |
+
+生产发布顺序:
+
+```text
+代码变更
+  -> schema/contract 影响评审
+  -> 编写 migration
+  -> 测试库验证 upgrade / rollback
+  -> 生产备份
+  -> migration_user 执行 migration
+  -> 应用以 runtime_user 启动并校验 schema version
+  -> daemon / worker 开始消费任务
+```
+
+禁止路径:
+
+```text
+daemon / worker 正常启动
+  -> 自动 CREATE TABLE / ALTER TABLE / DROP TABLE
+  -> 继续消费生产任务
+```
+
+允许路径:
+
+- 本地开发或首次初始化环境可使用 bootstrap 建表。
+- 生产环境可在独立 migration 步骤中执行 DDL。
+- 生产运行进程可以读取 migration version 并 fail fast，但不能自行修 schema。
+
 ## 3. Runtime 数据库
 
 Runtime 数据库是执行控制面。它回答的问题是:
@@ -61,10 +102,8 @@ Runtime 数据库是 `executor_daemon`、`api_worker`、`browser_worker`、`outb
 | 表 | 归属 | 作用 |
 | --- | --- | --- |
 | `task_request` | 顶层任务 | 用户提交的一次 Task，保存 payload、status、stage_cursor、summary、result |
-| `task_execution` | 浏览器/叶子任务队列 | browser worker 可 claim 的执行单元，例如单行竞品补全、关键词发现、TikTok browser fallback |
-| `api_worker_job` | API/IO job 队列 | api worker 可 claim 的通用 job，例如飞书表读取、FastMoss 商品采集、飞书写回 |
-| `influencer_pool_product_job` | 达人同步领域队列 | 商品/竞品粒度的达人发现 job |
-| `influencer_pool_author_job` | 达人同步领域队列 | 单个达人详情采集和写入 job |
+| `task_execution` | 浏览器/叶子任务队列 | browser worker 可 claim 的执行单元，例如 TikTok browser fallback、需要浏览器 profile 的页面采集 |
+| `api_worker_job` | API/IO job 队列 | api worker 可 claim 的通用 job，例如飞书表读取、FastMoss 商品搜索/采集、飞书写回 |
 | `resource_lease` | 资源租约 | 浏览器 profile / CDP 资源占用控制 |
 | `notification_outbox` | 通知 outbox | 最终消息发送队列 |
 | `artifact_object` | 运行产物索引 | stdout、截图、状态文件、上传对象等 artifact 的数据库索引 |
@@ -75,13 +114,13 @@ Runtime 数据库是 `executor_daemon`、`api_worker`、`browser_worker`、`outb
 erDiagram
     task_request ||--o{ task_execution : owns
     task_request ||--o{ api_worker_job : owns
-    task_request ||--o{ influencer_pool_product_job : owns
-    influencer_pool_product_job ||--o{ influencer_pool_author_job : fans_out
     task_execution ||--o| resource_lease : holds
     task_request ||--o{ notification_outbox : emits
     task_request ||--o{ artifact_object : produces
     task_execution ||--o{ artifact_object : produces
 ```
+
+当前代码里仍存在历史达人同步专用 job 表。它们属于待迁移实现细节，不作为目标数据库架构的一部分；新 workflow 只能使用 `api_worker_job` 或 `task_execution` 承载执行单元。
 
 ### 3.3 Runtime DB 的设计原则
 
@@ -250,8 +289,6 @@ Postgres
     task_request
     task_execution
     api_worker_job
-    influencer_pool_product_job
-    influencer_pool_author_job
     resource_lease
     notification_outbox
     artifact_object

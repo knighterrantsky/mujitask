@@ -20,6 +20,8 @@
 
 > 新增业务流程不能直接从“写一个 handler”开始，必须先定义 Task、Workflow、Stage、Job、Handler、Flow 的边界。
 
+> `task_code`、`workflow_code`、`stage_code`、`job_code`、`handler_code` 是稳定路由键，不在名称里追加 `v1`、`v2`、`stage1`、`stage2B` 这类版本或顺序信息。兼容演进通过新增可选字段、`contract_revision` 元数据、adapter 或迁移策略表达。
+
 ## 2. 新增业务流程的设计顺序
 
 新增业务应按下面顺序拆:
@@ -47,6 +49,77 @@ flowchart TD
 7. 明确会写哪些 Runtime 表、Fact 表、飞书表和对象存储。
 8. 明确失败、无响应、超时、部分成功时如何兜底。
 
+## 2.1 命名与版本约束
+
+所有 workflow contract 都必须使用稳定、可读、可搜索的语义化 code。
+
+### 2.1.1 稳定 Code 规则
+
+| 对象 | 命名规则 | 示例 |
+| --- | --- | --- |
+| `task_code` | 业务入口语义，snake_case | `search_keyword_competitor_products` |
+| `workflow_code` | 通常与 `task_code` 一致，表达稳定编排身份 | `tiktok_fastmoss_product_ingest` |
+| `stage_code` | 动词 + 业务对象，snake_case | `read_selection_rows`、`collect_product_data` |
+| `job_code` / `item_code` | worker 路由键，表达执行能力 | `fastmoss_product_search`、`feishu_table_write` |
+| `handler_code` | handler registry 路由键，通常与通用 `job_code` 一致 | `fact_bundle_upsert` |
+| mapper / adapter | 表级或业务级语义组件 | `selection_table_source_adapter`、`competitor_table_projection_mapper` |
+
+禁止:
+
+- `fastmoss_product_search_v1`
+- `fastmoss_product_search_v2`
+- `stage1`
+- `stage_2b`
+- `step1_handler`
+
+允许:
+
+- 在 contract 文档里记录 `contract_revision`，但它不是路由键。
+- 为破坏性变更新增迁移 adapter 或新 handler，但不能在旧 handler 的字段语义上静默破坏兼容。
+- 当前代码中历史 `WorkflowSpec` 的兼容 ID 可以保留为实现事实，目标 Runtime workflow 文档统一使用稳定 `workflow_code`。
+
+### 2.1.2 Stage Code 规范
+
+Stage 是 workflow 的业务阶段，不是步骤编号、函数名、adapter 名或 UI 文案。
+
+推荐 stage code:
+
+| 阶段类型 | 推荐命名 | 说明 |
+| --- | --- | --- |
+| 来源读取 | `read_<source>_rows` | 读取飞书源表或来源数据 |
+| 候选搜索 | `search_<entity>_candidates` | 通过搜索 API 得到候选 |
+| 候选处理 | `process_<entity>_candidates` | 去重、过滤、生成后续 job payload |
+| 派发子任务 | `dispatch_<entity>_jobs` / `dispatch_product_collection` | fan-out 子 job |
+| 数据采集 | `collect_<entity>_data` / `collect_<entity>_detail` | request/API 采集 |
+| 浏览器兜底 | `browser_fallback` | 仅在 request 明确要求 fallback 时进入 |
+| 媒体同步 | `sync_media` | 上传或绑定图片、头像、封面 |
+| 事实入库 | `persist_facts` | 写 Fact DB、raw links、observations |
+| 业务写回 | `writeback_<target>_rows` / `write_<target>` | 飞书或业务投影写回 |
+| 父级汇总 | `ready_for_summary` | executor 生成 summary/outbox |
+
+Stage 文档必须把 adapter/mapper 放在 Job / Handler / Flow 映射里，不能把 adapter/mapper 写成 stage 名称。比如 `read_selection_rows` 可以派生 `feishu_table_read`，并在 Job 映射里注明它调用 `selection_table_source_adapter`。
+
+### 2.1.3 Stage Contract 示例
+
+标准 stage 行应该包含“业务阶段 + 编排动作 + 派生 job + 退出条件”，不包含实现函数名或步骤编号。
+
+| Stage code | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
+| --- | --- | --- | --- | --- |
+| `read_selection_rows` | 开启 TK selection table mode | 派发飞书读取 job，读取源行和写回上下文 | `feishu_table_read` | 得到 product candidates 或确认跳过 |
+| `collect_product_data` | 有 product url / product id | 派发 request-first 商品采集 job | `tiktok_product_request_fetch`、`fastmoss_product_fetch` | 商品采集成功、失败或要求 fallback |
+| `browser_fallback` | `tiktok_product_request_fetch` 返回 `fallback_required=true` | 派发浏览器兜底 job | `tiktok_product_browser_fetch` | browser job 终态 |
+| `persist_facts` | 已得到 normalized facts | 写 Fact DB、raw links 和 observations | `fact_bundle_upsert` | facts 写入完成 |
+| `writeback_selection_rows` | 有来源飞书记录且需要写回 | 派发飞书写回 job | `feishu_table_write` | 写回 job 终态 |
+
+对应 Job / Handler / Flow 映射:
+
+| Stage code | Job code | Handler code | Adapter / Mapper / Flow |
+| --- | --- | --- | --- |
+| `read_selection_rows` | `feishu_table_read` | `feishu_table_read` | `selection_table_source_adapter` |
+| `collect_product_data` | `tiktok_product_request_fetch` | `tiktok_product_request_fetch` | TikTok request flow |
+| `collect_product_data` | `fastmoss_product_fetch` | `fastmoss_product_fetch` | FastMoss product flow |
+| `writeback_selection_rows` | `feishu_table_write` | `feishu_table_write` | `selection_table_projection_mapper` |
+
 ## 3. Workflow 必须包含的内容
 
 每个具体 workflow 文档都必须包含以下内容。
@@ -57,7 +130,7 @@ flowchart TD
 | --- | --- | --- |
 | `task_code` | 是 | 顶层任务类型，executor 用它选择 workflow |
 | `workflow_code` | 是 | workflow 编排编码 |
-| `workflow_version` | 建议 | 未来 workflow 兼容演进时使用 |
+| `contract_revision` | 可选 | 兼容演进元数据，不写进 `workflow_code` / `stage_code` / `job_code` |
 | `business_owner` | 建议 | 业务负责人或模块负责人 |
 | `trigger_mode` | 是 | manual / schedule / webhook / cli |
 | `source_channel_code` | 建议 | OpenClaw、CLI、定时任务等来源 |
@@ -99,7 +172,7 @@ flowchart TD
 
 | 内容 | 说明 |
 | --- | --- |
-| stage code | 阶段编码 |
+| `stage_code` | 阶段编码，必须是语义化 snake_case |
 | 进入条件 | 什么状态下进入 |
 | 执行动作 | executor 在该阶段做什么 |
 | 派生 job | 生成哪些 job |
@@ -115,6 +188,15 @@ Stage 是业务阶段，不是代码函数。比如:
 - 飞书写回
 - summary/outbox
 
+Stage 不能用 `Stage 1`、`Stage 2B` 或 adapter 名称表达。下面是推荐写法:
+
+| 不推荐 | 推荐 |
+| --- | --- |
+| `Stage 1: feishu_table_read + selection_table_source_adapter` | `read_selection_rows` |
+| `Stage 2: tiktok_product_request_fetch + fastmoss_product_fetch` | `collect_product_data` |
+| `Stage 2B: tiktok_product_browser_fetch` | `browser_fallback` |
+| `competitor_table_projection_mapper_stage` | `writeback_competitor_rows` |
+
 ### 3.5 Job 设计
 
 每类 job 必须说明:
@@ -123,7 +205,7 @@ Stage 是业务阶段，不是代码函数。比如:
 | --- | --- |
 | `job_code` / `item_code` | handler 路由键 |
 | worker 类型 | `api_worker` / `browser_worker` / `outbox_dispatcher` |
-| Runtime 表 | `api_worker_job` / `task_execution` / 领域 job 表 |
+| Runtime 表 | `api_worker_job` / `task_execution` |
 | business key | 业务定位键 |
 | dedupe key | 去重键 |
 | payload schema | 最小输入 |
@@ -150,6 +232,61 @@ Flow = handler 内部复用的业务过程
 - worker 只根据 `job_code` / `item_code` 找 handler，不理解完整业务流程。
 - handler 可以调用一个或多个 flow，但不能承担父 workflow 的全局编排职责。
 - flow 可以复用，但不能偷偷读写 Runtime 状态推进父任务，除非它明确属于该 handler 的职责。
+
+### 3.7 进程间调度时序图
+
+每个具体 workflow 文档必须包含一张“进程间调度时序图”。这张图用于说明业务从入口进入 Runtime DB 后，如何在 `executor_daemon`、`api_worker`、`browser_worker`、`outbox_dispatcher` 和外部系统之间交接。
+
+必须表达:
+
+- 入口如何创建 `task_request`。
+- `executor_daemon` 在每个关键 stage 派发哪些 `api_worker_job` 或 `task_execution`。
+- `api_worker` / `browser_worker` 如何 claim job，并把 result/status 写回 Runtime DB。
+- request-first / browser-fallback 的分支条件。
+- Fact DB、Feishu、MinIO/object store 的写入发生在哪个 worker 进程里。
+- Reconciler / executor 如何根据 Runtime DB 推进下一 stage 或最终 summary。
+- `notification_outbox` 何时创建，`outbox_dispatcher` 如何发送最终结果。
+
+不应该表达:
+
+- handler 内部每个函数调用。
+- adapter/mapper 的字段级映射细节。
+- 某个外部 API 的每一次 HTTP 请求。
+- Flow 内部的普通业务判断，除非它影响跨进程调度。
+
+通用模板:
+
+```mermaid
+sequenceDiagram
+    participant Entry as Entry
+    participant DB as Runtime DB
+    participant Exec as executor_daemon
+    participant API as api_worker
+    participant Browser as browser_worker
+    participant Feishu as Feishu
+    participant Fact as Fact DB
+    participant Obj as MinIO
+    participant Outbox as outbox_dispatcher
+
+    Entry->>DB: insert task_request(<task_code>)
+    Exec->>DB: claim task_request
+    Exec->>DB: enqueue api_worker_job(<first_job_code>)
+    API->>DB: claim api_worker_job
+    API->>Feishu: optional read / write
+    API->>Fact: optional fact upsert
+    API->>Obj: optional artifact / media write
+    API->>DB: mark job terminal
+    alt browser fallback required
+        Exec->>DB: enqueue task_execution(<item_code>)
+        Browser->>DB: claim task_execution
+        Browser->>Obj: store browser artifacts
+        Browser->>DB: mark browser job terminal
+    end
+    Exec->>DB: reconcile child jobs and advance stage
+    Exec->>DB: finalize task_request and insert notification_outbox
+    Outbox->>DB: claim notification_outbox
+    Outbox->>Entry: send summary
+```
 
 ## 4. 拆分原则
 
@@ -220,17 +357,22 @@ Handler 应按 job 类型拆。
 
 合理的 handler:
 
-- `feishu_table_read_handler`
-- `fastmoss_product_collect_handler`
-- `tiktok_browser_product_fetch_handler`
-- `influencer_author_detail_handler`
-- `feishu_writeback_handler`
+- `feishu_table_read`
+- `fastmoss_product_fetch`
+- `fastmoss_creator_fetch`
+- `tiktok_product_browser_fetch`
+- `feishu_table_write`
 
 不合理的 handler:
 
 - `do_everything_handler`
 - `sync_all_handler`
+- `orchestrate_sync_tk_influencer_pool`
+- `orchestrate_tiktok_fastmoss_product_ingest`
+- `run_sync_tk_influencer_pool`
 - `step1_handler`、`step2_handler` 这种没有业务语义的命名。
+
+`orchestrate_*` / `run_*_workflow` / `run_sync_*` 这类名称表达 workflow 编排入口，不是 handler。它们不能作为 `handler_code`、handler registry key、job handler 文件名或目标 handler contract 出现。目标文档如需说明历史实现，只能放在“当前实现事实 / 兼容入口”说明中，不能放入目标 Job / Handler 映射表。
 
 Handler 必须做到:
 
@@ -267,7 +409,7 @@ Flow 是业务实现复用层，不是调度层。
 | 是否需要逐条知道成功/失败 | 按业务实体拆 job | 可以批量处理 |
 | 是否耗时长或容易卡住 | 拆小并设置 timeout/progress | 可合并 |
 | 是否需要并行 | 拆成多个 job | 可以串行 |
-| 是否需要 browser profile | 放 `task_execution` 给 browser worker | 放 API/领域 job |
+| 是否需要 browser profile | 放 `task_execution` 给 browser worker | 放 `api_worker_job` |
 | 是否必须严格顺序 | 用 stage cursor 或父子 job 控制 | fan-out 并发 |
 | 重复执行是否会产生重复外部数据 | 拆分或补幂等键 | 可以复用 retry |
 
@@ -281,16 +423,16 @@ Flow 是业务实现复用层，不是调度层。
 Task:
   sync_xxx_table
 
-Stage 1:
+read_source_rows:
   table_read job 读取候选记录
 
-Stage 2:
+dispatch_entity_jobs:
   每条记录生成 entity job
 
-Stage 3:
+finalize_entity_jobs:
   finalizer 汇总 entity jobs
 
-Stage 4:
+ready_for_summary:
   summary + outbox
 ```
 
@@ -412,7 +554,7 @@ docs/arch/workflow-<business-name>-design.md
 
 模板:
 
-```markdown
+````markdown
 # <业务名> Workflow 设计
 
 日期: YYYY-MM-DD
@@ -431,13 +573,14 @@ docs/arch/workflow-<business-name>-design.md
 ## 3. Workflow
 
 - workflow_code:
+- contract_revision: optional metadata, not part of code names
 - stages:
 - stage_cursor:
 - terminal statuses:
 
 ## 4. Stage 设计
 
-| Stage | 进入条件 | 动作 | 派生 Job | 退出条件 | 失败策略 |
+| Stage code | 进入条件 | 动作 | 派生 Job | 退出条件 | 失败策略 |
 | --- | --- | --- | --- | --- | --- |
 
 ## 5. Job 设计
@@ -447,19 +590,48 @@ docs/arch/workflow-<business-name>-design.md
 
 ## 6. Handler 与 Flow 边界
 
-## 7. 数据写入
+## 7. 进程间调度时序图
+
+```mermaid
+sequenceDiagram
+    participant Entry as Entry
+    participant DB as Runtime DB
+    participant Exec as executor_daemon
+    participant API as api_worker
+    participant Browser as browser_worker
+    participant Feishu as Feishu
+    participant Fact as Fact DB
+    participant Obj as MinIO
+    participant Outbox as outbox_dispatcher
+
+    Entry->>DB: insert task_request(<task_code>)
+    Exec->>DB: claim task_request
+    Exec->>DB: enqueue api_worker_job(<job_code>)
+    API->>DB: claim api_worker_job
+    API->>DB: mark job terminal
+    alt browser fallback required
+        Exec->>DB: enqueue task_execution(<item_code>)
+        Browser->>DB: claim task_execution
+        Browser->>DB: mark browser job terminal
+    end
+    Exec->>DB: finalize task_request and insert notification_outbox
+    Outbox->>DB: claim notification_outbox
+    Outbox->>Entry: send summary
+```
+
+## 8. 数据写入
 
 - Runtime DB:
 - Fact DB:
 - Feishu:
 - MinIO/object store:
 
-## 8. 状态收敛
+## 9. 状态收敛
 
-## 9. 失败兜底
+## 10. 失败兜底
 
-## 10. 观测与 artifact
-```
+## 11. 观测与 artifact
+````
 
 ## 10. 新增 Workflow 评审清单
 
@@ -473,6 +645,7 @@ docs/arch/workflow-<business-name>-design.md
 - 是否定义了 retry、timeout、progress、error_type。
 - 是否定义了 dedupe key 和外部写入幂等。
 - 是否明确 Runtime DB 表和 Fact DB 表。
+- 是否包含进程间调度时序图，并且图中没有展开 handler 内部函数细节。
 - 是否明确父子 job 如何收敛。
 - 是否明确部分成功和最终 summary 规则。
 - 是否明确 outbox 事件和通知内容。
@@ -499,5 +672,4 @@ docs/arch/workflow-<business-name>-design.md
 - 新增业务不应新增一个新的 worker 类型，除非它代表新的执行能力。
 - 新增业务通常只需要新增 workflow、job_code、handler、flow。
 - `api_worker` / `browser_worker` 保持业务无关，只扩展 handler registry。
-- 领域 job 表只有在通用 `api_worker_job` 无法表达父子收敛、领域计数或高频查询时才新增。
-
+- 新业务流程默认不得新增业务专用 job 表；父子收敛、领域计数和高频查询优先通过 `api_worker_job` 的通用父子字段、业务键、payload/checkpoint、必要的只读投影或索引解决。

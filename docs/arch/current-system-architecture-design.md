@@ -151,6 +151,292 @@ flowchart TD
 - `fastmoss_session_cookie_cache` 物理上在 Runtime Postgres 中，逻辑上属于运行辅助缓存。
 - 飞书是外部业务视图，不作为内部任务状态和事实主档的数据库。
 
+## 4.2 Schema / Contract 安全边界
+
+架构文档可以随代码实现同步，但 Runtime DB schema、Fact DB schema、workflow contract 和 handler contract 是受控契约，不属于普通业务代码可以自由改写的实现细节。
+
+生产环境必须满足:
+
+- `executor_daemon`、`api_worker`、`browser_worker`、`outbox_dispatcher`、`Watchdog Scanner` 使用运行账号连接数据库。
+- 运行账号只允许读写数据，不允许 `CREATE TABLE`、`ALTER TABLE`、`DROP TABLE`、`CREATE INDEX`。
+- schema 变更只允许通过 migration 流程使用 migration 账号执行。
+- 应用启动时可以检查 schema version；版本不匹配时应 fail fast，不继续 claim job。
+- workflow / handler contract 变更必须保持向后兼容；破坏性变更需要 `contract_revision`、adapter、migration 或旧 job 清理策略，不能把 `v1` / `v2` 写进稳定 code 名称。
+
+这条边界的目的不是让文档不能随代码更新，而是保证“代码执行任务”与“变更数据库结构 / contract”分属不同权限和发布流程。
+
+```mermaid
+flowchart LR
+    A["CI/CD 或人工发布<br/>migration_user"] --> B["Migration<br/>CREATE / ALTER / DROP / INDEX"]
+    B --> C["Postgres<br/>Runtime DB / Fact DB schema"]
+
+    D["daemon / worker / dispatcher / watchdog<br/>runtime_user"] --> E["SELECT / INSERT / UPDATE / DELETE"]
+    E --> C
+
+    D -.-> F["禁止 DDL<br/>CREATE / ALTER / DROP"]
+```
+
+## 4.3 Feishu 输入到 Feishu 回写的数据流转
+
+一个从飞书输入开始、最后把执行结果回写飞书的完整链路如下。不同 workflow 可以裁剪其中某些阶段，例如单商品 direct ingest 可以跳过飞书表读取，但不能改变 Runtime DB 作为执行状态事实来源、Fact DB 作为业务事实沉淀层、飞书作为业务投影视图的边界。
+
+```mermaid
+flowchart TD
+    A["飞书业务表输入<br/>表 URL / 待处理行 / 人工状态"] --> B["OpenClaw / Skill / CLI<br/>提交顶层 Task"]
+    B --> C["Runtime DB<br/>task_request = pending"]
+
+    C --> D["executor_daemon<br/>claim task / 读取 workflow / 推进 stage"]
+    D --> E{"当前 stage 需要哪些 job?"}
+
+    E --> F["api_worker_job<br/>feishu_table_read"]
+    F --> G["api_worker + supervisor<br/>通用飞书读取能力"]
+    G --> H["Table Source Adapter<br/>表级过滤 / 字段解析 / 候选记录"]
+    H --> I["Runtime DB<br/>保存 stage cursor / fan-out 输入"]
+
+    E --> J["api_worker_job<br/>TikTok request / FastMoss product / creator / shop / video"]
+    J --> K["api_worker + supervisor<br/>request-first 数据采集"]
+    K --> L{"request 是否有效?"}
+    L -->|有效| M["Normalized facts result"]
+    L -->|失效且允许 fallback| N["task_execution<br/>browser fallback job"]
+    N --> O["browser_worker + supervisor<br/>页面 / network / HTML 采集"]
+    O --> M
+
+    M --> P["Fact DB<br/>主体 / 关系 / latest / observation / raw link upsert"]
+    M --> Q["MinIO / Object Store<br/>截图 / HTML / raw JSON / 图片 / artifact"]
+    Q --> R["Runtime DB<br/>artifact_object 索引"]
+
+    P --> S["Business Mapper / Projection Mapper<br/>按 workflow 生成飞书字段"]
+    I --> S
+    S --> T["api_worker_job<br/>feishu_table_write"]
+    T --> U["api_worker + supervisor<br/>飞书写回 / 幂等 update 或 create"]
+    U --> V["飞书业务表<br/>运营可见结果 / 状态 / record_id"]
+
+    T --> W["Runtime DB<br/>job success / failed / retry_wait"]
+    W --> X["Reconciler<br/>父子任务收敛"]
+    X --> Y{"workflow 是否完成?"}
+    Y -->|否| D
+    Y -->|是| Z["executor_daemon<br/>生成 summary / result"]
+    Z --> AA["notification_outbox<br/>最终消息"]
+    AA --> AB["outbox_dispatcher<br/>通知发送 / 重试"]
+    AB --> AC["飞书会话或业务表<br/>最终执行结果返回"]
+
+    AD["Watchdog Scanner<br/>lease / heartbeat / progress 兜底"] --> C
+    AD --> F
+    AD --> J
+    AD --> N
+    AD --> AA
+```
+
+数据落点分工:
+
+| 层 | 保存内容 | 不保存内容 |
+| --- | --- | --- |
+| Runtime DB | task/job/outbox 状态、lease、retry、stage cursor、artifact index | 商品/达人/视频事实主档 |
+| Fact DB | 商品、达人、视频、店铺、关系、指标、raw evidence link | worker claim、retry、heartbeat |
+| MinIO / local object store | 大文件、截图、HTML、raw JSON、图片、运行产物 | 任务状态真相 |
+| Feishu | 业务输入、运营投影字段、人工协作状态、最终结果可见面 | 内部执行状态唯一真相 |
+
+## 4.4 模块与进程间通信时序图
+
+以下时序图描述重构后的目标通信口径。当前代码中部分路径仍通过集中 flow 分支完成，但重构后的进程间通信应统一收敛到 Runtime DB、handler registry、Reconciler 和 outbox。
+
+### 4.4.1 顶层任务提交与 executor 编排
+
+```mermaid
+sequenceDiagram
+    participant U as Entry Client
+    participant Entry as Task Entry
+    participant DB as Runtime DB
+    participant Exec as executor_daemon
+
+    U->>Entry: submit task_code + payload
+    Entry->>DB: insert task_request(status=pending)
+    Entry-->>U: return request_id
+
+    loop executor runloop
+        Exec->>DB: claim pending / ready_for_summary task_request
+        DB-->>Exec: task_request + current_stage + stage_cursor
+        Exec->>Exec: load WorkflowDefinition(task_code)
+        Exec->>DB: update status=running, heartbeat, lease
+
+        alt stage needs worker jobs
+            Exec->>DB: insert api_worker_job / task_execution
+            Exec->>DB: update task_request status=waiting_children
+        else stage ready for summary
+            Exec->>DB: aggregate results and write summary_json/result_json
+            Exec->>DB: insert notification_outbox
+            Exec->>DB: mark task_request success / partial_success / failed
+        end
+    end
+```
+
+通信边界:
+
+- Entry 只负责创建顶层 `task_request`，不直接执行长流程。
+- executor 只通过 Runtime DB 派发 job 和推进 stage。
+- executor 不等待 worker 内存 callback，父子状态收敛依赖 Reconciler 读取 Runtime DB。
+
+### 4.4.2 worker claim、handler 执行与 Reconciler 收敛
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant DB as Runtime DB
+    participant S as Execution Supervisor
+    participant R as Handler Registry
+    participant H as Handler
+    participant X as External Systems
+    participant Rec as Reconciler
+
+    loop worker runloop
+        W->>DB: claim executable job
+        DB-->>W: job payload + job_code / item_code
+        W->>S: supervise(job)
+        S->>R: resolve handler(job_code / item_code)
+        R-->>S: handler
+        S->>H: execute(payload)
+        H->>DB: report progress(progress_stage, last_progress_at)
+        H->>X: Feishu / TikTok / FastMoss / Fact DB / MinIO
+        X-->>H: external result
+        H-->>S: result / retryable error / fatal error
+
+        alt success
+            S->>DB: mark job success + result_json
+        else retryable error
+            S->>DB: mark retry_wait + next available_at
+        else fatal error
+            S->>DB: mark failed / hard_failed
+        end
+
+        W->>Rec: trigger reconcile(request_id)
+        Rec->>DB: aggregate child job terminal states
+        Rec->>DB: update parent task stage / ready_for_summary
+    end
+```
+
+通信边界:
+
+- worker 不直接理解完整 workflow，只处理 job claim 和 supervise。
+- handler 可以调用 flow、adapter、mapper，但不能偷偷推进父 task。
+- Reconciler 只看 Runtime DB 当前状态，重复执行必须幂等。
+
+### 4.4.3 TikTok request-first / browser-fallback 时序
+
+```mermaid
+sequenceDiagram
+    participant Exec as executor_daemon
+    participant DB as Runtime DB
+    participant API as api_worker
+    participant Browser as browser_worker
+    participant Fact as Fact DB
+    participant Obj as Object Store
+    participant Rec as Reconciler
+
+    Exec->>DB: insert api_worker_job(tiktok_product_request_fetch)
+    API->>DB: claim tiktok_product_request_fetch
+    API->>API: request / HTTP / known endpoint fetch
+
+    alt request result valid
+        API->>DB: mark success(normalized_product_result)
+        API->>DB: insert api_worker_job(fact_bundle_upsert)
+    else request says fallback_required
+        API->>DB: mark success(fallback_required=true, reason)
+        Rec->>DB: advance stage to browser_fallback
+        Exec->>DB: insert task_execution(tiktok_product_browser_fetch)
+        Browser->>DB: claim browser fallback job
+        Browser->>Obj: store html / screenshot / network artifact
+        Browser->>DB: insert artifact_object index
+        Browser->>DB: mark success(normalized_product_result)
+        Browser->>DB: insert api_worker_job(fact_bundle_upsert)
+    else non-recoverable input error
+        API->>DB: mark failed / skipped(no browser fallback)
+    end
+
+    API->>DB: claim fact_bundle_upsert
+    API->>Fact: upsert products / relations / observations / raw links
+    API->>DB: mark fact_bundle_upsert success
+    Rec->>DB: advance workflow stage
+```
+
+通信边界:
+
+- browser fallback 只能由 `fallback_required=true` 或等价 result 触发。
+- request handler 和 browser handler 必须输出同一种 normalized product result。
+- `fact_bundle_upsert` 不关心结果来自 request 还是 browser。
+
+### 4.4.4 飞书投影写回与 outbox 分发
+
+```mermaid
+sequenceDiagram
+    participant Exec as executor_daemon
+    participant DB as Runtime DB
+    participant API as api_worker
+    participant Map as Projection Mapper
+    participant FS as Feishu API
+    participant Out as outbox_dispatcher
+
+    Exec->>DB: stage ready for writeback
+    Exec->>DB: insert api_worker_job(feishu_table_write)
+    API->>DB: claim feishu_table_write
+    API->>Map: build projection from Runtime result + Fact latest
+    Map-->>API: target table + record id / unique key + fields
+    API->>FS: update record or idempotent create
+    FS-->>API: record_id + writeback result
+    API->>DB: mark writeback success + target_record_id
+
+    Exec->>DB: claim ready_for_summary task_request
+    Exec->>DB: write summary_json/result_json
+    Exec->>DB: insert notification_outbox(dedupe_key)
+    Out->>DB: claim pending outbox
+    Out->>FS: send final message / update final status
+    alt send success
+        Out->>DB: mark outbox sent
+    else send failed retryably
+        Out->>DB: mark retry_wait(next_retry_at)
+    end
+```
+
+通信边界:
+
+- 飞书写回是业务投影，不是 Fact DB 主档。
+- projection mapper 决定字段映射，`feishu_table_write` handler 只负责可靠写入。
+- outbox 分发失败不应反向改变已完成的业务 task 状态。
+
+### 4.4.5 Watchdog 兜底时序
+
+```mermaid
+sequenceDiagram
+    participant WD as Watchdog Scanner
+    participant DB as Runtime DB
+    participant Rec as Reconciler
+    participant PM as Process Registry
+
+    loop watchdog tick
+        WD->>DB: scan running / sending / waiting_children records
+
+        alt lease expired
+            WD->>DB: mark lease_expired to retry_wait or failed
+        else hard timeout exceeded
+            WD->>PM: optional kill local child process when known
+            WD->>DB: mark timeout to retry_wait or failed
+        else stale progress
+            WD->>PM: optional kill local child process when known
+            WD->>DB: mark stale_progress to retry_wait or failed
+        else parent waiting but children terminal
+            WD->>Rec: trigger reconcile(request_id)
+            Rec->>DB: move task_request to ready_for_summary
+        else outbox sending expired
+            WD->>DB: mark outbox retry_wait / failed
+        end
+    end
+```
+
+通信边界:
+
+- Watchdog 的核心能力是修复 Runtime DB 状态，不替代 Supervisor 的执行期 hard kill。
+- 如果没有子进程隔离，Watchdog 可以让任务进入 retry / failed，但不能保证原执行体已经被杀掉。
+- 子进程隔离落地后，Watchdog 可以通过本机 supervisor/process registry 尝试 kill 已知 child process。
+
 ## 5. executor_daemon
 
 `executor_daemon` 物理上是 runloop，逻辑上是 workflow state machine / orchestrator。
@@ -195,7 +481,7 @@ executor 不应该负责:
 
 ```text
 task_request.status = waiting_children
-api_worker_job / task_execution / domain job = pending / running / retry_wait / success / failed
+api_worker_job / task_execution = pending / running / retry_wait / success / failed
 ```
 
 Reconciler 负责判断:
@@ -270,9 +556,9 @@ Handler = 处理某类 Job 的代码函数
 同一个 handler 可以处理很多 job:
 
 ```text
-author_detail_handler(job_for_author_A)
-author_detail_handler(job_for_author_B)
-author_detail_handler(job_for_author_C)
+fastmoss_creator_fetch(job_for_creator_A)
+fastmoss_creator_fetch(job_for_creator_B)
+fastmoss_creator_fetch(job_for_creator_C)
 ```
 
 一个 job 可以包含多个 API 请求和多个内部步骤，但必须满足:
@@ -324,8 +610,8 @@ author_detail_handler(job_for_author_C)
 ```text
 一个 table_read job 读取候选记录。
 多个 product job 处理商品级 fan-out。
-多个 author job 处理达人详情和写回。
-finalizer job 汇总一个 product 下的 author jobs。
+多个 creator detail job 处理达人详情和写回。
+finalizer job 汇总一个 product 下的 creator detail jobs。
 task reconciler 汇总整个 task。
 ```
 
@@ -481,14 +767,14 @@ Job 可能在以下场景被重复执行:
 
 示例:
 
-Author Job:
+Creator detail job:
 
 ```text
-1. claim author job -> running
-2. 拉达人详情
-3. 写飞书达人表
-4. 写事实库
-5. 标记 author job success
+1. claim creator detail job -> running
+2. 通过 fastmoss_creator_fetch 拉达人详情
+3. 通过 feishu_table_write 写飞书达人表
+4. 通过 fact_bundle_upsert 写事实库
+5. 标记 creator detail job success
 ```
 
 如果第 3 步成功但第 5 步失败，重试时可能重复写飞书。因此需要使用:
@@ -532,7 +818,24 @@ Author Job:
 - supervisor 父进程负责 kill 超时 child。
 - 解决业务函数不返回、HTTP 卡死、浏览器动作 hang 住的问题。
 
-### 15.5 第五阶段: 并发安全 claim 与多 worker 扩容
+### 15.5 远期可选阶段: 并发安全 claim 与多 worker 扩容
+
+当前业务阶段暂不把多 worker 横向扩容作为近期建设目标。更高优先级是:
+
+- Watchdog Scanner 兜底 running / stale / timeout / outbox 卡住。
+- Execution Supervisor 统一 heartbeat、progress、retry 和错误分类。
+- 子进程隔离与 hard timeout，解决 handler 真实卡死无法退出的问题。
+
+因此本阶段只作为后续吞吐量提升或多机部署时的扩展方向，不阻塞当前架构落地。
+
+触发条件:
+
+- API worker 单实例吞吐成为瓶颈。
+- 任务量增长到需要多个 worker 并行消费同一类 job。
+- 需要多机部署或多进程常驻消费。
+- browser profile / resource lease 需要更细的并发隔离。
+
+届时再考虑:
 
 - 使用 Postgres 原子 claim。
 - 可选实现 `FOR UPDATE SKIP LOCKED` 或 `UPDATE ... RETURNING`。

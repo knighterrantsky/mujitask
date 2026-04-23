@@ -27,6 +27,7 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 - `docs/README.md` 是文档总入口。
 - `docs/business` 只放需求和业务规则。
 - `docs/arch` 是当前架构事实来源。
+- Runtime DB schema、Fact DB schema、workflow contract、handler contract 是受控契约，不能随普通业务代码自由破坏。
 - framework contract 不再从本仓库文档读取。
 
 ## 2. 当前正式业务入口
@@ -44,11 +45,10 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 
 - `tiktok_product_link_cleanup`
 - `feishu_pending_rows_scan`
-- `feishu_single_row_update`
-- `feishu_seed_row_insert`
-- `fastmoss_keyword_candidate_discovery`
 - `tiktok_feishu_single_sync`
 - `fastmoss_login_check`
+
+说明：竞品表刷新和关键词竞品入库的目标重构路径统一通过 `feishu_table_read` / `feishu_table_write` / `fastmoss_product_search` 和商品事实采集 handler 组合完成；关键词只是 `fastmoss_product_search` 的一种输入 filter。
 
 ## 3. 推荐部署方式
 
@@ -226,13 +226,11 @@ automation-business-scaffold-run run \
 | `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
 | `docs/` | 项目文档地图 |
 
-不建议在业务开发中改动：
+治理边界：
 
-- `.platform/`
-- `AGENT.MD`
-- framework 依赖内部代码
-
-framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
+- `.platform/` 是平台管理规则，普通业务开发不直接修改。
+- `AGENT.MD` 是仓库级协作规则，只有明确的仓库治理变更才修改。
+- framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
 ## 8. 配置边界
 
@@ -256,6 +254,27 @@ framework 的接口和 contract 以 `automation-framework` 自身文档为准，
 - `BUSINESS_EXECUTION_CONTROL_HEARTBEAT_INTERVAL_SECONDS`
 
 详细 storage 规则见 [docs/arch/storage-architecture-design.md](./docs/arch/storage-architecture-design.md)。
+
+### 8.1 数据库和 Contract 安全边界
+
+生产运行进程不能拥有修改数据库结构的权限。
+
+推荐拆分：
+
+| 账号 | 用途 | 权限 |
+| --- | --- | --- |
+| `mujitask_runtime_user` | executor / worker / dispatcher / watchdog 正常运行 | `SELECT / INSERT / UPDATE / DELETE` |
+| `mujitask_migration_user` | 发布 schema migration | `CREATE / ALTER / DROP / CREATE INDEX` |
+| `mujitask_readonly_user` | 排障、报表、只读分析 | `SELECT` |
+
+运行规则：
+
+- Runtime DB schema 和 Fact DB schema 变更必须走 migration。
+- 生产 daemon / worker 启动时只做 schema version 校验，版本不匹配应 fail fast。
+- 不允许生产任务消费路径自动 `CREATE TABLE`、`ALTER TABLE` 或 `DROP TABLE`。
+- workflow / handler payload/result/error contract 需要保持兼容；破坏性变更要通过 `contract_revision`、adapter、migration 或清理旧 job 处理，不能把 `v1` / `v2` 写进稳定 code 名称。
+
+详细规则见 [docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
 
 ## 9. 验证
 
