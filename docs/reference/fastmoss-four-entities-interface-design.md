@@ -1,5 +1,7 @@
 # FastMoss 四主体接口与关系设计
 
+> 状态: Reference 文档。事实库正式 schema 以 [../arch/fact-db-schema-design.md](../arch/fact-db-schema-design.md) 为准；本文保留为 FastMoss 接口和建模参考。
+
 更新时间：`2026-04-20`
 
 本文基于 Roxy 浏览器真实打开以下 FastMoss 页面后抓到的接口请求，整理商品、达人、视频、店铺四类主体的接口结构和落表关系设计。

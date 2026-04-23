@@ -1,8 +1,10 @@
 # FastMoss 可视化分析
 
+> 状态: Reference 文档。本文保留 FastMoss 页面图表、接口字段和落表建议分析；正式需求口径仍以 `docs/business` 为准。
+
 更新时间：`2026-04-17`
 
-本文单独记录 FastMoss 商品详情页里常用图表的渲染逻辑、数据源接口、字段映射和落表建议。接口字段的更完整说明见 [fastmoss已知接口.md](./fastmoss已知接口.md)。
+本文单独记录 FastMoss 商品详情页里常用图表的渲染逻辑、数据源接口、字段映射和落表建议。接口字段的更完整说明见 [fastmoss-known-interfaces.md](./fastmoss-known-interfaces.md)。
 
 ## 1. 总体结论
 
@@ -636,3 +638,32 @@ const option = {
 - `Other` 是聚合项，不对应单一 SKU。
 - `d_type` 不同接口支持程度可能不同；上线前需要用真实商品至少验证 `7`, `28`, `90` 三个窗口。
 - 页面 ECharts 使用打包后的模块，不一定暴露 `window.echarts`，但可按 ECharts option 复刻渲染。
+
+## 12. 当前正式实现
+
+正式渲染入口已经沉淀为：
+
+```text
+src/automation_business_scaffold/infrastructure/fastmoss/visualization_renderer.py
+```
+
+核心类：
+
+```python
+FastMossVisualizationRenderer
+```
+
+职责边界：
+
+- 输入：FastMoss `/api/goods/v3/overview` 的 `data` payload、`/api/goods/v3/productSku` 的 `data` payload。
+- 输出：三张 PNG，固定命名为 `marketing_strategy.png`、`overview_trend.png`、`sku_analysis.png`。
+- 渲染：Python 类负责稳定接口、入参校验、manifest、错误处理；内置 Node renderer 负责 `ECharts SVG SSR -> sharp -> PNG`。
+- 依赖：运行环境需要 Node.js，以及可被 `RENDERER_PACKAGE_JSON` 指向的 `echarts`、`sharp` 依赖包。
+
+`tiktok_fastmoss_product_ingest` 已预留显式开关：
+
+```text
+fastmoss_visualization_enabled=true
+```
+
+开启后 API worker 可在 FastMoss API 拉取后生成三张 PNG；默认不开启，避免普通采集任务因为本地 Node/ECharts 依赖缺失而阻塞。

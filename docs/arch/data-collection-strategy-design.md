@@ -2,14 +2,16 @@
 
 更新时间：`2026-04-21`
 
+状态：架构策略文档。本文用于指导采集频率、窗口数据和事实沉淀策略；当前客户需求以 `docs/business` 为准，当前 Fact DB schema 以 [fact-db-schema-design.md](./fact-db-schema-design.md) 为准。
+
 本文基于当前已验证的 TikTok PDP 和 FastMoss 商品/达人/视频/店铺接口，定义一套更节省资源的数据采集策略。核心目标是：每天只抓真正必要的原子事实，窗口结构数据按商品价值和业务节点采集，避免把 `7天 / 28天 / 90天` 窗口重复请求和重复保存成资源浪费。
 
 相关文档：
 
-- [fastmoss已知接口.md](./fastmoss已知接口.md)
-- [fastmoss可视化分析.md](./fastmoss可视化分析.md)
-- [19-FastMoss四主体接口与关系设计.md](./19-FastMoss四主体接口与关系设计.md)
-- [20-事实数据库ERD与表结构设计.md](./20-事实数据库ERD与表结构设计.md)
+- [../reference/fastmoss-known-interfaces.md](../reference/fastmoss-known-interfaces.md)
+- [../reference/fastmoss-visualization-analysis.md](../reference/fastmoss-visualization-analysis.md)
+- [../reference/fastmoss-four-entities-interface-design.md](../reference/fastmoss-four-entities-interface-design.md)
+- [fact-db-schema-design.md](./fact-db-schema-design.md)
 
 ## 1. 核心结论
 

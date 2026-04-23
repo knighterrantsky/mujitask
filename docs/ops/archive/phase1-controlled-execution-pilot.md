@@ -1,5 +1,7 @@
 # Phase 1 受控执行 Pilot 说明
 
+> 状态: Ops archive。本文保留历史 Pilot/runbook；当前 Runtime 和 artifact 设计以 [../../arch/README.md](../../arch/README.md) 为准。
+
 更新时间：`2026-04-12`
 
 ## 1. 目的
@@ -12,7 +14,7 @@
 - 支持 `artifact_object` 本地索引
 
 如果要按“可交付阶段”执行部署、验收和回退，请继续参考
-[15-Phase1-可交付验收与回退说明.md](./15-Phase1-%E5%8F%AF%E4%BA%A4%E4%BB%98%E9%AA%8C%E6%94%B6%E4%B8%8E%E5%9B%9E%E9%80%80%E8%AF%B4%E6%98%8E.md)。
+[../phase1-acceptance-and-rollback.md](../phase1-acceptance-and-rollback.md)。
 
 当前实现仍然是 **兼容式升级**：
 
@@ -37,7 +39,6 @@ feishu_single_row_update
 - `control_action`
 - `execution_control_enabled`
 - `execution_control_db_url`
-- `execution_control_db_path`
 - `execution_control_artifact_root`
 - `execution_control_artifact_bucket`
 - `execution_requested_by`

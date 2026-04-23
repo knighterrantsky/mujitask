@@ -1,5 +1,7 @@
 # Phase 1 可交付验收与回退说明
 
+> 状态: Ops 历史文档。本文保留 Phase 1 验收与回退基线；当前系统全貌以 [../arch/README.md](../arch/README.md) 为准。
+
 更新时间：`2026-04-14`
 
 ## 1. 本文目的
@@ -10,18 +12,19 @@
 
 - 当前仓库已经继续推进并完成了 Phase 2 的对象存储接入与 Phase 3 的实体快照沉淀。
 - 因此本文件应视为“Phase 1 历史交付基线”，不是当前系统全貌。
-- 当前正式运行形态请以 [03-部署文档.md](./03-%E9%83%A8%E7%BD%B2%E6%96%87%E6%A1%A3.md)、[12-系统架构升级方案.md](./12-%E7%B3%BB%E7%BB%9F%E6%9E%B6%E6%9E%84%E5%8D%87%E7%BA%A7%E6%96%B9%E6%A1%88.md)、[13-系统升级开发目标与推进计划.md](./13-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E5%BC%80%E5%8F%91%E7%9B%AE%E6%A0%87%E4%B8%8E%E6%8E%A8%E8%BF%9B%E8%AE%A1%E5%88%92.md)、[16-系统升级状态流转图与进程交互时序图.md](./16-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E7%8A%B6%E6%80%81%E6%B5%81%E8%BD%AC%E5%9B%BE%E4%B8%8E%E8%BF%9B%E7%A8%8B%E4%BA%A4%E4%BA%92%E6%97%B6%E5%BA%8F%E5%9B%BE.md) 和 [17-系统升级数据库结构设计表.md](./17-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E6%95%B0%E6%8D%AE%E5%BA%93%E7%BB%93%E6%9E%84%E8%AE%BE%E8%AE%A1%E8%A1%A8.md) 为准。
+- 当前正式运行形态请以 [deployment.md](./deployment.md) 和 [../arch/README.md](../arch/README.md) 为准。
 
 补充说明：
-当前 Phase 1/2 运行时不是“只执行一次 CLI 命令”就结束，而是依赖 3 个常驻守护进程：
+当前 Phase 1/2 运行时不是“只执行一次 CLI 命令”就结束，而是依赖 4 个常驻守护进程：
 
 - `executor_daemon`
+- `api_worker_daemon`
 - `browser_runloop`
 - `outbox_dispatcher`
 
-如果部署文档里不明确写出这 3 个常驻进程，后续很容易出现“任务能提交，但无人消费”的误判。
+如果部署文档里不明确写出这 4 个常驻进程，后续很容易出现“任务能提交，但无人消费”的误判。
 
-交付口径对应 [13-系统升级开发目标与推进计划.md](./13-%E7%B3%BB%E7%BB%9F%E5%8D%87%E7%BA%A7%E5%BC%80%E5%8F%91%E7%9B%AE%E6%A0%87%E4%B8%8E%E6%8E%A8%E8%BF%9B%E8%AE%A1%E5%88%92.md) 中的 3 类要求：
+Phase 1 历史交付口径包含 3 类要求：
 
 - 代码交付物
 - 数据交付物
@@ -85,13 +88,7 @@ export BUSINESS_EXECUTION_CONTROL_DB_URL='postgresql+psycopg://postgres:postgres
 - `resource_lease`
 - `artifact_object`
 
-如果没有配置 `BUSINESS_EXECUTION_CONTROL_DB_URL`，系统仍会回退到：
-
-```text
-runtime/execution_control/control_plane.sqlite3
-```
-
-这条 SQLite 路径保留给本地开发和应急回退，不作为正式交付数据库。
+必须配置 `BUSINESS_EXECUTION_CONTROL_DB_URL`。运行时不再提供本地文件数据库兜底，避免 daemon 误连到临时控制面。
 
 ## 5. 标准部署流程
 
@@ -127,9 +124,10 @@ bash scripts/execution_control/run_alembic_upgrade.sh
 
 ### 5.4 启动 executor
 历史上 Phase 1 只强调过单个 `executor_daemon`。
-按当前实现，正式部署时应同时启动 3 个常驻进程：
+按当前实现，正式部署时应同时启动 4 个常驻进程：
 
 - 顶层任务推进：`executor_daemon`
+- API / 网络 / I/O job 消费：`api_worker_daemon`
 - 浏览器叶子任务消费：`browser_runloop`
 - 最终通知发送：`outbox_dispatcher`
 
@@ -163,13 +161,21 @@ bash scripts/execution_control/run_executor_daemon.sh --once
 
 ### 5.5 推荐部署方式：launchd
 
-在 macOS 真机环境，推荐用 `launchd` 托管这 3 个守护进程，而不是手工在终端里常驻。
+在 macOS 真机环境，推荐用 `launchd` 托管这 4 个守护进程，而不是手工在终端里常驻。
 
 项目内已提供：
 
 - 模板目录：[config/deployment/launchd](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/config/deployment/launchd)
 - 启动包装脚本：[run_launchd_agent.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/run_launchd_agent.sh:1)
 - 安装脚本：[install_launch_agents.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/install_launch_agents.sh:1)
+
+本地开发机完整测试建议直接使用项目配置的 Postgres：
+
+```bash
+scripts/execution_control/run_local_postgres_tests.sh
+```
+
+该脚本会读取 `scripts/execution_control/executor.local.env`，并让测试 fixture 在当前 Postgres 中创建临时 schema。
 
 标准安装命令：
 
@@ -205,6 +211,8 @@ launchctl print gui/$(id -u)/com.happyzhao.mujitask.executor-daemon
 
 - `executor_daemon.launchd.stdout.log`
 - `executor_daemon.launchd.stderr.log`
+- `api_worker_daemon.launchd.stdout.log`
+- `api_worker_daemon.launchd.stderr.log`
 - `browser_runloop.launchd.stdout.log`
 - `browser_runloop.launchd.stderr.log`
 - `outbox_dispatcher.launchd.stdout.log`
@@ -265,7 +273,7 @@ automation-business-scaffold-run run \
 - `notification_outbox` 发送中断后，超时后会回收到 `retry_wait`
 - `request_id -> execution_id -> run_id` 可在数据库回查
 - daemon 执行完成后可查询到 `artifact_object`
-- 3 个守护进程由 `launchd` 托管后，进程退出会被自动拉起
+- 4 个守护进程由 `launchd` 托管后，进程退出会被自动拉起
 
 ### 7.3 业务验收
 
@@ -277,7 +285,7 @@ automation-business-scaffold-run run \
 
 如果 Phase 1 上线后需要快速回退，按下面顺序做：
 
-1. 停掉 3 个守护进程
+1. 停掉 4 个守护进程
 2. 停止给 skill/CLI 传 `control_action` 与 `execution_control_*` 参数
 3. 清空或移除 `BUSINESS_EXECUTION_CONTROL_DB_URL`
 4. 恢复到原同步直跑方式

@@ -1,11 +1,14 @@
 # 部署文档
 
+> 状态: Ops 文档。本文是当前部署说明，部署和回退材料不再放在 `docs/business`。
+
 更新时间：`2026-04-14`
 
 本文件描述当前可运行版本的真实部署方式。当前正式运行形态已经不是“部署一个 skill 然后手工在终端里跑脚本”，而是：
 
 - Agent skill 负责提交顶层任务
 - `executor_daemon` 负责推进顶层任务
+- `api_worker_daemon` 负责网络/API 异步 job
 - `browser_runloop` 负责串行消费浏览器叶子任务
 - `outbox_dispatcher` 负责发送最终通知
 - `Postgres` 负责控制状态
@@ -19,9 +22,9 @@
 
 1. 目标 agent 可以识别并调用 `mujitask-tiktok-feishu-sync` skill。
 2. skill 可以同步提交顶层任务，并立即返回 `request_id`。
-3. `Postgres` 中可以看到 `task_request / task_execution / resource_lease / notification_outbox / artifact_object`。
+3. `Postgres` 中可以看到 `task_request / task_execution / api_worker_job / resource_lease / notification_outbox / artifact_object`。
 4. `MinIO` 中可以看到运行产物对象。
-5. `launchd` 托管的 3 个守护进程可以持续消费任务。
+5. `launchd` 托管的 4 个守护进程可以持续消费任务。
 6. 真实飞书任务可以收到最终汇总通知。
 
 ## 2. 当前支持范围
@@ -39,6 +42,7 @@
 | --- | --- | --- |
 | Agent skill | 意图识别、参数提取、顶层任务提交 | 不负责任务主编排 |
 | `executor_daemon` | 推进顶层 `task_request` | 负责 cleanup / scan / summary / outbox 创建 |
+| `api_worker_daemon` | 消费 API worker job | 负责 TikTok requests、FastMoss HTTP、MinIO 上传、事实入库、达人池 product/author/finalizer job |
 | `browser_runloop` | 消费浏览器叶子任务 | 按 `resource_code` 串行 |
 | `outbox_dispatcher` | 发送最终通知 | 支持重试和恢复 |
 | `Postgres` | 控制面数据库 | 任务、执行、租约、outbox、实体快照索引 |
@@ -61,6 +65,7 @@
   - `scripts/execution_control/run_launchd_agent.sh`
 - `launchd` 模板：
   - `config/deployment/launchd/com.happyzhao.mujitask.executor-daemon.plist.template`
+  - `config/deployment/launchd/com.happyzhao.mujitask.api-worker.plist.template`
   - `config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template`
   - `config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template`
 
@@ -236,7 +241,7 @@ launchctl list | grep 'com.happyzhao.mujitask'
 
 ## 9. Skill 默认入口
 
-当前默认对外入口只有两个：
+当前默认对外入口：
 
 - 竞品表刷新：
 
@@ -252,9 +257,15 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
   --sales-7d-threshold <number>
 ```
 
+- 达人池同步：
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh
+```
+
 说明：
 
-- 这两个入口都是“同步提交、异步执行”。
+- 这些默认入口都是“同步提交、异步执行”。
 - 首条回执只负责返回 `request_id`。
 - 最终结果由后台 `outbox_dispatcher` 发送到飞书。
 
@@ -275,9 +286,19 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
    - `run_keyword_search_step.sh`
    - `run_skill_step.py`
    - `lightweight_submit.py`
-4. `launchctl list` 中 3 个守护进程处于运行状态。
-5. `Postgres` 中可以查询到上述 8 张核心表。
+4. `launchctl list` 中 4 个守护进程处于运行状态。
+5. `Postgres` 中可以查询到 `task_request / task_execution / api_worker_job / notification_outbox` 等核心表。
 6. `MinIO` bucket 可访问，并能看到 smoke object 或实际运行对象。
+
+### 10.1 本地 Postgres 测试
+
+开发机上推荐用项目本地执行配置跑完整测试，避免数据库相关测试因为没有 DB URL 而被跳过：
+
+```bash
+scripts/execution_control/run_local_postgres_tests.sh
+```
+
+该脚本会读取 `scripts/execution_control/executor.local.env`，pytest fixture 会在当前 Postgres 内为每次测试创建独立 schema，测试结束后自动清理。
 
 ## 11. 日志与排障路径
 

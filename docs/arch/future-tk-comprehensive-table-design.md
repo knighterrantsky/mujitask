@@ -2,13 +2,15 @@
 
 更新时间：`2026-04-17`
 
+状态：设计草案。本文讨论未来飞书业务数据模型，不作为当前客户需求、当前飞书表事实或 Fact DB schema 的事实来源。
+
 本文基于当前飞书五张业务表、已创建的节日复盘测试表，以及 FastMoss 真实接口数据验证结果，设计一套可长期承载“商品、SKU、店铺、达人、建联、视频、节日复盘”的多维表结构。
 
 相关文档：
 
-- [10-飞书五表结构与关联分析.md](./10-飞书五表结构与关联分析.md)
-- [fastmoss已知接口.md](./fastmoss已知接口.md)
-- [fastmoss可视化分析.md](./fastmoss可视化分析.md)
+- [10-飞书五表结构与关联分析.md](../business/10-飞书五表结构与关联分析.md)
+- [../reference/fastmoss-known-interfaces.md](../reference/fastmoss-known-interfaces.md)
+- [../reference/fastmoss-visualization-analysis.md](../reference/fastmoss-visualization-analysis.md)
 
 ## 1. 设计目标
 
