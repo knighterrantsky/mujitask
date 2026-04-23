@@ -31,7 +31,7 @@
 
 ## 业务流程设计
 
-- [四个 Workflow 设计评估与新架构重设计](./workflow-redesign-review.md)
+- [四个 Workflow 重设计评审](./workflow-redesign-review.md)
 - [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 - [竞品表 Workflow 设计](./workflow-competitor-table-design.md)

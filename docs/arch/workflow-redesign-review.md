@@ -1,230 +1,303 @@
-# 四个 Workflow 设计评估与新架构重设计
+# 四个 Workflow 重设计评审
 
 日期: 2026-04-23
 
-状态: 正式架构评审文档。本文评估当前四个正式业务 workflow 的设计合理性，并给出按当前新架构口径重设计后的目标形态。
+状态: 正式架构评审文档
+
+本文把当前系统中的四个正式业务 workflow 收敛到同一套架构口径下评审，并给出后续重设计方向。本文不是替代具体流程文档，而是作为跨 workflow 的统一设计基线。
 
 相关文档:
 
 - [当前整体系统架构设计](./current-system-architecture-design.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
+- [Fact DB Schema 设计](./fact-db-schema-design.md)
+- [入口与输出契约设计](./entry-output-contract-design.md)
 - [竞品表 Workflow 设计](./workflow-competitor-table-design.md)
 - [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 
-## 1. 评审结论
+## 1. 评审范围
 
-当前四个正式 workflow 的业务颗粒度整体合理，应继续作为顶层 Task 保留:
+当前纳入正式评审的四个 workflow 是:
 
-| workflow / task_code | 当前定位 | 结论 |
+| Workflow | task_code | workflow_id | 当前业务定位 |
+| --- | --- | --- | --- |
+| 竞品表刷新 | `refresh_current_competitor_table` | `refresh_current_competitor_table_v1` | 刷新已有 `TK竞品收集` 记录，逐行补全商品数据 |
+| 关键词竞品入库 | `search_keyword_competitor_products` | `search_keyword_competitor_products_v1` | 按关键词发现竞品，插入飞书种子行，再补全详情 |
+| 达人同步 | `sync_tk_influencer_pool` | `sync_tk_influencer_pool_v1` | 从竞品商品出发发现达人，写入 `TK达人池` 并回写竞品表状态 |
+| 选品分析 | `tiktok_fastmoss_product_ingest` | `tiktok_fastmoss_product_ingest_v1` | 单商品 TikTok + FastMoss 采集、媒体上传、事实沉淀、可选飞书写回 |
+
+这四个 workflow 覆盖了当前系统的四种典型执行形态:
+
+- 整表维护型: 竞品表刷新。
+- 搜索发现型: 关键词竞品入库。
+- 领域 fan-out 型: 达人同步。
+- 单商品采集型: 选品分析。
+
+## 2. 总体结论
+
+四个 workflow 的顶层业务边界是合理的，建议继续保留为四个独立 `task_code`。当前真正需要调整的不是“是否合并 workflow”，而是把 Task / Stage / Job / Handler / Flow 的职责边界落到代码结构和 Runtime 状态机中。
+
+评审结论:
+
+| Workflow | 结论 | 主要改造方向 |
 | --- | --- | --- |
-| `refresh_current_competitor_table` | 刷新已有 `TK竞品收集` 记录 | 保留。逐行补全的 job 颗粒度合理，plan 阶段需拆薄。 |
-| `search_keyword_competitor_products` | 按关键词发现竞品、插入种子行、补全详情 | 保留。阶段划分合理，seed insert 应从 executor 内部动作演进为 API job。 |
-| `sync_tk_influencer_pool` | 从竞品商品扩展达人池 | 保留。product / author / finalizer 颗粒度最接近新架构，需统一 handler 与失败语义。 |
-| `tiktok_fastmoss_product_ingest` | 单商品 TikTok + FastMoss 采集、事实沉淀、选品表写回 | 保留。API job + browser fallback 方向合理，WorkflowSpec 需要从单个 orchestrate step 演进为显式 stage 定义。 |
+| `refresh_current_competitor_table` | 保留 | plan 阶段拆薄，清理/扫描逐步从 executor 内部动作演进为 API job |
+| `search_keyword_competitor_products` | 保留 | seed row insert 应成为可重试 API job，候选处理和详情补全分阶段表达 |
+| `sync_tk_influencer_pool` | 保留 | product / author / finalizer 颗粒度合理，需统一 handler registry 和失败语义 |
+| `tiktok_fastmoss_product_ingest` | 保留 | 区分 direct ingest 与 TK 选品表模式，显式表达 browser fallback 和写回阶段 |
 
 总体判断:
 
-- 业务拆分方向是对的。
-- Runtime DB 作为任务状态和可靠队列是必要的。
-- 当前主要问题不在 workflow 业务边界，而在代码承载方式还没有完全对齐新架构。
-- `business/workflows/*.py` 仍偏旧框架适配层；真正的编排逻辑大量集中在 flow 文件里。
-- 新架构下应把 Task / Stage / Job / Handler / Flow 的边界显式化，并让 worker 只按 job 路由执行 handler。
+- Runtime DB 作为可靠队列和状态事实来源是必要的。
+- 四个 workflow 的业务颗粒度基本正确。
+- 当前代码实现仍偏“集中 flow 分支路由”，不是完全业务无关 worker + handler registry。
+- `business/workflows/*.py` 当前更多是 framework 兼容入口，不等同于内部真实 Runtime workflow 定义。
+- 后续应引入内部 `WorkflowDefinition`，把 stage、job、transition、summary policy 作为架构事实来源。
 
-## 2. 新架构评审标准
+## 3. 统一执行链路
 
-本文按以下标准评估 workflow 设计。
+目标架构下，四个 workflow 应共享同一条执行链路:
 
-### 2.1 Task
-
-Task 必须代表一次用户可理解的顶层业务请求，具备:
-
-- 可审计输入。
-- 可查询最终状态。
-- 可生成 summary。
-- 可通过 outbox 回复。
-- 可在进程重启后继续推进或明确失败。
-
-### 2.2 Stage
-
-Stage 是业务阶段，不是代码函数。适合作为 stage 的信号:
-
-- 需要等待一批子 job 完成。
-- 输入来源和输出目标明显不同。
-- 失败策略不同。
-- 需要人工可见进度。
-- 需要从 API 能力切换到 browser 能力。
-
-### 2.3 Job
-
-Job 是 Runtime DB 中可被 worker 独立 claim、retry、timeout 和审计的执行单元。
-
-一个动作适合拆成 job，当它满足任意条件:
-
-- 需要独立重试。
-- 需要独立超时。
-- 需要独立并发。
-- 失败不应拖垮整批。
-- 有外部副作用，需要清晰幂等边界。
-- 需要占用 browser profile 等资源。
-
-### 2.4 Handler / Flow
-
-```text
-Job = Runtime DB 中的一条待执行数据
-Handler = 处理某类 job 的代码入口
-Flow = handler 内部复用的业务实现过程
+```mermaid
+flowchart TD
+    A["OpenClaw / CLI / Scheduler"] --> B["submit task_request"]
+    B --> C["executor_daemon"]
+    C --> D{"按 workflow stage 决定下一步"}
+    D --> E["api_worker_job"]
+    D --> F["task_execution"]
+    D --> G["domain job tables"]
+    E --> H["api_worker"]
+    F --> I["browser_worker"]
+    G --> H
+    H --> J["Handler"]
+    I --> J
+    J --> K["Flow"]
+    K --> L["Runtime DB result / status"]
+    L --> M["Reconciler"]
+    M --> N{"是否进入下一阶段"}
+    N -->|是| C
+    N -->|完成| O["summary + notification_outbox"]
+    O --> P["outbox_dispatcher"]
 ```
 
-约束:
+统一概念:
 
-- worker 只根据 `job_code` / `item_code` 找 handler。
-- handler 可以调用一个或多个 flow，但不承担父 workflow 的全局编排职责。
-- flow 不应偷偷推进父 Task，除非它明确属于该 handler 的职责。
+| 概念 | 定义 | 当前落点 |
+| --- | --- | --- |
+| Task | 用户可理解的一次顶层业务请求 | `task_request` |
+| Workflow | Task 的阶段编排定义 | 当前在 `business/workflows/*.py` 与 flow 分支中共同表达 |
+| Stage | Workflow 的业务阶段 | `task_request.current_stage` / `stage_cursor_json` |
+| Job | Runtime DB 中 worker 可领取的最小运行时执行单元 | `api_worker_job` / `task_execution` / 领域 job 表 |
+| Handler | 某类 job 的代码入口 | 当前多数在 flow 文件中以函数分支存在 |
+| Flow | Handler 内部复用的业务过程 | `business/flows/*` |
 
-## 3. 当前共性问题
+## 4. 当前实现事实与目标架构差异
 
-### 3.1 WorkflowSpec 与真实架构表达脱节
+### 4.1 Worker 业务无关是目标，不是当前完全事实
+
+目标架构要求 worker 只做:
+
+1. claim job。
+2. 交给 Execution Supervisor。
+3. 根据 `job_code` / `item_code` 查 handler。
+4. 写回 result / error / retry 状态。
+
+当前代码中，`executor_daemon`、`api_worker_daemon`、`browser_runloop`、`outbox_dispatcher` 都进入同一个核心业务 flow，再由 flow 中的分支处理不同 `task_code`、`job_code`、`item_code`。因此文档和代码应明确:
+
+- 当前实现: 集中业务 flow 路由。
+- 目标实现: worker + handler registry。
+
+### 4.2 WorkflowSpec 是兼容层，不是完整 Runtime workflow
 
 当前 `WorkflowSpec` 有两种形态:
 
-- `refresh_current_competitor_table` 和 `search_keyword_competitor_products` 仍保留多 step 兼容流程。
-- `sync_tk_influencer_pool` 和 `tiktok_fastmoss_product_ingest` 基本是一个 `orchestrate_*` step。
+- `refresh_current_competitor_table` 和 `search_keyword_competitor_products` 仍保留多 step 兼容流程，会在 framework run 模式中陪跑 executor/browser/outbox。
+- `sync_tk_influencer_pool` 和 `tiktok_fastmoss_product_ingest` 主要是单个 `orchestrate_*` step，真实 stage 推进在 Runtime DB 和 flow 中发生。
 
-这会导致:
+正式架构口径:
 
-- `WorkflowSpec` 不能稳定表达真实 stage / job 设计。
-- 新人读代码时会以为 step 就是业务 workflow，但实际状态机在 Runtime DB 和 flow 函数中。
-- workflow 演进依赖大函数分支，难以做结构化评审。
+- `WorkflowSpec` 继续作为 framework 兼容入口。
+- 内部 Runtime workflow 应由新的 `WorkflowDefinition` 表达。
+- `WorkflowDefinition` 应包含 `task_code`、`workflow_id`、`stage_code`、`job_code`、transition、summary policy 和 idempotency policy。
 
-目标设计:
+### 4.3 Executor 仍承担部分业务动作
 
-- `WorkflowSpec` 保留为外部框架兼容层。
-- 新增内部 `WorkflowDefinition`，显式描述 `workflow_code`、`version`、`stages`、`jobs`、`transitions`、`summary_policy`。
-- executor 只读取内部 workflow definition 推进 Runtime DB。
-
-### 3.2 executor 仍承担部分业务执行
-
-当前有些阶段在 executor 中直接做业务动作，例如:
+当前 executor 已经承担编排职责，但仍直接执行部分轻量业务动作:
 
 - 竞品表刷新中的链接清理和待处理行扫描。
-- 关键词竞品入库中的 seed row 插入。
+- 关键词竞品入库中的候选处理和 seed row insert。
 
-短期可以接受，因为这些动作相对轻量，且历史实现已稳定。
+短期可以接受，但判断标准要清楚:
 
-目标设计:
+- 轻量、快速、可幂等、失败面小的编排动作可以暂留 executor。
+- 耗时、外部副作用重、需要独立重试或需要独立超时的动作应拆为 `api_worker_job`。
 
-- 如果动作耗时、可失败、需要重试或有外部副作用，应拆成 `api_worker_job`。
-- executor 只负责阶段推进、job fan-out、父子收敛和 summary。
+### 4.4 Reconciler 与 Watchdog 需要成为显式能力
 
-### 3.3 worker 与业务 handler 绑定过深
+当前系统已有 lease、heartbeat、retry 和部分父子状态收敛，但这些能力仍分散在 RuntimeStore 和业务 flow 中。
 
-当前 worker 仍包含较多业务分支:
+目标架构要求:
 
-- browser worker 按 `item_code` 直接分支调用具体 flow。
-- API worker 按 `job_code` 直接分支调用具体 handler。
-- 达人同步还存在领域队列的特殊 worker 查找路径。
+- Reconciler 基于 Runtime DB 判断父任务是否可进入下一阶段。
+- Watchdog Scanner 处理 worker 自己无法收尾的状态。
+- Execution Supervisor 统一管理 heartbeat、hard timeout、progress monitor、异常分类和 retry。
 
-目标设计:
+### 4.5 通用事实采集与业务投影边界
 
-- 引入 `api_handler_registry` 和 `browser_handler_registry`。
-- worker 只做 claim、supervisor、handler lookup、result/error 写回。
-- handler 拆到独立模块，并明确 payload / result / retry / timeout / idempotency。
+四个 workflow 的共性不只是“有一些通用 job”，而是它们都依赖同一套事实采集能力。飞书表读取、TikTok 商品 request/browser 采集、FastMoss 商品/达人/视频数据拉取，本质上都应被看成通用数据获取能力，再由统一的事实写入层沉淀到 Fact DB。
 
-### 3.4 Reconciler / Watchdog 需要显式化
+正式架构口径:
 
-当前已经有基于 Runtime DB 的父任务收敛，但仍分散在业务函数里。
+- 商品、达人、视频、图片/媒体资产属于通用事实数据，不应绑定到某一个 workflow。
+- 事实数据通过业务唯一键 upsert 到 Fact DB，作为跨 workflow 共享的主档或事实实体。
+- 不同 workflow 的差异主要体现在关系数据、快照数据、业务字段映射和飞书投影写回。
+- 如果某个业务流程需要更多数据，应增加采集 step 或启用更高 detail level，而不是复制一套业务专属采集逻辑。
 
-目标设计:
+需要区分四类数据:
 
-- `Reconciler` 作为明确职责存在，可由 worker 完成后触发，也可由 executor/watchdog 扫描触发。
-- `Watchdog Scanner` 补齐 lease expired、hard timeout、stale progress、orphan running、waiting_children 已终态但未推进等兜底。
+| 数据类型 | 示例 | 主要存储 | 说明 |
+| --- | --- | --- | --- |
+| 事实实体 | 商品、达人、视频、店铺、媒体资产 | Fact DB | 跨 workflow 共享，按业务唯一键 upsert |
+| 关系数据 | 商品-达人关系、商品-视频关系、来源飞书记录-商品关系、活动/节日-商品关系 | Fact DB 或业务关系表 | 体现业务上下文，不应塞进实体主档 |
+| 快照/观测 | 某次采集的销量、粉丝数、页面原文、飞书源行快照、写回结果 | Runtime artifact / Fact observation / snapshot 表 | 体现某个时间点或某次任务的状态 |
+| 业务投影 | `TK竞品收集`、`TK达人池`、`TK选品收集` 写回字段 | Feishu | 面向运营使用的视图，不是内部任务状态真相 |
 
-## 4. Workflow 逐项评估与目标设计
+因此，通用能力型 job 应优先围绕事实采集和投影写入来设计:
 
-## 4.1 `refresh_current_competitor_table`
+| Generic Job | Worker | 输出 |
+| --- | --- | --- |
+| `feishu_table_read` | `api_worker` | source rows / source snapshot / candidate keys |
+| `tiktok_product_request_fetch` | `api_worker` | TikTok 商品 request 结果、解析后的商品事实、fallback 判断 |
+| `tiktok_product_browser_fetch` | `browser_worker` | request 失效后的 TikTok 页面 HTML / network / 页面解析结果 |
+| `fastmoss_product_fetch` | `api_worker` | 商品事实、店铺事实、商品指标观测 |
+| `fastmoss_author_fetch` | `api_worker` | 达人事实、达人指标观测 |
+| `fastmoss_video_fetch` | `api_worker` | 视频事实、视频指标观测 |
+| `media_asset_sync` | `api_worker` | 图片、封面、头像等媒体资产事实和对象索引 |
+| `fact_bundle_upsert` | `api_worker` | 商品/达人/视频/媒体/关系/观测的统一 upsert 结果 |
+| `feishu_table_write` | `api_worker` | 面向业务表的投影写回结果 |
 
-### 当前合理性
+TikTok 商品数据采集约定:
 
-该 workflow 解决的是“刷新已有竞品表记录”，业务边界清楚。
+- 默认优先派发 `tiktok_product_request_fetch`，通过 request / HTTP / 已知接口路径获取商品数据。
+- 只有 request 结果不可解析、关键字段缺失、被风控/登录/验证码阻断，或 handler 明确返回 `fallback_required=true` 时，才派发 `tiktok_product_browser_fetch`。
+- 浏览器采集是 fallback，不是默认路径；它占用 browser profile、执行成本更高，也更容易触发风控。
+- request job 和 browser fallback job 必须输出同一种 normalized product result，后续 `fact_bundle_upsert` 不应关心数据来自 request 还是 browser。
+- 非法输入、缺少 product key、URL 无法归一化等不可恢复错误，不应 fallback 到浏览器，而应直接进入 failed 或 skipped。
+- fallback 决策必须写入 result / stage cursor，例如 `fallback_required`、`fallback_reason`、`fallback_source_job_id`。
 
-当前合理点:
+Workflow 不应该直接绑定某个大业务函数，而应该编排这些通用事实采集 job，再通过业务 mapper 决定:
 
-- 顶层 task 代表一次定时刷新请求。
-- 每条竞品记录的详情补全是一个 `feishu_single_row_update` browser job。
+- 需要读取哪些来源表。
+- 需要采集哪些实体和 detail level。
+- 需要写入哪些关系或观测。
+- 需要把结果投影到哪张飞书表。
+- 部分失败时如何定义 `success / partial_success / failed`。
+
+## 5. Workflow 1: 竞品表刷新
+
+### 5.1 当前定位
+
+`refresh_current_competitor_table` 负责刷新已有 `TK竞品收集` 记录。它的核心价值是维护竞品表中商品基础数据质量。
+
+当前主要链路:
+
+```mermaid
+flowchart TD
+    A["submit_refresh_request"] --> B["plan_refresh_work"]
+    B --> C["cleanup links"]
+    B --> D["scan pending rows"]
+    D --> E["enqueue feishu_single_row_update jobs"]
+    E --> F["browser worker updates rows"]
+    F --> G["finalize summary"]
+    G --> H["notification_outbox"]
+```
+
+### 5.2 当前合理点
+
+- 顶层 Task 代表一次刷新请求。
+- 每条竞品记录的详情补全是独立 browser job。
 - 单行失败不会拖垮整张表。
-- browser profile 可通过 `resource_lease` 串行保护。
-- summary 能展示每行成功、失败、跳过状态。
+- Browser profile 可通过 `resource_lease` 串行保护。
+- 最终 summary 可以保留每行成功、失败、跳过状态。
 
-当前问题:
+### 5.3 当前问题
 
-- cleanup 和 pending rows scan 在 executor 内同步执行。
-- `plan_refresh_work` 同时做清理、扫描、fan-out，职责偏厚。
-- `current_stage="waiting_children"` 语义偏泛，无法直接看出正在等待哪类 child job。
+| 问题 | 影响 | 建议 |
+| --- | --- | --- |
+| `plan_refresh_work` 同时做 cleanup、scan、fan-out | executor 阶段偏厚 | 先标注为轻量编排动作，后续拆 API job |
+| `waiting_children` 语义偏泛 | 状态不够可读 | 在 stage cursor 或 stage code 中表达 `waiting_row_updates` |
+| browser handler 在 runloop 分支中 | 新增 item_code 需要改 worker 分支 | 抽成 browser handler registry |
 
-### 目标 Stage
+### 5.4 目标 Stage
 
-| Stage | 进入条件 | executor 动作 | 派生 Job | 退出条件 |
+| Stage | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
-| `submitted` | task 创建成功 | 初始化 stage cursor | 无 | 进入 `cleanup_and_scan` |
-| `cleanup_and_scan` | pending task | 派发或执行轻量 cleanup/scan | 可选 `feishu_competitor_cleanup_scan` API job | 得到 target rows |
-| `dispatch_row_updates` | 有待补全 rows | 为每行派发 browser job | `feishu_single_row_update` in `task_execution` | 进入 `waiting_row_updates` |
-| `waiting_row_updates` | row jobs active | 不阻塞等待 | 无 | row jobs 全部终态 |
-| `ready_for_summary` | 子任务已终态 | 汇总结果、写 outbox | `notification_outbox` | completed |
+| `submitted` | task 创建成功 | 初始化请求上下文 | 无 | 进入 `cleanup_and_scan` |
+| `cleanup_and_scan` | 有待刷新配置 | 清理链接、扫描待处理行 | 可选 `feishu_competitor_cleanup_scan` | 得到 target rows |
+| `dispatch_row_updates` | 有 target rows | 为每行派发 browser job | `feishu_single_row_update` | 进入 `waiting_row_updates` |
+| `waiting_row_updates` | row jobs active | 等待 reconciler | 无 | row jobs 全部终态 |
+| `ready_for_summary` | 子任务已终态 | 汇总结果，写 outbox | `notification_outbox` | `completed` / `partial_success` |
 
-### 目标 Job
+### 5.5 目标 Job
 
 | Job | Runtime 表 | Worker | Handler | 幂等边界 |
 | --- | --- | --- | --- | --- |
-| `feishu_competitor_cleanup_scan` | `api_worker_job` 或 executor 轻量动作 | `api_worker` / `executor_daemon` | `competitor_cleanup_scan_handler` | 基于 table url + request id + normalized url |
-| `feishu_single_row_update` | `task_execution` | `browser_worker` | `feishu_single_row_update_handler` | 基于 record_id / normalized product url |
-| `task_request.completed` | `notification_outbox` | `outbox_dispatcher` | outbox handler | `task_request.completed:{request_id}` |
+| `feishu_competitor_cleanup_scan` | `api_worker_job` 或 executor 轻量动作 | `api_worker` / `executor_daemon` | `competitor_cleanup_scan_handler` | table url + request id |
+| `feishu_single_row_update` | `task_execution` | `browser_worker` | `feishu_single_row_update_handler` | record_id / normalized product url |
+| `task_completed_notification` | `notification_outbox` | `outbox_dispatcher` | outbox handler | `task_request.completed:{request_id}` |
 
-### 设计建议
+## 6. Workflow 2: 关键词竞品入库
 
-短期:
+### 6.1 当前定位
 
-- 保留 cleanup/scan 在 executor 内，但在文档和代码中明确它是轻量编排动作。
-- 将 `waiting_children` 的 `stage_cursor.resume_action` 改成更明确的 `waiting_row_updates` 语义。
+`search_keyword_competitor_products` 负责根据关键词在 FastMoss 中发现竞品，插入 `TK竞品收集` 种子行，再复用单行补全能力完成详情更新。
 
-中期:
+当前主要链路:
 
-- 将 cleanup/scan 拆成 API job。
-- 将 `feishu_single_row_update` browser handler 从 browser runloop 分支中抽出。
+```mermaid
+flowchart TD
+    A["submit_keyword_request"] --> B["enqueue keyword discovery"]
+    B --> C["browser discovery"]
+    C --> D["process candidates"]
+    D --> E["insert Feishu seed rows"]
+    E --> F["enqueue feishu_single_row_update jobs"]
+    F --> G["browser detail updates"]
+    G --> H["finalize summary"]
+    H --> I["notification_outbox"]
+```
 
-## 4.2 `search_keyword_competitor_products`
+### 6.2 当前合理点
 
-### 当前合理性
+- 关键词 discovery 是独立 browser job。
+- 发现候选后再插入 seed rows，避免一开始就污染飞书表。
+- 详情补全复用 `feishu_single_row_update`，业务能力复用合理。
+- discovery 和 detail updates 分阶段等待，可以恢复。
 
-该 workflow 解决的是“按关键词发现竞品并写入竞品表”，与刷新已有记录是不同 Task，保留独立入口是合理的。
+### 6.3 当前问题
 
-当前合理点:
+| 问题 | 影响 | 建议 |
+| --- | --- | --- |
+| seed row insert 在 executor resume 阶段执行 | 有外部副作用但不可独立 retry | 拆成 `feishu_seed_row_insert` API job |
+| candidate processing、seed insert、detail fan-out 混在一个阶段 | 状态不够可观测 | 拆为 `process_candidates`、`waiting_seed_insert`、`dispatch_detail_updates` |
+| discovery 与 detail 都用 `task_execution`，主要靠 cursor 区分 | 排障时可读性不足 | stage code 明确区分 waiting 类型 |
 
-- 关键词 discovery 是一个独立 browser job。
-- discovery 完成后再处理候选、插入 seed rows、派发详情补全 jobs。
-- 详情补全复用 `feishu_single_row_update`，避免重复实现。
+### 6.4 目标 Stage
 
-当前问题:
-
-- seed row insert 当前在 executor resume 阶段循环执行，存在外部副作用但不具备独立 retry/timeout。
-- discovery 与 detail update 都使用 `task_execution`，但 stage code 仍主要靠 `resume_action` 表达。
-- 候选处理、seed 插入、detail fan-out 混在一个 resume 函数中。
-
-### 目标 Stage
-
-| Stage | 进入条件 | executor 动作 | 派生 Job | 退出条件 |
+| Stage | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
-| `submitted` | task 创建成功 | 初始化关键词参数 | 无 | 进入 `dispatch_keyword_discovery` |
-| `dispatch_keyword_discovery` | 有 search keyword | 派发 discovery browser job | `fastmoss_keyword_candidate_discovery` | 进入 `waiting_keyword_discovery` |
+| `submitted` | task 创建成功 | 校验关键词和筛选条件 | 无 | 进入 `dispatch_keyword_discovery` |
+| `dispatch_keyword_discovery` | 有关键词 | 派发 discovery browser job | `fastmoss_keyword_candidate_discovery` | 进入 `waiting_keyword_discovery` |
 | `waiting_keyword_discovery` | discovery active | 等待 reconciler | 无 | discovery 终态 |
-| `process_candidates` | discovery success | 解析候选并派发 seed jobs | `feishu_seed_row_insert` | 进入 `waiting_seed_insert` |
-| `waiting_seed_insert` | seed jobs active | 等待 seed jobs | 无 | seed jobs 全部终态 |
-| `dispatch_detail_updates` | 有新增 seed rows | 派发 row update jobs | `feishu_single_row_update` | 进入 `waiting_detail_updates` |
-| `waiting_detail_updates` | detail jobs active | 等待 row jobs | 无 | row jobs 全部终态 |
-| `ready_for_summary` | 子任务终态 | 汇总 discovery / seed / detail | `notification_outbox` | completed |
+| `process_candidates` | discovery success | 解析候选、去重、生成 seed payload | 无 | 进入 `dispatch_seed_insert` |
+| `dispatch_seed_insert` | 有候选 | 派发 seed insert jobs | `feishu_seed_row_insert` | 进入 `waiting_seed_insert` |
+| `waiting_seed_insert` | seed jobs active | 等待 reconciler | 无 | seed jobs 全部终态 |
+| `dispatch_detail_updates` | 有成功 seed rows | 派发详情补全 browser jobs | `feishu_single_row_update` | 进入 `waiting_detail_updates` |
+| `waiting_detail_updates` | detail jobs active | 等待 reconciler | 无 | detail jobs 全部终态 |
+| `ready_for_summary` | 子任务终态 | 汇总 discovery / seed / detail | `notification_outbox` | `completed` / `partial_success` |
 
-### 目标 Job
+### 6.5 目标 Job
 
 | Job | Runtime 表 | Worker | Handler | 幂等边界 |
 | --- | --- | --- | --- | --- |
@@ -232,48 +305,53 @@ Flow = handler 内部复用的业务实现过程
 | `feishu_seed_row_insert` | `api_worker_job` | `api_worker` | `feishu_seed_row_insert_handler` | target table + product_id / normalized url |
 | `feishu_single_row_update` | `task_execution` | `browser_worker` | `feishu_single_row_update_handler` | record_id / normalized product url |
 
-### 设计建议
+## 7. Workflow 3: 达人同步
 
-短期:
+### 7.1 当前定位
 
-- 将 seed insert 的结果 schema 固化，避免 summary 依赖松散 item 字段。
-- 在 `stage_cursor` 中分开记录 discovery result、seed insert summary、detail fan-out summary。
+`sync_tk_influencer_pool` 负责从 `TK竞品收集` 中筛选需要查找达人的竞品记录，基于 FastMoss 商品关联达人列表生成达人详情任务，写入 `TK达人池`，并回写竞品表状态。
 
-中期:
+当前主要链路:
 
-- 把 seed insert 拆为 API job，支持单商品级重试。
-- 给 keyword discovery 和 seed insert 增加标准化 error schema。
+```mermaid
+flowchart TD
+    A["dispatch influencer pool product jobs"] --> B["product job"]
+    B --> C["fetch related authors"]
+    C --> D["fan-out author jobs"]
+    D --> E["author detail + Feishu writeback"]
+    E --> F["product finalizer"]
+    F --> G["task reconciler"]
+    G --> H["summary + outbox"]
+```
 
-## 4.3 `sync_tk_influencer_pool`
+### 7.2 当前合理点
 
-### 当前合理性
+这是四个 workflow 中最接近目标架构的一个。
 
-这是四个 workflow 中最接近目标架构的一个。它天然需要领域 job，因为 product job 和 author job 的状态机与普通 API job 不完全一样。
-
-当前合理点:
-
-- 顶层 task 负责一次达人同步请求。
 - product job 负责一条竞品记录的商品级达人发现。
 - author job 负责一个达人详情采集和写入。
 - product finalizer 基于 Runtime DB 汇总 author jobs。
-- 失败可以限制在单个达人或单个商品，不拖垮整批。
+- 单个达人失败不会拖垮整个 task。
+- 领域 job 表保留了 product / author 的业务状态，比强行塞进通用 job 更清楚。
 
-当前问题:
+### 7.3 当前问题
 
-- product / author / finalizer 目前通过 `run_sync_tk_influencer_pool(queue_mode=worker)` 处理，API worker 对这类领域 job 有特殊路径。
-- handler 边界不够显式。
-- 父任务 finalizer 当前需要更清晰地区分 `success`、`partial_success`、`failed`。
-- product/author job 与通用 `api_worker_job` 的生命周期字段尚未完全统一。
+| 问题 | 影响 | 建议 |
+| --- | --- | --- |
+| API worker 对达人领域 job 有特殊路径 | worker 仍理解部分业务 | 改为 handler registry 或 domain job adapter |
+| product / author / finalizer handler 边界不够显式 | 难以单独评审 payload/result | 三类 handler 分模块定义 schema |
+| 父任务 final status 策略不够清晰 | success / partial_success / failed 容易混淆 | 明确 final_status_policy |
+| 领域 job 与通用 job 生命周期字段未完全统一 | Watchdog 兜底难统一 | 补齐 progress、timeout、dead letter 字段 |
 
-### 目标 Stage
+### 7.4 目标 Stage
 
-| Stage | 进入条件 | executor 动作 | 派生 Job | 退出条件 |
+| Stage | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
-| `dispatch_product_jobs` | task pending | 扫描候选竞品并创建 product jobs | `influencer_pool_product_job` | 进入 `waiting_product_jobs` |
-| `waiting_product_jobs` | product jobs active | 不阻塞等待 | 无 | product jobs 全部终态 |
-| `ready_for_summary` | product jobs 终态 | 汇总 product / author 状态 | `notification_outbox` | completed / partial_success / failed |
+| `dispatch_product_jobs` | task pending | 扫描候选竞品，创建 product jobs | `influencer_pool_product_job` | 进入 `waiting_product_jobs` |
+| `waiting_product_jobs` | product jobs active | 等待 product / author / finalizer 收敛 | 无 | product jobs 全部终态 |
+| `ready_for_summary` | product jobs 终态 | 汇总 product / author 状态，写 outbox | `notification_outbox` | `completed` / `partial_success` / `failed` |
 
-领域 job 内部阶段:
+领域 job 内部状态:
 
 | Job | 状态流转 |
 | --- | --- |
@@ -281,7 +359,7 @@ Flow = handler 内部复用的业务实现过程
 | author job | `pending -> running -> succeeded/skipped/failed_retry/hard_failed` |
 | product finalizer | 聚合 author jobs，推进 product job 终态 |
 
-### 目标 Job
+### 7.5 目标 Job
 
 | Job | Runtime 表 | Worker | Handler | 幂等边界 |
 | --- | --- | --- | --- | --- |
@@ -290,79 +368,101 @@ Flow = handler 内部复用的业务实现过程
 | 商品级汇总 | product finalizer scan | `api_worker` | `influencer_pool_product_finalizer` | product_job_id |
 | 父任务汇总 | `task_request` | `executor_daemon` | workflow finalizer | request_id |
 
-### 设计建议
+### 7.6 Final Status Policy
 
-短期:
+达人同步应显式定义父任务终态:
 
-- 保留领域 job 表，不强行合并到通用 job 表。
-- 明确 product / author / finalizer 三类 handler 的 payload 和 result schema。
-- 父任务 summary 增加 `final_status_policy`:
-  - 全部成功或跳过: `success`
-  - 部分 hard_failed 但允许部分成功: `partial_success`
-  - 命中硬停止或失败超过阈值: `failed`
+| 条件 | final_status |
+| --- | --- |
+| product jobs 全部 completed，author jobs 全部 succeeded/skipped | `success` |
+| 部分 product/author hard_failed，但未超过业务阈值 | `partial_success` |
+| 无任何有效结果，或失败超过业务阈值，或编排阶段不可恢复失败 | `failed` |
 
-中期:
+## 8. Workflow 4: 选品分析
 
-- 将 API worker 对 influencer pool 的特殊路径改成 handler registry。
-- 统一领域 job 的 `last_progress_at`、`progress_stage`、`max_execution_seconds`、`dead_letter_reason` 字段。
+### 8.1 当前定位
 
-## 4.4 `tiktok_fastmoss_product_ingest`
+`tiktok_fastmoss_product_ingest` 负责围绕一个 TikTok 商品 URL / SKU 完成商品数据采集、媒体上传、事实库沉淀和可选飞书写回。
 
-### 当前合理性
+该 workflow 有两个模式:
 
-该 workflow 解决的是单商品选品分析/事实采集，业务边界清楚。它的目标不是整表批处理，而是围绕一个 TikTok 商品 URL / SKU 完成采集、事实沉淀和可选飞书写回。
+| 模式 | 说明 |
+| --- | --- |
+| direct ingest | 调用方直接给 product url / product id，系统直接派发商品采集 job |
+| TK selection table mode | 需要先读取 `TK选品收集`，获取源记录和写回上下文，再采集并写回飞书 |
 
-当前合理点:
+目标主要链路:
 
-- 使用 `api_worker_job` 承载飞书读取、商品采集、飞书写回。
-- TikTok request 不可解析时可派发 browser fallback。
-- 媒体上传和事实入库已经被纳入采集结果。
-- 父任务通过 Runtime DB 汇总 API job 和 browser job 状态。
+```mermaid
+flowchart TD
+    A["submit product ingest task"] --> B{"需要 TK 选品表读取?"}
+    B -->|是| C["feishu_tk_selection_table_read"]
+    B -->|否| D["tiktok_product_request_fetch + fastmoss_product_fetch"]
+    C --> D
+    D --> E{"TikTok request 有效?"}
+    E -->|否| F["tiktok_product_browser_fetch"]
+    F --> G["normalize browser result"]
+    E -->|是| H{"需要飞书写回?"}
+    G --> H
+    H -->|是| I["feishu_tk_selection_table_writeback"]
+    H -->|否| J["ready_for_summary"]
+    I --> J
+    J --> K["summary + outbox"]
+```
 
-当前问题:
+### 8.2 当前合理点
 
-- 当前 `WorkflowSpec` 是单个 `orchestrate_tiktok_fastmoss_product_ingest` step，不利于表达真实阶段。
-- 商品采集 job 内部包含 TikTok、FastMoss、媒体上传、事实入库等多个副作用，必须严格依赖幂等。
-- browser fallback 完成后再派发第二次 product ingest API job，stage transition 需要更清晰。
+- 商品采集使用 `api_worker_job`，适合 HTTP/API、媒体上传、事实库写入。
+- TikTok 商品数据优先走 request，request 不可解析或关键字段缺失时可以派发 browser fallback。
+- 飞书读取、商品采集、飞书写回已经拆成不同 job。
+- Fact DB upsert 与 MinIO artifact/object prefix 已纳入采集结果。
 
-### 目标 Stage
+### 8.3 当前问题
 
-| Stage | 进入条件 | executor 动作 | 派生 Job | 退出条件 |
+| 问题 | 影响 | 建议 |
+| --- | --- | --- |
+| `WorkflowSpec` 是单个 `orchestrate_tiktok_fastmoss_product_ingest` step | 外部看不到真实 stage | 内部 `WorkflowDefinition` 显式定义 stage |
+| 文档容易把飞书读取/写回写成必经链路 | direct ingest 模式被误解 | 明确飞书表读写是条件阶段 |
+| 商品采集 job 内部副作用较多 | 幂等要求高 | 将 TikTok request、FastMoss fetch、Fact upsert、写回边界显式化 |
+| fallback 后二次采集的 stage transition 不够直观 | 排障困难 | stage cursor 记录 fallback execution 和 after-fallback job |
+
+### 8.4 目标 Stage
+
+| Stage | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
-| `read_selection_table` | 需要绑定 TK 选品表 | 派发飞书读取 job | `feishu_tk_selection_table_read` | 读取成功 / 跳过 |
-| `collect_product_data` | 有 product url / id | 派发商品采集 job | `tiktok_fastmoss_product_ingest` | 成功 / fallback required / failed |
-| `browser_fallback` | TikTok request 不可解析 | 派发 browser fetch job | `tiktok_product_browser_fetch` | browser fetch 成功 / failed |
-| `collect_after_fallback` | browser fallback 成功 | 用 browser result 重新派发采集 job | `tiktok_fastmoss_product_ingest` | 采集成功 / failed |
-| `writeback_selection_table` | 有来源飞书记录且需要写回 | 派发写回 job | `feishu_tk_selection_table_writeback` | 写回终态 |
-| `ready_for_summary` | 子任务终态 | 汇总结果、写 outbox | `notification_outbox` | completed / failed |
+| `read_selection_table` | 开启 TK selection table mode | 派发飞书读取 job | `feishu_tk_selection_table_read` | 读取成功 / 跳过 |
+| `collect_product_data` | 有 product url / id | 优先派发 request/API 采集 | `tiktok_product_request_fetch`、`fastmoss_product_fetch` | 成功 / fallback required / failed |
+| `browser_fallback` | TikTok request 失效且允许 fallback | 派发 browser fetch job | `tiktok_product_browser_fetch` | browser fetch 终态 |
+| `normalize_after_fallback` | browser fallback 成功 | 将 browser result 归一化为同一 product result contract | 可选 `fact_bundle_upsert` | 归一化和事实写入完成 |
+| `writeback_selection_table` | 有来源飞书记录且需要写回 | 派发飞书写回 job | `feishu_tk_selection_table_writeback` | 写回终态 |
+| `ready_for_summary` | 子任务终态 | 汇总 result，写 outbox | `notification_outbox` | `completed` / `partial_success` / `failed` |
 
-### 目标 Job
+### 8.5 目标 Job
 
 | Job | Runtime 表 | Worker | Handler | 幂等边界 |
 | --- | --- | --- | --- | --- |
 | `feishu_tk_selection_table_read` | `api_worker_job` | `api_worker` | `selection_table_read_handler` | request_id + table + product key |
-| `tiktok_fastmoss_product_ingest` | `api_worker_job` | `api_worker` | `product_ingest_handler` | product_id / normalized url + request_id suffix |
+| `tiktok_product_request_fetch` | `api_worker_job` | `api_worker` | `tiktok_product_request_fetch_handler` | product_id / normalized url |
+| `fastmoss_product_fetch` | `api_worker_job` | `api_worker` | `fastmoss_product_fetch_handler` | product_id / fastmoss product key |
 | `tiktok_product_browser_fetch` | `task_execution` | `browser_worker` | `tiktok_product_browser_fetch_handler` | request_id + product url |
+| `fact_bundle_upsert` | `api_worker_job` | `api_worker` | `fact_bundle_upsert_handler` | entity business keys + observation timestamp |
 | `feishu_tk_selection_table_writeback` | `api_worker_job` | `api_worker` | `selection_table_writeback_handler` | request_id + source_record_id |
 
-### 设计建议
+### 8.6 幂等要求
 
-短期:
+商品采集 job 内部可以暂时保留 TikTok、FastMoss、媒体上传和事实入库这些步骤，但必须满足:
 
-- 保留商品采集作为一个 API job，但补齐幂等说明:
-  - Fact DB 使用业务唯一键 upsert。
-  - MinIO object key 稳定或可覆盖。
-  - 飞书写回只由 writeback job 执行。
-- 在 stage cursor 中显式记录 fallback required、fallback execution、after fallback ingest job。
+- Fact DB 只通过业务唯一键 upsert。
+- MinIO object key 必须稳定，或允许同一 request 覆盖。
+- 飞书写回只能由 `feishu_tk_selection_table_writeback` 执行。
+- fallback 后二次 ingest 不能重复创建不一致事实。
+- outbox 使用 request 级 dedupe key，避免重复通知。
 
-中期:
+## 9. 统一重设计方案
 
-- 如果媒体上传或事实入库失败频率高，将 `media_upload_and_fact_persist` 从 product ingest job 拆成独立 API job。
-- 将 `tiktok_fastmoss_product_ingest_v1` 的单步 WorkflowSpec 改为兼容入口，真实 stage 由内部 workflow definition 表达。
+### 9.1 内部 WorkflowDefinition
 
-## 5. 统一目标架构
-
-建议引入以下代码分层:
+建议新增内部 workflow definition 层:
 
 ```text
 business/workflow_defs/
@@ -370,18 +470,37 @@ business/workflow_defs/
   search_keyword_competitor_products.py
   sync_tk_influencer_pool.py
   tiktok_fastmoss_product_ingest.py
+```
 
-business/orchestrators/
-  executor.py
-  stage_runner.py
-  fanout.py
+每个 definition 至少包含:
 
+| 字段 | 说明 |
+| --- | --- |
+| `task_code` | 顶层任务类型 |
+| `workflow_id` | workflow 版本 |
+| `stages` | stage code、进入条件、退出条件 |
+| `job_defs` | job code、worker type、payload/result schema |
+| `transitions` | stage 转移规则 |
+| `summary_policy` | success / partial_success / failed 规则 |
+| `idempotency_policy` | job 和外部副作用幂等规则 |
+| `timeout_policy` | 单 job 超时和整体超时策略 |
+| `watchdog_policy` | lease expired、stale progress、dead letter 规则 |
+
+### 9.2 Handler Registry
+
+目标目录:
+
+```text
 business/handlers/api/
   registry.py
-  feishu_seed_row_insert.py
-  feishu_tk_selection_table_read.py
-  feishu_tk_selection_table_writeback.py
-  product_ingest.py
+  feishu_table_read.py
+  feishu_table_write.py
+  tiktok_product_request_fetch.py
+  fastmoss_product_fetch.py
+  fastmoss_author_fetch.py
+  fastmoss_video_fetch.py
+  media_asset_sync.py
+  fact_bundle_upsert.py
   influencer_pool_product.py
   influencer_pool_author.py
   influencer_pool_finalizer.py
@@ -392,71 +511,105 @@ business/handlers/browser/
   fastmoss_keyword_candidate_discovery.py
   tiktok_product_browser_fetch.py
 
+business/mappers/
+  feishu_competitor_table_mapper.py
+  feishu_selection_table_mapper.py
+  feishu_influencer_pool_mapper.py
+  fastmoss_fact_mapper.py
+  workflow_projection_mapper.py
+```
+
+约束:
+
+- API worker 不再写 `if job_code == ...` 业务分支。
+- Browser worker 不再写 `if item_code == ...` 业务分支。
+- 新增 job 只需要注册 handler，不修改 worker runloop。
+- Handler 统一返回标准 result / error / retry classification。
+- 通用 handler 负责获取或写入事实数据，业务 mapper 负责关系、快照和飞书字段投影。
+
+### 9.3 Reconciler
+
+目标目录:
+
+```text
 business/reconcilers/
   task_request_reconciler.py
   api_worker_job_reconciler.py
   browser_execution_reconciler.py
   influencer_pool_reconciler.py
-
-business/flows/
-  只保留可复用业务实现过程
 ```
 
-核心原则:
+职责:
 
-- `business/workflows/*.py` 可以继续作为 framework 兼容层。
-- 内部 workflow definition 才是当前系统 stage/job 事实来源。
-- worker 不直接写业务分支，只通过 registry 找 handler。
-- Reconciler 基于 Runtime DB 聚合状态，不依赖内存 callback。
-- Watchdog 独立扫描异常状态，不等待 worker 自己恢复。
+- 基于 Runtime DB 判断 child jobs 是否全部终态。
+- 推进父 `task_request` 到下一 stage 或 `ready_for_summary`。
+- 对同一个 request 可重复执行，结果幂等。
+- 不依赖 worker 进程内 callback。
 
-## 6. 迁移计划
+### 9.4 Flow 收敛
 
-### 阶段 1: 文档和状态口径统一
+`business/flows/` 应逐步收敛为可复用业务过程，不再承载全局编排大分支。
+
+目标边界:
+
+| 层 | 应该做 | 不应该做 |
+| --- | --- | --- |
+| executor | 推进 stage、派发 job、汇总父任务 | 直接执行长耗时业务动作 |
+| worker | claim、supervise、handler lookup、写回状态 | 理解完整业务 workflow |
+| handler | 执行某类 job，调用 flow，分类错误 | 编排整个父 task |
+| flow | 复用业务动作，如请求 API、写飞书、写事实库 | 偷偷推进 Runtime 父状态 |
+| reconciler | 基于 DB 聚合状态 | 依赖内存 callback |
+
+## 10. 迁移计划
+
+### 10.1 阶段一: 文档和状态口径统一
 
 目标:
 
-- 保留四个顶层 task_code 不变。
+- 保留四个 `task_code` 不变。
 - 固化每个 workflow 的 stage code、job code、payload schema、result schema。
-- 在 README 和 workflow 文档中明确 `WorkflowSpec` 是兼容层。
+- 明确 `WorkflowSpec` 是 framework 兼容层。
+- 修正选品分析文档中“飞书读取/写回是必经链路”的表述。
 
 验收:
 
 - 每个 workflow 都能在文档中找到 Task / Stage / Job / Handler / Flow 映射。
-- 新增 workflow 必须按 [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md) 评审。
+- 新增 workflow 必须按 [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md) 完成评审。
 
-### 阶段 2: Handler registry 抽取
+### 10.2 阶段二: Handler registry 抽取
 
 目标:
 
-- API worker 从 `if job_code == ...` 改成 registry lookup。
-- Browser worker 从 `if item_code == ...` 改成 registry lookup。
-- handler 统一返回标准 result / error。
+- API worker 从 `job_code` 分支改为 registry lookup。
+- Browser worker 从 `item_code` 分支改为 registry lookup。
+- influencer pool 领域 job 通过 domain adapter 接入 API handler registry。
 
 验收:
 
-- 新增一个 API job 不需要修改 worker 主循环。
+- 新增一个 API job 不需要修改 API worker 主循环。
 - 新增一个 browser item_code 不需要修改 browser runloop 主循环。
+- handler 有统一 payload/result/error schema。
 
-### 阶段 3: Reconciler 显式化
+### 10.3 阶段三: Reconciler 显式化
 
 目标:
 
 - 将父任务推进逻辑从业务 flow 中抽到 reconciler。
 - 支持 worker 完成后触发、executor 扫描触发、watchdog 兜底触发。
+- 统一 `waiting_children -> ready_for_summary -> completed` 的推进规则。
 
 验收:
 
 - 父任务从 `waiting_children` 到 `ready_for_summary` 完全依赖 Runtime DB 当前状态。
 - 重复执行 reconciler 不会重复创建 outbox 或重复推进非法状态。
 
-### 阶段 4: Watchdog / Supervisor 补齐
+### 10.4 阶段四: Watchdog / Supervisor 补齐
 
 目标:
 
-- 所有 job 表补齐 `last_progress_at`、`progress_stage`、`max_execution_seconds`、`dead_letter_reason`。
+- 所有 job 表补齐或等价表达 `last_progress_at`、`progress_stage`、`max_execution_seconds`、`dead_letter_reason`。
 - Watchdog 处理 lease expired、stale progress、hard timeout、orphan running。
-- Supervisor 负责 heartbeat、progress、timeout 和异常分类。
+- Supervisor 统一 heartbeat、progress、timeout 和异常分类。
 
 验收:
 
@@ -464,15 +617,43 @@ business/flows/
 - handler 卡住但进程仍 heartbeat 时，可被 stale progress 策略兜底。
 - 父任务不会长期停留在 children 已终态的 `waiting_children`。
 
-## 7. 最终目标
+### 10.5 阶段五: 高副作用动作拆 job
 
-四个 workflow 的最终目标不是把代码拆得更碎，而是让可靠性边界更清晰:
+目标:
 
-- 顶层 Task 面向用户和审计。
-- Stage 面向业务进度和恢复。
-- Job 面向独立调度、重试和超时。
+- `feishu_seed_row_insert` 从 executor resume 拆为 API job。
+- 竞品表 cleanup/scan 视耗时和失败率决定是否拆 API job。
+- 选品分析中的媒体上传/事实入库若失败率高，再从 product ingest job 中拆出。
+
+验收:
+
+- 外部副作用动作都有独立 retry、timeout、idempotency。
+- executor 不再承担长耗时或高失败率业务动作。
+
+## 11. 优先级建议
+
+| 优先级 | 动作 | 原因 |
+| --- | --- | --- |
+| P0 | 修正文档口径，明确当前实现与目标架构差异 | 避免后续开发误判现状 |
+| P0 | 固化通用事实采集与业务投影边界 | 避免每个 workflow 重复实现商品/达人/视频采集 |
+| P1 | 抽 API / browser handler registry | 降低新增 job 对 worker 主循环的侵入 |
+| P1 | seed row insert 拆 API job | 这是当前最明显的外部副作用但不可独立重试点 |
+| P1 | influencer pool final status policy 固化 | 达人同步需要清晰表达 partial success |
+| P2 | Reconciler 显式化 | 提升父子任务收敛的可测试性和可恢复性 |
+| P2 | Watchdog Scanner 补齐 | 解决无响应、卡死、孤儿 running 兜底 |
+| P3 | 内部 WorkflowDefinition 落地 | 让 stage/job 设计从文档进入代码事实来源 |
+
+## 12. 最终目标
+
+四个 workflow 的最终目标不是把代码机械拆碎，而是让可靠性边界清楚:
+
+- Task 面向用户请求、审计和最终结果。
+- Stage 面向业务进度、恢复和可观测性。
+- Job 面向独立调度、重试、超时和幂等。
 - Handler 面向代码入口和执行保护。
 - Flow 面向可复用业务实现。
 - Runtime DB 面向状态真相。
+- Reconciler 面向父子状态收敛。
+- Watchdog 面向不可恢复或无响应状态兜底。
 
-这样新增业务时，不再从“写一个 handler”开始，而是先定义 Task、Stage、Job、Handler、Flow，再落到代码实现。
+新增业务流程时，不应从“写一个 handler”开始，而应先定义 Task、Workflow、Stage、Job、Handler、Flow 和对应的 Runtime/Fact/Storage 边界，再进入代码实现。
