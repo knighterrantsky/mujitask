@@ -9,13 +9,13 @@
 1. `.platform/platform-manifest.yaml`
 2. `.platform/model-rules.yaml`
 3. `AGENT.MD`
-4. `docs/framework_contract/0.2.1/public-capability-status.md`
-5. `docs/framework_contract/0.2.1/business-consumption-contract.md`
+4. `README.md`
+5. `docs/README.md`
 
 ## Repo Role
 
 - 这个仓库是业务模板，不是 framework 源码仓库
-- 业务侧不应把 framework 源码当作事实 contract
+- framework public API、contract 和迁移说明以 `automation-framework` package 或 framework 仓库自身文档为准
 - 新业务应从这个仓库初始化为独立业务仓库后再长期开发
 - 标准安装模式下，不应假设本机存在 `../automation-framework`
 - 同级目录本地 framework checkout 只属于平台联调覆盖模式
@@ -28,7 +28,6 @@
 
 - 只在业务可编辑区工作
 - 不修改 platform-managed 区域
-- 不修改 vendored framework contract docs
 - 不导入非白名单 framework 模块
 
 如果任务明确涉及 framework 升级或 scaffold 基线升级，才进入 `platform_upgrade` 模式。
@@ -44,16 +43,18 @@
 
 - `.platform/**`
 - `AGENT.MD`
-- `docs/framework_contract/**`
 - `src/automation_business_scaffold/agent.py`
 - `src/automation_business_scaffold/registry.py`
 - `tests/test_agent.py`
-- `tests/test_contract_pack.py`
+- `tests/test_framework_dependency.py`
 
 ## Business Editable Paths
 
 默认只在这些区域工作：
 
+- `README.md`
+- `docs/README.md`
+- `docs/arch/**`
 - `src/automation_business_scaffold/config.py`
 - `src/automation_business_scaffold/tasks/**`
 - `src/automation_business_scaffold/workflows/**`
@@ -62,6 +63,8 @@
 - `src/automation_business_scaffold/mappers/**`
 - `src/automation_business_scaffold/validators/**`
 - `docs/business/**`
+- `docs/ops/**`
+- `docs/reference/**`
 - `tests/test_registry.py`
 - `tests/test_workflow_demo.py`
 
@@ -95,7 +98,7 @@
 
 - 新业务默认走 `BaseWorkflowTask`
 - `workflow_draft.review-only.yaml` 只是审核样例，不是可执行 workflow
-- `run_mode` / `effects` 的解释以 vendored contract docs 为准
+- `run_mode` / `effects` 的解释以 `automation-framework` package 或 framework 仓库自身文档为准
 - 业务逻辑应放在 `tasks/`、`workflows/`、`mappers/`、`validators/`、`flows/`
 
 ## Escalation

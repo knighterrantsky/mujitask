@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.happyzhao.mujitask.api-worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ROOT_DIR__/scripts/execution_control/run_launchd_agent.sh</string>
+    <string>automation_business_scaffold.api_worker_daemon</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__ROOT_DIR__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__ROOT_DIR__/runtime/phase1_daemons/api_worker.launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT_DIR__/runtime/phase1_daemons/api_worker.launchd.stderr.log</string>
+</dict>
+</plist>

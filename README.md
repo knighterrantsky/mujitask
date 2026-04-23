@@ -1,73 +1,100 @@
-# automation-business-scaffold
+# Mujitask
 
-`automation-business-scaffold` 是业务侧的起步模板仓库。
+Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 
-它的定位很明确：
+它的核心职责是：
 
-- 它不是 framework 源码仓库
-- 它不是多个业务长期共用的业务仓库
-- 它是一个“拿下来就能开始写业务”的 base project
+- 从 OpenClaw / Skill / CLI 接收业务任务。
+- 通过 Runtime DB 编排长流程任务。
+- 使用 `executor_daemon`、`api_worker_daemon`、`browser_runloop`、`outbox_dispatcher` 执行业务。
+- 采集 TikTok / FastMoss 数据，写回飞书业务表，并沉淀事实数据库和运行产物。
 
-推荐模式：
-
-1. 平台团队维护 `automation-framework` 与 `automation-business-scaffold`
-2. 新业务从 `automation-business-scaffold` 初始化自己的独立仓库
-3. 业务团队只在自己的业务仓库里长期开发
+当前项目依赖 `automation-framework`，但不在本仓库维护 framework 的接口说明和 contract 文档。framework 的公开接口、运行时契约和升级说明应直接从 `automation-framework` 包或 framework 仓库读取；本仓库 README 只说明 Mujitask 这个业务项目如何部署、运行和维护。
 
 ## 1. 先读什么
 
-默认阅读顺序：
+项目入口：
 
-1. `.platform/platform-manifest.yaml`
-2. `.platform/model-rules.yaml`
-3. `AGENT.MD`
-4. `docs/framework_contract/0.2.1/public-capability-status.md`
-5. `docs/framework_contract/0.2.1/business-consumption-contract.md`
+1. [docs/README.md](./docs/README.md): 全部文档地图。
+2. [docs/business/README.md](./docs/business/README.md): 客户需求、业务规则、飞书表口径、验收口径。
+3. [docs/arch/README.md](./docs/arch/README.md): 当前系统架构、workflow、Runtime DB、Fact DB、Storage。
+4. [docs/ops/README.md](./docs/ops/README.md): 部署、验收、回退和 runbook 归口。
+5. [docs/reference/README.md](./docs/reference/README.md): FastMoss / TikTok 等外部接口和研究材料归口。
 
-这几个文件一起定义：
+重要边界：
 
-- 当前 pinned 的 framework 版本
-- 允许使用的 framework import 面
-- 哪些目录是 platform-managed
-- 哪些目录是业务可编辑区
-- 当前能力哪些可用、哪些还在规划中
+- 根 `README.md` 是项目入口，不承载详细需求和架构设计。
+- `docs/README.md` 是文档总入口。
+- `docs/business` 只放需求和业务规则。
+- `docs/arch` 是当前架构事实来源。
+- framework contract 不再从本仓库文档读取。
 
-额外约束：
+## 2. 当前正式业务入口
 
-- 这个仓库必须能在“只 clone 自己一个仓库”的情况下工作
-- 不要把 `../automation-framework` 视为必然存在的路径
-- 同级目录里的本地 framework checkout 只属于平台联调便利，不属于标准安装前提
+当前正式业务入口是顶层 Task，而不是单个 leaf task。
 
-## 2. 快速启动
+| task_code | 作用 | 执行形态 |
+| --- | --- | --- |
+| `refresh_current_competitor_table` | 定时刷新当前飞书竞品表 | submit 入队，executor 编排，browser/API worker 执行 |
+| `search_keyword_competitor_products` | 根据关键词新增竞品到飞书竞品表 | submit 入队，executor 编排，browser/API worker 执行 |
+| `sync_tk_influencer_pool` | 从竞品表扩展达人池 | submit 入队，api worker 消费 product/author/finalizer job |
+| `tiktok_fastmoss_product_ingest` | 单商品 TikTok + FastMoss 事实采集 | submit 入队，api worker 采集、上传媒体、写事实库 |
 
-### macOS 一键部署模式
+内部 / debug leaf task 仍可直接运行，但不作为客户正式入口：
 
-当前正式部署先收窄为 `macOS + launchd + Homebrew 本机 Postgres/MinIO`。
-运行前需要 Homebrew 已安装；部署脚本会安装缺失的 `postgresql@17` / `minio` formula。
-现场实施时必须显式确认两个目录：`MUJITASK_INSTALL_DIR` 是项目安装路径，`MUJITASK_SKILLS_DIR` 是目标 agent 读取 skills 的根目录。OpenClaw、Hermes Agent 或其他 agent 都通过这个 skills 根目录接入，不再由脚本猜 workspace。
+- `tiktok_product_link_cleanup`
+- `feishu_pending_rows_scan`
+- `feishu_single_row_update`
+- `feishu_seed_row_insert`
+- `fastmoss_keyword_candidate_discovery`
+- `tiktok_feishu_single_sync`
+- `fastmoss_login_check`
+
+## 3. 推荐部署方式
+
+当前正式部署路径收敛为：
+
+```text
+macOS + launchd + Homebrew Postgres + MinIO + Mujitask skill bundle
+```
+
+部署前先复制并填写本地部署配置：
 
 ```bash
 cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.local.env
-# 填写 deploy.local.env 中的项目安装路径、skills 安装路径、飞书、FastMoss 和浏览器配置
+```
+
+必须确认这些关键配置：
+
+| 配置 | 说明 |
+| --- | --- |
+| `MUJITASK_INSTALL_DIR` | 项目安装目录，默认示例为 `$HOME/apps/mujitask` |
+| `MUJITASK_SKILLS_DIR` | 目标 agent 读取 skills 的目录 |
+| `MUJITASK_TABLE_URL` | 飞书 Base / Table URL |
+| `MUJITASK_FEISHU_ACCESS_TOKEN` | 飞书访问 token |
+| `MUJITASK_FASTMOSS_PHONE` / `MUJITASK_FASTMOSS_PASSWORD` | FastMoss 登录账号 |
+| `MUJITASK_BROWSER_PROFILE_REF` | 浏览器 profile 引用，默认 `roxy-tiktok` |
+
+执行预检和部署：
+
+```bash
 bash scripts/deploy/macos/preflight.sh
 bash scripts/deploy/macos/deploy.sh
 ```
 
-这条路径会完成：
+部署脚本会完成：
 
-- 创建/更新 `.venv`
-- 安装 pinned `automation-framework` 与项目运行依赖
-- 安装并启动本机 Postgres 和 MinIO
-- 生成 `<MUJITASK_INSTALL_DIR>/scripts/execution_control/executor.local.env`
-- 安装 skill bundle 到 `<MUJITASK_SKILLS_DIR>/mujitask-tiktok-feishu-sync`
-- 安装并刷新 3 个 `launchd` 守护进程
-- 执行 smoke check
+- 创建或更新 `.venv`。
+- 安装当前项目依赖和 `automation-framework`。
+- 安装并启动本机 Postgres 和 MinIO。
+- 生成 `scripts/execution_control/executor.local.env`。
+- 安装 `skills/mujitask-tiktok-feishu-sync` 到目标 skills 目录。
+- 安装并刷新 4 个 launchd 守护进程。
+- 执行 smoke check。
 
-### 标准模式
+## 4. 本地开发运行
 
-这是默认模式，也是对外必须保证成立的模式。
-
-创建虚拟环境并安装：
+创建虚拟环境并安装依赖：
 
 ```bash
 python3 -m venv .venv
@@ -76,254 +103,197 @@ pip install -e .[dev]
 python -m playwright install chromium
 ```
 
-这一步会通过 `pyproject.toml` 中 pin 的 git 依赖自动安装对应 framework 版本。
-
-在这个模式下，你不需要本地 `automation-framework` 同级目录。
-
-### 平台联调覆盖模式
-
-如果你在同一个 `workspace` 里同时有本地 framework 仓库，平台维护者可以临时覆盖 pinned 依赖：
-
-```bash
-pip install -e ../automation-framework
-```
-
-这个模式只用于：
-
-- 验证 scaffold 是否兼容未发布的 framework 改动
-- 平台侧本地联调
-
-不要把它作为业务开发默认前提写入后续派生业务仓库。
-
-复制运行时配置：
+复制基础配置：
 
 ```bash
 cp .env.example .env
 cp config/browser_profiles.example.json config/browser_profiles.json
 ```
 
-启动 agent：
+如果只跑 Runtime DB 相关流程，需要准备：
+
+```bash
+cp scripts/execution_control/executor.local.env.example scripts/execution_control/executor.local.env
+```
+
+然后填写 Postgres / MinIO / worker 相关配置。
+
+启动本地 agent API：
 
 ```bash
 uvicorn automation_business_scaffold.agent:app --app-dir src --host 127.0.0.1 --port 8110
 ```
 
-查看 task：
+查看已注册任务：
 
 ```bash
 curl http://127.0.0.1:8110/tasks
 ```
 
-提交当前竞品表刷新 workflow：
-
-```bash
-curl -X POST http://127.0.0.1:8110/runs \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_name": "refresh_current_competitor_table",
-    "params": {
-      "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
-      "access_token_env": "FEISHU_ACCESS_TOKEN",
-      "profile_ref": "roxy-tiktok",
-      "run_mode": "canary"
-    },
-    "wait": true
-  }'
-```
-
-### 直接脚本执行模式
-
-如果不需要启动 agent，也可以直接执行注册好的 task。
-
-先列出可运行 task：
+也可以直接使用 CLI 查看任务：
 
 ```bash
 automation-business-scaffold-run list-tasks
 ```
 
-直接运行 TikTok 链接清洗 task：
+## 5. 常驻进程
+
+生产和本地 launchd 部署会运行 4 个常驻角色：
+
+| 进程 | console script | 作用 |
+| --- | --- | --- |
+| executor | `automation-business-scaffold-executor` | 顶层 workflow 编排，拆 job，汇总结果，写 outbox |
+| API worker | `automation-business-scaffold-api-worker` | 处理 API/HTTP/飞书/FastMoss/事实入库/媒体上传 job |
+| Browser worker | `automation-business-scaffold-browser-runloop` | 串行消费需要浏览器 profile/CDP 的任务 |
+| Outbox dispatcher | `automation-business-scaffold-outbox-dispatcher` | 发送最终通知，处理通知重试 |
+
+launchd 安装脚本：
 
 ```bash
-cd "$HOME/apps/mujitask"
+bash scripts/execution_control/install_launch_agents.sh
+```
+
+本地也可以直接运行单进程排障，例如：
+
+```bash
+automation-business-scaffold-executor --once
+automation-business-scaffold-api-worker --once
+automation-business-scaffold-browser-runloop --once
+automation-business-scaffold-outbox-dispatcher --once
+```
+
+## 6. 提交和查询任务
+
+提交达人池同步：
+
+```bash
 automation-business-scaffold-run run \
-  --task tiktok_product_link_cleanup \
+  --task sync_tk_influencer_pool \
   --params-json '{
-    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
+    "control_action": "submit",
+    "table_url": "https://my.feishu.cn/base/appXXX?table=tblSource",
+    "target_table_url": "https://my.feishu.cn/base/appXXX?table=tblTarget",
     "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "url_field_name": "产品链接",
-    "run_mode": "canary"
+    "fastmoss_phone_env": "FASTMOSS_PHONE",
+    "fastmoss_password_env": "FASTMOSS_PASSWORD"
   }'
 ```
 
-当前表驱动更新链路已经拆成 3 个 task，由 agent skill 负责编排：
-
-- `tiktok_product_link_cleanup`
-- `feishu_pending_rows_scan`
-- `feishu_single_row_update`
-
-如果只想先看当前飞书表里哪些行还需要补齐，可以直接运行待更新扫描 task：
+提交单商品事实采集：
 
 ```bash
-cd "$HOME/apps/mujitask"
 automation-business-scaffold-run run \
-  --task feishu_pending_rows_scan \
+  --task tiktok_fastmoss_product_ingest \
   --params-json '{
-    "table_url": "https://my.feishu.cn/base/appXXX?table=tblXXX",
-    "access_token_env": "FEISHU_ACCESS_TOKEN",
-    "run_mode": "canary"
+    "control_action": "submit",
+    "product_url": "https://www.tiktok.com/shop/pdp/1732183068040729370",
+    "fastmoss_phone_env": "FASTMOSS_PHONE",
+    "fastmoss_password_env": "FASTMOSS_PASSWORD",
+    "execution_control_artifact_store_provider": "minio"
+  }'
+```
+
+查询状态时传入 `request_id`：
+
+```bash
+automation-business-scaffold-run run \
+  --task sync_tk_influencer_pool \
+  --params-json '{
+    "control_action": "status",
+    "request_id": "replace-with-request-id"
   }'
 ```
 
 说明：
 
-- `tiktok_product_link_cleanup` 只是前置辅助能力，用来规范 `产品链接` 并删除重复整行
-- `feishu_pending_rows_scan` 只负责识别待更新行，不会抓取详情也不会写回
-- `feishu_single_row_update` 才是当前单条记录补齐更新入口，会按缺失字段写入 TikTok 和 FastMoss 数据
+- `submit` 只负责提交顶层任务。
+- 后续推进由 executor 和 worker 完成。
+- 最终通知由 outbox dispatcher 完成。
+- 不传 `control_action` 的同步直跑模式只用于本地 debug。
 
-这个模式会像 agent 一样写入运行记录和中间数据：
+## 7. 目录边界
 
-- `runtime/cli_runs/*.json`
-- `runtime/cli_runs/steps/*.json`
-- `runtime/cli_runs/signals/*.json`
-- `runtime/artifacts/<run_id>/...`
+| 路径 | 说明 |
+| --- | --- |
+| `src/automation_business_scaffold/business/tasks/` | 顶层 task 和内部 task 入口 |
+| `src/automation_business_scaffold/business/workflows/` | WorkflowSpec 声明 |
+| `src/automation_business_scaffold/business/flows/` | 业务编排和领域流程 |
+| `src/automation_business_scaffold/infrastructure/` | 飞书、FastMoss、Runtime Store、Fact Store、Artifact Store 等基础设施 |
+| `src/automation_business_scaffold/models/` | 运行时和业务模型 |
+| `src/automation_business_scaffold/validators/` | 业务参数校验 |
+| `skills/mujitask-tiktok-feishu-sync/` | 对外安装的 skill bundle |
+| `scripts/deploy/macos/` | macOS 一键部署 |
+| `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
+| `docs/` | 项目文档地图 |
 
-## 3. 目录边界
-
-### Platform-managed
-
-默认不要在普通业务开发里修改这些区域：
+不建议在业务开发中改动：
 
 - `.platform/`
 - `AGENT.MD`
-- `docs/framework_contract/`
-- `src/automation_business_scaffold/agent.py`
-- `src/automation_business_scaffold/registry.py`
-- `tests/test_agent.py`
-- `tests/test_contract_pack.py`
+- framework 依赖内部代码
 
-### Business-editable
+framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
-业务开发默认在这些区域工作：
+## 8. 配置边界
 
-- `src/automation_business_scaffold/config.py`
-- `src/automation_business_scaffold/business/tasks/`
-- `src/automation_business_scaffold/business/workflows/`
-- `src/automation_business_scaffold/business/flows/`
-- `src/automation_business_scaffold/infrastructure/`
-- `src/automation_business_scaffold/models/`
-- `src/automation_business_scaffold/validators/`
-- `docs/business/`
-- `tests/test_registry.py`
-- `tests/test_workflow_demo.py`
+业务运行配置主要分三类：
 
-## 4. 公开接入入口
+| 配置来源 | 说明 |
+| --- | --- |
+| `.env` | 本地 agent / browser profile 等基础配置 |
+| `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
+| `scripts/execution_control/executor.local.env` | Runtime DB、MinIO、lease、heartbeat、worker 等执行控制配置 |
 
-这个 scaffold 对外固定公开两个入口：
+常见执行控制环境变量：
 
-- `automation_business_scaffold.agent:app`
-- `automation_business_scaffold.registry.build_task_registry()`
+- `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
+- `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
+- `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
+- `BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX`
+- `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
+- `BUSINESS_EXECUTION_CONTROL_LEASE_SECONDS`
+- `BUSINESS_EXECUTION_CONTROL_HEARTBEAT_INTERVAL_SECONDS`
 
-当前 TikTok 业务入口：
-
-- `tiktok_product_link_cleanup`
-- `feishu_pending_rows_scan`
-- `feishu_single_row_update`
-- `feishu_seed_row_insert`
-- `fastmoss_keyword_candidate_discovery`
-- `refresh_current_competitor_table`
-- `search_keyword_competitor_products`
-- `sync_tk_influencer_pool`
-- `tiktok_feishu_single_sync`
-
-## 5. 新业务怎么从这里开始
-
-建议流程：
-
-1. 用这个仓库初始化一个新的业务仓库
-2. 替换项目名、包名、README 标题
-3. 在 `tasks/__init__.py` 中替换默认 task 列表
-4. 在 `business/tasks/`、`business/flows/`、`business/workflows/`、`infrastructure/`、`validators/` 内逐步替换业务逻辑
-5. 保留 `.platform/*`、`AGENT.MD`、`docs/framework_contract/*`
-
-注意：
-
-- 不建议长期直接在 `automation-business-scaffold` 仓库上写真实业务
-- 当前 TikTok 一期为了直接复用 `chrome_cdp` / `roxy` provider，业务实现显式依赖 `automation_framework.browser`
-- `workflow_draft.review-only.yaml` 只是审核样例，不是可执行 workflow
-
-## 6. 运行时配置与业务默认配置
-
-### runtime 配置
-
-由 framework runtime 读取：
-
-- `BROWSER_PROFILES_FILE`
-- `DEFAULT_PROFILE_REF`
-- `AGENT_HOST`
-- `AGENT_PORT`
-- `AGENT_RUN_DIR`
-- `AGENT_RECORDING_DIR`
-
-这些配置写在 `.env.example` 中。
-
-### 业务默认配置
-
-由本仓库自己的 `src/automation_business_scaffold/config.py` 负责：
-
-- `BUSINESS_DEFAULT_RUN_MODE`
-- `BUSINESS_SOURCE_SYSTEM`
-- `BUSINESS_TARGET_SYSTEM`
-- `BUSINESS_DEFAULT_CATEGORY`
-- `BUSINESS_DEFAULT_PRICE`
-- `BUSINESS_DEFAULT_DESCRIPTION`
-
-这部分是业务级默认值，不属于 framework runtime 配置。
-
-## 7. 如何新增业务 task
-
-推荐步骤：
-
-1. 在 `models/` 补业务模型
-2. 在 `infrastructure/*` 补请求、mapper、fact ingestion、对象存储等基础设施
-3. 在 `validators/` 补业务校验
-4. 在 `business/flows/` 补业务编排
-5. 在 `business/workflows/` 只保留顶层入口或真实多 step 的 `WorkflowSpec`
-6. 在 `business/tasks/` 继承 `BaseWorkflowTask`；叶子任务的单 step `WorkflowSpec` 直接放在 task 内
-7. 在 `business/tasks/__init__.py` 把新 task 加入默认列表
-
-## 8. 如何替换 framework 依赖
-
-`automation-framework` 的安装版本只由 `pyproject.toml` 决定。
-
-当前依赖 pin 为：
-
-```text
-55e8223a92f562f4053006c55e66fe5491c9be61
-```
-
-如果平台发布了新版本，升级顺序固定为：
-
-1. 先看新的 `docs/framework_contract/<framework_version>/...`
-2. 再看 `docs/framework_contract/<framework_version>/public-migration-guide.md`
-3. 再更新 `pyproject.toml` 里的 pinned framework 依赖
-4. 如果 contract pack 有变化，再更新 `.platform/platform-manifest.yaml` 中的 `public_contract_pack_version`
-5. 最后按需迁移 platform-managed 区域
-
-当前业务文档入口见：
-
-- `docs/business/README.md`
+详细 storage 规则见 [docs/arch/storage-architecture-design.md](./docs/arch/storage-architecture-design.md)。
 
 ## 9. 验证
 
-运行测试：
+本地 Postgres 相关测试：
 
 ```bash
-pytest
+scripts/execution_control/run_local_postgres_tests.sh
 ```
 
-首版至少验证这些场景：
+轻量测试：
 
-- `GET /tasks` 能看到 demo task
-- demo task 能通过 `/runs` 执行并产出 step / signal / artifact
-- `draft` 模式下带 `submit` effect 的 step 会被 runtime 阻止
-- vendored contract docs 版本与 `.platform/platform-manifest.yaml` 中的 `public_contract_pack_version` 一致
+```bash
+uv run --extra dev pytest
+```
+
+部署后建议至少验证：
+
+- `automation-business-scaffold-run list-tasks` 能列出正式 task。
+- 4 个 launchd 守护进程能启动。
+- Postgres Runtime 表可连接。
+- MinIO bucket 可写入 artifact。
+- `refresh_current_competitor_table` 可以 submit 并返回 `request_id`。
+- executor / worker 能推进任务状态。
+- outbox dispatcher 能处理最终通知。
+
+## 10. Framework 依赖说明
+
+`automation-framework` 由 `pyproject.toml` 管理：
+
+```toml
+automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.6
+```
+
+升级 framework 时：
+
+1. 在 framework 包或 framework 仓库中查看对应版本的公开接口、contract 和迁移说明。
+2. 更新 `pyproject.toml` 中的 framework 版本。
+3. 安装依赖并运行测试。
+4. 只在确有需要时同步调整 `.platform/` 或 framework 接入代码。
+
+本仓库不再把 framework contract 作为项目 README 的阅读入口；Mujitask README 只维护业务项目自身的入口、部署、运行和文档边界。

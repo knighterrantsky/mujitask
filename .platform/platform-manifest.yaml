@@ -1,7 +1,7 @@
-# Platform-managed: keep this file aligned with the vendored framework contract pack.
+# Platform-managed: keep this file aligned with the pinned automation-framework dependency.
 repo_role: business_scaffold
 scaffold_version: "0.1.0"
-public_contract_pack_version: "0.2.1"
+framework_docs_source: "automation-framework package or framework repository"
 default_change_mode: "business_feature"
 path_assumptions:
   sibling_framework_repo_required: false
@@ -18,12 +18,14 @@ allowed_framework_imports:
 protected_paths:
   - ".platform/**"
   - "AGENT.MD"
-  - "docs/framework_contract/**"
   - "src/automation_business_scaffold/agent.py"
   - "src/automation_business_scaffold/registry.py"
   - "tests/test_agent.py"
-  - "tests/test_contract_pack.py"
+  - "tests/test_framework_dependency.py"
 business_editable_paths:
+  - "README.md"
+  - "docs/README.md"
+  - "docs/arch/**"
   - "src/automation_business_scaffold/config.py"
   - "src/automation_business_scaffold/tasks/**"
   - "src/automation_business_scaffold/workflows/**"
@@ -32,15 +34,9 @@ business_editable_paths:
   - "src/automation_business_scaffold/mappers/**"
   - "src/automation_business_scaffold/validators/**"
   - "docs/business/**"
+  - "docs/ops/**"
+  - "docs/reference/**"
   - "tests/test_registry.py"
   - "tests/test_workflow_demo.py"
-contract_docs:
-  - "docs/framework_contract/0.2.1/public-import-surface.md"
-  - "docs/framework_contract/0.2.1/public-capability-status.md"
-  - "docs/framework_contract/0.2.1/public-timeline.md"
-  - "docs/framework_contract/0.2.1/public-migration-guide.md"
-  - "docs/framework_contract/0.2.1/business-consumption-contract.md"
-  - "docs/framework_contract/0.2.1/workflow-runtime-contract.md"
-  - "docs/framework_contract/0.2.1/workflow-draft-contract.md"
 demo_task_name: "source_to_target_publish_demo"
 demo_workflow_id: "source_to_target_publish_demo_v1"

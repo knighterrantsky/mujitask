@@ -15,10 +15,15 @@ target_metadata = None
 
 
 def _database_url() -> str:
-    return (
+    db_url = (
         os.getenv("BUSINESS_EXECUTION_CONTROL_DB_URL", "").strip()
         or config.get_main_option("sqlalchemy.url")
     )
+    if not db_url:
+        raise RuntimeError("BUSINESS_EXECUTION_CONTROL_DB_URL is required for migrations.")
+    if db_url.lower().startswith("sqlite"):
+        raise RuntimeError("SQLite is no longer supported for migrations; use Postgres.")
+    return db_url
 
 
 def run_migrations_offline() -> None:

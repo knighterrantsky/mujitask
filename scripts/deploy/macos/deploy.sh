@@ -404,13 +404,12 @@ install_agent_skill() {
   local fastmoss_phone="$6"
   local fastmoss_password="$7"
   local db_url="$8"
-  local db_path="$9"
-  local artifact_root="${10}"
-  local artifact_bucket="${11}"
-  local requested_by="${12}"
-  local notification_channel_code="${13}"
-  local openclaw_agent_id="${14}"
-  local openclaw_state_dir="${15}"
+  local artifact_root="$9"
+  local artifact_bucket="${10}"
+  local requested_by="${11}"
+  local notification_channel_code="${12}"
+  local openclaw_agent_id="${13}"
+  local openclaw_state_dir="${14}"
 
   local source_skill_dir="${install_dir}/skills/mujitask-tiktok-feishu-sync"
   local target_skill_dir="${skills_dir}/mujitask-tiktok-feishu-sync"
@@ -447,7 +446,6 @@ install_agent_skill() {
     "${fastmoss_phone}" \
     "${fastmoss_password}" \
     "${db_url}" \
-    "${db_path}" \
     "${artifact_root}" \
     "${artifact_bucket}" \
     "${requested_by}" \
@@ -481,15 +479,14 @@ main() {
   postgres_user="${MUJITASK_POSTGRES_USER:-$(id -un)}"
   postgres_socket_dir="${MUJITASK_POSTGRES_SOCKET_DIR:-/tmp}"
 
-  local db_url db_path artifact_root artifact_bucket artifact_store_provider
+  local db_url artifact_root artifact_bucket artifact_store_provider
   if [[ "${MUJITASK_RUNTIME_MODE:-native}" == "external" ]]; then
     db_url="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "")"
   else
     db_url="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "postgresql+psycopg://${postgres_user}@/${postgres_db}?host=${postgres_socket_dir}&port=${postgres_port}")"
   fi
-  db_path="$(config_value MUJITASK_DB_PATH BUSINESS_EXECUTION_CONTROL_DB_PATH "")"
-  if [[ -z "${db_url}" && -z "${db_path}" ]]; then
-    fail_deploy "Missing database config. Set MUJITASK_DB_URL or MUJITASK_DB_PATH in ${ENV_FILE}."
+  if [[ -z "${db_url}" ]]; then
+    fail_deploy "Missing database config. Set MUJITASK_DB_URL / BUSINESS_EXECUTION_CONTROL_DB_URL in ${ENV_FILE}."
   fi
   artifact_root="$(config_value MUJITASK_ARTIFACT_ROOT BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT "${install_dir}/runtime/execution_control/object_store")"
   artifact_bucket="$(config_value MUJITASK_MINIO_BUCKET BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET "automation-business-scaffold")"
@@ -521,7 +518,6 @@ main() {
   write_executor_local_env \
     "${install_dir}" \
     "${db_url}" \
-    "${db_path}" \
     "${artifact_root}" \
     "${artifact_bucket}" \
     "${artifact_store_provider}" \
@@ -540,17 +536,8 @@ main() {
     "${fastmoss_password}" \
     "${notification_channel_code}"
 
-  local runtime_check_db_url="${db_url}"
-  if [[ -z "${runtime_check_db_url}" && -n "${db_path}" ]]; then
-    if [[ "${db_path}" == /* ]]; then
-      runtime_check_db_url="sqlite:///${db_path}"
-    else
-      runtime_check_db_url="sqlite:///${install_dir}/${db_path}"
-    fi
-  fi
-
   wait_for_runtime \
-    "${runtime_check_db_url}" \
+    "${db_url}" \
     "${artifact_store_provider}" \
     "${minio_endpoint}" \
     "${minio_access_key}" \
@@ -570,7 +557,6 @@ main() {
     "${fastmoss_phone}" \
     "${fastmoss_password}" \
     "${db_url}" \
-    "${db_path}" \
     "${artifact_root}" \
     "${artifact_bucket}" \
     "${requested_by}" \

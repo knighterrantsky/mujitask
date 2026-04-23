@@ -18,7 +18,7 @@ main() {
   [[ -f "$existing_skill_env" ]] || fail "Missing deployed skill config: $existing_skill_env"
 
   local install_dir table_url token browser_profile_ref fastmoss_phone fastmoss_password
-  local db_url db_path artifact_root artifact_bucket requested_by notification_channel_code
+  local db_url artifact_root artifact_bucket requested_by notification_channel_code
   local openclaw_agent_id openclaw_state_dir
   install_dir="$(read_kv_value "$existing_skill_env" "INSTALL_DIR" 2>/dev/null || true)"
   table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
@@ -27,7 +27,6 @@ main() {
   fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
   fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
   db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-  db_path="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
   artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
   artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
   requested_by="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_REQUESTED_BY" 2>/dev/null || true)"
@@ -42,7 +41,6 @@ main() {
   local artifact_store_provider="" artifact_object_prefix="" minio_endpoint="" minio_access_key="" minio_secret_key="" minio_region="" minio_secure="" minio_create_bucket="" sync_referenced_files=""
   if [[ -f "$existing_executor_env" ]]; then
     [[ -n "$db_url" ]] || db_url="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-    [[ -n "$db_path" ]] || db_path="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_PATH" 2>/dev/null || true)"
     [[ -n "$artifact_root" ]] || artifact_root="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
     [[ -n "$artifact_bucket" ]] || artifact_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
     artifact_store_provider="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER" 2>/dev/null || true)"
@@ -168,7 +166,6 @@ main() {
     "$fastmoss_phone" \
     "$fastmoss_password" \
     "$db_url" \
-    "$db_path" \
     "$artifact_root" \
     "$artifact_bucket" \
     "${requested_by:-openclaw-skill}" \
@@ -178,7 +175,6 @@ main() {
   write_executor_local_env \
     "$install_dir" \
     "$db_url" \
-    "$db_path" \
     "$artifact_root" \
     "$artifact_bucket" \
     "${artifact_store_provider:-minio}" \

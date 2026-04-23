@@ -4,6 +4,8 @@ from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
     map_fastmoss_author_video_list,
     map_fastmoss_goods_author,
     map_fastmoss_goods_base,
+    map_fastmoss_goods_overview,
+    map_fastmoss_goods_product_sku,
     map_fastmoss_shop_author,
     map_fastmoss_shop_goods,
     map_fastmoss_video_goods,
@@ -40,6 +42,58 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
     assert mapped["shops"][0]["shop_name"] == "Roxy Shop"
     assert mapped["relations"]["product_shops"][0]["shop_id"] == "7496166867916327706"
     assert mapped["media_assets"][0]["entity_external_id"] == "1732183068040729370"
+    assert mapped["products"][0]["facts"] == {}
+
+
+def test_product_overview_mapper_keeps_metrics_out_of_product_main_facts():
+    mapped = map_fastmoss_goods_overview(
+        {
+            "data": {
+                "product_id": "1732183068040729370",
+                "overview": {
+                    "d_type": 28,
+                    "sales_7d": 88,
+                    "sale_amount": 1200.5,
+                },
+            }
+        }
+    )
+
+    assert mapped["products"] == [
+        {
+            "product_id": "1732183068040729370",
+            "source_platform": "fastmoss",
+            "facts": {},
+        }
+    ]
+
+
+def test_product_sku_mapper_keeps_price_and_stock_out_of_sku_main():
+    mapped = map_fastmoss_goods_product_sku(
+        {
+            "data": {
+                "product_id": "1732183068040729370",
+                "sku_list": [
+                    {
+                        "sku_id": "sku-pink",
+                        "sku_name": "Pink",
+                        "real_price": "$12.99",
+                        "stock": 7,
+                        "sold_count": 31,
+                    }
+                ],
+            }
+        }
+    )
+
+    sku = mapped["product_skus"][0]
+    assert sku == {
+        "product_id": "1732183068040729370",
+        "sku_id": "sku-pink",
+        "sku_name": "Pink",
+        "spec_name": "",
+        "facts": {},
+    }
 
 
 def test_map_fastmoss_goods_author_extracts_creator_product_and_representative_video():
@@ -180,7 +234,7 @@ def test_fastmoss_session_only_returns_payload_for_business_layer():
     assert returned is payload
 
 
-def test_business_layer_maps_accepted_rows_then_explicitly_ingests(tmp_path):
+def test_business_layer_maps_accepted_rows_then_explicitly_ingests(runtime_db_url):
     raw_payload = {
         "code": 200,
         "data": {
@@ -207,7 +261,7 @@ def test_business_layer_maps_accepted_rows_then_explicitly_ingests(tmp_path):
     ]
     accepted_payload = {"code": 200, "data": {"list": accepted_rows}}
     mapped = map_fastmoss_goods_author(accepted_payload, product_id="1732183068040729370")
-    store = RuntimeStore(db_path=tmp_path / "explicit-ingestion.sqlite3")
+    store = RuntimeStore(db_url=runtime_db_url)
 
     persisted = TKFactIngestionService(runtime_store=store).ingest_api_response(
         source_platform="fastmoss",

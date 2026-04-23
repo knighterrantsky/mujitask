@@ -582,7 +582,6 @@ def _append_influencer_pool_browser_params(
 
 def _append_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
     db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
-    db_path = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_PATH")
     artifact_root = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_ROOT")
     artifact_bucket = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_BUCKET")
     requested_by = _optional_env_value(skill_env, "EXECUTION_CONTROL_REQUESTED_BY")
@@ -591,8 +590,6 @@ def _append_runtime_params(params: list[str], skill_env: dict[str, str]) -> list
 
     if db_url:
         params.append(f"execution_control_db_url={db_url}")
-    elif db_path:
-        params.append(f"execution_control_db_path={db_path}")
     if artifact_root:
         params.append(f"execution_control_artifact_root={artifact_root}")
     if artifact_bucket:
@@ -994,6 +991,14 @@ def _build_parser() -> argparse.ArgumentParser:
     influencer_pool_sync_submit_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
     influencer_pool_sync_submit_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
 
+    influencer_pool_sync_status_parser = subparsers.add_parser("influencer-pool-sync-status")
+    influencer_pool_sync_status_parser.add_argument("--run-mode", default="canary")
+    influencer_pool_sync_status_parser.add_argument("--request-id", required=True)
+
+    influencer_pool_sync_result_parser = subparsers.add_parser("influencer-pool-sync-result")
+    influencer_pool_sync_result_parser.add_argument("--run-mode", default="canary")
+    influencer_pool_sync_result_parser.add_argument("--request-id", required=True)
+
     influencer_pool_worker_parser = subparsers.add_parser("influencer-pool-worker")
     influencer_pool_worker_parser.add_argument("--run-mode", default="canary")
     influencer_pool_worker_parser.add_argument("--worker-kinds", default="product,author,finalizer")
@@ -1293,17 +1298,37 @@ def main(argv: list[str] | None = None) -> int:
             params=submit_params,
             stdout_prefix=prefix,
             extra_env={**extra_env, **influencer_pool_env},
-            accepted_message="Influencer pool sync submit placeholder accepted. Use influencer-pool-sync to execute immediately.",
+            accepted_message="Influencer pool sync task accepted for asynchronous execution.",
         )
         if submit_status != 0:
             return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
+    elif args.command == "influencer-pool-sync-status":
+        task_name = "sync_tk_influencer_pool"
+        prefix = "influencer-pool-sync-status-step"
+        params = _append_runtime_params(
+            [
+                "control_action=status",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "influencer-pool-sync-result":
+        task_name = "sync_tk_influencer_pool"
+        prefix = "influencer-pool-sync-result-step"
+        params = _append_runtime_params(
+            [
+                "control_action=result",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
     elif args.command == "influencer-pool-sync":
         task_name = "sync_tk_influencer_pool"
         prefix = "influencer-pool-sync-step"
-        params, influencer_pool_env = _influencer_pool_sync_submit_params(
+        submit_params, influencer_pool_env = _influencer_pool_sync_submit_params(
             skill_env=skill_env,
-            include_submit_control_action=False,
+            include_submit_control_action=True,
             max_source_rows=max(args.max_source_rows, 0),
             max_author_pages=max(args.max_author_pages, 0),
             max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
@@ -1315,19 +1340,19 @@ def main(argv: list[str] | None = None) -> int:
             request_delay_min_seconds=float(args.request_delay_min_seconds),
             request_delay_max_seconds=float(args.request_delay_max_seconds),
         )
-        cli_status, cli_payload = _run_cli_task_capture_payload(
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
             install_dir=install_dir,
             python_bin=python_bin,
-            cli_bin=cli_bin,
             task_name=task_name,
             run_mode=args.run_mode,
-            params=params,
+            params=submit_params,
             stdout_prefix=prefix,
             extra_env={**extra_env, **influencer_pool_env},
+            accepted_message="Influencer pool sync task accepted for asynchronous execution.",
         )
-        if cli_status != 0:
-            return _emit_final_result(cli_payload or {"status": "failed", "error": "run failed"})
-        return _emit_final_result(cli_payload)
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+        return _emit_final_result(submit_payload)
     elif args.command == "influencer-pool-worker":
         task_name = "sync_tk_influencer_pool"
         prefix = "influencer-pool-worker-step"

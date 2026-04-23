@@ -12,6 +12,11 @@ from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.infrastructure.feishu.api import FeishuBitableClient, parse_table_url
 from automation_business_scaffold.infrastructure.browser.browser_bridge import open_automation_page
 from automation_business_scaffold.business.flows.resource_codes import build_browser_resource_code
+from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import (
+    attach_fastmoss_cookie_cache,
+    build_fastmoss_cookie_cache_context,
+    save_fastmoss_cookie_cache_from_session,
+)
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
@@ -327,7 +332,11 @@ def _dispatch_influencer_pool_product_jobs(
     if max_source_rows > 0:
         candidate_rows = candidate_rows[:max_source_rows]
 
-    jobs = [_build_product_job_from_source_record(raw_record) for raw_record in candidate_rows]
+    request_id = str(params.get("request_id", "") or "")
+    jobs = [
+        _build_product_job_from_source_record(raw_record, request_id=request_id)
+        for raw_record in candidate_rows
+    ]
     queue_payload = _upsert_product_jobs(
         store=store,
         jobs=jobs,
@@ -424,6 +433,11 @@ def _run_influencer_pool_worker_daemon(
         ),
         event_callback=settings.get("debug_event_callback"),
     ) as fastmoss:
+        _attach_fastmoss_cookie_cache(
+            fastmoss=fastmoss,
+            settings=settings,
+            store=store,
+        )
         _prime_fastmoss_session(
             fastmoss=fastmoss,
             settings=settings,
@@ -558,6 +572,11 @@ def _run_candidate_rows_via_worker_queue(
         ),
         event_callback=settings.get("debug_event_callback"),
     ) as fastmoss:
+        _attach_fastmoss_cookie_cache(
+            fastmoss=fastmoss,
+            settings=settings,
+            store=store,
+        )
         _prime_fastmoss_session(
             fastmoss=fastmoss,
             settings=settings,
@@ -603,9 +622,84 @@ def _prime_fastmoss_session(
         has_browser_cookie_source=False,
         **fastmoss.cookie_snapshot(),
     )
+    if not bool(settings.get("fastmoss_ensure_login", False)):
+        _emit_debug_event(settings, "session_prime_cookie_reuse_mode", **fastmoss.cookie_snapshot())
+        return
     _emit_debug_event(settings, "session_prime_http_login_fallback_start", **fastmoss.cookie_snapshot())
     fastmoss.ensure_logged_in()
+    _save_fastmoss_cookie_cache(
+        fastmoss=fastmoss,
+        settings=settings,
+        reason="ensure_login",
+    )
     _emit_debug_event(settings, "session_prime_http_login_fallback_done", **fastmoss.cookie_snapshot())
+
+
+def _attach_fastmoss_cookie_cache(
+    *,
+    fastmoss: FastMossHTTPSession,
+    settings: Mapping[str, Any],
+    store: RuntimeStore,
+) -> dict[str, Any]:
+    status = attach_fastmoss_cookie_cache(
+        fastmoss,
+        store=store,
+        account_key=str(settings.get("fastmoss_phone") or ""),
+        region=str(settings.get("fastmoss_region") or "US"),
+        namespace=str(settings.get("fastmoss_cookie_cache_namespace") or ""),
+        enabled=bool(settings.get("fastmoss_cookie_cache_enabled", True)),
+        force_refresh=bool(settings.get("fastmoss_cookie_cache_force_refresh", False)),
+        ttl_seconds=float(settings.get("fastmoss_cookie_cache_ttl_seconds") or 43200.0),
+    )
+    _emit_debug_event(
+        settings,
+        "cookie_cache_attach",
+        cache_enabled=bool(status.get("enabled")),
+        cache_status=str(status.get("status") or status.get("reason") or ""),
+        cache_key=str(status.get("cache_key") or ""),
+        cookie_count=int(status.get("cookie_count") or 0),
+        has_fd_tk=bool(status.get("has_fd_tk")),
+        fd_tk_digest=str(status.get("fd_tk_digest") or ""),
+    )
+    return status
+
+
+def _save_fastmoss_cookie_cache(
+    *,
+    fastmoss: FastMossHTTPSession,
+    settings: Mapping[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    if not bool(settings.get("fastmoss_cookie_cache_enabled", True)):
+        return {"enabled": False, "reason": "disabled"}
+    try:
+        store = _create_runtime_store(settings)
+    except Exception as exc:
+        return {"enabled": False, "reason": f"store_unavailable:{type(exc).__name__}"}
+    context = build_fastmoss_cookie_cache_context(
+        base_url=fastmoss.base_url,
+        account_key=str(settings.get("fastmoss_phone") or ""),
+        region=str(settings.get("fastmoss_region") or "US"),
+        namespace=str(settings.get("fastmoss_cookie_cache_namespace") or ""),
+    )
+    status = save_fastmoss_cookie_cache_from_session(
+        fastmoss,
+        store=store,
+        context=context,
+        ttl_seconds=float(settings.get("fastmoss_cookie_cache_ttl_seconds") or 43200.0),
+    )
+    _emit_debug_event(
+        settings,
+        "cookie_cache_save",
+        reason=reason,
+        cache_enabled=bool(status.get("enabled")),
+        cache_status=str(status.get("status") or status.get("reason") or ""),
+        cache_key=str(status.get("cache_key") or ""),
+        cookie_count=int(status.get("cookie_count") or 0),
+        has_fd_tk=bool(status.get("has_fd_tk")),
+        fd_tk_digest=str(status.get("fd_tk_digest") or ""),
+    )
+    return status
 
 
 def _refresh_fastmoss_session_from_browser(
@@ -710,6 +804,11 @@ def _refresh_fastmoss_session_from_browser(
 
         browser_cookies = page.context.cookies(["https://www.fastmoss.com"])
         synced_cookie_count = fastmoss.replace_browser_cookies(browser_cookies)
+        _save_fastmoss_cookie_cache(
+            fastmoss=fastmoss,
+            settings=settings,
+            reason=f"browser_sync:{reason}",
+        )
         _emit_debug_event(
             settings,
             "browser_cookie_sync_complete",
@@ -746,6 +845,11 @@ def _refresh_fastmoss_session_from_browser(
         )
         browser_cookies = page.context.cookies(["https://www.fastmoss.com"])
         fastmoss.replace_browser_cookies(browser_cookies)
+        _save_fastmoss_cookie_cache(
+            fastmoss=fastmoss,
+            settings=settings,
+            reason=f"browser_recovery:{reason}",
+        )
         page.remove_listener("response", response_listener)
         if recovered:
             _emit_debug_event(
@@ -1224,6 +1328,7 @@ def _run_one_influencer_pool_product_worker(
     if not hasattr(store, "claim_influencer_pool_product_job"):
         return None
     product_job = store.claim_influencer_pool_product_job(
+        request_id=str(getattr(execution, "request_id", "") or ""),
         worker_id=str(queue_settings["worker_id"]),
         lease_seconds=float(queue_settings["lease_seconds"]),
     )
@@ -1235,6 +1340,7 @@ def _run_one_influencer_pool_product_worker(
         failure_item = {
             "worker_kind": "product",
             "product_job_id": str(product_job.get("job_id", "") or ""),
+            "request_id": str(product_job.get("request_id", "") or ""),
             "record_id": str(product_job.get("source_record_id", "") or ""),
             "product_id": str(product_job.get("product_id", "") or ""),
             "status": "failed_retry",
@@ -1268,6 +1374,7 @@ def _run_one_influencer_pool_product_worker(
     )
     item["worker_kind"] = "product"
     item["product_job_id"] = str(product_job.get("job_id", "") or "")
+    item["request_id"] = str(product_job.get("request_id", "") or "")
 
     if item.get("status") in {"completed", "completed_no_matches", "skipped_unavailable"}:
         store.mark_influencer_pool_product_job_success(
@@ -1312,6 +1419,7 @@ def _run_one_influencer_pool_author_worker(
 ) -> dict[str, Any] | None:
     author_job = _claim_next_author_detail_job(
         store=store,
+        request_id=str(getattr(execution, "request_id", "") or ""),
         product_id="",
         source_record_id="",
         worker_id=str(queue_settings["worker_id"]),
@@ -1327,6 +1435,7 @@ def _run_one_influencer_pool_author_worker(
     item: dict[str, Any] = {
         "worker_kind": "author",
         "author_job_id": str(author_job.get("job_id", "") or ""),
+        "request_id": str(author_job.get("request_id", "") or ""),
         "record_id": record_id,
         "product_id": product_id,
         "influencer_id": influencer_id,
@@ -1427,6 +1536,7 @@ def _run_one_influencer_pool_author_worker(
             )
         _reactivate_product_finalizer(
             store=store,
+            request_id=str(author_job.get("request_id", "") or ""),
             source_record_id=record_id,
             product_id=product_id,
             run_id=str(execution.run_id or ""),
@@ -1462,6 +1572,7 @@ def _run_one_influencer_pool_author_worker(
         )
         _reactivate_product_finalizer(
             store=store,
+            request_id=str(author_job.get("request_id", "") or ""),
             source_record_id=record_id,
             product_id=product_id,
             run_id=str(execution.run_id or ""),
@@ -1479,12 +1590,16 @@ def _run_one_influencer_pool_finalizer(
 ) -> dict[str, Any] | None:
     if not hasattr(store, "list_influencer_pool_product_jobs_for_finalizer"):
         return None
-    product_jobs = store.list_influencer_pool_product_jobs_for_finalizer(limit=limit)
+    product_jobs = store.list_influencer_pool_product_jobs_for_finalizer(
+        request_id=str(getattr(execution, "request_id", "") or ""),
+        limit=limit,
+    )
     for product_job in product_jobs:
         record_id = str(product_job.get("source_record_id", "") or "")
         product_id = str(product_job.get("product_id", "") or "")
         summary = _summarize_author_detail_jobs(
             store=store,
+            request_id=str(product_job.get("request_id", "") or ""),
             product_id=product_id,
             source_record_id=record_id,
             fallback_jobs=[],
@@ -1496,6 +1611,7 @@ def _run_one_influencer_pool_finalizer(
         item = {
             "worker_kind": "finalizer",
             "product_job_id": str(product_job.get("job_id", "") or ""),
+            "request_id": str(product_job.get("request_id", "") or ""),
             "record_id": record_id,
             "product_id": product_id,
             "author_queue_summary": summary,
@@ -1782,6 +1898,7 @@ def _process_source_record(
                 uid = str(author_row.get("uid") or "").strip() or None
                 author_detail_jobs.append(
                     _build_author_detail_job(
+                        request_id=str(getattr(execution, "request_id", "") or ""),
                         source_record_id=record_id,
                         product_id=product_id,
                         influencer_id=influencer_id,
@@ -1816,6 +1933,7 @@ def _process_source_record(
         if not _coerce_bool(settings.get("drain_author_detail_jobs_inline"), default=True):
             author_queue_summary = _summarize_author_detail_jobs(
                 store=store,
+                request_id=str(getattr(execution, "request_id", "") or ""),
                 product_id=product_id,
                 source_record_id=record_id,
                 fallback_jobs=author_detail_jobs,
@@ -1857,6 +1975,7 @@ def _process_source_record(
         while max_author_detail_jobs <= 0 or processed_author_job_count < max_author_detail_jobs:
             author_job = _claim_next_author_detail_job(
                 store=store,
+                request_id=str(getattr(execution, "request_id", "") or ""),
                 product_id=product_id,
                 source_record_id=record_id,
                 worker_id=str(getattr(execution, "run_id", "") or getattr(execution, "execution_id", "") or ""),
@@ -1965,6 +2084,7 @@ def _process_source_record(
 
         author_queue_summary = _summarize_author_detail_jobs(
             store=store,
+            request_id=str(getattr(execution, "request_id", "") or ""),
             product_id=product_id,
             source_record_id=record_id,
             fallback_jobs=author_detail_jobs,
@@ -2176,6 +2296,7 @@ def _build_incoming_influencer_state(
 
 def _build_author_detail_job(
     *,
+    request_id: str = "",
     source_record_id: str,
     product_id: str,
     influencer_id: str,
@@ -2189,6 +2310,7 @@ def _build_author_detail_job(
 ) -> dict[str, Any]:
     return {
         "job_id": uuid.uuid4().hex,
+        "request_id": str(request_id or ""),
         "source_record_id": source_record_id,
         "product_id": product_id,
         "influencer_id": influencer_id,
@@ -2204,12 +2326,17 @@ def _build_author_detail_job(
     }
 
 
-def _build_product_job_from_source_record(raw_record: Mapping[str, Any]) -> dict[str, Any]:
+def _build_product_job_from_source_record(
+    raw_record: Mapping[str, Any],
+    *,
+    request_id: str = "",
+) -> dict[str, Any]:
     fields = raw_record.get("fields")
     product_id = ""
     if isinstance(fields, Mapping):
         product_id = str(fields.get(DEFAULT_COMPETITOR_PRODUCT_ID_FIELD_NAME, "") or "").strip()
     return {
+        "request_id": str(request_id or ""),
         "source_record_id": str(raw_record.get("record_id", "") or "").strip(),
         "product_id": product_id,
         "source_record": dict(raw_record),
@@ -2262,6 +2389,7 @@ def _upsert_author_detail_jobs(
 def _claim_next_author_detail_job(
     *,
     store: Any,
+    request_id: str = "",
     product_id: str,
     source_record_id: str,
     worker_id: str,
@@ -2270,6 +2398,7 @@ def _claim_next_author_detail_job(
 ) -> dict[str, Any] | None:
     if hasattr(store, "claim_influencer_pool_author_job"):
         return store.claim_influencer_pool_author_job(
+            request_id=request_id,
             product_id=product_id,
             source_record_id=source_record_id,
             worker_id=worker_id,
@@ -2351,6 +2480,7 @@ def _mark_author_detail_job_failed(
 def _summarize_author_detail_jobs(
     *,
     store: Any,
+    request_id: str = "",
     product_id: str,
     source_record_id: str,
     fallback_jobs: list[dict[str, Any]],
@@ -2358,6 +2488,7 @@ def _summarize_author_detail_jobs(
     if hasattr(store, "summarize_influencer_pool_author_jobs"):
         return dict(
             store.summarize_influencer_pool_author_jobs(
+                request_id=request_id,
                 product_id=product_id,
                 source_record_id=source_record_id,
             )
@@ -2410,6 +2541,7 @@ def _mark_product_job_failed_from_item(
 def _reactivate_product_finalizer(
     *,
     store: Any,
+    request_id: str = "",
     source_record_id: str,
     product_id: str,
     run_id: str,
@@ -2417,6 +2549,7 @@ def _reactivate_product_finalizer(
     if not hasattr(store, "reactivate_influencer_pool_product_job_finalizer"):
         return
     store.reactivate_influencer_pool_product_job_finalizer(
+        request_id=request_id,
         source_record_id=source_record_id,
         product_id=product_id,
         run_id=run_id,
@@ -2566,14 +2699,38 @@ def _build_sync_settings(params: Mapping[str, Any]) -> dict[str, Any]:
     if not target_table_url:
         raise ValueError("target_table_url is required")
 
+    defaults = get_execution_control_defaults()
     run_mode = _normalize_run_mode(params.get("run_mode"))
     return {
         "table_url": table_url,
         "target_table_url": target_table_url,
+        "execution_control_db_url": str(params.get("execution_control_db_url") or defaults.db_url).strip(),
         "access_token": _resolve_access_token(params),
         "fastmoss_phone": _resolve_secret_param(params, "fastmoss_phone", "fastmoss_phone_env"),
         "fastmoss_password": _resolve_secret_param(params, "fastmoss_password", "fastmoss_password_env"),
         "fastmoss_region": str(params.get("fastmoss_region") or "US").strip() or "US",
+        "fastmoss_ensure_login": _coerce_bool(params.get("fastmoss_ensure_login"), default=False),
+        "fastmoss_cookie_cache_enabled": _coerce_bool_with_env(
+            params,
+            "fastmoss_cookie_cache_enabled",
+            "FASTMOSS_COOKIE_CACHE_ENABLED",
+            default=True,
+        ),
+        "fastmoss_cookie_cache_force_refresh": _coerce_bool(
+            params.get("fastmoss_cookie_cache_force_refresh"),
+            default=False,
+        ),
+        "fastmoss_cookie_cache_ttl_seconds": _coerce_non_negative_float_with_env(
+            params,
+            "fastmoss_cookie_cache_ttl_seconds",
+            "FASTMOSS_COOKIE_CACHE_TTL_SECONDS",
+            default=43200.0,
+        ),
+        "fastmoss_cookie_cache_namespace": str(
+            params.get("fastmoss_cookie_cache_namespace")
+            or os.environ.get("FASTMOSS_COOKIE_CACHE_NAMESPACE")
+            or ""
+        ).strip(),
         "profile_ref": str(params.get("profile_ref", "") or "").strip(),
         "browser_provider_name": str(params.get("browser_provider_name", "") or "").strip(),
         "browser_profile_id": str(params.get("browser_profile_id", "") or "").strip(),
@@ -2650,13 +2807,8 @@ def _build_influencer_pool_worker_settings(params: Mapping[str, Any]) -> dict[st
 def _build_queue_settings(params: Mapping[str, Any]) -> dict[str, Any]:
     defaults = get_execution_control_defaults()
     configured_db_url = str(params.get("execution_control_db_url") or defaults.db_url).strip()
-    configured_db_path = str(params.get("execution_control_db_path") or defaults.db_path).strip()
-    if not configured_db_url and "://" in configured_db_path:
-        configured_db_url = configured_db_path
-        configured_db_path = str(defaults.db_path)
     return {
         "db_url": configured_db_url,
-        "db_path": configured_db_path,
         "requested_by": str(
             params.get("execution_requested_by") or params.get("requested_by") or defaults.requested_by
         ).strip(),
@@ -2713,8 +2865,7 @@ def _build_table_target(table_url: str, access_token: str) -> TableTarget:
 def _create_runtime_store(params: Mapping[str, Any]) -> RuntimeStore:
     defaults = get_execution_control_defaults()
     db_url = str(params.get("execution_control_db_url") or defaults.db_url).strip()
-    db_path = str(params.get("execution_control_db_path") or defaults.db_path).strip()
-    return RuntimeStore(db_url=db_url, db_path=db_path)
+    return RuntimeStore(db_url=db_url)
 
 
 def _is_candidate_source_record(raw_record: Mapping[str, Any]) -> bool:
@@ -3131,6 +3282,18 @@ def _coerce_non_negative_float(value: Any, *, default: float) -> float:
     return max(normalized, 0.0)
 
 
+def _coerce_non_negative_float_with_env(
+    params: Mapping[str, Any],
+    key: str,
+    env_key: str,
+    *,
+    default: float,
+) -> float:
+    if key in params:
+        return _coerce_non_negative_float(params.get(key), default=default)
+    return _coerce_non_negative_float(os.environ.get(env_key), default=default)
+
+
 def _coerce_bool(value: Any, *, default: bool) -> bool:
     if value in (None, ""):
         return default
@@ -3144,6 +3307,18 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _coerce_bool_with_env(
+    params: Mapping[str, Any],
+    key: str,
+    env_key: str,
+    *,
+    default: bool,
+) -> bool:
+    if key in params:
+        return _coerce_bool(params.get(key), default=default)
+    return _coerce_bool(os.environ.get(env_key), default=default)
 
 
 def _format_fastmoss_error(exc: FastMossHTTPError) -> str:

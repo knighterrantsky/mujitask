@@ -45,7 +45,7 @@ def map_fastmoss_goods_overview(
             {
                 "product_id": normalized_product_id,
                 "source_platform": "fastmoss",
-                "facts": {"overview": dict(overview), "raw": dict(data)},
+                "facts": {},
             },
         )
     return result
@@ -72,14 +72,7 @@ def map_fastmoss_goods_product_sku(
                 "sku_id": sku_id,
                 "sku_name": sku_name,
                 "spec_name": spec_name,
-                "price_text": _first_non_empty(
-                    row.get("real_price"),
-                    row.get("real_price_value"),
-                    row.get("price"),
-                    row.get("sale_price"),
-                ),
-                "stock_count": row.get("stock") or row.get("stock_count") or 0,
-                "facts": {"raw": dict(row)},
+                "facts": {},
             },
         )
     return result
@@ -466,7 +459,7 @@ def _product_from_mapping(
         "shop_name": shop_name,
         "country_region": _first_non_empty(payload.get("region"), shop_payload.get("region")),
         "source_platform": "fastmoss",
-        "facts": {"raw": dict(row)},
+        "facts": {},
     }
 
 

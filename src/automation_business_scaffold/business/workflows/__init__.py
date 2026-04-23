@@ -1,11 +1,13 @@
 from .refresh_current_competitor_table_v1 import build_refresh_current_competitor_table_workflow
 from .search_keyword_competitor_products_v1 import build_search_keyword_competitor_products_workflow
 from .sync_tk_influencer_pool_v1 import build_sync_tk_influencer_pool_workflow
+from .tiktok_fastmoss_product_ingest_v1 import build_tiktok_fastmoss_product_ingest_workflow
 from .tiktok_product_link_cleanup_v1 import build_tiktok_product_link_cleanup_workflow
 
 __all__ = [
     "build_refresh_current_competitor_table_workflow",
     "build_search_keyword_competitor_products_workflow",
     "build_sync_tk_influencer_pool_workflow",
+    "build_tiktok_fastmoss_product_ingest_workflow",
     "build_tiktok_product_link_cleanup_workflow",
 ]

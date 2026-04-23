@@ -55,11 +55,13 @@ metadata:
   - `bash skills/mujitask-tiktok-feishu-sync/run_refresh_current_competitor_table_step.sh`
 - 关键词搜索：
   - `bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh --search-keyword "<keyword>" --sales-7d-threshold <number>`
+- 达人池同步：
+  - `bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh`
 - 如果用户没有指定 `7日销量阈值`，关键词搜索默认传 `200`。
 
 ## 输出契约
 
-- 这两个入口都属于“同步提交、异步执行”：
+- 这些入口都属于“同步提交、异步执行”：
   - 脚本只负责创建顶层 `task_request`
   - 首条回执必须返回 `request_id`
   - 后续执行和最终汇总由后台 `executor/browser/outbox` 推进
@@ -82,5 +84,6 @@ metadata:
 - `run_keyword_candidate_step.sh`
 - `run_insert_seed_row_step.sh`
 - `run_fastmoss_login_check_step.sh`
+- `run_influencer_pool_worker_step.sh`
 
 这些脚本仅用于人工排障，不再作为默认主流程。

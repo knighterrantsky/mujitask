@@ -8,6 +8,7 @@ from automation_business_scaffold.business.tasks import (
     FeishuClearRowByUrlTask,
     RefreshCurrentCompetitorTableTask,
     SearchKeywordCompetitorProductsTask,
+    SyncTKInfluencerPoolTask,
 )
 
 
@@ -62,6 +63,15 @@ def test_refresh_current_competitor_table_control_action_keeps_single_action_wor
     workflow = task.build_workflow({"control_action": "submit"})
 
     assert [step.step_id for step in workflow.steps] == ["orchestrate_refresh_current_competitor_table"]
+
+
+def test_sync_tk_influencer_pool_workflow_uses_single_orchestration_step():
+    task = SyncTKInfluencerPoolTask()
+
+    workflow = task.build_workflow({"control_action": "submit"})
+
+    assert workflow.workflow_id == "sync_tk_influencer_pool_v1"
+    assert [step.step_id for step in workflow.steps] == ["orchestrate_sync_tk_influencer_pool"]
 
 
 def test_cli_runner_lists_registered_tasks():
@@ -127,6 +137,13 @@ def test_cli_runner_lists_registered_tasks():
             "description": "Synchronize pending competitor products into the TK influencer pool via FastMoss HTTP APIs.",
         },
         {
+            "name": "tiktok_fastmoss_product_ingest",
+            "description": (
+                "Fetch one TikTok Shop product URL via Python requests, fetch FastMoss product API data by SKU, "
+                "and persist facts without writing Feishu."
+            ),
+        },
+        {
             "name": "tiktok_feishu_single_sync",
             "description": (
                 "Fetch one TikTok Shop product URL and insert one Feishu Bitable row; "
@@ -157,7 +174,162 @@ def _keyword_search_context(params: dict[str, object]) -> SimpleNamespace:
     )
 
 
-def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation_error(tmp_path):
+def _influencer_pool_context(params: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        step=SimpleNamespace(step_id="orchestrate_sync_tk_influencer_pool"),
+        params=params,
+    )
+
+
+def test_sync_tk_influencer_pool_submit_then_executor_once_finishes_request(
+    monkeypatch,
+    tmp_path,
+    runtime_db_url,
+):
+    module = __import__(
+        "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
+        fromlist=["run_sync_tk_influencer_pool_sync"],
+    )
+    task = SyncTKInfluencerPoolTask()
+    db_url = runtime_db_url
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_sync(params):
+        captured_payloads.append(dict(params))
+        store = module.RuntimeStore(db_url=str(params["execution_control_db_url"]))
+        request_id = str(params.get("request_id") or "")
+        queue_mode = str(params.get("queue_mode") or "")
+        if queue_mode == "dispatch_only":
+            store.upsert_influencer_pool_product_jobs(
+                jobs=[
+                    {
+                        "request_id": request_id,
+                        "source_record_id": "rec-a",
+                        "product_id": "product-a",
+                        "source_record": {"record_id": "rec-a", "fields": {}},
+                    }
+                ],
+                force_refresh=True,
+            )
+            return {
+                "status": "success",
+                "message": "Dispatched influencer pool product jobs.",
+                "summary": {"total": 1, "counts": {"product_jobs_created": 1}},
+                "queue_mode": "dispatch_only",
+                "product_queue": {"created_count": 1, "updated_count": 0},
+                "outbox": [],
+            }
+        product_job = store.claim_influencer_pool_product_job(
+            request_id=request_id,
+            worker_id="api-worker-test",
+            lease_seconds=30,
+        )
+        assert product_job is not None
+        store.mark_influencer_pool_product_job_success(
+            job_id=str(product_job["job_id"]),
+            run_id="api-worker-run",
+            stage="completed",
+        )
+        return {
+            "status": "success",
+            "message": "Processed influencer pool API worker job.",
+            "summary": {"total": 1, "counts": {"completed": 1}},
+            "write_summary": {
+                "created_author_count": 0,
+                "updated_author_count": 0,
+                "already_synced_author_count": 0,
+                "failed_item_count": 0,
+                "hard_stopped": False,
+            },
+            "item": {"request_id": request_id, "record_id": "rec-a", "status": "completed"},
+            "items": [{"request_id": request_id, "record_id": "rec-a", "status": "completed"}],
+            "failed_items": [],
+            "failed_item_count": 0,
+            "outbox": [],
+        }
+
+    monkeypatch.setattr(module, "run_sync_tk_influencer_pool_sync", fake_sync)
+
+    submitted = task.execute_workflow_step(
+        _influencer_pool_context(
+            {
+                "control_action": "submit",
+                "table_url": "https://example.feishu.cn/base/appXXX?table=tblSource",
+                "target_table_url": "https://example.feishu.cn/base/appXXX?table=tblTarget",
+                "access_token": "token-demo",
+                "fastmoss_phone": "18000000000",
+                "fastmoss_password": "secret",
+                "notification_channel_code": "noop",
+                "reply_target": "user:demo",
+                "execution_control_db_url": db_url,
+            }
+        )
+    )
+
+    assert submitted.data["request_status"] == "pending"
+    assert submitted.data["summary"]["counts"] == {"queued": 1}
+
+    executor_once = task.execute_workflow_step(
+        _influencer_pool_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_url": db_url,
+            }
+        )
+    )
+
+    assert executor_once.data["request_id"] == submitted.data["request_id"]
+    assert executor_once.data["request_status"] == "waiting_children"
+    assert executor_once.data["child_total_count"] == 1
+
+    api_worker_once = task.execute_workflow_step(
+        _influencer_pool_context(
+            {
+                "control_action": "api_worker_once",
+                "execution_control_db_url": db_url,
+            }
+        )
+    )
+    assert api_worker_once.data["daemon_status"] == "processed"
+    assert api_worker_once.data["parent_updates"][0]["updated"] is True
+
+    executor_summary = task.execute_workflow_step(
+        _influencer_pool_context(
+            {
+                "control_action": "executor_once",
+                "execution_control_db_url": db_url,
+            }
+        )
+    )
+
+    assert executor_summary.data["request_id"] == submitted.data["request_id"]
+    assert executor_summary.data["request_status"] == "success"
+    assert executor_summary.data["summary"]["counts"] == {"completed": 1}
+    assert executor_summary.data["result"]["write_summary"]["product_job_success_count"] == 1
+    assert executor_summary.data["outbox"][0]["status"] == "pending"
+    assert captured_payloads[0]["queue_mode"] == "dispatch_only"
+    assert captured_payloads[0]["request_id"] == submitted.data["request_id"]
+    assert captured_payloads[0]["notification_channel_code"] == ""
+    assert captured_payloads[0]["reply_target"] == ""
+    assert captured_payloads[1]["queue_mode"] == "worker"
+
+    result = task.execute_workflow_step(
+        _influencer_pool_context(
+            {
+                "control_action": "result",
+                "request_id": submitted.data["request_id"],
+                "execution_control_db_url": db_url,
+            }
+        )
+    )
+    assert result.data["request_status"] == "success"
+    assert result.data["result"]["summary"]["total"] == 1
+
+
+def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation_error(
+    tmp_path,
+    runtime_db_url,
+):
     payload = run_registered_task(
         "refresh_current_competitor_table",
         params={
@@ -165,7 +337,7 @@ def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation
             "profile_ref": "main",
             "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
             "access_token": "token-demo",
-            "execution_control_db_path": str(tmp_path / "phase1.sqlite3"),
+            "execution_control_db_url": runtime_db_url,
         },
         run_dir=tmp_path / "cli_runs",
     )
@@ -178,7 +350,11 @@ def test_cli_runner_supports_phase1_top_level_submit_without_workflow_validation
     assert step_output["summary"]["counts"] == {"queued": 1}
 
 
-def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(monkeypatch, tmp_path):
+def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(
+    monkeypatch,
+    tmp_path,
+    runtime_db_url,
+):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -189,7 +365,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "phase1.sqlite3"
+    db_url = runtime_db_url
 
     def fake_cleanup(params):
         return {
@@ -253,7 +429,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -266,7 +442,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
             {
                 "control_action": "status",
                 "request_id": submitted.data["request_id"],
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -276,7 +452,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -289,7 +465,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         _refresh_context(
             {
                 "control_action": "browser_loop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
                 "execution_control_stop_when_idle": True,
                 "execution_control_max_idle_cycles": 1,
             }
@@ -302,7 +478,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
             {
                 "control_action": "status",
                 "request_id": submitted.data["request_id"],
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -312,7 +488,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -323,7 +499,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert len(executor_summary.data["outbox"]) == 1
     assert executor_summary.data["outbox"][0]["status"] == "pending"
 
-    store = module.RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_url=db_url)
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 2
     assert all(len(store.list_artifacts(run_id=record.run_id)) == 5 for record in execution_records)
@@ -337,7 +513,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
         _refresh_context(
             {
                 "control_action": "outbox_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -349,7 +525,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
             {
                 "control_action": "result",
                 "request_id": submitted.data["request_id"],
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -362,7 +538,7 @@ def test_phase1_refresh_task_submit_status_executor_browser_outbox_round_trip(mo
     assert "entity_snapshots" not in final_result.data["result"]
 
 
-def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
+def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path, runtime_db_url):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -373,7 +549,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         ],
     )
     task = SearchKeywordCompetitorProductsTask()
-    db_path = tmp_path / "phase1_keyword.sqlite3"
+    db_url = runtime_db_url
 
     def fake_discovery(params):
         keyword = str(params["search_keyword"])
@@ -483,7 +659,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -495,7 +671,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -507,7 +683,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "browser_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -518,7 +694,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -529,7 +705,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "browser_loop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
                 "execution_control_stop_when_idle": True,
                 "execution_control_max_idle_cycles": 1,
             }
@@ -541,7 +717,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -559,7 +735,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
         _keyword_search_context(
             {
                 "control_action": "outbox_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -570,7 +746,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
             {
                 "control_action": "result",
                 "request_id": submitted.data["request_id"],
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -586,7 +762,7 @@ def test_phase1_keyword_search_task_round_trip(monkeypatch, tmp_path):
     assert final_result.data["result"]["fact_entities"][0]["product_id"] == "1731098351299629802"
     assert "entity_bindings" not in final_result.data["result"]
 
-    store = module.RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_url=db_url)
     executions = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(executions) == 3
     assert sum(1 for execution in executions if execution.item_code == "fastmoss_keyword_candidate_discovery") == 1
@@ -635,7 +811,11 @@ def test_keyword_failure_outbox_text_includes_keyword():
     assert message_text == "关键词 Easter Basket Stuffers 搜索失败：FastMoss login failed"
 
 
-def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch, tmp_path):
+def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(
+    monkeypatch,
+    tmp_path,
+    runtime_db_url,
+):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -648,7 +828,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
     from automation_business_scaffold.infrastructure.artifacts.artifact_store import StoredArtifact
 
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "phase1_minio.sqlite3"
+    db_url = runtime_db_url
     image_path = tmp_path / "main-image.png"
     product_screenshot_path = tmp_path / "product-page.png"
     fastmoss_screenshot_path = tmp_path / "fastmoss-page.png"
@@ -743,7 +923,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
                 "execution_control_artifact_store_provider": "minio",
                 "execution_control_artifact_bucket": "phase2-bucket",
                 "execution_control_artifact_object_prefix": "phase2/demo",
@@ -755,7 +935,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -764,7 +944,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
         _refresh_context(
             {
                 "control_action": "browser_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
                 "execution_control_artifact_store_provider": "minio",
                 "execution_control_artifact_bucket": "phase2-bucket",
                 "execution_control_artifact_object_prefix": "phase2/demo",
@@ -784,7 +964,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
     assert any(key.endswith("/referenced/product_page_screenshot_file/product-page.png") for key in uploaded_keys)
     assert any(key.endswith("/referenced/detail_page_screenshot_file/fastmoss-page.png") for key in uploaded_keys)
 
-    store = module.RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_url=db_url)
     execution_records = store.list_task_executions(request_id=submitted.data["request_id"])
     assert len(execution_records) == 1
     stored_artifacts = store.list_artifacts(run_id=execution_records[0].run_id)
@@ -796,7 +976,7 @@ def test_phase1_refresh_task_syncs_browser_artifacts_to_minio_store(monkeypatch,
     assert all(record.metadata.get("storage_backend") == "minio" for record in stored_artifacts)
 
 
-def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
+def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path, runtime_db_url):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -805,7 +985,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "phase1_dedupe.sqlite3"
+    db_url = runtime_db_url
 
     monkeypatch.setattr(
         module,
@@ -830,7 +1010,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -838,7 +1018,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -852,7 +1032,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -860,7 +1040,7 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -871,7 +1051,11 @@ def test_phase1_refresh_task_dedupes_active_browser_leaf(monkeypatch, tmp_path):
     assert len(second_executor.data["executions"]) == 0
 
 
-def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, tmp_path):
+def test_phase1_refresh_task_creates_incremental_product_snapshots(
+    monkeypatch,
+    tmp_path,
+    runtime_db_url,
+):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -882,7 +1066,7 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "phase1_entity.sqlite3"
+    db_url = runtime_db_url
     versions = iter(
         [
             {
@@ -964,7 +1148,7 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
                     "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                     "access_token": "token-demo",
                     "notification_channel_code": "noop",
-                    "execution_control_db_path": str(db_path),
+                    "execution_control_db_url": db_url,
                 }
             )
         )
@@ -972,7 +1156,7 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
             _refresh_context(
                 {
                     "control_action": "executor_once",
-                    "execution_control_db_path": str(db_path),
+                    "execution_control_db_url": db_url,
                 }
             )
         )
@@ -980,7 +1164,7 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
             _refresh_context(
                 {
                     "control_action": "browser_loop",
-                    "execution_control_db_path": str(db_path),
+                    "execution_control_db_url": db_url,
                     "execution_control_stop_when_idle": True,
                     "execution_control_max_idle_cycles": 1,
                 }
@@ -990,7 +1174,7 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
             _refresh_context(
                 {
                     "control_action": "executor_once",
-                    "execution_control_db_path": str(db_path),
+                    "execution_control_db_url": db_url,
                 }
             )
         )
@@ -999,22 +1183,41 @@ def test_phase1_refresh_task_creates_incremental_product_snapshots(monkeypatch, 
                 {
                     "control_action": "result",
                     "request_id": submitted.data["request_id"],
-                    "execution_control_db_path": str(db_path),
+                    "execution_control_db_url": db_url,
                 }
             )
         )
         assert final_result.data["request_status"] == "success"
 
-    store = module.RuntimeStore(db_path=str(db_path))
+    store = module.RuntimeStore(db_url=db_url)
     fact_store = TKFactStore(runtime_store=store)
     product = fact_store.get_product(product_id="1731098351299629802")
     assert product["title"] == "Product A Updated"
-    assert product["facts"]["fields"]["Fastmoss价格"] == "12.49"
-    assert product["facts"]["logical_fields"]["title"] == "Product A Updated"
+    assert "fields" not in product["facts"]
+    assert "logical_fields" not in product["facts"]
+    with fact_store._engine.connect() as connection:  # noqa: SLF001
+        fastmoss_metric = connection.execute(
+            fact_store._text(  # noqa: SLF001
+                """
+                SELECT payload_json
+                FROM tk_product_window_latest
+                WHERE product_id = :product_id
+                  AND source_platform = 'fastmoss'
+                  AND source_endpoint = 'single_row_update.result.fastmoss_snapshot'
+                  AND window_days = 7
+                LIMIT 1
+                """
+            ),
+            {"product_id": "1731098351299629802"},
+        ).mappings().first()
+    assert fastmoss_metric is not None
+    fastmoss_payload = json.loads(str(fastmoss_metric["payload_json"]))
+    assert fastmoss_payload["fastmoss_price_amount"] == "12.49"
+    assert fastmoss_payload["sales_7d"] == "520"
     assert "entity_snapshot" not in fact_store.table_names()
 
 
-def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
+def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path, runtime_db_url):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=[
@@ -1024,7 +1227,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
         ],
     )
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "phase1_outbox.sqlite3"
+    db_url = runtime_db_url
     dispatched_commands: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -1087,7 +1290,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
                 "notification_channel_code": "openclaw_message",
                 "reply_target": reply_target,
                 "source_session_id": "session-123",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -1096,7 +1299,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -1104,7 +1307,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "browser_loop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
                 "execution_control_stop_when_idle": True,
                 "execution_control_max_idle_cycles": 1,
             }
@@ -1114,7 +1317,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "executor_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -1123,7 +1326,7 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
         _refresh_context(
             {
                 "control_action": "outbox_once",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
@@ -1148,13 +1351,13 @@ def test_phase1_outbox_dispatches_via_openclaw_message(monkeypatch, tmp_path):
     ]
 
 
-def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path):
+def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path, runtime_db_url):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=["dispatch_phase1_outbox_once", "RuntimeStore"],
     )
-    db_path = tmp_path / "phase1_feishu_outbox.sqlite3"
-    store = module.RuntimeStore(db_path=str(db_path))
+    db_url = runtime_db_url
+    store = module.RuntimeStore(db_url=db_url)
     dispatched_messages: list[dict[str, str]] = []
 
     monkeypatch.setattr(
@@ -1183,7 +1386,7 @@ def test_phase1_outbox_dispatches_via_feishu_bot_api(monkeypatch, tmp_path):
         dedupe_key="request-feishu:summary",
     )
 
-    payload = module.dispatch_phase1_outbox_once({"execution_control_db_path": str(db_path)})
+    payload = module.dispatch_phase1_outbox_once({"execution_control_db_url": db_url})
 
     assert payload["dispatcher_status"] == "processed"
     assert payload["summary"]["counts"] == {"sent": 1}
@@ -1213,7 +1416,7 @@ def test_parse_reply_target_accepts_python_dict_repr():
     }
 
 
-def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys):
+def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys, runtime_db_url):
     module = __import__(
         "automation_business_scaffold.business.flows.refresh_current_competitor_table_flow",
         fromlist=["run_tiktok_product_link_cleanup", "run_feishu_pending_rows_scan"],
@@ -1221,7 +1424,7 @@ def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys
     from automation_business_scaffold.executor_daemon import main as executor_main
 
     task = RefreshCurrentCompetitorTableTask()
-    db_path = tmp_path / "workflow_executor.sqlite3"
+    db_url = runtime_db_url
 
     def fake_cleanup(params):
         return {
@@ -1247,12 +1450,12 @@ def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys
                 "table_url": "https://example.feishu.cn/base/appXXX?table=tblXXX",
                 "access_token": "token-demo",
                 "notification_channel_code": "noop",
-                "execution_control_db_path": str(db_path),
+                "execution_control_db_url": db_url,
             }
         )
     )
 
-    exit_code = executor_main(["--once", "--db-path", str(db_path)])
+    exit_code = executor_main(["--once", "--db-url", db_url])
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
 
@@ -1261,3 +1464,48 @@ def test_executor_daemon_cli_processes_one_request(monkeypatch, tmp_path, capsys
     assert payload["request_id"] == submitted.data["request_id"]
     assert payload["request_status"] == "success"
     assert payload["current_stage"] == "completed"
+
+
+def test_api_worker_daemon_cli_processes_one_cycle(monkeypatch, capsys):
+    from automation_business_scaffold import api_worker_daemon
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_execute_api_worker_once(params):
+        captured_params.append(dict(params))
+        return {
+            "control_action": "api_worker_once",
+            "daemon_status": "processed",
+            "processed_count": 1,
+            "success_count": 1,
+            "failed_count": 0,
+            "request_id": "req-api-worker",
+            "summary": {"total": 1, "counts": {"completed": 1}},
+            "items": [{"request_id": "req-api-worker", "status": "completed"}],
+        }
+
+    monkeypatch.setattr(api_worker_daemon, "execute_api_worker_once", fake_execute_api_worker_once)
+
+    exit_code = api_worker_daemon.main(
+        [
+            "--once",
+            "--db-url",
+            "postgresql+psycopg://user:pass@localhost:5432/mujitask",
+            "--request-id",
+            "req-api-worker",
+            "--worker-id",
+            "worker-test",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["daemon_status"] == "processed"
+    assert captured_params == [
+        {
+            "execution_control_db_url": "postgresql+psycopg://user:pass@localhost:5432/mujitask",
+            "request_id": "req-api-worker",
+            "execution_worker_id": "worker-test",
+        }
+    ]
