@@ -12,6 +12,13 @@ _PRODUCT_ID_PATTERNS = (
 
 
 _COMPETITOR_AUTO_FIELDS = (
+    "产品链接",
+    "SKU-ID",
+    "图片",
+    "标题",
+    "节日",
+    "卖家",
+    "价格",
     "Fastmoss价格",
     "昨日销量",
     "近7天销量",

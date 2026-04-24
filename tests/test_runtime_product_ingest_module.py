@@ -292,6 +292,109 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
     assert store.outbox[0]["payload"]["task_code"] == PRODUCT_INGEST_TASK_CODE
 
 
+def test_advance_stage_persist_facts_enqueues_standard_fact_bundle_payload() -> None:
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="persist_facts",
+        payload={
+            "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
+            "fact_db_url": "postgresql+psycopg://fact-db",
+        },
+    )
+    store = FakeRuntimeStore(
+        request=request,
+        api_jobs=[
+            _api_job(
+                request_id=request.request_id,
+                stage_code="collect_product_data",
+                job_code="tiktok_product_request_fetch",
+                result={
+                    "handler_result": {"status": "success"},
+                    "normalized_product_result": {
+                        "product_id": "1234567890",
+                        "normalized_product_url": "https://www.tiktok.com/shop/pdp/1234567890",
+                        "fact_bundle": {
+                            "products": [
+                                {
+                                    "product_id": "1234567890",
+                                    "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
+                                    "title": "Sample product",
+                                    "source_platform": "tiktok",
+                                }
+                            ],
+                            "product_skus": [
+                                {
+                                    "product_id": "1234567890",
+                                    "sku_id": "sku-1",
+                                    "sku_name": "Black",
+                                }
+                            ],
+                        },
+                    },
+                },
+            ),
+            _api_job(
+                request_id=request.request_id,
+                stage_code="collect_product_data",
+                job_code="fastmoss_product_fetch",
+                result={
+                    "handler_result": {"status": "success"},
+                    "product_fact_bundle": {
+                        "product_metric_snapshots": [
+                            {
+                                "product_id": "1234567890",
+                                "source_platform": "fastmoss",
+                                "source_endpoint": "fastmoss.product.overview",
+                                "window_days": 7,
+                                "payload": {"sold_count": 12},
+                            }
+                        ],
+                    },
+                },
+            ),
+            _api_job(
+                request_id=request.request_id,
+                stage_code="sync_media",
+                job_code="media_asset_sync",
+                result={
+                    "handler_result": {"status": "success"},
+                    "media_fact_bundle": {
+                        "media_assets": [
+                            {
+                                "entity_type": "product",
+                                "entity_external_id": "1234567890",
+                                "media_role": "product_main_image",
+                                "object_key": "phase2/local/1234567890/main.webp",
+                            }
+                        ],
+                    },
+                },
+            ),
+        ],
+    )
+
+    result = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="persist_facts",
+    )
+
+    assert result["action"] == "waiting"
+    fact_job = next(job for job in store.api_jobs if job["job_code"] == "fact_bundle_upsert")
+    payload = fact_job["payload"]
+    assert "tiktok_result" not in payload
+    assert "fastmoss_result" not in payload
+    assert "media_sync_result" not in payload
+    assert "mapper_code" not in payload
+    assert payload["fact_db_url"] == "postgresql+psycopg://fact-db"
+    fact_bundle = payload["fact_bundle"]
+    assert fact_bundle["products"][0]["product_id"] == "1234567890"
+    assert fact_bundle["product_skus"][0]["sku_id"] == "sku-1"
+    assert fact_bundle["product_metric_snapshots"][0]["payload"]["sold_count"] == 12
+    assert fact_bundle["media_assets"][0]["object_key"] == "phase2/local/1234567890/main.webp"
+
+
 def test_release_request_after_child_completion_requeues_pending_executor() -> None:
     request = _build_request(
         current_stage="collect_product_data",

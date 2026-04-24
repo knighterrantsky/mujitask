@@ -151,7 +151,6 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
                 job_bindings=(
                     StageJobBinding(
                         job_code="fact_bundle_upsert",
-                        mapper_code="competitor_fact_relation_mapper",
                         result_consumer="competitor writeback projection",
                     ),
                 ),

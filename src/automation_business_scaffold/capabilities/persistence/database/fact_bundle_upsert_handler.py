@@ -28,13 +28,7 @@ CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
 def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
-    merged_bundle = merge_fact_bundles(
-        coerce_mapping(payload.get("fact_bundle")),
-        coerce_mapping(payload.get("fact_bundle_patch")),
-        coerce_mapping(payload.get("media_fact_bundle")),
-        coerce_mapping(payload.get("product_fact_bundle")),
-        coerce_mapping(coerce_mapping(payload.get("normalized_product_result")).get("fact_bundle")),
-    )
+    merged_bundle = merge_fact_bundles(coerce_mapping(payload.get("fact_bundle")))
 
     entity_keys = bundle_entity_keys(merged_bundle)
     if not entity_keys:

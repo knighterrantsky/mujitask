@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
+    _build_tiktok_normalized_product_result as _shared_build_tiktok_normalized_product_result,
+)
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -59,7 +62,14 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
     normalized = coerce_mapping(payload.get("normalized_product_result"))
     if not normalized:
         raw_request_result = _resolve_inline_tiktok_payload(payload)
-        normalized = _build_tiktok_normalized_product_result(
+        if not raw_request_result and fallback_allowed:
+            return _browser_fallback_result(
+                context,
+                identity=identity,
+                fallback_reason=first_non_empty(payload.get("fallback_reason"), "request_payload_missing_product_detail"),
+                detail_message="TikTok request-first payload did not include product detail data.",
+            )
+        normalized = _shared_build_tiktok_normalized_product_result(
             raw_request_result,
             identity=identity,
             collection_path="request",

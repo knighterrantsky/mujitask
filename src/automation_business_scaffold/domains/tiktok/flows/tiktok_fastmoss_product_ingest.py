@@ -10,6 +10,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     build_request_payload,
     build_outbox_message_text,
 )
+from automation_business_scaffold.contracts.handler.shared import merge_fact_bundles
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -513,6 +514,14 @@ def _advance_ingest_persist_facts(
         tiktok_source = _effective_tiktok_result(collect_jobs=collect_jobs, browser_execs=browser_execs)
         fastmoss_job = _latest_api_job_by_code(collect_jobs, "fastmoss_product_fetch")
         identity = _resolve_product_identity(request_payload, tiktok_source, fastmoss_job)
+        tiktok_result = _job_effective_result(tiktok_source) if isinstance(tiktok_source, Mapping) else {}
+        fastmoss_result = _job_effective_result(fastmoss_job)
+        media_result = _job_effective_result(media_job)
+        fact_bundle = _build_fact_bundle_from_ingest_results(
+            tiktok_result=tiktok_result,
+            fastmoss_result=fastmoss_result,
+            media_result=media_result,
+        )
         enqueue_payload = store.enqueue_api_worker_jobs(
             request_id=request.request_id,
             task_code=request.task_code,
@@ -529,9 +538,12 @@ def _advance_ingest_persist_facts(
                         "workflow_code": request.task_code,
                         "stage_code": stage_code,
                         "product_identity": identity,
-                        "tiktok_result": _job_effective_result(tiktok_source) if isinstance(tiktok_source, dict) else {},
-                        "fastmoss_result": _job_effective_result(fastmoss_job),
-                        "media_sync_result": _job_effective_result(media_job),
+                        "fact_bundle": fact_bundle,
+                        "fact_db_url": _fact_db_url_from_request(request_payload),
+                        "observation_context": {
+                            "product_id": identity["product_id"],
+                            "normalized_product_url": identity["normalized_product_url"],
+                        },
                     },
                 }
             ],
@@ -732,6 +744,35 @@ def _job_effective_result(job: Mapping[str, Any] | None) -> dict[str, Any]:
     if "handler_result" in result:
         result = {key: value for key, value in result.items() if key != "handler_result"}
     return result
+
+
+def _build_fact_bundle_from_ingest_results(
+    *,
+    tiktok_result: Mapping[str, Any],
+    fastmoss_result: Mapping[str, Any],
+    media_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_product_result = (
+        dict(tiktok_result.get("normalized_product_result") or {})
+        if isinstance(tiktok_result.get("normalized_product_result"), Mapping)
+        else {}
+    )
+    return merge_fact_bundles(
+        dict(normalized_product_result.get("fact_bundle") or {}),
+        dict(tiktok_result.get("fact_bundle") or {}),
+        dict(fastmoss_result.get("product_fact_bundle") or {}),
+        dict(fastmoss_result.get("fact_bundle") or {}),
+        dict(media_result.get("media_fact_bundle") or {}),
+        dict(media_result.get("fact_bundle") or {}),
+    )
+
+
+def _fact_db_url_from_request(request_payload: Mapping[str, Any]) -> str:
+    return _first_non_empty(
+        request_payload.get("fact_db_url"),
+        request_payload.get("execution_control_fact_db_url"),
+        request_payload.get("db_url"),
+    )
 
 
 def _execution_effective_result(execution: Any) -> dict[str, Any]:

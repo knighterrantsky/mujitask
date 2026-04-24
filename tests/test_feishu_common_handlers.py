@@ -4,6 +4,7 @@ from typing import Any
 
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.capabilities.input_sources.feishu.table_common import map_write_records
 from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
@@ -68,6 +69,11 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
                             "fields": {
                                 "产品链接": {"text": "p", "link": "https://www.tiktok.com/shop/pdp/123456789"},
                                 "SKU-ID": "123456789",
+                                "图片": "",
+                                "标题": "Demo product",
+                                "节日": "",
+                                "卖家": "",
+                                "价格": "$9.99",
                                 "商品状态": "",
                                 "Fastmoss价格": "",
                                 "昨日销量": "2",
@@ -83,6 +89,11 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
                             "fields": {
                                 "产品链接": "https://www.tiktok.com/shop/pdp/987654321",
                                 "SKU-ID": "987654321",
+                                "图片": "https://cdn.example.com/987654321.jpg",
+                                "标题": "Complete product",
+                                "节日": "Halloween",
+                                "卖家": "Demo shop",
+                                "价格": "$0.99",
                                 "商品状态": "",
                                 "Fastmoss价格": "$1",
                                 "昨日销量": "2",
@@ -103,7 +114,21 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
     payload = _table_payload(
         request_id="req-read",
         source_table_ref="feishu://mujitask/TK竞品收集",
-        field_names=["产品链接", "SKU-ID", "商品状态", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+        field_names=[
+            "产品链接",
+            "SKU-ID",
+            "图片",
+            "标题",
+            "节日",
+            "卖家",
+            "价格",
+            "商品状态",
+            "Fastmoss价格",
+            "昨日销量",
+            "近7天销量",
+            "近90天销量",
+            "记录日期",
+        ],
         filter_spec={"candidate_policy": "missing_auto_maintained_fields", "skip_product_status": ["已下架/区域不可售"]},
         adapter_code="competitor_table_source_adapter",
         snapshot_policy={"store_raw_rows": True, "raw_snapshot_namespace": "feishu/competitor/read"},
@@ -115,6 +140,14 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
     assert result.result["raw_rows"][0]["record_id"] == "rec-1"
     assert result.result["source_rows"][0]["source_record_id"] == "rec-1"
     assert result.result["source_rows"][0]["product_identity"]["product_id"] == "123456789"
+    assert result.result["source_rows"][0]["missing_auto_fields"] == [
+        "图片",
+        "节日",
+        "卖家",
+        "Fastmoss价格",
+        "近7天销量",
+        "记录日期",
+    ]
     assert result.result["candidate_keys"] == ["product:123456789"]
     assert result.result["adapter_summary"]["skipped_complete_count"] == 1
     assert result.result["raw_snapshot_ref"].startswith("artifact://feishu/competitor/read/req-read/")
@@ -241,6 +274,32 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert "SKU-ID" not in fields
     assert "产品链接" not in fields
     assert fields.get("价格") is None
+
+
+def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        write_mode="upsert",
+        mapper_code="competitor_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-1",
+                "product_id": "123456789",
+                "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                "projection_fields": {
+                    "图片": "https://p16-oec.example.com/image.webp?from=2378011839",
+                },
+                "source_fields": {"图片": ""},
+            }
+        ],
+    )
+
+    records = map_write_records(payload)
+
+    assert records[0]["fields"]["图片"] == {
+        "text": "https://p16-oec.example.com/image.webp?from=2378011839",
+        "link": "https://p16-oec.example.com/image.webp?from=2378011839",
+    }
 
 
 def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:

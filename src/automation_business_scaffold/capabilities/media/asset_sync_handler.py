@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import mimetypes
 import tempfile
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -49,6 +55,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     )
     run_id = first_non_empty(payload.get("run_id"), context.metadata.get("run_id"), context.job_id)
     created_at = now_timestamp()
+    sync_referenced_files = _sync_referenced_files_enabled(payload, artifact_settings)
 
     specs: list[ArtifactFileSpec] = []
     local_assets_by_path: dict[str, dict[str, Any]] = {}
@@ -59,24 +66,37 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         normalized_asset = _normalize_media_asset(asset, fallback_product_id=payload.get("product_id"))
         local_path = Path(coerce_str(normalized_asset.get("local_path"))).expanduser()
         if local_path.exists() and local_path.is_file():
-            specs.append(
-                ArtifactFileSpec(
-                    kind=first_non_empty(normalized_asset.get("media_role"), "asset_file"),
-                    step_id=context.handler_code,
-                    relative_name=f"assets/{index:03d}_{local_path.name}",
-                    path=local_path,
-                    content_type=coerce_str(normalized_asset.get("mime_type")),
-                    metadata={
-                        "entity_type": coerce_str(normalized_asset.get("entity_type")),
-                        "entity_external_id": coerce_str(normalized_asset.get("entity_external_id")),
-                        "media_role": coerce_str(normalized_asset.get("media_role")),
-                    },
-                )
+            _append_artifact_spec(
+                specs,
+                local_assets_by_path,
+                normalized_asset,
+                index=index,
+                handler_code=context.handler_code,
+                local_path=local_path,
             )
-            local_assets_by_path[str(local_path.resolve())] = normalized_asset
             continue
         if coerce_str(normalized_asset.get("local_path")):
             warnings.append(f"Local asset path not found: {normalized_asset.get('local_path')}")
+        if sync_referenced_files and coerce_str(normalized_asset.get("source_url")):
+            try:
+                downloaded_asset = _download_referenced_asset(
+                    normalized_asset,
+                    payload=payload,
+                    artifact_root=artifact_root,
+                    index=index,
+                )
+                downloaded_path = Path(coerce_str(downloaded_asset.get("local_path"))).expanduser()
+                _append_artifact_spec(
+                    specs,
+                    local_assets_by_path,
+                    downloaded_asset,
+                    index=index,
+                    handler_code=context.handler_code,
+                    local_path=downloaded_path,
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"Referenced asset download failed: {normalized_asset.get('source_url')} ({exc})")
         normalized_asset["sync_state"] = "referenced"
         synced_assets.append(normalized_asset)
 
@@ -133,7 +153,7 @@ def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
     settings = coerce_mapping(payload.get("artifact_store"))
     if settings:
         return settings
-    return compact_dict(
+    explicit_settings = compact_dict(
         {
             "artifact_store_provider": payload.get("artifact_store_provider"),
             "artifact_bucket": payload.get("artifact_bucket"),
@@ -144,6 +164,22 @@ def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
             "minio_secure": payload.get("minio_secure"),
             "minio_region": payload.get("minio_region"),
             "minio_create_bucket": payload.get("minio_create_bucket"),
+        }
+    )
+    if explicit_settings:
+        return explicit_settings
+    defaults = get_execution_control_defaults()
+    return compact_dict(
+        {
+            "artifact_store_provider": defaults.artifact_store_provider,
+            "artifact_bucket": defaults.artifact_bucket,
+            "artifact_object_prefix": defaults.artifact_object_prefix,
+            "minio_endpoint": defaults.minio_endpoint,
+            "minio_access_key": defaults.minio_access_key,
+            "minio_secret_key": defaults.minio_secret_key,
+            "minio_secure": defaults.minio_secure,
+            "minio_region": defaults.minio_region,
+            "minio_create_bucket": defaults.minio_create_bucket,
         }
     )
 
@@ -167,6 +203,128 @@ def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = 
             "metadata": coerce_mapping(asset.get("metadata")),
         }
     )
+
+
+def _append_artifact_spec(
+    specs: list[ArtifactFileSpec],
+    local_assets_by_path: dict[str, dict[str, Any]],
+    asset: dict[str, Any],
+    *,
+    index: int,
+    handler_code: str,
+    local_path: Path,
+) -> None:
+    specs.append(
+        ArtifactFileSpec(
+            kind=first_non_empty(asset.get("media_role"), "asset_file"),
+            step_id=handler_code,
+            relative_name=f"assets/{index:03d}_{local_path.name}",
+            path=local_path,
+            content_type=coerce_str(asset.get("mime_type")),
+            metadata={
+                "entity_type": coerce_str(asset.get("entity_type")),
+                "entity_external_id": coerce_str(asset.get("entity_external_id")),
+                "media_role": coerce_str(asset.get("media_role")),
+            },
+        )
+    )
+    local_assets_by_path[str(local_path.resolve())] = asset
+
+
+def _sync_referenced_files_enabled(payload: dict[str, Any], artifact_settings: dict[str, Any]) -> bool:
+    for source in (payload, artifact_settings):
+        value = source.get("sync_referenced_files") if isinstance(source, dict) else None
+        if value not in (None, ""):
+            return _coerce_bool(value)
+    return get_execution_control_defaults().sync_referenced_files
+
+
+def _download_referenced_asset(
+    asset: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    artifact_root: Path,
+    index: int,
+) -> dict[str, Any]:
+    source_url = coerce_str(asset.get("source_url"))
+    timeout_seconds = _coerce_int(
+        first_non_empty(payload.get("media_download_timeout_seconds"), payload.get("download_timeout_seconds")),
+        default=30,
+    )
+    request = Request(source_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - URLs come from trusted workflow fetches.
+        content = response.read()
+        content_type = coerce_str(response.headers.get("Content-Type"))
+    if not content:
+        raise ValueError("downloaded asset is empty")
+
+    suffix = _guess_media_suffix(source_url, content_type)
+    file_name = _safe_file_name(
+        first_non_empty(
+            asset.get("file_name"),
+            f"{_safe_segment(first_non_empty(asset.get('entity_external_id'), payload.get('product_id'), 'product'))}-"
+            f"{_safe_segment(first_non_empty(asset.get('media_role'), 'asset'))}-"
+            f"{index:03d}-{hashlib.sha1(source_url.encode('utf-8')).hexdigest()[:12]}{suffix}",
+        )
+    )
+    product_id = _safe_segment(first_non_empty(asset.get("entity_external_id"), payload.get("product_id"), "unknown-product"))
+    download_root = Path(
+        first_non_empty(
+            payload.get("media_download_dir"),
+            payload.get("image_download_dir"),
+            artifact_root / "downloaded_media",
+        )
+    ).expanduser()
+    target_dir = download_root / product_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / file_name
+    target_path.write_bytes(content)
+
+    downloaded = dict(asset)
+    downloaded["local_path"] = str(target_path)
+    downloaded["file_name"] = target_path.name
+    downloaded["mime_type"] = first_non_empty(asset.get("mime_type"), _normalize_content_type(content_type, suffix))
+    return downloaded
+
+
+def _guess_media_suffix(source_url: str, content_type: str) -> str:
+    guessed = mimetypes.guess_extension(str(content_type).split(";")[0].strip()) if content_type else ""
+    if guessed:
+        return ".jpg" if guessed == ".jpe" else guessed
+    suffix = Path(urlparse(source_url).path).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".mp4", ".mov"}:
+        return suffix
+    return ".bin"
+
+
+def _normalize_content_type(content_type: str, suffix: str) -> str:
+    normalized = str(content_type or "").split(";")[0].strip().lower()
+    if normalized:
+        return normalized
+    return mimetypes.types_map.get(suffix.lower(), "application/octet-stream")
+
+
+def _safe_file_name(value: str) -> str:
+    name = Path(str(value or "").strip()).name
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in name).strip("-") or "asset.bin"
+
+
+def _safe_segment(value: Any) -> str:
+    text = coerce_str(value)
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in text).strip("-") or "unknown"
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_int(value: Any, *, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "media_asset_sync_handler"]

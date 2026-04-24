@@ -20,6 +20,7 @@
 - 系统执行链路: [current-system-architecture-design.md](./current-system-architecture-design.md)
 - Workflow 设计规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - Handler 契约: [handler-contract-design.md](./handler-contract-design.md)
+- 飞书表 Adapter/Projection 契约: [feishu-table-adapter-projection-contract.md](./feishu-table-adapter-projection-contract.md)
 - Runtime 控制面契约: [runtime-control-plane-contract.md](./runtime-control-plane-contract.md)
 - 文档修改治理: [../dev/documentation-change-policy.md](../dev/documentation-change-policy.md)
 
@@ -206,8 +207,11 @@ skills/{skill_code}/
 
 1. 读取候选筛选放入 source adapter。
 2. 写回字段构造放入 projection mapper。
-3. handler 只负责 Feishu transport、schema 校验、batch write、错误分类和幂等边界。
-4. 如果表级逻辑需要独立 retry/timeout/artifact/外部副作用，先按 business handler candidate 评审，不能直接塞进 handler registry。
+3. source adapter 必须拥有读表字段判断、候选字段集合和跳过 summary；projection mapper 必须拥有写表字段投影、必填/可选/人工保留/系统覆盖字段策略。
+4. handler 只负责 Feishu transport、schema 校验、batch write、错误分类和幂等边界。
+5. 具体飞书表字段不得放入 common、handler 或 registry；source adapter/projection mapper 模块必须拥有字段规格和处理逻辑；同一 adapter/projection 支持多张表时，字段集合可由 payload/table profile 显式传入，但必须在模块内归一化后执行。
+6. 详细输入输出和字段策略见 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
+7. 如果表级逻辑需要独立 retry/timeout/artifact/外部副作用，先按 business handler candidate 评审，不能直接塞进 handler registry。
 
 新增 Runtime 控制面入口:
 

@@ -302,6 +302,17 @@ def test_refresh_executor_integration_request_first_success_path(
     assert fastmoss_job["status"] == "success"
     assert fastmoss_job["result"]["product_fact_bundle"]["product_id"] == PRODUCT_ID
 
+    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert sync_wait["request_status"] == "waiting_children"
+    assert sync_wait["current_stage"] == "sync_media"
+    sync_job_codes = {
+        str(job["job_code"])
+        for job in _stage_jobs(sync_wait, stage_code="sync_media")
+    }
+    assert sync_job_codes == {"media_asset_sync"}
+
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+
     persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert persist_wait["request_status"] == "waiting_children"
     assert persist_wait["current_stage"] == "persist_facts"
@@ -309,9 +320,7 @@ def test_refresh_executor_integration_request_first_success_path(
         str(job["job_code"])
         for job in _stage_jobs(persist_wait, stage_code="persist_facts")
     }
-    assert persist_job_codes == {"media_asset_sync", "fact_bundle_upsert"}
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert persist_job_codes == {"fact_bundle_upsert"}
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
 
     writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
@@ -391,15 +400,22 @@ def test_refresh_executor_integration_browser_fallback_path(
         }
     ]
 
+    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert sync_wait["request_id"] == request_id
+    assert sync_wait["request_status"] == "waiting_children"
+    assert sync_wait["current_stage"] == "sync_media"
+    assert {
+        str(job["job_code"]) for job in _stage_jobs(sync_wait, stage_code="sync_media")
+    } == {"media_asset_sync"}
+
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert persist_wait["request_id"] == request_id
     assert persist_wait["request_status"] == "waiting_children"
     assert persist_wait["current_stage"] == "persist_facts"
     assert {
         str(job["job_code"]) for job in _stage_jobs(persist_wait, stage_code="persist_facts")
-    } == {"media_asset_sync", "fact_bundle_upsert"}
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    } == {"fact_bundle_upsert"}
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert writeback_wait["request_status"] == "waiting_children"
@@ -424,9 +440,11 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["row_status"] == "success"
     assert row_result["tiktok_status"] == "fallback_required"
     assert row_result["browser_status"] == "success"
+    assert row_result["media_status"] == "success"
     assert row_result["fact_status"] == "success"
     assert row_result["writeback_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 2
+    assert status_payload["result"]["stage_summary"]["sync_media"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 1
     assert status_payload["result"]["stage_summary"]["writeback_competitor_rows"]["total_count"] == 1
 
 
@@ -583,23 +601,24 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
 
+    sync_wait = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert {str(job["job_code"]) for job in _stage_jobs(sync_wait, stage_code="sync_media")} == {
+        "media_asset_sync",
+    }
+    runtime_orchestrator.execute_api_worker_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+
     persist_wait = runtime_orchestrator.execute_executor_once(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
     assert {str(job["job_code"]) for job in _stage_jobs(persist_wait, stage_code="persist_facts")} == {
-        "media_asset_sync",
         "fact_bundle_upsert",
     }
-    persist_workers = [
-        runtime_orchestrator.execute_api_worker_once(
-            _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-        ),
-        runtime_orchestrator.execute_api_worker_once(
-            _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-        ),
-    ]
-    fact_worker = next(
-        item for item in persist_workers if item["api_worker_job"]["job_code"] == "fact_bundle_upsert"
+    fact_worker = runtime_orchestrator.execute_api_worker_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
     assert fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
     assert fact_worker["api_worker_job"]["result"]["handler_result"]["result"]["persistence_mode"] == "database"
@@ -615,7 +634,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     )
     assert len(writeback_jobs) == 1
     projection_fields = writeback_jobs[0]["payload"]["records"][0]["projection_fields"]
-    assert projection_fields["Fastmoss价格"] == "$14.50"
+    assert projection_fields["Fastmoss价格"] == "14.5"
     assert projection_fields["近7天销量"] == "412"
 
     write_worker = runtime_orchestrator.execute_api_worker_once(
@@ -627,10 +646,11 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     updated_fields = FakeFeishuClient.updated[0]["fields"]
     assert updated_fields["标题"] == "Graduation Candy Boxes"
     assert updated_fields["卖家"] == "Party Supply Co"
-    assert updated_fields["Fastmoss价格"] == "$14.50"
+    assert updated_fields["Fastmoss价格"] == "14.5"
     assert updated_fields["昨日销量"] == "38"
     assert updated_fields["近7天销量"] == "412"
     assert updated_fields["近90天销量"] == "2310"
+    assert "商品状态" not in updated_fields
     assert "产品链接" not in updated_fields
     assert "记录日期" in updated_fields
 

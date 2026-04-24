@@ -106,7 +106,6 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 job_bindings=(
                     StageJobBinding(
                         job_code="fastmoss_creator_fetch",
-                        mapper_code="creator_fact_mapper",
                         flow_code="fastmoss_creator_flow",
                         result_consumer="influencer projection payload",
                         notes=("Creator detail may include optional media refs that later mappers can consume.",),
@@ -122,7 +121,6 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 job_bindings=(
                     StageJobBinding(
                         job_code="fact_bundle_upsert",
-                        mapper_code="creator_fact_mapper",
                         result_consumer="fact projection checkpoint before influencer pool write",
                     ),
                 ),

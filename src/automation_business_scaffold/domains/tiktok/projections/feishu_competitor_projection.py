@@ -117,8 +117,11 @@ def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[s
         name = _text(field_name)
         if not name or value in (None, "", [], {}):
             continue
-        if name in {"产品链接", "图片", "前台截图", "Fastmoss截图"}:
+        if name == "产品链接":
             normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
+            continue
+        if name in {"图片", "前台截图", "Fastmoss截图"}:
+            normalized[name] = _raw_link_value(_text_value(value)) if _text_value(value) else value
             continue
         normalized[name] = value
     return normalized
@@ -254,6 +257,13 @@ def _text_value(value: Any) -> str:
 
 def _link_value(url: str) -> dict[str, str] | str:
     normalized = _normalize_product_url(url)
+    if not normalized:
+        return ""
+    return {"text": normalized, "link": normalized}
+
+
+def _raw_link_value(url: str) -> dict[str, str] | str:
+    normalized = _text(url)
     if not normalized:
         return ""
     return {"text": normalized, "link": normalized}

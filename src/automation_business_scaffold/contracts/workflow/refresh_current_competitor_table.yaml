@@ -113,6 +113,3 @@ jobs:
       system: outbox
       module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
       export: outbox_dispatch_handler
-known_architecture_gaps:
-  - code: competitor_fact_relation_mapper
-    reason: referenced by the migrated workflow definition but not yet split into a dedicated domain mapper module.

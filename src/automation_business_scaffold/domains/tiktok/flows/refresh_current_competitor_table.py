@@ -139,6 +139,8 @@ def advance_stage(
         return _advance_collect_product_data(store=store, request=request, workflow=workflow)
     if stage_code == "browser_fallback":
         return _advance_browser_fallback(store=store, request=request, workflow=workflow)
+    if stage_code == "sync_media":
+        return _advance_sync_media(store=store, request=request, workflow=workflow)
     if stage_code == "persist_facts":
         return _advance_persist_facts(store=store, request=request, workflow=workflow)
     if stage_code == "writeback_competitor_rows":
@@ -323,8 +325,11 @@ def _resume_stage_from_premature_summary(
         request_id=request.request_id,
         current_stage=current_stage,
         summary_stage_code=workflow.summary_policy.summary_stage_code,
-        continuation_stage_codes=("persist_facts", "writeback_competitor_rows"),
-        continuation_candidate_ready=bool(_persist_candidates(store=store, request_id=request.request_id)),
+        continuation_stage_codes=("sync_media", "persist_facts", "writeback_competitor_rows"),
+        continuation_candidate_ready=bool(
+            _media_sync_candidates(store=store, request_id=request.request_id)
+            or _fact_persist_candidates(store=store, request_id=request.request_id)
+        ),
     )
 
 
@@ -381,10 +386,60 @@ def _advance_read_competitor_rows(
         return _waiting(stage_code=stage_code, message="Waiting for competitor row read job to finish.")
 
     source_rows = select_latest_successful_api_job(jobs, "feishu_table_read")
+    read_payload = extract_effective_result_payload(source_rows) if isinstance(source_rows, Mapping) else {}
+    empty_row_deletes = _empty_row_delete_records(read_payload)
+    cleanup_jobs = [
+        job
+        for job in jobs
+        if str(job.get("job_code") or "") == "feishu_table_write"
+        and str((job.get("payload") or {}).get("cleanup_kind") or "") == "delete_empty_rows"
+    ]
+    if empty_row_deletes and not cleanup_jobs:
+        cleanup_job_def = workflow.require_job("feishu_table_write")
+        cleanup_payload = build_projection_write_payload(
+            stage_code=stage_code,
+            request_id=request.request_id,
+            target_table_ref=str(request.payload.get("source_table_ref") or ""),
+            records=empty_row_deletes,
+            mapper_code="",
+            write_mode="delete",
+        )
+        cleanup_payload.update(_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code))
+        cleanup_payload.update(_payload_subset(request.payload, FEISHU_WRITE_PASSTHROUGH_KEYS))
+        cleanup_payload["cleanup_kind"] = "delete_empty_rows"
+        keys = render_job_keys(
+            cleanup_job_def,
+            request.payload,
+            cleanup_payload,
+            request_id=request.request_id,
+            task_code=request.task_code,
+            workflow_code=workflow.workflow_code,
+            stage_code=stage_code,
+            job_code=cleanup_job_def.job_code,
+        )
+        store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=cleanup_job_def.job_code,
+            jobs=[
+                {
+                    "business_key": keys["business_key"],
+                    "dedupe_key": build_stage_local_dedupe_key(keys["dedupe_key"], cleanup_job_def.job_code),
+                    "payload": cleanup_payload,
+                    "max_execution_seconds": _timeout_seconds(workflow, cleanup_job_def.job_code),
+                }
+            ],
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Enqueued empty competitor row cleanup.",
+            details={"empty_row_delete_count": len(empty_row_deletes)},
+        )
+    if _any_api_jobs_active(cleanup_jobs):
+        return _waiting(stage_code=stage_code, message="Waiting for empty row cleanup to finish.")
+
     row_contexts = _normalize_source_rows(
-        extract_effective_result_payload(source_rows).get("source_rows")
-        if isinstance(source_rows, Mapping)
-        else []
+        read_payload.get("source_rows")
     )
     _update_request_cursor(
         store=store,
@@ -404,6 +459,42 @@ def _advance_read_competitor_rows(
             "read_job_count": len(jobs),
         },
     }
+
+
+def _empty_row_delete_records(read_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_rows = read_payload.get("raw_rows_all") or read_payload.get("raw_rows") or []
+    records: list[dict[str, Any]] = []
+    for row in raw_rows:
+        if not isinstance(row, Mapping):
+            continue
+        record_id = str(row.get("record_id") or "").strip()
+        fields = row.get("fields")
+        if record_id and isinstance(fields, Mapping) and not _any_field_has_value(fields):
+            records.append(
+                {
+                    "op": "delete",
+                    "record_id": record_id,
+                    "business_entity_key": f"empty-row:{record_id}",
+                    "source_context": {"cleanup_reason": "empty_row"},
+                }
+            )
+    return records
+
+
+def _any_field_has_value(fields: Mapping[str, Any]) -> bool:
+    return any(_field_has_value(value) for value in fields.values())
+
+
+def _field_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(_field_has_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_field_has_value(item) for item in value)
+    return True
 
 
 def _advance_dispatch_product_collection(
@@ -546,7 +637,7 @@ def _advance_collect_product_data(
     stage_code = "collect_product_data"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     if not jobs:
-        return {"action": "advance", "next_stage": "persist_facts", "details": {"dispatched_row_count": 0}}
+        return {"action": "advance", "next_stage": "sync_media", "details": {"dispatched_row_count": 0}}
     if _any_api_jobs_active(jobs):
         return _waiting(stage_code=stage_code, message="Waiting for product collection jobs to finish.")
 
@@ -566,7 +657,7 @@ def _advance_collect_product_data(
             "next_stage": "browser_fallback",
             "details": {"fallback_row_count": len(fallback_candidates)},
         }
-    return {"action": "advance", "next_stage": "persist_facts", "details": {"collect_job_count": len(jobs)}}
+    return {"action": "advance", "next_stage": "sync_media", "details": {"collect_job_count": len(jobs)}}
 
 
 def _advance_browser_fallback(
@@ -579,7 +670,7 @@ def _advance_browser_fallback(
     executions = _browser_executions_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     fallback_candidates = _browser_fallback_candidates(store=store, request_id=request.request_id)
     if not fallback_candidates and not executions:
-        return {"action": "advance", "next_stage": "persist_facts", "details": {"fallback_row_count": 0}}
+        return {"action": "advance", "next_stage": "sync_media", "details": {"fallback_row_count": 0}}
 
     if not executions and fallback_candidates:
         job_def = workflow.require_job("tiktok_product_browser_fetch")
@@ -635,7 +726,80 @@ def _advance_browser_fallback(
 
     if _any_browser_executions_active(executions):
         return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
-    return {"action": "advance", "next_stage": "persist_facts", "details": {"execution_count": len(executions)}}
+    return {"action": "advance", "next_stage": "sync_media", "details": {"execution_count": len(executions)}}
+
+
+def _advance_sync_media(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+) -> dict[str, Any]:
+    stage_code = "sync_media"
+    jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
+    if not jobs:
+        candidates = _media_sync_candidates(store=store, request_id=request.request_id)
+        if not candidates:
+            return {"action": "advance", "next_stage": "persist_facts", "details": {"media_candidate_count": 0}}
+
+        media_job_def = workflow.require_job("media_asset_sync")
+        media_jobs: list[dict[str, Any]] = []
+        for candidate in candidates:
+            asset_refs = list(candidate.get("asset_refs") or [])
+            media_payload = {
+                **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
+                **_payload_subset(request.payload, ARTIFACT_PASSTHROUGH_KEYS),
+                "stage_code": stage_code,
+                "source_record_id": candidate["source_record_id"],
+                "asset_refs": asset_refs,
+                "entity_keys": [candidate["business_key"]],
+                "source_context": dict(candidate["source_context"]),
+            }
+            media_payload.update(_artifact_settings_from_request_payload(request.payload))
+            media_keys = render_job_keys(
+                media_job_def,
+                request.payload,
+                candidate,
+                media_payload,
+                request_id=request.request_id,
+                task_code=request.task_code,
+                workflow_code=workflow.workflow_code,
+                stage_code=stage_code,
+                job_code=media_job_def.job_code,
+            )
+            media_jobs.append(
+                {
+                    "business_key": media_keys["business_key"],
+                    "dedupe_key": build_stage_local_dedupe_key(media_keys["dedupe_key"], media_job_def.job_code),
+                    "payload": media_payload,
+                    "max_execution_seconds": _timeout_seconds(workflow, media_job_def.job_code),
+                }
+            )
+
+        media_dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=media_job_def.job_code,
+            jobs=media_jobs,
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "media_candidate_count": len(candidates),
+                "media_dispatch": media_dispatch,
+            },
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Enqueued media sync jobs.",
+            details={"media_created_count": int(media_dispatch["created_count"])},
+        )
+
+    if _any_api_jobs_active(jobs):
+        return _waiting(stage_code=stage_code, message="Waiting for media sync jobs to finish.")
+    return {"action": "advance", "next_stage": "persist_facts", "details": {"media_job_count": len(jobs)}}
 
 
 def _advance_persist_facts(
@@ -647,54 +811,20 @@ def _advance_persist_facts(
     stage_code = "persist_facts"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     if not jobs:
-        candidate_rows = _persist_candidates(store=store, request_id=request.request_id)
+        candidate_rows = _fact_persist_candidates(store=store, request_id=request.request_id)
         if not candidate_rows:
             return {"action": "advance", "next_stage": "writeback_competitor_rows", "details": {"persist_count": 0}}
 
-        media_job_def = workflow.require_job("media_asset_sync")
         fact_job_def = workflow.require_job("fact_bundle_upsert")
-        media_jobs: list[dict[str, Any]] = []
         fact_jobs: list[dict[str, Any]] = []
         for candidate in candidate_rows:
-            asset_refs = list(candidate.get("asset_refs") or [])
-            if asset_refs:
-                media_payload = {
-                    **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
-                    **_payload_subset(request.payload, ARTIFACT_PASSTHROUGH_KEYS),
-                    "stage_code": stage_code,
-                    "source_record_id": candidate["source_record_id"],
-                    "asset_refs": asset_refs,
-                    "entity_keys": [candidate["business_key"]],
-                    "source_context": dict(candidate["source_context"]),
-                }
-                media_payload.update(_artifact_settings_from_request_payload(request.payload))
-                media_keys = render_job_keys(
-                    media_job_def,
-                    request.payload,
-                    candidate,
-                    media_payload,
-                    request_id=request.request_id,
-                    task_code=request.task_code,
-                    workflow_code=workflow.workflow_code,
-                    stage_code=stage_code,
-                    job_code=media_job_def.job_code,
-                )
-                media_jobs.append(
-                    {
-                        "business_key": media_keys["business_key"],
-                        "dedupe_key": build_stage_local_dedupe_key(media_keys["dedupe_key"], media_job_def.job_code),
-                        "payload": media_payload,
-                        "max_execution_seconds": _timeout_seconds(workflow, media_job_def.job_code),
-                    }
-                )
-
             fact_payload = {
                 **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
                 **_payload_subset(request.payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS),
                 "stage_code": stage_code,
                 "source_record_id": candidate["source_record_id"],
                 "fact_bundle": dict(candidate["fact_bundle"]),
-                "mapper_code": "competitor_fact_relation_mapper",
+                "observation_at": str(candidate.get("observation_at") or ""),
                 "observation_context": {
                     "source_record_id": candidate["source_record_id"],
                     "product_id": candidate.get("product_id") or "",
@@ -720,12 +850,6 @@ def _advance_persist_facts(
                 }
             )
 
-        media_dispatch = store.enqueue_api_worker_jobs(
-            request_id=request.request_id,
-            task_code=request.task_code,
-            job_code=media_job_def.job_code,
-            jobs=media_jobs,
-        )
         fact_dispatch = store.enqueue_api_worker_jobs(
             request_id=request.request_id,
             task_code=request.task_code,
@@ -738,15 +862,13 @@ def _advance_persist_facts(
             stage_code=stage_code,
             payload={
                 "persist_candidate_count": len(candidate_rows),
-                "media_dispatch": media_dispatch,
                 "fact_dispatch": fact_dispatch,
             },
         )
         return _waiting(
             stage_code=stage_code,
-            message="Enqueued media and fact persistence jobs.",
+            message="Enqueued fact persistence jobs.",
             details={
-                "media_created_count": int(media_dispatch["created_count"]),
                 "fact_created_count": int(fact_dispatch["created_count"]),
             },
         )
@@ -856,14 +978,45 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
     return candidates
 
 
-def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+def _media_sync_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
     browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
     browser_by_row = {
         str((execution.payload or {}).get("source_record_id") or ""): execution for execution in browser_execs
     }
     tiktok_by_row: dict[str, dict[str, Any]] = {}
+    for job in collect_jobs:
+        if str(job.get("job_code") or "") != "tiktok_product_request_fetch":
+            continue
+        source_record_id = str((job.get("payload") or {}).get("source_record_id") or "")
+        if source_record_id:
+            tiktok_by_row[source_record_id] = job
+
+    candidates: list[dict[str, Any]] = []
+    for row in _row_contexts(store=store, request_id=request_id):
+        source_record_id = row["source_record_id"]
+        tiktok_result = _effective_tiktok_result(
+            tiktok_job=tiktok_by_row.get(source_record_id),
+            browser_execution=browser_by_row.get(source_record_id),
+        )
+        product_result = dict(tiktok_result.get("normalized_product_result") or {})
+        asset_refs = _collect_asset_refs(product_result)
+        if not asset_refs:
+            continue
+        candidates.append({**row, "asset_refs": asset_refs})
+    return candidates
+
+
+def _fact_persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+    collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
+    browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
+    media_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media")
+    browser_by_row = {
+        str((execution.payload or {}).get("source_record_id") or ""): execution for execution in browser_execs
+    }
+    tiktok_by_row: dict[str, dict[str, Any]] = {}
     fastmoss_by_row: dict[str, dict[str, Any]] = {}
+    media_by_row: dict[str, dict[str, Any]] = {}
     for job in collect_jobs:
         source_record_id = str((job.get("payload") or {}).get("source_record_id") or "")
         if not source_record_id:
@@ -872,6 +1025,10 @@ def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[st
             tiktok_by_row[source_record_id] = job
         if str(job.get("job_code") or "") == "fastmoss_product_fetch":
             fastmoss_by_row[source_record_id] = job
+    for job in media_jobs:
+        source_record_id = str((job.get("payload") or {}).get("source_record_id") or "")
+        if source_record_id:
+            media_by_row[source_record_id] = job
 
     candidates: list[dict[str, Any]] = []
     for row in _row_contexts(store=store, request_id=request_id):
@@ -879,29 +1036,26 @@ def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[st
         browser_execution = browser_by_row.get(source_record_id)
         tiktok_job = tiktok_by_row.get(source_record_id)
         fastmoss_job = fastmoss_by_row.get(source_record_id)
+        media_job = media_by_row.get(source_record_id)
         tiktok_result = _effective_tiktok_result(tiktok_job=tiktok_job, browser_execution=browser_execution)
         fastmoss_result = extract_effective_result_payload(fastmoss_job)
-        if not tiktok_result and not fastmoss_result:
+        media_result = extract_effective_result_payload(media_job)
+        if not tiktok_result and not fastmoss_result and not media_result:
             continue
         product_result = dict(tiktok_result.get("normalized_product_result") or {})
         fact_bundle = _merge_runtime_fact_bundles(
             dict(product_result.get("fact_bundle") or {}),
             dict(fastmoss_result.get("product_fact_bundle") or {}),
+            dict(media_result.get("media_fact_bundle") or {}),
         )
         fact_bundle["source_record_id"] = source_record_id
         fact_bundle["product_identity"] = dict(row["product_identity"])
         fact_bundle["source_context"] = dict(row["source_context"])
-        asset_refs = _dedupe_asset_refs(
-            [
-                *_collect_asset_refs(product_result),
-                *_collect_asset_refs(fact_bundle),
-            ]
-        )
         candidates.append(
             {
                 **row,
                 "fact_bundle": fact_bundle,
-                "asset_refs": asset_refs,
+                "observation_at": str(int(time.time())),
                 "product_id": str(
                     product_result.get("product_id")
                     or row.get("product_id")
@@ -911,6 +1065,10 @@ def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[st
             }
         )
     return candidates
+
+
+def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+    return _fact_persist_candidates(store=store, request_id=request_id)
 
 
 def _build_writeback_projection(
@@ -952,13 +1110,14 @@ def _build_row_result(
 ) -> dict[str, Any]:
     source_record_id = str(row_context.get("source_record_id") or "")
     collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
+    media_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media")
     persist_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="persist_facts")
     write_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="writeback_competitor_rows")
     browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
 
     tiktok_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="tiktok_product_request_fetch")
     fastmoss_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="fastmoss_product_fetch")
-    media_job = _latest_row_job(persist_jobs, source_record_id=source_record_id, job_code="media_asset_sync")
+    media_job = _latest_row_job(media_jobs, source_record_id=source_record_id, job_code="media_asset_sync")
     fact_job = _latest_row_job(persist_jobs, source_record_id=source_record_id, job_code="fact_bundle_upsert")
     write_job = _latest_row_job(write_jobs, source_record_id=source_record_id, job_code="feishu_table_write")
     browser_execution = _latest_row_execution(browser_execs, source_record_id=source_record_id)
@@ -967,6 +1126,7 @@ def _build_row_result(
         tiktok_job=tiktok_job,
         fastmoss_job=fastmoss_job,
         browser_execution=browser_execution,
+        media_job=media_job,
         fact_job=fact_job,
         write_job=write_job,
     )
@@ -991,17 +1151,25 @@ def _build_competitor_projection_fields(
 ) -> dict[str, Any]:
     source_record_id = str(row_context.get("source_record_id") or "")
     collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
+    media_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media")
     browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
     tiktok_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="tiktok_product_request_fetch")
     fastmoss_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="fastmoss_product_fetch")
+    media_job = _latest_row_job(media_jobs, source_record_id=source_record_id, job_code="media_asset_sync")
     browser_execution = _latest_row_execution(browser_execs, source_record_id=source_record_id)
 
     tiktok_result = _effective_tiktok_result(tiktok_job=tiktok_job, browser_execution=browser_execution)
     fastmoss_result = extract_effective_result_payload(fastmoss_job)
+    media_result = extract_effective_result_payload(media_job)
     product_result = dict(tiktok_result.get("normalized_product_result") or {})
     tiktok_product = dict(product_result.get("product") or {})
     logical_fields = dict(product_result.get("logical_fields") or {})
     fastmoss_bundle = dict(fastmoss_result.get("product_fact_bundle") or {})
+    daily_metrics = [
+        dict(item)
+        for item in fastmoss_bundle.get("product_daily_metrics", [])
+        if isinstance(item, Mapping)
+    ]
     fastmoss_product = _fact_bundle_product(
         fastmoss_bundle,
         product_id=str(row_context.get("product_id") or row_context.get("product_identity", {}).get("product_id") or ""),
@@ -1037,11 +1205,12 @@ def _build_competitor_projection_fields(
         fastmoss_product.get("shop_name"),
     )
     image_url = _first_text(
+        _first_media_asset_url(media_result),
         logical_fields.get("main_image_url"),
         _first_media_asset_url(product_result),
         _first_media_asset_url(fastmoss_bundle),
     )
-    price_text = _first_text(
+    price_text = _price_number_text(
         logical_fields.get("price_text"),
         tiktok_product.get("price_text"),
         tiktok_product.get("price_amount"),
@@ -1049,7 +1218,7 @@ def _build_competitor_projection_fields(
         overview_metrics.get("real_price"),
         overview_metrics.get("price"),
     )
-    fastmoss_price = _first_text(
+    fastmoss_price = _price_number_text(
         overview_metrics.get("fastmoss_price"),
         overview_metrics.get("real_price"),
         overview_metrics.get("price"),
@@ -1064,27 +1233,36 @@ def _build_competitor_projection_fields(
         "卖家": seller_name,
         "价格": price_text,
         "Fastmoss价格": fastmoss_price,
-        "昨日销量": _metric_text(
-            overview_metrics,
-            "yday_sold_count",
-            "yesterday_sold_count",
-            "day1_sold_count",
-            "yday_sales",
-            "yesterday_sales",
+        "昨日销量": _first_text(
+            _metric_text(
+                overview_metrics,
+                "yday_sold_count",
+                "yesterday_sold_count",
+                "day1_sold_count",
+                "yday_sales",
+                "yesterday_sales",
+            ),
+            _daily_sales_text(daily_metrics, window_days=1),
         ),
-        "近7天销量": _metric_text(
-            overview_metrics,
-            "day7_sold_count",
-            "sales_7d",
-            "day7_sales",
-            "sold_count_7d",
+        "近7天销量": _first_text(
+            _metric_text(
+                overview_metrics,
+                "day7_sold_count",
+                "sales_7d",
+                "day7_sales",
+                "sold_count_7d",
+            ),
+            _daily_sales_text(daily_metrics, window_days=7),
         ),
-        "近90天销量": _metric_text(
-            overview_metrics,
-            "day90_sold_count",
-            "sales_90d",
-            "day90_sales",
-            "sold_count_90d",
+        "近90天销量": _first_text(
+            _metric_text(
+                overview_metrics,
+                "day90_sold_count",
+                "sales_90d",
+                "day90_sales",
+                "sold_count_90d",
+            ),
+            _daily_sales_text(daily_metrics, window_days=90),
         ),
     }
     return {key: value for key, value in fields.items() if value not in ("", None, [], {})}
@@ -1092,9 +1270,7 @@ def _build_competitor_projection_fields(
 
 def _competitor_status_text(row_status: str) -> str:
     return {
-        "success": "已更新",
-        "partial_success": "部分更新",
-        "failed": "更新失败",
+        "unavailable": "已下架/区域不可售",
     }.get(str(row_status or ""), "")
 
 
@@ -1113,16 +1289,40 @@ def _fact_bundle_product(fact_bundle: Mapping[str, Any], *, product_id: str) -> 
 
 
 def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
-    assets = payload.get("media_assets") if isinstance(payload, Mapping) else []
-    for asset in assets if isinstance(assets, list) else []:
+    assets = []
+    if isinstance(payload, Mapping):
+        for key in ("media_assets", "synced_assets"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                assets.extend(value)
+    for asset in _prefer_main_image_assets(assets):
         if isinstance(asset, Mapping):
-            source_url = _first_text(asset.get("source_url"), asset.get("remote_uri"), asset.get("local_path"))
+            source_url = _first_text(
+                asset.get("remote_uri"),
+                asset.get("source_url"),
+                asset.get("object_key"),
+                asset.get("local_path"),
+            )
             if source_url:
                 return source_url
-    fact_bundle = payload.get("fact_bundle") if isinstance(payload, Mapping) else None
-    if isinstance(fact_bundle, Mapping):
-        return _first_media_asset_url(fact_bundle)
+    for nested_key in ("media_fact_bundle", "fact_bundle"):
+        nested = payload.get(nested_key) if isinstance(payload, Mapping) else None
+        if isinstance(nested, Mapping):
+            found = _first_media_asset_url(nested)
+            if found:
+                return found
     return ""
+
+
+def _prefer_main_image_assets(assets: list[Any]) -> list[Any]:
+    main_assets: list[Any] = []
+    other_assets: list[Any] = []
+    for asset in assets if isinstance(assets, list) else []:
+        if isinstance(asset, Mapping) and str(asset.get("media_role") or "") == "product_main_image":
+            main_assets.append(asset)
+        else:
+            other_assets.append(asset)
+    return [*main_assets, *other_assets]
 
 
 def _source_fields_from_row_context(row_context: Mapping[str, Any]) -> dict[str, Any]:
@@ -1147,6 +1347,59 @@ def _metric_text(payload: Mapping[str, Any], *keys: str) -> str:
         if text:
             return text
     return ""
+
+
+def _daily_sales_text(daily_metrics: list[Mapping[str, Any]], *, window_days: int) -> str:
+    if not daily_metrics or window_days <= 0:
+        return ""
+    ordered = sorted(
+        (dict(item) for item in daily_metrics if isinstance(item, Mapping)),
+        key=lambda item: _first_text(item.get("metric_date"), item.get("date"), item.get("dt")),
+    )
+    if len(ordered) < window_days:
+        return ""
+    selected = ordered[-window_days:]
+    values: list[float] = []
+    for item in selected:
+        value = _number_value(
+            item.get("sold_count"),
+            dict(item.get("payload") or {}).get("inc_sold_count") if isinstance(item.get("payload"), Mapping) else None,
+        )
+        if value is None:
+            return ""
+        values.append(value)
+    total = sum(values)
+    return str(int(total)) if float(total).is_integer() else str(total)
+
+
+def _price_number_text(*values: Any) -> str:
+    text = _first_text(*values)
+    if not text:
+        return ""
+    normalized = text.strip().replace(",", "")
+    normalized = re.sub(r"^(?:US\$|USD\s*|\$|￥|¥|CNY\s*|RMB\s*)", "", normalized, flags=re.IGNORECASE).strip()
+    normalized = re.sub(r"\s*(?:USD|US\$|美元|元)$", "", normalized, flags=re.IGNORECASE).strip()
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", normalized)
+    if match is None:
+        return normalized
+    number = match.group(0)
+    return number.rstrip("0").rstrip(".") if "." in number else number
+
+
+def _number_value(*values: Any) -> float | None:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = _first_text(value).replace(",", "")
+        if not text:
+            continue
+        try:
+            return float(text)
+        except ValueError:
+            continue
+    return None
 
 
 def _first_text(*values: Any) -> str:
@@ -1281,23 +1534,50 @@ def _effective_tiktok_result(*, tiktok_job: Mapping[str, Any] | None, browser_ex
 
 
 def _collect_asset_refs(product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw_assets = product_result.get("media_assets")
-    if not isinstance(raw_assets, list):
-        return []
+    raw_assets: list[Any] = []
+    media_assets = product_result.get("media_assets")
+    if isinstance(media_assets, list):
+        raw_assets.extend(media_assets)
+    images = product_result.get("images")
+    if isinstance(images, list):
+        raw_assets.extend(images)
+    videos = product_result.get("videos")
+    if isinstance(videos, list):
+        raw_assets.extend(videos)
+
     assets: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for asset in raw_assets:
-        if not isinstance(asset, Mapping):
+        if isinstance(asset, Mapping):
+            item = dict(asset)
+        elif isinstance(asset, str):
+            item = {"source_url": asset, "source_type": "image"}
+        else:
             continue
-        source_url = str(asset.get("source_url") or "")
-        if not source_url:
+        source_url = str(item.get("source_url") or item.get("url") or "").strip()
+        local_path = str(item.get("local_path") or "").strip()
+        object_key = str(item.get("object_key") or "").strip()
+        dedupe_key = source_url or local_path or object_key
+        if not dedupe_key or dedupe_key in seen:
             continue
+        seen.add(dedupe_key)
         assets.append(
-            {
-                "source_url": source_url,
-                "source_type": str(asset.get("source_type") or "image"),
-                "file_name": str(asset.get("file_name") or ""),
-                "mime_type": str(asset.get("mime_type") or ""),
-            }
+            _compact_mapping(
+                {
+                    "source_url": source_url,
+                    "source_type": str(item.get("source_type") or item.get("type") or "image"),
+                    "file_name": str(item.get("file_name") or ""),
+                    "mime_type": str(item.get("mime_type") or ""),
+                    "local_path": local_path,
+                    "object_key": object_key,
+                    "remote_uri": str(item.get("remote_uri") or ""),
+                    "entity_type": str(item.get("entity_type") or ""),
+                    "entity_external_id": str(item.get("entity_external_id") or item.get("product_id") or ""),
+                    "media_role": str(item.get("media_role") or ""),
+                    "source_platform": str(item.get("source_platform") or "tiktok"),
+                    "metadata": item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {},
+                }
+            )
         )
     return assets
 
@@ -1307,21 +1587,34 @@ def _derive_row_status(
     tiktok_job: Mapping[str, Any] | None,
     fastmoss_job: Mapping[str, Any] | None,
     browser_execution: Any,
+    media_job: Mapping[str, Any] | None,
     fact_job: Mapping[str, Any] | None,
     write_job: Mapping[str, Any] | None,
 ) -> str:
-    if str((write_job or {}).get("status") or "") == "success":
+    statuses = [
+        _record_effective_status(tiktok_job),
+        _record_effective_status(fastmoss_job),
+        _record_effective_status(browser_execution),
+        _record_effective_status(media_job),
+        _record_effective_status(fact_job),
+        _record_effective_status(write_job),
+    ]
+    if "unavailable" in statuses:
+        return "unavailable"
+    if str((write_job or {}).get("status") or "") == "success" and "failed" not in statuses:
         return "success"
-    if str((fact_job or {}).get("status") or "") == "success":
+    if str((fact_job or {}).get("status") or "") == "success" and "failed" not in statuses:
         return "success"
-    if _record_effective_status(browser_execution) == "failed":
-        return "failed"
     if _record_effective_status(tiktok_job) == "failed" and _record_effective_status(fastmoss_job) != "success":
         return "failed"
     if _record_effective_status(tiktok_job) == "fallback_required" and _record_effective_status(browser_execution) in {"", "pending"}:
         return "partial_success"
-    if _record_effective_status(fastmoss_job) == "success":
+    if "success" in statuses or "partial_success" in statuses:
+        if "failed" in statuses or "fallback_required" in statuses:
+            return "partial_success"
         return "partial_success"
+    if "failed" in statuses:
+        return "failed"
     return "failed"
 
 
@@ -1353,17 +1646,48 @@ def _record_effective_status(record: Any) -> str:
     if hasattr(record, "payload") and hasattr(record, "status"):
         result = getattr(record, "result", {}) or {}
         if isinstance(result, Mapping):
+            if _is_unavailable_result(result):
+                return "unavailable"
             handler_result = result.get("handler_result")
             if isinstance(handler_result, Mapping):
+                if _is_unavailable_result(handler_result):
+                    return "unavailable"
                 return str(handler_result.get("status") or record.status or "")
         return str(getattr(record, "status", "") or "")
     if isinstance(record, Mapping):
         result = dict(record.get("result") or {})
+        if _is_unavailable_result(result) or _is_unavailable_result(record):
+            return "unavailable"
         handler_result = result.get("handler_result")
         if isinstance(handler_result, Mapping):
+            if _is_unavailable_result(handler_result):
+                return "unavailable"
             return str(handler_result.get("status") or record.get("status") or "")
         return str(record.get("status") or "")
     return ""
+
+
+def _is_unavailable_result(payload: Mapping[str, Any]) -> bool:
+    if str(payload.get("availability_status") or payload.get("status") or "").strip().lower() == "unavailable":
+        return True
+    effective = extract_effective_result_payload(payload)
+    if effective and effective is not payload and _is_unavailable_result(effective):
+        return True
+    normalized = payload.get("normalized_product_result")
+    if isinstance(normalized, Mapping):
+        if _is_unavailable_result(normalized):
+            return True
+    logical_fields = payload.get("logical_fields")
+    if isinstance(logical_fields, Mapping) and _is_unavailable_result(logical_fields):
+        return True
+    product = payload.get("product")
+    if isinstance(product, Mapping):
+        if str(product.get("availability_status") or "").strip().lower() == "unavailable":
+            return True
+        facts = product.get("facts")
+        if isinstance(facts, Mapping) and _is_unavailable_result(facts):
+            return True
+    return False
 
 
 def _is_fallback_required(job: Mapping[str, Any]) -> bool:
@@ -1425,6 +1749,10 @@ def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[s
     }
 
 
+def _compact_mapping(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): value for key, value in values.items() if value not in (None, "", [], {})}
+
+
 def _fastmoss_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     settings = dict(payload.get("fastmoss") or {}) if isinstance(payload.get("fastmoss"), Mapping) else {}
     for source_key, target_key in (
@@ -1435,6 +1763,7 @@ def _fastmoss_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[
         ("fastmoss_base_url", "base_url"),
         ("region", "region"),
         ("fastmoss_timeout", "timeout"),
+        ("fastmoss_window_days", "window_days"),
         ("browser_cookies", "browser_cookies"),
         ("fastmoss_live_fetch", "live_fetch"),
         ("ensure_fastmoss_logged_in", "ensure_logged_in"),

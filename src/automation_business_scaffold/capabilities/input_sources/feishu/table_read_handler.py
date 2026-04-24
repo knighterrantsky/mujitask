@@ -39,6 +39,7 @@ def feishu_table_read_handler(context: HandlerContext) -> HandlerResult:
         if coerce_bool(read_policy.get("validate_schema")) or coerce_bool(payload.get("validate_schema")):
             validate_read_schema(client, target, field_names)
         raw_records, pagination = read_feishu_records(client, target, payload)
+        raw_rows_all = normalize_raw_rows(raw_records, field_names=[])
         raw_rows = normalize_raw_rows(raw_records, field_names=field_names)
         adapter_payload = adapt_source_rows(raw_rows, payload)
     except Exception as exc:  # pragma: no cover - defensive boundary uses classified payloads in tests
@@ -52,6 +53,7 @@ def feishu_table_read_handler(context: HandlerContext) -> HandlerResult:
 
     result = {
         "raw_rows": raw_rows,
+        "raw_rows_all": raw_rows_all,
         "source_rows": adapter_payload["source_rows"],
         "schema": {"field_names": field_names},
         "pagination": pagination,

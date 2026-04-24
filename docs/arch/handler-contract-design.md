@@ -1102,7 +1102,7 @@ result 示例:
 | 项 | 约定 |
 | --- | --- |
 | worker | `api_worker` |
-| input | source_job_ids、entities、relations、observations、raw_refs、relation_context |
+| input | `fact_bundle`、source_job_ids、observation_context |
 | output | persisted_entities、persisted_relations、persisted_observations、warnings |
 | idempotency | 主体按业务键 upsert，关系按 relation_key upsert，latest upsert，observations/raw 追加或 digest 去重 |
 | side effects | Fact DB |
@@ -1111,12 +1111,13 @@ result 示例:
 
 Fact projection 指 “将采集 handler 输出的标准事实 bundle 写入 Fact DB，并产出后续飞书 mapper 可消费的只读投影上下文”。它不是新的 handler 名称；正式 Runtime job 仍是 `fact_bundle_upsert`。
 
+`fact_bundle_upsert` 不接收事实层 mapper，也不按业务场景分支；TikTok / FastMoss / media handler 或 workflow 必须在调用前产出标准 `fact_bundle`。Feishu 写回仍通过 projection mapper 处理不同表字段。
+
 payload 示例:
 
 ```json
 {
   "source_job_ids": ["api-job-tiktok-001", "api-job-fastmoss-001"],
-  "mapper_code": "competitor_fact_relation_mapper",
   "fact_bundle": {
     "entities": {
       "products": [

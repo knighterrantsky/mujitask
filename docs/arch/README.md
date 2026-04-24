@@ -1,6 +1,6 @@
 # Arch 文档索引
 
-日期: 2026-04-23
+日期: 2026-04-24
 
 本目录维护当前系统架构和核心业务 workflow 的设计文档。
 
@@ -30,6 +30,7 @@
 - [Workflow 实现模式规范](./workflow-implementation-patterns.md)
 - [项目结构与命名契约](./project-structure-contract.md)
 - [模块实现所有权契约](./module-ownership-contract.md)
+- [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Handler Contract 设计](./handler-contract-design.md)
@@ -68,6 +69,7 @@
 - `Real Migration`: 将旧实现所有权迁移到目标目录，禁止 facade/shim/re-export 的迁移模式。
 - `Implementation Pattern`: 新 workflow 开发时每类文件的固定职责、依赖方向和测试模式。
 - `Module Ownership`: mapper/projection、capability handler、registry、common、`__init__.py` 和 legacy 路径的实现归属边界。
+- `Feishu Adapter/Projection Contract`: 飞书表读写中 source adapter 和 projection mapper 的字段策略、输入输出和禁止事项。
 
 ## 已删除的历史来源
 

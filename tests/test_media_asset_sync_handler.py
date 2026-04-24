@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+from typing import Any
+
+from automation_business_scaffold.capabilities.media import asset_sync_handler
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
+
+
+class _FakeResponse:
+    headers = {"Content-Type": "image/webp"}
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b"fake-webp-bytes"
+
+
+def _context(payload: dict[str, Any]) -> HandlerContext:
+    return HandlerContext(
+        request_id="req-media",
+        job_id="job-media",
+        handler_code="media_asset_sync",
+        worker_type="api_worker",
+        runtime_table="api_worker_job",
+        job_code="media_asset_sync",
+        payload=payload,
+    )
+
+
+def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypatch, tmp_path) -> None:
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int):
+        requested_urls.append(request.full_url)
+        assert timeout == 11
+        return _FakeResponse()
+
+    monkeypatch.setattr(asset_sync_handler, "urlopen", fake_urlopen)
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "sync_referenced_files": True,
+                "media_download_timeout_seconds": 11,
+                "media_download_dir": str(tmp_path / "downloads"),
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_gallery_image",
+                        "source_url": "https://cdn.example.com/gallery.webp?from=2378011839",
+                        "source_platform": "tiktok",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert requested_urls == ["https://cdn.example.com/gallery.webp?from=2378011839"]
+    asset = result.result["synced_assets"][0]
+    assert asset["sync_state"] == "linked_local"
+    assert asset["media_role"] == "product_gallery_image"
+    assert asset["source_url"] == "https://cdn.example.com/gallery.webp?from=2378011839"
+    assert asset["local_path"].endswith(".webp")
+    assert asset["object_key"].endswith(".webp")
+    assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
+
+
+def test_media_asset_sync_can_leave_referenced_url_unmaterialized(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not download")),
+    )
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "sync_referenced_files": False,
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_gallery_image",
+                        "source_url": "https://cdn.example.com/gallery.webp",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["synced_assets"][0]["sync_state"] == "referenced"
+    assert result.result["artifact_refs"] == []

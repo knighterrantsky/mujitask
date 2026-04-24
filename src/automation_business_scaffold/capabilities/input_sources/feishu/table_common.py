@@ -44,6 +44,13 @@ _PRODUCT_ID_PATTERNS = (
 )
 
 _COMPETITOR_AUTO_FIELDS = (
+    "产品链接",
+    "SKU-ID",
+    "图片",
+    "标题",
+    "节日",
+    "卖家",
+    "价格",
     "Fastmoss价格",
     "昨日销量",
     "近7天销量",
@@ -205,6 +212,9 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     mapper_code = _text(payload.get("mapper_code"))
     mapped: list[dict[str, Any]] = []
     for record in records:
+        if _text(record.get("op")) == "delete":
+            mapped.append(_normalize_write_record(record, payload))
+            continue
         if _mapping(record.get("fields")):
             mapped.append(_normalize_write_record(record, payload))
             continue
@@ -213,7 +223,7 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         )
 
         mapped.append(map_projection_record(mapper_code, record, payload))
-    return [record for record in mapped if _mapping(record.get("fields"))]
+    return [record for record in mapped if _mapping(record.get("fields")) or _text(record.get("op")) == "delete"]
 
 
 def execute_write_records(
@@ -241,6 +251,35 @@ def execute_write_records(
         if record_key:
             seen_keys.add(record_key)
 
+        op = _text(command.get("op"))
+        if op == "delete":
+            if not _text(command.get("record_id")):
+                skipped_count += 1
+                result_records.append(_write_result_record(command, status="skipped", message="missing_record_id"))
+                continue
+            try:
+                raw_result, target_record_id, effective_op = _execute_one_write(client, target, command)
+            except Exception as exc:
+                failed_count += 1
+                classified = classify_feishu_exception(exc)
+                result_records.append(
+                    _write_result_record(
+                        command,
+                        status="failed",
+                        message=classified.message,
+                        error_code=classified.error_code,
+                        error_type=classified.error_type,
+                    )
+                )
+                continue
+            written_count += 1
+            if target_record_id:
+                target_record_ids.append(target_record_id)
+            item = _write_result_record(command, status="success", record_id=target_record_id, op=effective_op)
+            item["raw_result"] = _compact_raw_result(raw_result)
+            result_records.append(item)
+            continue
+
         fields = _mapping(command.get("fields"))
         if not fields:
             skipped_count += 1
@@ -248,7 +287,6 @@ def execute_write_records(
             continue
 
         try:
-            op = _text(command.get("op"))
             upsert_key = _mapping(command.get("upsert_key"))
             if op in {"insert_if_absent", "create_if_absent"} and upsert_key:
                 existing_id = _find_existing_record_id(client, target, upsert_key)
@@ -794,8 +832,11 @@ def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[s
         name = _text(field_name)
         if not name or value in (None, "", [], {}):
             continue
-        if name in {"产品链接", "图片", "前台截图", "Fastmoss截图"}:
+        if name == "产品链接":
             normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
+            continue
+        if name in {"图片", "前台截图", "Fastmoss截图"}:
+            normalized[name] = _raw_link_value(_text_value(value)) if _text_value(value) else value
             continue
         normalized[name] = value
     return normalized
@@ -1128,6 +1169,10 @@ def _execute_one_write(
     op = _text(record.get("op"))
     fields = _mapping(record.get("fields"))
     record_id = _text(record.get("record_id"))
+    if op == "delete" and record_id:
+        raw = client.delete_record(target.app_token, target.table_id, record_id)
+        return raw, record_id, "delete"
+
     if op == "update" and record_id:
         raw = client.update_record(target.app_token, target.table_id, record_id, fields)
         return raw, record_id, "update"
@@ -1331,6 +1376,13 @@ def _text_value(value: Any) -> str:
 
 def _link_value(url: str) -> dict[str, str] | str:
     normalized = _normalize_product_url(url)
+    if not normalized:
+        return ""
+    return {"text": normalized, "link": normalized}
+
+
+def _raw_link_value(url: str) -> dict[str, str] | str:
+    normalized = _text(url)
     if not normalized:
         return ""
     return {"text": normalized, "link": normalized}

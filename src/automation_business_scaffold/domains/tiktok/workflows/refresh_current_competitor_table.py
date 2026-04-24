@@ -121,20 +121,28 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
-                stage_code="persist_facts",
-                description="Sync media assets and persist normalized facts into Fact DB.",
+                stage_code="sync_media",
+                description="Sync TikTok/browser product media before fact persistence.",
                 execution_mode="worker_jobs",
-                enter_condition="normalized product facts exist from request or browser collection",
-                exit_condition="media sync and fact upsert jobs are terminal",
+                enter_condition="normalized TikTok/browser product results include media assets",
+                exit_condition="media sync jobs are terminal or skipped",
                 job_bindings=(
                     StageJobBinding(
                         job_code="media_asset_sync",
                         flow_code="media_object_store_flow",
-                        result_consumer="fact_bundle_upsert or competitor projection",
+                        result_consumer="media facts for fact_bundle_upsert",
                     ),
+                ),
+            ),
+            StageDefinition(
+                stage_code="persist_facts",
+                description="Persist normalized product entities, relations, and observations to Fact DB.",
+                execution_mode="worker_jobs",
+                enter_condition="collection results and optional media refs are available",
+                exit_condition="fact upsert jobs are terminal",
+                job_bindings=(
                     StageJobBinding(
                         job_code="fact_bundle_upsert",
-                        mapper_code="competitor_fact_relation_mapper",
                         result_consumer="competitor writeback projection",
                     ),
                 ),
@@ -197,19 +205,24 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="collect_product_data",
-                to_stage_code="persist_facts",
+                to_stage_code="sync_media",
                 condition="product collection jobs are terminal and no browser fallback is pending",
                 transition_type="conditional",
             ),
             TransitionDefinition(
                 from_stage_code="browser_fallback",
-                to_stage_code="persist_facts",
+                to_stage_code="sync_media",
                 condition="browser fallback executions are terminal",
+            ),
+            TransitionDefinition(
+                from_stage_code="sync_media",
+                to_stage_code="persist_facts",
+                condition="media sync jobs are terminal or no media candidates exist",
             ),
             TransitionDefinition(
                 from_stage_code="persist_facts",
                 to_stage_code="writeback_competitor_rows",
-                condition="media sync and fact upsert jobs are terminal",
+                condition="fact upsert jobs are terminal",
             ),
             TransitionDefinition(
                 from_stage_code="writeback_competitor_rows",

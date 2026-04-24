@@ -53,6 +53,39 @@ def _build_tiktok_normalized_product_result(
         raw.get("shop_name"),
     )
     shop_url = first_non_empty(shop_payload.get("shop_url"), product_payload.get("shop_url"), raw.get("shop_url"))
+    product_facts = compact_dict(
+        {
+            "collection_path": collection_path,
+            "main_image_url": first_non_empty(
+                product_payload.get("main_image_url"),
+                product_payload.get("img"),
+                product_payload.get("image_url"),
+                raw.get("main_image_url"),
+            ),
+            "price_text": first_non_empty(
+                product_payload.get("price_text"),
+                product_payload.get("real_price"),
+                product_payload.get("price"),
+                raw.get("price_text"),
+                raw.get("real_price"),
+                raw.get("price"),
+            ),
+            "price_amount": first_non_empty(product_payload.get("price_amount"), raw.get("price_amount")),
+            "price_currency": first_non_empty(product_payload.get("price_currency"), raw.get("price_currency")),
+            "sales_count": first_non_empty(product_payload.get("sales_count"), raw.get("sales_count")),
+            "rating_score": first_non_empty(product_payload.get("rating_score"), raw.get("rating_score")),
+            "review_count": first_non_empty(product_payload.get("review_count"), raw.get("review_count")),
+            "comment_count": first_non_empty(product_payload.get("comment_count"), raw.get("comment_count")),
+            "availability_status": first_non_empty(
+                product_payload.get("availability_status"),
+                raw.get("availability_status"),
+            ),
+            "unavailable_message": first_non_empty(
+                product_payload.get("unavailable_message"),
+                raw.get("unavailable_message"),
+            ),
+        }
+    )
     product = compact_dict(
         {
             "product_id": product_id,
@@ -64,7 +97,7 @@ def _build_tiktok_normalized_product_result(
             "shop_name": shop_name,
             "shop_url": shop_url,
             "source_platform": "tiktok",
-            "facts": {"collection_path": collection_path},
+            "facts": product_facts or {"collection_path": collection_path},
         }
     )
     shop = compact_dict(
@@ -195,6 +228,18 @@ def _normalize_tiktok_media_assets(raw_payload: dict[str, Any], *, product: dict
                         "entity_external_id": product_id,
                         "media_role": media_role,
                         "source_url": source_url,
+                        "local_path": first_non_empty(
+                            raw_payload.get("main_image_local_path"),
+                            coerce_mapping(raw_payload.get("product")).get("main_image_local_path"),
+                        ),
+                        "file_name": first_non_empty(
+                            raw_payload.get("main_image_file_name"),
+                            coerce_mapping(raw_payload.get("product")).get("main_image_file_name"),
+                        ),
+                        "mime_type": first_non_empty(
+                            raw_payload.get("main_image_mime_type"),
+                            coerce_mapping(raw_payload.get("product")).get("main_image_mime_type"),
+                        ),
                         "source_platform": "tiktok",
                     },
                     fallback_product_id=product_id,
@@ -203,7 +248,12 @@ def _normalize_tiktok_media_assets(raw_payload: dict[str, Any], *, product: dict
             break
     gallery_images = raw_payload.get("gallery_images") or coerce_mapping(raw_payload.get("product")).get("gallery_images")
     for entry in gallery_images if isinstance(gallery_images, list) else []:
-        source_url = entry if isinstance(entry, str) else first_non_empty(coerce_mapping(entry).get("source_url"), coerce_mapping(entry).get("url"))
+        entry_map = coerce_mapping(entry)
+        source_url = entry if isinstance(entry, str) else first_non_empty(
+            entry_map.get("source_url"),
+            entry_map.get("url"),
+            entry_map.get("image_url"),
+        )
         if not source_url:
             continue
         media_assets.append(
@@ -211,9 +261,69 @@ def _normalize_tiktok_media_assets(raw_payload: dict[str, Any], *, product: dict
                 {
                     "entity_type": "product",
                     "entity_external_id": product_id,
-                    "media_role": "product_gallery_image",
+                    "media_role": first_non_empty(entry_map.get("media_role"), "product_gallery_image"),
                     "source_url": source_url,
+                    "file_token": entry_map.get("file_token"),
+                    "local_path": first_non_empty(entry_map.get("local_path"), entry_map.get("path")),
+                    "file_name": entry_map.get("file_name"),
+                    "mime_type": entry_map.get("mime_type"),
                     "source_platform": "tiktok",
+                    "metadata": {
+                        key: value
+                        for key, value in entry_map.items()
+                        if key
+                        not in {
+                            "media_role",
+                            "source_url",
+                            "url",
+                            "image_url",
+                            "file_token",
+                            "local_path",
+                            "path",
+                            "file_name",
+                            "mime_type",
+                            "source_platform",
+                        }
+                    },
+                },
+                fallback_product_id=product_id,
+            )
+        )
+    sku_images = raw_payload.get("sku_images") or coerce_mapping(raw_payload.get("product")).get("sku_images")
+    for entry in sku_images if isinstance(sku_images, list) else []:
+        entry_map = coerce_mapping(entry)
+        source_url = first_non_empty(entry_map.get("source_url"), entry_map.get("url"), entry_map.get("image_url"))
+        if not source_url:
+            continue
+        media_assets.append(
+            _normalize_media_asset(
+                {
+                    "entity_type": "product",
+                    "entity_external_id": product_id,
+                    "media_role": first_non_empty(entry_map.get("media_role"), "product_sku_image"),
+                    "source_url": source_url,
+                    "file_token": entry_map.get("file_token"),
+                    "local_path": first_non_empty(entry_map.get("local_path"), entry_map.get("path")),
+                    "file_name": entry_map.get("file_name"),
+                    "mime_type": entry_map.get("mime_type"),
+                    "source_platform": "tiktok",
+                    "metadata": {
+                        key: value
+                        for key, value in entry_map.items()
+                        if key
+                        not in {
+                            "media_role",
+                            "source_url",
+                            "url",
+                            "image_url",
+                            "file_token",
+                            "local_path",
+                            "path",
+                            "file_name",
+                            "mime_type",
+                            "source_platform",
+                        }
+                    },
                 },
                 fallback_product_id=product_id,
             )

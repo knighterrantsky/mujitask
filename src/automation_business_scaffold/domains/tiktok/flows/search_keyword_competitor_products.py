@@ -894,7 +894,6 @@ def _advance_persist_facts(
                 "entity_business_keys": candidate["business_entity_key"],
                 "observation_at": str(candidate.get("observation_at") or ""),
                 "fact_bundle": dict(candidate["fact_bundle"]),
-                "mapper_code": "competitor_fact_relation_mapper",
                 "observation_context": {
                     "source_record_id": candidate["source_record_id"],
                     "search_query": candidate.get("search_query") or "",

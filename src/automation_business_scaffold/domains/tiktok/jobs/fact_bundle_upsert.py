@@ -16,7 +16,6 @@ FACT_BUNDLE_UPSERT_JOB = JobDefinition(
     payload_contract=contract(
         "fact_bundle_upsert_payload",
         required_field("fact_bundle", "Normalized entities, relations, and observations.", type_hint="dict[str, Any]"),
-        optional_field("mapper_code", "Business relation mapper used before upsert.", type_hint="str"),
         optional_field("observation_context", "Observation and snapshot context.", type_hint="dict[str, Any]"),
     ),
     result_contract=contract(

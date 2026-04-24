@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [目标项目架构契约](./target-project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md) 和 [项目结构与命名契约](./project-structure-contract.md)。
+本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [目标项目架构契约](./target-project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
 
 本文解决五类反复混淆的问题:
 
@@ -55,12 +55,14 @@ mapper 拥有:
 - 业务字段名、兼容别名、默认值和标准化规则。
 - domain key、candidate、seed、writeback context 等业务对象构造。
 - 纯函数式字段转换和业务校验。
+- 飞书 source adapter 的候选字段集合、字段判断逻辑、跳过原因和 adapter summary。
 
 projection 拥有:
 
 - domain object / workflow result 到飞书表格、消息、视图或 outbox payload 的字段投影。
 - 写回字段名、列级默认值、展示格式和缺失值策略。
 - 面向外部通道的业务摘要文本，但不负责发送。
+- 飞书 projection mapper 的必填字段、可选字段、人工保留字段和系统覆盖字段策略。
 
 mapper / projection 禁止:
 
@@ -258,6 +260,7 @@ common 模块只承载小型、稳定、无业务归属的工具。
 - [ ] `__init__.py` 没有导出 runtime contract。
 - [ ] registry 只登记，不承载业务转换和 handler 实现。
 - [ ] common helper 不包含业务字段、projection、summary 或 handler envelope。
+- [ ] 飞书表 source adapter/projection mapper 的字段集合和缺失策略符合 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
 - [ ] legacy business 路径没有继续作为 runtime 主路径。
 - [ ] 测试导入真实目标模块路径，并覆盖 mapper/projection/capability 的行为。
 

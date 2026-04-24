@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
@@ -166,7 +167,7 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
         if candidate:
             return candidate
 
-    fastmoss_settings = coerce_mapping(payload.get("fastmoss"))
+    fastmoss_settings = _resolve_fastmoss_product_settings(payload)
     live_fetch = coerce_bool(fastmoss_settings.get("live_fetch"), default=bool(product_id and fastmoss_settings))
     if not live_fetch or not product_id:
         return {}
@@ -204,6 +205,50 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
                 ecommerce_type=first_non_empty(author_plan.get("ecommerce_type"), "all"),
             )
         return bundle
+
+
+def _resolve_fastmoss_product_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = coerce_mapping(payload.get("fastmoss"))
+    phone_env = first_non_empty(
+        settings.get("phone_env"),
+        settings.get("fastmoss_phone_env"),
+        payload.get("fastmoss_phone_env"),
+    )
+    password_env = first_non_empty(
+        settings.get("password_env"),
+        settings.get("fastmoss_password_env"),
+        payload.get("fastmoss_password_env"),
+    )
+    browser_cookies = settings.get("browser_cookies", payload.get("browser_cookies"))
+    return {
+        "phone": first_non_empty(
+            settings.get("phone"),
+            payload.get("fastmoss_phone"),
+            _env_value(phone_env),
+        ),
+        "password": first_non_empty(
+            settings.get("password"),
+            payload.get("fastmoss_password"),
+            _env_value(password_env),
+        ),
+        "phone_env": phone_env,
+        "password_env": password_env,
+        "base_url": first_non_empty(settings.get("base_url"), payload.get("fastmoss_base_url"), "https://www.fastmoss.com"),
+        "region": first_non_empty(settings.get("region"), payload.get("region"), "US"),
+        "timeout": settings.get("timeout", payload.get("fastmoss_timeout", 30.0)),
+        "browser_cookies": browser_cookies if isinstance(browser_cookies, list) else [],
+        "live_fetch": settings.get("live_fetch", payload.get("fastmoss_live_fetch", True)),
+        "ensure_logged_in": settings.get("ensure_logged_in", payload.get("ensure_fastmoss_logged_in", None)),
+        "window_days": settings.get("window_days", payload.get("fastmoss_window_days", 28)),
+        "author_list": settings.get("author_list", payload.get("fastmoss_author_list", True)),
+    }
+
+
+def _env_value(env_name: str) -> str:
+    name = coerce_str(env_name)
+    if not name:
+        return ""
+    return coerce_str(os.environ.get(name))
 
 
 def _product_fetch_includes_related_creators(payload: Mapping[str, Any], *, detail_level: str) -> bool:
@@ -523,7 +568,7 @@ def _build_fastmoss_distribution_snapshots(raw_overview: dict[str, Any], *, prod
                             "source_name": source_key,
                             "source_platform": "fastmoss",
                             "window_days": window_days,
-                            "metric_value": item.get(value_key, item.get("sold_count"), item.get("propotion")),
+                            "metric_value": first_non_empty(item.get(value_key), item.get("sold_count"), item.get("propotion")),
                             "metric_amount": item.get(amount_key, item.get("sale_amount")),
                             "payload": item,
                         }

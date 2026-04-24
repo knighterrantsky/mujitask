@@ -71,7 +71,7 @@ flowchart TD
 | FastMoss 商品采集 | `fastmoss_product_fetch` | `api_worker` | `fastmoss_product_fetch` | FastMoss product flow |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | browser product page flow |
 | 媒体同步 | `media_asset_sync` | `api_worker` | `media_asset_sync` | object store flow |
-| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | `competitor_fact_relation_mapper` |
+| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | fixed `fact_bundle` upsert |
 | 竞品表写回 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_table_projection_mapper` |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
 
@@ -178,7 +178,7 @@ flowchart TD
 | FastMoss 商品采集 | `fastmoss_product_fetch` | `api_worker` | `fastmoss_product_fetch` | FastMoss product flow |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | browser product page flow |
 | 媒体同步 | `media_asset_sync` | `api_worker` | `media_asset_sync` | object store flow |
-| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | `competitor_fact_relation_mapper` |
+| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | fixed `fact_bundle` upsert |
 | 竞品表详情写回 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_table_projection_mapper` |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
 

@@ -142,32 +142,40 @@ def test_refresh_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     request = store.load_task_request(request_id=request.request_id)
     collect_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="collect_product_data")
     assert collect_advance["action"] == "advance"
-    assert collect_advance["next_stage"] == "persist_facts"
+    assert collect_advance["next_stage"] == "sync_media"
 
     request = store.load_task_request(request_id=request.request_id)
-    persist_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="persist_facts")
-    assert persist_waiting["action"] == "waiting"
+    sync_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="sync_media")
+    assert sync_waiting["action"] == "waiting"
     media_job = _latest_stage_job(
         store,
         request_id=request.request_id,
-        stage_code="persist_facts",
+        stage_code="sync_media",
         job_code="media_asset_sync",
     )
-    fact_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="persist_facts",
-        job_code="fact_bundle_upsert",
-    )
     assert media_job["payload"]["source_record_id"] == "row-1"
-    assert fact_job["payload"]["fact_bundle"]["product_identity"]["product_id"] == PRODUCT_ID
-
     store.mark_api_worker_job_success(
         job_id=media_job["job_id"],
         run_id="pytest:media",
         summary={"synced": 1},
         result={"synced_assets": [{"source_url": "https://cdn.example.com/p1.jpg"}]},
     )
+    request = store.load_task_request(request_id=request.request_id)
+    sync_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="sync_media")
+    assert sync_advance["action"] == "advance"
+    assert sync_advance["next_stage"] == "persist_facts"
+
+    request = store.load_task_request(request_id=request.request_id)
+    persist_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="persist_facts")
+    assert persist_waiting["action"] == "waiting"
+    fact_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="persist_facts",
+        job_code="fact_bundle_upsert",
+    )
+    assert fact_job["payload"]["fact_bundle"]["product_identity"]["product_id"] == PRODUCT_ID
+
     store.mark_api_worker_job_success(
         job_id=fact_job["job_id"],
         run_id="pytest:fact",
@@ -318,7 +326,72 @@ def test_refresh_runtime_browser_fallback_stage_enqueues_execution_and_advances(
     request = store.load_task_request(request_id=request.request_id)
     browser_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="browser_fallback")
     assert browser_advance["action"] == "advance"
-    assert browser_advance["next_stage"] == "persist_facts"
+    assert browser_advance["next_stage"] == "sync_media"
+
+
+def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_refresh_request(runtime_db_url)
+
+    read_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
+    assert read_waiting["action"] == "waiting"
+    read_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
+    )
+    store.mark_api_worker_job_success(
+        job_id=read_job["job_id"],
+        run_id="pytest:read",
+        summary={"rows": 2},
+        result={
+            "raw_rows_all": [
+                {
+                    "record_id": "rec-empty",
+                    "fields": {"产品链接": "", "SKU-ID": "", "备注": ""},
+                },
+                {
+                    "record_id": "rec-manual",
+                    "fields": {"产品链接": "", "SKU-ID": "", "备注": "keep"},
+                },
+            ],
+            "raw_rows": [
+                {"record_id": "rec-empty", "fields": {"产品链接": "", "SKU-ID": ""}},
+                {"record_id": "rec-manual", "fields": {"产品链接": "", "SKU-ID": ""}},
+            ],
+            "source_rows": [],
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    cleanup_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
+    assert cleanup_waiting["action"] == "waiting"
+    cleanup_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_write",
+    )
+    assert cleanup_job["payload"]["cleanup_kind"] == "delete_empty_rows"
+    assert cleanup_job["payload"]["records"] == [
+        {
+            "op": "delete",
+            "record_id": "rec-empty",
+            "business_entity_key": "empty-row:rec-empty",
+            "source_context": {"cleanup_reason": "empty_row"},
+        }
+    ]
+
+    store.mark_api_worker_job_success(
+        job_id=cleanup_job["job_id"],
+        run_id="pytest:cleanup",
+        summary={"deleted": 1},
+        result={"deleted_count": 1, "target_record_ids": ["rec-empty"]},
+    )
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
+    assert read_advance["action"] == "advance"
+    assert read_advance["next_stage"] == "dispatch_product_collection"
 
 
 def test_refresh_runtime_release_request_after_child_completion_requeues_worker_stage(runtime_db_url: str) -> None:

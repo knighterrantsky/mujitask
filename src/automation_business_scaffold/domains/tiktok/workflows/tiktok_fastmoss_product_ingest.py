@@ -137,7 +137,6 @@ def build_tiktok_fastmoss_product_ingest_definition() -> WorkflowDefinition:
                 job_bindings=(
                     StageJobBinding(
                         job_code="fact_bundle_upsert",
-                        mapper_code="selection_fact_relation_mapper",
                         result_consumer="selection writeback projection or summary",
                     ),
                 ),

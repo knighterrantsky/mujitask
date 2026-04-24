@@ -11,6 +11,9 @@ from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
     map_fastmoss_video_goods,
     map_fastmoss_video_overview,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler import (
+    _resolve_fastmoss_product_settings,
+)
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
@@ -93,6 +96,25 @@ def test_fastmoss_product_fetch_unwraps_overview_for_metrics_and_observations():
     assert result.result["metrics_snapshot"]["overview"]["day7_sold_count"] == 412
     assert result.result["product_fact_bundle"]["product_metric_snapshots"]
     assert result.result["product_fact_bundle"]["product_daily_metrics"][0]["sold_count"] == 38
+
+
+def test_fastmoss_product_fetch_resolves_credentials_from_env_markers(monkeypatch):
+    monkeypatch.setenv("PYTEST_FASTMOSS_PHONE", "18000000000")
+    monkeypatch.setenv("PYTEST_FASTMOSS_PASSWORD", "secret")
+
+    settings = _resolve_fastmoss_product_settings(
+        {
+            "fastmoss": {
+                "phone_env": "PYTEST_FASTMOSS_PHONE",
+                "password_env": "PYTEST_FASTMOSS_PASSWORD",
+                "window_days": 90,
+            }
+        }
+    )
+
+    assert settings["phone"] == "18000000000"
+    assert settings["password"] == "secret"
+    assert settings["window_days"] == 90
 
 
 def test_product_overview_mapper_keeps_metrics_out_of_product_main_facts():
