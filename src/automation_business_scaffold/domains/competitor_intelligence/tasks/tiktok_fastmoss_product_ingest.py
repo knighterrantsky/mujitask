@@ -5,9 +5,9 @@ from automation_framework.runtime import WorkflowSpec
 from automation_business_scaffold.control_plane.executor.runner import (
     run_tiktok_fastmoss_product_ingest_request,
 )
-from automation_business_scaffold.business.workflows import build_tiktok_fastmoss_product_ingest_workflow
+from automation_business_scaffold.domains.competitor_intelligence.workflows import build_tiktok_fastmoss_product_ingest_workflow
 
-from automation_business_scaffold.business.tasks.runtime_task_shell import RuntimeTaskShell
+from automation_business_scaffold.contracts.workflow import RuntimeTaskShell
 
 
 class TikTokFastMossProductIngestTask(RuntimeTaskShell):

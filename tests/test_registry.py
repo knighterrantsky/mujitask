@@ -8,8 +8,8 @@ from types import ModuleType, SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
-TASKS_ROOT = SRC_ROOT / "business" / "tasks"
-TASKS_INIT = SRC_ROOT / "business" / "tasks" / "__init__.py"
+TASKS_ROOT = SRC_ROOT / "domains" / "competitor_intelligence" / "tasks"
+TASKS_INIT = TASKS_ROOT / "__init__.py"
 REGISTRY_MODULE = SRC_ROOT / "registry.py"
 OFFICIAL_TASK_CODES = (
     "refresh_current_competitor_table",
@@ -60,18 +60,21 @@ def _load_registry_module(default_tasks: list[object]):
     fake_framework_core.TaskRegistry = FakeTaskRegistry
 
     fake_root = ModuleType("automation_business_scaffold")
-    fake_business = ModuleType("automation_business_scaffold.business")
-    fake_tasks = ModuleType("automation_business_scaffold.business.tasks")
+    fake_domains = ModuleType("automation_business_scaffold.domains")
+    fake_domain = ModuleType("automation_business_scaffold.domains.competitor_intelligence")
+    fake_tasks = ModuleType("automation_business_scaffold.domains.competitor_intelligence.tasks")
     fake_tasks.DEFAULT_TASKS = default_tasks
-    fake_business.tasks = fake_tasks
-    fake_root.business = fake_business
+    fake_domain.tasks = fake_tasks
+    fake_domains.competitor_intelligence = fake_domain
+    fake_root.domains = fake_domains
 
     module_names = (
         "automation_framework",
         "automation_framework.core",
         "automation_business_scaffold",
-        "automation_business_scaffold.business",
-        "automation_business_scaffold.business.tasks",
+        "automation_business_scaffold.domains",
+        "automation_business_scaffold.domains.competitor_intelligence",
+        "automation_business_scaffold.domains.competitor_intelligence.tasks",
     )
     previous = {name: sys.modules.get(name) for name in module_names}
     sys.modules.update(
@@ -79,8 +82,9 @@ def _load_registry_module(default_tasks: list[object]):
             "automation_framework": fake_framework,
             "automation_framework.core": fake_framework_core,
             "automation_business_scaffold": fake_root,
-            "automation_business_scaffold.business": fake_business,
-            "automation_business_scaffold.business.tasks": fake_tasks,
+            "automation_business_scaffold.domains": fake_domains,
+            "automation_business_scaffold.domains.competitor_intelligence": fake_domain,
+            "automation_business_scaffold.domains.competitor_intelligence.tasks": fake_tasks,
         }
     )
 
@@ -98,17 +102,17 @@ def _load_registry_module(default_tasks: list[object]):
                 sys.modules[name] = original
 
 
-def test_business_tasks_package_must_define_default_tasks() -> None:
-    assert TASKS_INIT.exists(), "business.tasks package must exist and define DEFAULT_TASKS for registry discovery."
+def test_domain_tasks_package_must_define_default_tasks() -> None:
+    assert TASKS_INIT.exists(), "domain tasks package must define DEFAULT_TASKS for registry discovery."
     assert _defines_name(TASKS_INIT, "DEFAULT_TASKS"), (
-        "business.tasks.__init__ must define or re-export DEFAULT_TASKS so registry.py stays a thin shell."
+        "domain tasks __init__ must define DEFAULT_TASKS so registry.py stays a thin shell."
     )
 
 
-def test_business_tasks_package_exposes_the_four_formal_task_entry_modules() -> None:
+def test_domain_tasks_package_exposes_the_four_formal_task_entry_modules() -> None:
     missing = [task_code for task_code in OFFICIAL_TASK_CODES if _module_entry(TASKS_ROOT, task_code) is None]
     assert missing == [], (
-        "business.tasks should keep one discoverable task entry module per formal workflow:\n" + "\n".join(missing)
+        "domain tasks should keep one discoverable task entry module per formal workflow:\n" + "\n".join(missing)
     )
 
 
@@ -125,5 +129,5 @@ def test_build_task_registry_registers_default_tasks_without_hardcoding_task_nam
 
     assert isinstance(registry, fake_registry_type)
     assert registry.registered_batches == [default_tasks], (
-        "registry.py should forward business.tasks.DEFAULT_TASKS into TaskRegistry.register_many()."
+        "registry.py should forward domain DEFAULT_TASKS into TaskRegistry.register_many()."
     )

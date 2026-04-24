@@ -181,6 +181,14 @@ scripts/
 9. 运行控制
    daemon、Watchdog、Reconciler、Execution Supervisor 统一归 `control_plane`，不能引入业务专用 fork。业务差异只能通过 workflow、job、policy、mapper、projection 注入。
 
+每个 workflow 必须同时维护一份 Workflow Architecture Manifest:
+
+```text
+contracts/workflow/{workflow_code}.yaml
+```
+
+Manifest 是开发阶段的结构契约，必须声明 `workflow_origin`、agent artifact、task、workflow、job、handler capability、mapper、projection、policy、outbox 的真实 module 和 export。`workflow_origin` 为 `new_workflow` 时不允许存在未落文件的 mapper / projection / policy；迁移旧 workflow 时可以暂时使用 `migrated_existing`，但必须把未拆出的项写入 `known_architecture_gaps`，作为后续真实迁移清单。
+
 开发完成前必须能回答:
 
 - 这个需求新增了哪个 `skill_code`、`task_code`、`workflow_code`、`job_code`。
@@ -293,6 +301,7 @@ src/{project}/capabilities/channels/discord/
 | `test_control_plane_boundary` | RPC/CLI/daemon/control_plane 只管 request lifecycle、supervisor、reconciler、watchdog、outbox，不承载业务 mapper/projection |
 | `test_capability_boundary` | Feishu / Dingding / TikTok / FastMoss / AWS / database / object storage / channel 等能力按角色分类 |
 | `test_real_migration_contract` | 真实迁移禁止 facade、shim、re-export、`sys.modules` alias 和 `_implementations` 大杂烩 |
+| `test_workflow_architecture_manifests` | 每个 workflow 都有 `contracts/workflow/{workflow_code}.yaml`，并能对上真实 task/workflow/job/capability/custom logic 导出 |
 | `test_agent_artifact_boundary` | skill/script 是部署给 OpenClaw / Hermes / 用户 agent workspace 的入口产物，只提交 task request |
 
 ## 11. 默认假设

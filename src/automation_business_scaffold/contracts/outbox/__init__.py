@@ -1,7 +1,7 @@
-"""Outbox handler contract facade."""
+"""Outbox handler contracts and registry entry points."""
 
-from automation_business_scaffold.business.handlers.allowlist import OUTBOX_HANDLER_CONTRACTS
-from automation_business_scaffold.business.handlers.outbox.registry import (
+from automation_business_scaffold.contracts.handler.allowlist import OUTBOX_HANDLER_CONTRACTS
+from automation_business_scaffold.contracts.handler.outbox import (
     BOUND_OUTBOX_HANDLERS,
     OUTBOX_HANDLER_CODES,
     bind_default_outbox_handlers,

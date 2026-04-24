@@ -7,7 +7,7 @@ from automation_framework.core import BaseWorkflowTask, FrameworkResult
 import automation_business_scaffold.business.flows.tiktok_fastmoss_product_ingest_flow as ingest_flow
 import automation_business_scaffold.business.flows.refresh_current_competitor_table_flow as runtime_flow
 from automation_business_scaffold.business.tasks.workflow_step_helpers import ok_result
-from automation_business_scaffold.business.workflows import build_tiktok_fastmoss_product_ingest_workflow
+from automation_business_scaffold.business.workflows.achieve import build_tiktok_fastmoss_product_ingest_workflow
 
 
 class TikTokFastMossProductIngestTask(BaseWorkflowTask):

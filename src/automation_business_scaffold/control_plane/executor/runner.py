@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
-from automation_business_scaffold.business.flows.runtime_common import (
+from automation_business_scaffold.control_plane.executor.looping import (
+    build_child_runner_config,
+    run_control_loop,
+    supervisor_error_payload,
+)
+from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
+from automation_business_scaffold.control_plane.outbox.dispatcher import (
+    dispatch_outbox_once,
+    ensure_request_outbox,
+    run_outbox_dispatcher,
+)
+from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
     REFRESH_TASK_CODE,
     build_idle_payload,
-    build_outbox_message_text,
     build_request_payload,
     build_runtime_settings,
     create_runtime_store,
@@ -23,10 +33,9 @@ from automation_business_scaffold.control_plane.supervisor.execution_supervisor 
     ExecutionSupervisorOutcome,
     run_supervised_handler,
 )
-from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
-from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
-from automation_business_scaffold.business.handlers.contract import HandlerContext
-from automation_business_scaffold.business.workflow_defs import WorkflowDefinition, get_workflow_definition
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
@@ -34,17 +43,11 @@ TERMINAL_API_JOB_STATUSES = {"success", "failed", "cancelled"}
 ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
 TERMINAL_EXECUTION_STATUSES = {"success", "failed", "skipped", "cancelled"}
 MAX_EXECUTOR_STAGE_HOPS = 16
-DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER = {
-    "api_worker": 300.0,
-    "browser_worker": 900.0,
-    "outbox_dispatcher": 60.0,
-}
 PHASE2_NOT_READY_MESSAGE = (
     "Phase 2 runtime orchestration is currently wired only for tiktok_fastmoss_product_ingest."
 )
 API_HANDLER_REGISTRY: Any | None = None
 BROWSER_HANDLER_REGISTRY: Any | None = None
-OUTBOX_HANDLER_REGISTRY: Any | None = None
 
 
 class _LegacyProductIngestRuntime:
@@ -176,10 +179,6 @@ def _dispatch_api_runtime_handler(context: HandlerContext) -> Any:
 
 def _dispatch_browser_runtime_handler(context: HandlerContext) -> Any:
     return _build_bound_browser_handler_registry().dispatch(context.handler_code, context)
-
-
-def _dispatch_outbox_runtime_handler(context: HandlerContext) -> Any:
-    return _build_bound_outbox_handler_registry().dispatch("outbox_dispatch", context)
 
 
 def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
@@ -320,7 +319,7 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_executor_daemon(params: dict[str, Any]) -> dict[str, Any]:
-    return _run_loop(
+    return run_control_loop(
         params=params,
         actor="daemon",
         once_func=execute_executor_once,
@@ -375,7 +374,7 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
                 lease_seconds=settings.lease_seconds,
             ),
         ),
-        child_runner_config=_build_child_runner_config(
+        child_runner_config=build_child_runner_config(
             params,
             worker_type="api_worker",
             handler_code=str(job["job_code"]),
@@ -410,12 +409,12 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         }
     )
     if outcome.error is not None:
-        payload.update(_supervisor_error_payload(outcome))
+        payload.update(supervisor_error_payload(outcome))
     return payload
 
 
 def run_api_worker_daemon(params: dict[str, Any]) -> dict[str, Any]:
-    return _run_loop(
+    return run_control_loop(
         params=params,
         actor="daemon",
         once_func=execute_api_worker_once,
@@ -473,7 +472,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
                 lease_seconds=settings.lease_seconds,
             ),
         ),
-        child_runner_config=_build_child_runner_config(
+        child_runner_config=build_child_runner_config(
             params,
             worker_type="browser_worker",
             handler_code=execution.item_code,
@@ -509,201 +508,17 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         }
     )
     if outcome.error is not None:
-        payload.update(_supervisor_error_payload(outcome))
+        payload.update(supervisor_error_payload(outcome))
     return payload
 
 
 def run_browser_runloop(params: dict[str, Any]) -> dict[str, Any]:
-    return _run_loop(
+    return run_control_loop(
         params=params,
         actor="daemon",
         once_func=execute_browser_once,
         idle_status_key="daemon_status",
     )
-
-
-def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
-    settings = build_runtime_settings(params)
-    store = create_runtime_store(settings)
-    outbox = store.claim_next_outbox(worker_id=settings.worker_id, lease_seconds=settings.lease_seconds)
-    if outbox is None:
-        return build_idle_payload(
-            control_action="outbox_once",
-            actor="dispatcher",
-            message="No outbox message is ready to dispatch.",
-        )
-
-    context = HandlerContext(
-        request_id=outbox.ref_id,
-        job_id=outbox.outbox_id,
-        handler_code="outbox_dispatch",
-        worker_type="outbox_dispatcher",
-        runtime_table="notification_outbox",
-        payload=dict(outbox.payload or {}),
-        workflow_code="",
-        stage_code="ready_for_summary",
-        job_code="outbox_dispatch",
-        worker_id=settings.worker_id,
-        metadata={"channel_code": outbox.channel_code, "reply_target": outbox.reply_target},
-    )
-
-    outcome = run_supervised_handler(
-        context=context,
-        dispatch=_dispatch_outbox_runtime_handler,
-        heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
-        callbacks=ExecutionSupervisorCallbacks(
-            heartbeat=lambda: store.heartbeat_outbox(
-                outbox_id=outbox.outbox_id,
-                lease_seconds=settings.lease_seconds,
-            ),
-            on_progress=lambda event: store.update_outbox_progress(
-                outbox_id=outbox.outbox_id,
-                progress_stage=event.progress_stage,
-                lease_seconds=settings.lease_seconds,
-            ),
-        ),
-        child_runner_config=_build_child_runner_config(
-            params,
-            worker_type="outbox_dispatcher",
-            handler_code="outbox_dispatch",
-            runtime_timeout_seconds=outbox.max_execution_seconds,
-        ),
-    )
-    if outcome.should_mark_failed:
-        retryable = outcome.error.retryable if outcome.error is not None else True
-        failed = store.mark_outbox_retry_or_failed(
-            outbox_id=outbox.outbox_id,
-            error_text=outcome.error_text,
-            retry_delay_seconds=settings.retry_delay_seconds,
-            retryable=retryable,
-            error_type=outcome.error.error_type if outcome.error is not None else "",
-            error_code=outcome.error.error_code if outcome.error is not None else "",
-            dead_letter_reason="supervisor_failed" if outcome.error is not None and outcome.error.terminal else "",
-        )
-        payload = {
-            "control_action": "outbox_once",
-            "dispatcher_status": "processed",
-            "processed_count": 1,
-            "success_count": 0,
-            "failed_count": 1 if failed.status == "failed" else 0,
-            "message": "Outbox dispatcher handler returned failure.",
-            "summary": {"total": 1, "counts": {failed.status: 1}},
-            "item": failed.to_dict(),
-            "items": [failed.to_dict()],
-            "request_id": failed.ref_id,
-            "outbox_id": failed.outbox_id,
-            "channel_code": failed.channel_code,
-            "retry_count": failed.retry_count,
-            "retry_scheduled_count": 1 if failed.status == "retry_wait" else 0,
-            "worker_result": outcome.worker_result.to_dict(),
-            "supervisor": outcome.to_dict(),
-            "error": failed.last_error_text,
-        }
-        if outcome.error is not None:
-            payload.update(_supervisor_error_payload(outcome))
-        return payload
-
-    sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-    return {
-        "control_action": "outbox_once",
-        "dispatcher_status": "processed",
-        "processed_count": 1,
-        "success_count": 1,
-        "failed_count": 0,
-        "message": "Outbox dispatcher sent one message through the runtime handler.",
-        "summary": {"total": 1, "counts": {"sent": 1}},
-        "item": sent.to_dict(),
-        "items": [sent.to_dict()],
-        "request_id": sent.ref_id,
-        "outbox_id": sent.outbox_id,
-        "channel_code": sent.channel_code,
-        "worker_result": outcome.worker_result.to_dict(),
-        "supervisor": outcome.to_dict(),
-    }
-
-
-def run_outbox_dispatcher(params: dict[str, Any]) -> dict[str, Any]:
-    return _run_loop(
-        params=params,
-        actor="dispatcher",
-        once_func=dispatch_outbox_once,
-        idle_status_key="dispatcher_status",
-    )
-
-
-def ensure_request_outbox(
-    *,
-    store: RuntimeStore,
-    request_id: str,
-) -> None:
-    request = store.load_task_request(request_id=request_id)
-    summary = dict(request.summary or {})
-    result = dict(request.result or {})
-    store.create_notification_outbox(
-        channel_code=request.source_channel_code or "noop",
-        event_type="task_request.completed",
-        ref_id=request.request_id,
-        reply_target=request.reply_target,
-        payload={
-            "message_text": build_outbox_message_text(
-                request_id=request.request_id,
-                task_code=request.task_code,
-                summary=summary,
-                result=result,
-            ),
-            "request_id": request.request_id,
-            "task_code": request.task_code,
-            "summary": summary,
-            "result": result,
-        },
-        dedupe_key=f"task_request.completed:{request.request_id}",
-    )
-
-
-def _run_loop(
-    *,
-    params: dict[str, Any],
-    actor: str,
-    once_func: Callable[[dict[str, Any]], dict[str, Any]],
-    idle_status_key: str,
-) -> dict[str, Any]:
-    settings = build_runtime_settings(params)
-    processed_count = 0
-    success_count = 0
-    failed_count = 0
-    idle_cycles = 0
-    iterations = 0
-    last_payload = build_idle_payload(
-        control_action="loop",
-        actor=actor,
-        message=f"{actor} loop has not processed any work yet.",
-    )
-
-    while True:
-        iterations += 1
-        payload = once_func(params)
-        last_payload = payload
-        status = str(payload.get(idle_status_key, "") or "")
-        if status == "idle":
-            idle_cycles += 1
-            if settings.stop_when_idle and idle_cycles >= settings.max_idle_cycles:
-                return payload
-            if settings.max_iterations and iterations >= settings.max_iterations:
-                return payload
-            time.sleep(settings.poll_interval_seconds)
-            continue
-
-        idle_cycles = 0
-        processed_count += int(payload.get("processed_count", 0) or 0)
-        success_count += int(payload.get("success_count", 0) or 0)
-        failed_count += int(payload.get("failed_count", 0) or 0)
-        last_payload["processed_count"] = processed_count
-        last_payload["success_count"] = success_count
-        last_payload["failed_count"] = failed_count
-        if settings.max_iterations and iterations >= settings.max_iterations:
-            return last_payload
-        if settings.stop_when_idle and processed_count > 0:
-            return last_payload
 
 
 def _persist_api_worker_outcome(
@@ -778,79 +593,6 @@ def _persist_browser_execution_outcome(
         result=stored_result,
     )
     return execution, 1, 0
-
-
-def _supervisor_error_payload(outcome: ExecutionSupervisorOutcome) -> dict[str, Any]:
-    if outcome.error is None:
-        return {}
-    return {
-        "worker_error": outcome.error.message,
-        "error_type": outcome.error.error_type,
-        "error_code": outcome.error.error_code,
-        "retryable": outcome.error.retryable,
-        "terminal_error": outcome.error.terminal,
-    }
-
-
-def _build_child_runner_config(
-    params: Mapping[str, Any],
-    *,
-    worker_type: str = "",
-    handler_code: str = "",
-    runtime_timeout_seconds: Any = None,
-) -> ChildRunnerConfig | None:
-    explicit_mode = str(params.get("execution_child_runner_mode") or "").strip()
-    mode = explicit_mode or _default_child_runner_mode(worker_type=worker_type, handler_code=handler_code)
-    if mode != "child_process":
-        return None
-
-    timeout_raw = params.get("execution_child_timeout_seconds")
-    timeout_seconds = (
-        _default_child_timeout_seconds(
-            worker_type=worker_type,
-            runtime_timeout_seconds=runtime_timeout_seconds,
-        )
-        if timeout_raw in (None, "")
-        else max(float(timeout_raw), 0.01)
-    )
-    poll_raw = params.get("execution_child_poll_interval_seconds")
-    poll_interval_seconds = 0.02 if poll_raw in (None, "") else max(float(poll_raw), 0.005)
-    grace_raw = params.get("execution_child_terminate_grace_seconds")
-    terminate_grace_seconds = 0.2 if grace_raw in (None, "") else max(float(grace_raw), 0.01)
-    start_method = str(params.get("execution_child_start_method") or "").strip() or None
-    return ChildRunnerConfig(
-        mode="child_process",
-        timeout_seconds=timeout_seconds,
-        start_method=start_method,
-        poll_interval_seconds=poll_interval_seconds,
-        terminate_grace_seconds=terminate_grace_seconds,
-    )
-
-
-def _default_child_runner_mode(*, worker_type: str, handler_code: str) -> str:
-    del handler_code
-    if worker_type in DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER:
-        return "child_process"
-    return "inline"
-
-
-def _default_child_timeout_seconds(*, worker_type: str, runtime_timeout_seconds: Any) -> float | None:
-    runtime_timeout = _coerce_positive_float(runtime_timeout_seconds)
-    if runtime_timeout is not None:
-        return runtime_timeout
-    return DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER.get(worker_type)
-
-
-def _coerce_positive_float(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError):
-        return None
-    if normalized <= 0:
-        return None
-    return max(normalized, 0.01)
 
 
 def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:
@@ -1784,7 +1526,7 @@ def _build_bound_api_handler_registry() -> Any:
     if API_HANDLER_REGISTRY is not None:
         return API_HANDLER_REGISTRY
 
-    from automation_business_scaffold.business.handlers import build_bound_api_handler_registry
+    from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 
     return build_bound_api_handler_registry()
 
@@ -1793,18 +1535,11 @@ def _build_bound_browser_handler_registry() -> Any:
     if BROWSER_HANDLER_REGISTRY is not None:
         return BROWSER_HANDLER_REGISTRY
 
-    from automation_business_scaffold.business.handlers import build_bound_browser_handler_registry
+    from automation_business_scaffold.contracts.handler.browser import (
+        build_bound_browser_handler_registry,
+    )
 
     return build_bound_browser_handler_registry()
-
-
-def _build_bound_outbox_handler_registry() -> Any:
-    if OUTBOX_HANDLER_REGISTRY is not None:
-        return OUTBOX_HANDLER_REGISTRY
-
-    from automation_business_scaffold.business.handlers import build_bound_outbox_handler_registry
-
-    return build_bound_outbox_handler_registry()
 
 
 def _initial_stage_for_task_code(task_code: str) -> str:

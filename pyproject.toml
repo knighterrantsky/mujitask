@@ -15,13 +15,13 @@ dependencies = [
 ]
 
 [project.scripts]
-automation-business-scaffold-agent = "automation_business_scaffold.agent:main"
-automation-business-scaffold-api-worker = "automation_business_scaffold.api_worker_daemon:main"
-automation-business-scaffold-browser-runloop = "automation_business_scaffold.browser_runloop:main"
-automation-business-scaffold-executor = "automation_business_scaffold.executor_daemon:main"
-automation-business-scaffold-outbox-dispatcher = "automation_business_scaffold.outbox_dispatcher:main"
-automation-business-scaffold-run = "automation_business_scaffold.cli:main"
-automation-business-scaffold-watchdog = "automation_business_scaffold.watchdog_scanner:main"
+automation-business-scaffold-agent = "automation_business_scaffold.apps.rpc_agent.server:main"
+automation-business-scaffold-api-worker = "automation_business_scaffold.apps.daemons.api_worker.main:main"
+automation-business-scaffold-browser-runloop = "automation_business_scaffold.apps.daemons.browser_worker.main:main"
+automation-business-scaffold-executor = "automation_business_scaffold.apps.daemons.executor.main:main"
+automation-business-scaffold-outbox-dispatcher = "automation_business_scaffold.apps.daemons.outbox.main:main"
+automation-business-scaffold-run = "automation_business_scaffold.apps.cli.main:main"
+automation-business-scaffold-watchdog = "automation_business_scaffold.apps.daemons.watchdog.main:main"
 
 [project.optional-dependencies]
 dev = [

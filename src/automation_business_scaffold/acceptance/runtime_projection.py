@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from automation_business_scaffold.business.workflow_defs.execution_helpers import (
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_effective_result_payload,
     extract_handler_result_status,
 )

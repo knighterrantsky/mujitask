@@ -26,6 +26,8 @@
 - [重构验收契约](./rewrite-acceptance-contract.md)
 - [当前整体系统架构设计](./current-system-architecture-design.md)
 - [目标项目架构契约](./target-project-architecture-contract.md)
+- [真实迁移 Checklist](./real-migration-checklist.md)
+- [Workflow 实现模式规范](./workflow-implementation-patterns.md)
 - [项目结构与命名契约](./project-structure-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
@@ -62,6 +64,8 @@
 - `Flow`: Handler 内部复用的业务实现过程。
 - `Runtime Control Plane`: RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 等运行控制入口和恢复机制。
 - `Target Project Architecture`: 后续重构和新增业务的目标目录、模块归属和开发拆分契约。
+- `Real Migration`: 将旧实现所有权迁移到目标目录，禁止 facade/shim/re-export 的迁移模式。
+- `Implementation Pattern`: 新 workflow 开发时每类文件的固定职责、依赖方向和测试模式。
 
 ## 已删除的历史来源
 

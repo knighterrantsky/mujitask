@@ -1,5 +1,5 @@
 from automation_business_scaffold.cli import list_registered_tasks
-from automation_business_scaffold.business.tasks import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks import (
     RefreshCurrentCompetitorTableTask,
     SearchKeywordCompetitorProductsTask,
     SyncTKInfluencerPoolTask,

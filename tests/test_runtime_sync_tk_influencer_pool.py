@@ -15,7 +15,7 @@ from automation_business_scaffold.business.flows.runtime_sync_tk_influencer_pool
     finalize_request,
     release_request_after_child_completion,
 )
-from automation_business_scaffold.business.workflow_defs import get_workflow_definition
+from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 

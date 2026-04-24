@@ -12,14 +12,14 @@ pytest.skip(
 from types import SimpleNamespace
 
 from automation_business_scaffold.models import FastMossProductSalesSnapshot
-from automation_business_scaffold.business.tasks.fastmoss_product_sales_snapshot import (
+from automation_business_scaffold.business.tasks.achieve.fastmoss_product_sales_snapshot import (
     FastMossProductSalesSnapshotTask,
 )
 
 
 def test_fastmoss_product_sales_snapshot_task_defaults_verify_login_to_false(monkeypatch):
     module = __import__(
-        "automation_business_scaffold.business.tasks.fastmoss_product_sales_snapshot",
+        "automation_business_scaffold.business.tasks.achieve.fastmoss_product_sales_snapshot",
         fromlist=["FastMossProductSalesSnapshotTask"],
     )
 

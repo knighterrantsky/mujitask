@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Mapping
 
-from automation_business_scaffold.business.handlers.contract import (
+from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerError,
     HandlerNextAction,

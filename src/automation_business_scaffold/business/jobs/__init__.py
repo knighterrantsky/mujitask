@@ -1,27 +1,7 @@
-from .catalog import (
-    FACT_BUNDLE_UPSERT_JOB,
-    FASTMOSS_CREATOR_FETCH_JOB,
-    FASTMOSS_PRODUCT_FETCH_JOB,
-    FASTMOSS_PRODUCT_SEARCH_JOB,
-    FEISHU_TABLE_READ_JOB,
-    FEISHU_TABLE_WRITE_JOB,
-    MEDIA_ASSET_SYNC_JOB,
-    TASK_COMPLETED_NOTIFICATION_JOB,
-    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
-    TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
-    list_job_definitions,
-)
+"""Legacy job reference package.
 
-__all__ = [
-    "FACT_BUNDLE_UPSERT_JOB",
-    "FASTMOSS_CREATOR_FETCH_JOB",
-    "FASTMOSS_PRODUCT_FETCH_JOB",
-    "FASTMOSS_PRODUCT_SEARCH_JOB",
-    "FEISHU_TABLE_READ_JOB",
-    "FEISHU_TABLE_WRITE_JOB",
-    "MEDIA_ASSET_SYNC_JOB",
-    "TASK_COMPLETED_NOTIFICATION_JOB",
-    "TIKTOK_PRODUCT_BROWSER_FETCH_JOB",
-    "TIKTOK_PRODUCT_REQUEST_FETCH_JOB",
-    "list_job_definitions",
-]
+Runtime job ownership lives in
+``automation_business_scaffold.domains.competitor_intelligence.jobs``.
+"""
+
+__all__: list[str] = []

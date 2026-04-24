@@ -6,7 +6,7 @@ from automation_business_scaffold.business.flows.runtime_refresh_current_competi
     release_request_after_child_completion,
 )
 from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
-from automation_business_scaffold.business.workflow_defs import get_workflow_definition
+from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"

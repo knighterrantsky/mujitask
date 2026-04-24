@@ -1,23 +1,28 @@
 from __future__ import annotations
 
-from automation_business_scaffold.business.workflow_defs.job_catalog import (
-    COMMON_TASK_COMPLETED_NOTIFICATION_JOB,
-    DEFAULT_CONTRACT_REVISION,
+from automation_framework.runtime import WorkflowSpec
+
+from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
+from automation_business_scaffold.domains.competitor_intelligence.jobs import (
     FACT_BUNDLE_UPSERT_JOB,
     FASTMOSS_PRODUCT_FETCH_JOB,
     FEISHU_TABLE_READ_JOB,
     FEISHU_TABLE_WRITE_JOB,
     MEDIA_ASSET_SYNC_JOB,
-    STANDARD_ERROR_CONTRACT,
-    STANDARD_SUMMARY_CONTRACT,
+    TASK_COMPLETED_NOTIFICATION_JOB,
     TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
     TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
+)
+from automation_business_scaffold.domains.competitor_intelligence.policies import (
+    DEFAULT_CONTRACT_REVISION,
+    STANDARD_ERROR_CONTRACT,
+    STANDARD_SUMMARY_CONTRACT,
     notification_summary_policy,
     standard_watchdog_rules,
     table_workflow_idempotency_rules,
     table_workflow_timeout_rules,
 )
-from automation_business_scaffold.business.workflow_defs.models import (
+from automation_business_scaffold.contracts.workflow import (
     StageDefinition,
     StageJobBinding,
     SummaryStatusRule,
@@ -171,7 +176,7 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             MEDIA_ASSET_SYNC_JOB,
             FACT_BUNDLE_UPSERT_JOB,
             FEISHU_TABLE_WRITE_JOB,
-            COMMON_TASK_COMPLETED_NOTIFICATION_JOB,
+            TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
             TransitionDefinition(
@@ -245,3 +250,15 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
 
 
 REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION = build_refresh_current_competitor_table_definition()
+
+
+def build_refresh_current_competitor_table_workflow(
+    *,
+    run_mode: str = "draft",
+    control_action: str = "submit",
+) -> WorkflowSpec:
+    del control_action
+    return build_formal_task_workflow(
+        workflow_code="refresh_current_competitor_table",
+        run_mode=run_mode,
+    )

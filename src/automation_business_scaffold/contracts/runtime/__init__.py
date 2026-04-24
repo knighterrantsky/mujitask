@@ -1,4 +1,4 @@
-"""Runtime control contract facade."""
+"""Runtime control contract entry points."""
 
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
     ExecutionProgressEvent,
@@ -8,7 +8,7 @@ from automation_business_scaffold.control_plane.supervisor.execution_supervisor 
     FailureDisposition,
     run_supervised_handler,
 )
-from automation_business_scaffold.business.flows.runtime_common import (
+from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     RuntimeExecutionSettings,
     build_runtime_settings,

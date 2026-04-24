@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__ROOT_DIR__/scripts/execution_control/run_launchd_agent.sh</string>
-    <string>automation_business_scaffold.executor_daemon</string>
+    <string>automation_business_scaffold.apps.daemons.executor.main</string>
   </array>
 
   <key>WorkingDirectory</key>

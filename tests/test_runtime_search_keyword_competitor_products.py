@@ -6,7 +6,7 @@ from automation_business_scaffold.business.flows.runtime_search_keyword_competit
     release_request_after_child_completion,
 )
 from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
-from automation_business_scaffold.business.workflow_defs import get_workflow_definition
+from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 TASK_CODE = "search_keyword_competitor_products"

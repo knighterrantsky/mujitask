@@ -5,12 +5,13 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.business.flows.runtime_common import (
+from automation_business_scaffold.control_plane.runtime_config.settings import (
     PRODUCT_INGEST_TASK_CODE,
     build_request_payload,
     build_outbox_message_text,
 )
-from automation_business_scaffold.business.workflow_defs import WorkflowDefinition, get_workflow_definition
+from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}

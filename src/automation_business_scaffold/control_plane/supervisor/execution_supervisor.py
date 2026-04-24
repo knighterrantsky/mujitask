@@ -11,8 +11,8 @@ from automation_business_scaffold.control_plane.supervisor.child_runner import (
     ChildRunnerEnvelope,
     ChildRunnerProgressEvent,
 )
-from automation_business_scaffold.business.handlers.contract import HandlerContext, HandlerError, HandlerResult
-from automation_business_scaffold.business.handlers.registry import HandlerInvocationContractError, HandlerRegistryError
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerError, HandlerResult
+from automation_business_scaffold.contracts.handler.registry import HandlerInvocationContractError, HandlerRegistryError
 
 FailureDisposition = Literal["none", "retryable", "terminal"]
 DispatchCallable = Callable[[HandlerContext], HandlerResult]

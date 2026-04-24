@@ -16,7 +16,7 @@ from automation_business_scaffold.business.flows.runtime_sync_tk_influencer_pool
     WRITEBACK_STAGE_CODE,
     WRITE_POOL_STAGE_CODE,
 )
-from automation_business_scaffold.business.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore

@@ -4,8 +4,8 @@ from typing import Any
 
 from automation_business_scaffold.business.handlers.api.registry import build_bound_api_handler_registry
 from automation_business_scaffold.business.handlers.contract import HandlerContext
-from automation_business_scaffold.business.feishu.projection_mappers import PROJECTION_MAPPER_CODES
-from automation_business_scaffold.business.feishu.source_adapters import SOURCE_ADAPTER_CODES
+from automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers import PROJECTION_MAPPER_CODES
+from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_source_adapters import SOURCE_ADAPTER_CODES
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 

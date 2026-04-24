@@ -12,7 +12,7 @@ from automation_business_scaffold.business.tasks.workflow_step_helpers import (
     run_browser_loop_if_waiting,
     run_executor_or_load_status,
 )
-from automation_business_scaffold.business.workflows import build_refresh_current_competitor_table_workflow
+from automation_business_scaffold.business.workflows.achieve import build_refresh_current_competitor_table_workflow
 
 
 class RefreshCurrentCompetitorTableTask(BaseWorkflowTask):

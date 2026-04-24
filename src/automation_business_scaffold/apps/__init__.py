@@ -1,1 +1,1 @@
-"""Process entrypoint facades for the target project architecture."""
+"""Process entrypoints for the target project architecture."""

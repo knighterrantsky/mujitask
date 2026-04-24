@@ -6,13 +6,13 @@ import re
 import time
 from typing import Any, Mapping
 
-from automation_business_scaffold.business.handlers._shared import merge_fact_bundles
-from automation_business_scaffold.business.flows.runtime_common import (
+from automation_business_scaffold.contracts.handler.shared import merge_fact_bundles
+from automation_business_scaffold.control_plane.runtime_config.settings import (
     KEYWORD_TASK_CODE,
     build_outbox_message_text,
 )
-from automation_business_scaffold.business.workflow_defs import WorkflowDefinition
-from automation_business_scaffold.business.workflow_defs.execution_helpers import (
+from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
     all_child_records as _all_child_records,
     any_api_jobs_active as _any_api_jobs_active,
     any_browser_executions_active as _any_browser_executions_active,
@@ -1594,7 +1594,7 @@ def _waiting(*, stage_code: str, message: str, details: Mapping[str, Any] | None
 
 
 def _require_keyword_workflow() -> WorkflowDefinition:
-    from automation_business_scaffold.business.workflow_defs import get_workflow_definition
+    from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
 
     return get_workflow_definition(KEYWORD_TASK_CODE)
 

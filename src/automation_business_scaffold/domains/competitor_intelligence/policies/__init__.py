@@ -1,4 +1,7 @@
-from automation_business_scaffold.business.workflow_defs.job_catalog import (
+from automation_business_scaffold.domains.competitor_intelligence.policies.workflow_policies import (
+    DEFAULT_CONTRACT_REVISION,
+    STANDARD_ERROR_CONTRACT,
+    STANDARD_SUMMARY_CONTRACT,
     influencer_idempotency_rules,
     influencer_timeout_rules,
     ingest_idempotency_rules,
@@ -10,6 +13,9 @@ from automation_business_scaffold.business.workflow_defs.job_catalog import (
 )
 
 __all__ = [
+    "DEFAULT_CONTRACT_REVISION",
+    "STANDARD_ERROR_CONTRACT",
+    "STANDARD_SUMMARY_CONTRACT",
     "influencer_idempotency_rules",
     "influencer_timeout_rules",
     "ingest_idempotency_rules",

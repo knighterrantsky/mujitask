@@ -1,6 +1,16 @@
-"""Handler contract facade."""
+"""Stable handler contracts, allowlists, and runtime registry primitives."""
 
-from automation_business_scaffold.business.handlers.contract import (
+from .allowlist import (
+    ALLOWED_HANDLER_CODES,
+    API_HANDLER_CODES,
+    API_HANDLER_CONTRACTS,
+    BROWSER_HANDLER_CODES,
+    BROWSER_HANDLER_CONTRACTS,
+    OUTBOX_HANDLER_CODES,
+    OUTBOX_HANDLER_CONTRACTS,
+    prohibited_handler_code_reason,
+)
+from .contract import (
     HandlerCallable,
     HandlerContext,
     HandlerContract,
@@ -11,7 +21,7 @@ from automation_business_scaffold.business.handlers.contract import (
     HandlerStatus,
     HandlerWorkerType,
 )
-from automation_business_scaffold.business.handlers.registry import (
+from .registry import (
     DisallowedHandlerCodeError,
     HandlerInvocationContractError,
     HandlerNotBoundError,
@@ -22,6 +32,11 @@ from automation_business_scaffold.business.handlers.registry import (
 )
 
 __all__ = [
+    "ALLOWED_HANDLER_CODES",
+    "API_HANDLER_CODES",
+    "API_HANDLER_CONTRACTS",
+    "BROWSER_HANDLER_CODES",
+    "BROWSER_HANDLER_CONTRACTS",
     "DisallowedHandlerCodeError",
     "HandlerCallable",
     "HandlerContext",
@@ -36,6 +51,9 @@ __all__ = [
     "HandlerRuntimeTable",
     "HandlerStatus",
     "HandlerWorkerType",
+    "OUTBOX_HANDLER_CODES",
+    "OUTBOX_HANDLER_CONTRACTS",
     "RegisteredHandler",
     "UnknownHandlerCodeError",
+    "prohibited_handler_code_reason",
 ]

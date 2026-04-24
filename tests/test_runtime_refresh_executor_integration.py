@@ -14,7 +14,7 @@ from automation_business_scaffold.business.handlers import (
     register_api_handler,
     register_browser_handler,
 )
-from automation_business_scaffold.business.tasks.refresh_current_competitor_table import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore

@@ -1,6 +1,6 @@
-"""Workflow and job contract facade."""
+"""Workflow and job contract models."""
 
-from automation_business_scaffold.business.workflow_defs.models import (
+from automation_business_scaffold.contracts.workflow.models import (
     DEFAULT_TERMINAL_JOB_STATUSES,
     EMPTY_CONTRACT,
     ContractDefinition,
@@ -26,6 +26,14 @@ from automation_business_scaffold.business.workflow_defs.models import (
     optional_field,
     required_field,
 )
+from automation_business_scaffold.contracts.workflow.runtime_task_shell import (
+    FORMAL_TASK_WORKFLOW_ACTION_TYPE,
+    FORMAL_TASK_WORKFLOW_OUTPUTS,
+    FORMAL_TASK_WORKFLOW_STEP_ID,
+    RuntimeTaskShell,
+    build_formal_task_workflow,
+    ok_result,
+)
 
 __all__ = [
     "DEFAULT_TERMINAL_JOB_STATUSES",
@@ -33,6 +41,9 @@ __all__ = [
     "ContractDefinition",
     "ContractField",
     "FinalStatus",
+    "FORMAL_TASK_WORKFLOW_ACTION_TYPE",
+    "FORMAL_TASK_WORKFLOW_OUTPUTS",
+    "FORMAL_TASK_WORKFLOW_STEP_ID",
     "IdempotencyRule",
     "JobDefinition",
     "ResolvedStageJobDefinition",
@@ -49,7 +60,10 @@ __all__ = [
     "WatchdogRule",
     "WorkerType",
     "WorkflowDefinition",
+    "RuntimeTaskShell",
+    "build_formal_task_workflow",
     "contract",
+    "ok_result",
     "optional_field",
     "required_field",
 ]

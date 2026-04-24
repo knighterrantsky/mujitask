@@ -17,7 +17,7 @@ elif command -v automation-business-scaffold-executor >/dev/null 2>&1; then
   EXECUTOR_CMD=("$(command -v automation-business-scaffold-executor)")
 else
   export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
-  EXECUTOR_CMD=(python3 -m automation_business_scaffold.executor_daemon)
+  EXECUTOR_CMD=(python3 -m automation_business_scaffold.apps.daemons.executor.main)
 fi
 
 cd "${ROOT_DIR}"

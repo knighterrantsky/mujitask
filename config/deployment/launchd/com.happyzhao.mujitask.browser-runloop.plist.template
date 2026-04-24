@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__ROOT_DIR__/scripts/execution_control/run_launchd_agent.sh</string>
-    <string>automation_business_scaffold.browser_runloop</string>
+    <string>automation_business_scaffold.apps.daemons.browser_worker.main</string>
   </array>
 
   <key>WorkingDirectory</key>

@@ -14,13 +14,13 @@ from automation_business_scaffold.acceptance import (
 import automation_business_scaffold.business.feishu_common as feishu_common
 from automation_business_scaffold.business.flows import runtime_orchestrator
 import automation_business_scaffold.business.handlers.api.implementations as api_impl
-from automation_business_scaffold.business.tasks.refresh_current_competitor_table import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
-from automation_business_scaffold.business.tasks.search_keyword_competitor_products import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.search_keyword_competitor_products import (
     SearchKeywordCompetitorProductsTask,
 )
-from automation_business_scaffold.business.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore

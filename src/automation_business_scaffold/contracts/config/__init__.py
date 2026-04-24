@@ -1,4 +1,4 @@
-"""Configuration contract facade."""
+"""Configuration contract entry points."""
 
 from automation_business_scaffold.config import (
     BusinessDefaults,

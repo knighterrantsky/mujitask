@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from automation_business_scaffold.business.tasks.tiktok_fastmoss_product_ingest import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
 from automation_business_scaffold.cli import run_registered_task

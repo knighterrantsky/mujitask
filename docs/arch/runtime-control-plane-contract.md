@@ -24,15 +24,15 @@ Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTo
 | 组件 | 代码归属 | 入口命令 | 职责 | 不应放入 |
 | --- | --- | --- | --- | --- |
 | Agent Skill Artifact | `skills/{skill_code}/`，部署目标 `MUJITASK_SKILLS_DIR/{skill_code}` | skill 内 `run_*_step.sh` / `lightweight_submit.py` | agent workspace 可读取的业务入口产物、固定输入、首条回执 | workflow 编排、worker retry、数据库 schema |
-| RPC Agent Service | `src/automation_business_scaffold/agent.py` | `automation-business-scaffold-agent` | 暴露 platform/framework 兼容的 HTTP/RPC task registry 和提交入口 | daemon loop、业务字段 mapper、外部 API transport |
-| CLI / Task Request Entry | `src/automation_business_scaffold/cli.py`、`business/tasks/{task_code}.py`、`business/flows/runtime_orchestrator.py::submit_task_request`、`business/flows/runtime_common.py` | `automation-business-scaffold-run` | 本地/manual 运行、submit/status/result/control action 适配、构造顶层 `task_request` | worker 具体执行、浏览器 profile 操作、通知发送 |
-| Executor Daemon Entry | `src/automation_business_scaffold/executor_daemon.py` | `automation-business-scaffold-executor` | 解析 daemon 参数并调用 `execute_executor_once` / `run_executor_daemon` 推进 workflow | stage/job 业务实现、handler registry 修改 |
-| API Worker Daemon Entry | `src/automation_business_scaffold/api_worker_daemon.py` | `automation-business-scaffold-api-worker` | 解析 worker 参数并调用 `execute_api_worker_once` / `run_api_worker_daemon` 消费 API lane job | Feishu 表级 mapper、FastMoss 业务策略 |
-| Browser Runloop Entry | `src/automation_business_scaffold/browser_runloop.py` | `automation-business-scaffold-browser-runloop` | 串行消费 browser lane job，保护 browser profile / CDP 执行边界 | API worker 逻辑、事实库 schema |
-| Outbox Dispatcher Entry | `src/automation_business_scaffold/outbox_dispatcher.py` | `automation-business-scaffold-outbox-dispatcher` | 消费 `notification_outbox` 并分发最终消息 | workflow summary 生成、业务数据采集 |
-| Watchdog Entry | `src/automation_business_scaffold/watchdog_scanner.py`、`business/flows/watchdog_scanner.py` | `automation-business-scaffold-watchdog` | 扫描 stuck runtime 状态，执行 retry/fail/repair | 正常 workflow 推进、业务字段映射 |
-| Execution Supervisor | `business/flows/execution_supervisor.py` | 由 worker flow 调用 | 包装 handler dispatch，负责 heartbeat、进度、超时、异常归一化和 child process 结果落库 | 业务规则判断、外部数据源字段解释 |
-| Reconciler | `business/flows/runtime_views.py`、`business/flows/runtime_orchestrator.py` 的 aggregate/finalize 路径 | 由 executor / status / result 路径调用 | 汇总 child task/job 状态，推进 parent request 终态和可观测视图 | 外部副作用、通知发送、handler 执行 |
+| RPC Agent Service | `src/automation_business_scaffold/apps/rpc_agent/server.py` | `automation-business-scaffold-agent` | 暴露 platform/framework 兼容的 HTTP/RPC task registry 和提交入口 | daemon loop、业务字段 mapper、外部 API transport |
+| CLI / Task Request Entry | `src/automation_business_scaffold/apps/cli/main.py`、`control_plane/task_requests/`、`control_plane/executor/runner.py`、`control_plane/runtime_config/settings.py` | `automation-business-scaffold-run` | 本地/manual 运行、submit/status/result/control action 适配、构造顶层 `task_request` | worker 具体执行、浏览器 profile 操作、通知发送 |
+| Executor Daemon Entry | `src/automation_business_scaffold/apps/daemons/executor/main.py` | `automation-business-scaffold-executor` | 解析 daemon 参数并调用 `execute_executor_once` / `run_executor_daemon` 推进 workflow | stage/job 业务实现、handler registry 修改 |
+| API Worker Daemon Entry | `src/automation_business_scaffold/apps/daemons/api_worker/main.py` | `automation-business-scaffold-api-worker` | 解析 worker 参数并调用 `execute_api_worker_once` / `run_api_worker_daemon` 消费 API lane job | Feishu 表级 mapper、FastMoss 业务策略 |
+| Browser Runloop Entry | `src/automation_business_scaffold/apps/daemons/browser_worker/main.py` | `automation-business-scaffold-browser-runloop` | 串行消费 browser lane job，保护 browser profile / CDP 执行边界 | API worker 逻辑、事实库 schema |
+| Outbox Dispatcher Entry | `src/automation_business_scaffold/apps/daemons/outbox/main.py` | `automation-business-scaffold-outbox-dispatcher` | 消费 `notification_outbox` 并分发最终消息 | workflow summary 生成、业务数据采集 |
+| Watchdog Entry | `src/automation_business_scaffold/apps/daemons/watchdog/main.py`、`control_plane/watchdog/scanner.py` | `automation-business-scaffold-watchdog` | 扫描 stuck runtime 状态，执行 retry/fail/repair | 正常 workflow 推进、业务字段映射 |
+| Execution Supervisor | `control_plane/supervisor/execution_supervisor.py` | 由 worker control path 调用 | 包装 handler dispatch，负责 heartbeat、进度、超时、异常归一化和 child process 结果落库 | 业务规则判断、外部数据源字段解释 |
+| Reconciler | `control_plane/reconciler/views.py`、`control_plane/reconciler/reconciler.py` | 由 executor / status / result 路径调用 | 汇总 child task/job 状态，推进 parent request 终态和可观测视图 | 外部副作用、通知发送、handler 执行 |
 | Project Configuration | `src/automation_business_scaffold/project_env.py`、`src/automation_business_scaffold/config.py`、`scripts/execution_control/executor.local.env`、`skills/{skill_code}/skill.local.env`、`.env` | 各 CLI / daemon / pytest / Alembic 启动时加载 | 统一配置加载顺序、默认值、typed settings | 将业务映射散落到 daemon 或 handler wrapper |
 | Launchd Deployment | `config/deployment/launchd/*.plist.template`、`scripts/execution_control/install_launch_agents.sh`、`scripts/execution_control/run_launchd_agent.sh` | launchd | 安装、刷新、拉起常驻进程 | 业务逻辑、Runtime DB schema 变更 |
 
@@ -81,30 +81,28 @@ CLI 参数 > 环境变量 > executor.local.env > skill.local.env > .env
 
 ## 5. 文件命名契约
 
-根包入口文件是进程门面:
+应用入口文件归 `apps/**`:
 
-- `agent.py` 表示 RPC Agent Service。
-- `cli.py` 表示本地/manual 命令入口。
-- `*_daemon.py` 表示常驻 daemon 或可 `--once` 执行的后台 worker 门面。
-- `browser_runloop.py` 表示 browser lane 的 profile/CDP 串行执行门面。
-- `outbox_dispatcher.py` 表示通知 outbox 分发门面。
-- `watchdog_scanner.py` 表示 watchdog CLI 门面。
+- `apps/rpc_agent/server.py` 表示 RPC Agent Service。
+- `apps/cli/main.py` 表示本地/manual 命令入口。
+- `apps/daemons/{daemon_code}/main.py` 表示常驻 daemon 或可 `--once` 执行的后台 worker 入口。
 
-这些门面只做参数解析、配置加载、日志上下文和调用 `business/flows/**` 中的控制面函数。新增业务能力不得直接塞进根包入口文件。
+这些入口只做参数解析、配置加载、日志上下文和调用 `control_plane/**` 中的控制面函数。新增业务能力不得直接塞进 app 入口文件。
 
-业务控制面函数归属:
+控制面函数归属:
 
-- 提交、状态查询、result 查询、executor/api/browser/outbox control action: `business/flows/runtime_orchestrator.py`。
-- runtime settings、formal task code、request payload 构造: `business/flows/runtime_common.py`。
-- child request / child job 汇总视图和 Reconciler 辅助: `business/flows/runtime_views.py`。
-- handler 执行监督、heartbeat、timeout、异常归一化: `business/flows/execution_supervisor.py`。
-- stuck 状态扫描、候选生成、retry/fail/repair: `business/flows/watchdog_scanner.py`。
+- 提交、状态查询、result 查询、executor/api/browser/outbox control action: `control_plane/executor/runner.py` 和 `control_plane/task_requests/`。
+- runtime settings、formal task code、request payload 构造: `control_plane/runtime_config/settings.py`。
+- workflow runtime module 解析: `control_plane/executor/workflow_registry.py`。
+- child request / child job 汇总视图和 Reconciler 辅助: `control_plane/reconciler/views.py`。
+- handler 执行监督、heartbeat、timeout、异常归一化: `control_plane/supervisor/execution_supervisor.py`。
+- stuck 状态扫描、候选生成、retry/fail/repair: `control_plane/watchdog/scanner.py`。
 
 如果未来 Reconciler 需要独立常驻进程，必须新增:
 
 ```text
-src/automation_business_scaffold/reconciler_daemon.py
-business/flows/reconciler.py
+src/automation_business_scaffold/apps/daemons/reconciler/main.py
+control_plane/reconciler/reconciler.py
 automation-business-scaffold-reconciler
 ```
 
@@ -115,7 +113,7 @@ automation-business-scaffold-reconciler
 新增 RPC 服务:
 
 1. 先确认是 platform/framework 入口还是业务 channel。
-2. platform/framework 入口放根包服务门面，业务逻辑仍落到 `business/tasks` 和 `business/flows/runtime_*`。
+2. platform/framework 入口放 `apps/rpc_agent` 或 `apps/cli`，业务逻辑仍落到 domain task/workflow 和 `control_plane/**`。
 3. 新增 console script 时，必须同步 `pyproject.toml`、部署模板、README/ops 文档和测试。
 
 新增 daemon:

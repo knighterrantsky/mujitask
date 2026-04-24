@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any
 
-from automation_business_scaffold.control_plane.executor.runner import (
+from automation_business_scaffold.control_plane.outbox.dispatcher import (
     dispatch_outbox_once,
     run_outbox_dispatcher,
 )

@@ -18,7 +18,7 @@ from automation_business_scaffold.business.handlers import (
     build_api_handler_registry,
     register_api_handler,
 )
-from automation_business_scaffold.business.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 

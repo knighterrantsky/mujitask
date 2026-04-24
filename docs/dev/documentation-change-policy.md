@@ -27,6 +27,8 @@
 | `.platform/**` | 不直接修改 | platform-managed；需要 platform upgrade 口径 |
 | `AGENT.MD` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
 | `docs/arch/target-project-architecture-contract.md` | 受控修改 | 目标工程组织方式、模块归属和 workflow 开发拆分；变更必须同步目标架构测试 |
+| `docs/arch/real-migration-checklist.md` | 受控修改 | 真实迁移验收 checklist；变更必须同步 migration 静态检查 |
+| `docs/arch/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
 | `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
 | `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
 | `docs/arch/current-system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
@@ -95,6 +97,8 @@
 | Handler contract | `handler-contract-design.md` | 必须说明 payload/result/error 是否兼容；破坏性变更要通过 `contract_revision`、migration、adapter 或新语义 handler 处理 |
 | 入口/输出 contract | `entry-output-contract-design.md` | 必须说明调用方、返回结构、错误结构和兼容窗口 |
 | 目标项目架构 contract | `target-project-architecture-contract.md` | 必须说明目标目录、系统元素归属、workflow 开发拆分和测试护栏 |
+| 真实迁移 checklist | `real-migration-checklist.md` | 必须说明迁移模式、分层迁移完成标准、禁止模式、静态验收和行为验收 |
+| Workflow 实现模式 contract | `workflow-implementation-patterns.md` | 必须说明 task/workflow/job/mapper/policy/projection/capability/outbox 的实现模式和依赖方向 |
 | 项目结构与命名 contract | `project-structure-contract.md` | 必须说明目录职责、文件命名、定位路径和测试护栏 |
 | Runtime 控制面 contract | `runtime-control-plane-contract.md` | 必须说明 RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 的归属、入口命令、配置优先级和测试护栏 |
 
@@ -113,6 +117,8 @@
 - 修改 upsert key / dedupe key / idempotency key。
 - 修改 handler 必填入参或标准 result/error 外壳。
 - 修改目标目录层级、系统元素归属或 workflow 开发拆分规则。
+- 修改真实迁移完成标准或 scaffold / real_migration 判定。
+- 修改新 workflow 的文件模式、依赖方向或测试模式。
 - 修改 `business/tasks`、`business/workflow_defs`、`business/jobs`、`business/handlers`、`business/feishu`、`business/flows` 的职责边界。
 - 修改 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Outbox Dispatcher 的归属和入口命令。
 - 在 `task_code`、`workflow_code`、`stage_code`、`job_code`、`handler_code` 或 payload/result 字段名中加入 `v1`、`v2`、`stage1`、`stage2B` 这类版本/顺序后缀。

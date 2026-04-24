@@ -15,7 +15,7 @@ from automation_business_scaffold.business.handlers import (
     register_api_handler,
     register_browser_handler,
 )
-from automation_business_scaffold.business.tasks.search_keyword_competitor_products import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.search_keyword_competitor_products import (
     SearchKeywordCompetitorProductsTask,
 )
 

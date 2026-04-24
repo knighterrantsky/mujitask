@@ -1,1 +1,1 @@
-"""Daemon entrypoint facades."""
+"""Daemon entrypoints."""

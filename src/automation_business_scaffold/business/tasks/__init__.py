@@ -1,19 +1,7 @@
-from .refresh_current_competitor_table import RefreshCurrentCompetitorTableTask
-from .search_keyword_competitor_products import SearchKeywordCompetitorProductsTask
-from .sync_tk_influencer_pool import SyncTKInfluencerPoolTask
-from .tiktok_fastmoss_product_ingest import TikTokFastMossProductIngestTask
+"""Legacy task reference package.
 
-DEFAULT_TASKS = [
-    RefreshCurrentCompetitorTableTask(),
-    SearchKeywordCompetitorProductsTask(),
-    SyncTKInfluencerPoolTask(),
-    TikTokFastMossProductIngestTask(),
-]
+Runtime task ownership lives in
+``automation_business_scaffold.domains.competitor_intelligence.tasks``.
+"""
 
-__all__ = [
-    "DEFAULT_TASKS",
-    "RefreshCurrentCompetitorTableTask",
-    "SearchKeywordCompetitorProductsTask",
-    "SyncTKInfluencerPoolTask",
-    "TikTokFastMossProductIngestTask",
-]
+__all__: list[str] = []

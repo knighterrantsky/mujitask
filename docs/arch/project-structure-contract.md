@@ -63,13 +63,13 @@ api_worker_job.job_code / task_execution.item_code / notification_outbox.event_t
 
 ```text
 console script 或 agent/CLI 请求
-  -> src/automation_business_scaffold/agent.py 或 cli.py
-  -> src/automation_business_scaffold/*_daemon.py / browser_runloop.py / outbox_dispatcher.py / watchdog_scanner.py
-  -> business/flows/runtime_orchestrator.py
-  -> business/flows/runtime_common.py
-  -> business/flows/execution_supervisor.py
-  -> business/flows/runtime_views.py
-  -> business/flows/watchdog_scanner.py
+  -> src/automation_business_scaffold/apps/rpc_agent/server.py 或 apps/cli/main.py
+  -> src/automation_business_scaffold/apps/daemons/{daemon_code}/main.py
+  -> control_plane/executor/runner.py
+  -> control_plane/runtime_config/settings.py
+  -> control_plane/supervisor/execution_supervisor.py
+  -> control_plane/reconciler/views.py
+  -> control_plane/watchdog/scanner.py
   -> src/automation_business_scaffold/project_env.py
   -> src/automation_business_scaffold/config.py
 ```
@@ -124,9 +124,9 @@ skills/{skill_code}/
 | --- | --- | --- |
 | `skills/{skill_code}/` | 仓库内 agent skill bundle 源；部署时复制到目标 agent workspace/skills 目录 | workflow 主编排、worker 执行逻辑、数据库 schema |
 | `scripts/deploy/` | 安装项目、复制 skill bundle、生成部署配置、安装守护进程 | 业务字段映射、handler 实现 |
-| `src/automation_business_scaffold/agent.py` | RPC Agent Service 门面，暴露 platform/framework 兼容 task registry 和提交入口 | daemon loop、业务字段 mapper |
-| `src/automation_business_scaffold/cli.py` | 本地/manual task submit/status/result/control action 入口 | worker 具体执行、浏览器操作 |
-| `src/automation_business_scaffold/*_daemon.py`、`browser_runloop.py`、`outbox_dispatcher.py`、`watchdog_scanner.py` | 常驻进程或 `--once` 进程门面，负责参数解析和调用 flow | stage/job 业务实现、外部 API 字段映射 |
+| `src/automation_business_scaffold/apps/rpc_agent/` | RPC Agent Service 入口，暴露 platform/framework 兼容 task registry 和提交入口 | daemon loop、业务字段 mapper |
+| `src/automation_business_scaffold/apps/cli/` | 本地/manual task submit/status/result/control action 入口 | worker 具体执行、浏览器操作 |
+| `src/automation_business_scaffold/apps/daemons/` | 常驻进程或 `--once` 进程入口，负责参数解析和调用 control plane | stage/job 业务实现、外部 API 字段映射 |
 | `src/automation_business_scaffold/project_env.py`、`config.py` | 项目配置加载和 typed defaults | handler 业务规则、部署脚本动作 |
 | `scripts/execution_control/` | 运行控制配置示例、launchd 安装脚本和 daemon 启动包装 | 业务字段映射、Runtime schema 迁移 |
 | `config/deployment/launchd/` | macOS launchd plist 模板 | Python 业务实现 |
@@ -139,7 +139,8 @@ skills/{skill_code}/
 | `business/handlers/browser/` | Browser/CDP/Profile 类 handler 入口 | API worker 逻辑、Feishu 写入 |
 | `business/handlers/outbox/` | notification outbox 分发 handler 入口 | workflow summary 生成逻辑 |
 | `business/feishu/` | 飞书 source adapter、projection mapper、表级读写业务差异 | handler registry key、Runtime job 编排 |
-| `business/flows/` | 业务实现细节、runtime stage 推进、Execution Supervisor、Reconciler、Watchdog、旧链路兼容 flow | 稳定 handler/job contract 事实来源、部署配置源 |
+| `control_plane/` | task request 生命周期、executor/worker claim、Execution Supervisor、Reconciler、Watchdog、outbox、runtime config | 飞书字段映射、TikTok/FastMoss 业务策略、业务专用 daemon |
+| `business/flows/` | 旧业务实现细节或 domain 迁移前参考；新增主路径优先使用 `domains/**` 和 `control_plane/**` | 稳定 handler/job contract 事实来源、部署配置源、运行控制面主实现 |
 | `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | task/workflow/handler 业务语义 |
 | `models/` | 跨层使用的数据模型 | 外部 API 调用流程 |
 | `validators/` | 输入和业务数据校验 | runtime 编排 |
@@ -158,8 +159,8 @@ skills/{skill_code}/
 | `handler_code` | `business/handlers/{worker_lane}/{handler_code}.py` | `HANDLER_CODE`、`CONTRACT`、handler callable 或占位 contract |
 | `adapter_code` | `business/feishu/source_adapters.py` | adapter registry 中的同名函数或明确映射 |
 | `mapper_code` | `business/feishu/projection_mappers.py` | mapper registry 中的同名函数或明确映射 |
-| `daemon_code` | 根包 `*_daemon.py` 或 `{lane}_runloop.py` | console script、`main()`、`--once` 或 daemon loop 参数 |
-| `control_plane_code` | `business/flows/runtime_*.py`、`execution_supervisor.py`、`watchdog_scanner.py` | runtime control function，不作为 handler registry key |
+| `daemon_code` | `apps/daemons/{daemon_code}/main.py` | console script、`main()`、`--once` 或 daemon loop 参数 |
+| `control_plane_code` | `control_plane/{executor,supervisor,reconciler,watchdog,outbox,runtime_config}/**` | runtime control function，不作为 handler registry key |
 
 禁止:
 
@@ -206,8 +207,8 @@ skills/{skill_code}/
 新增 Runtime 控制面入口:
 
 1. 先更新 [runtime-control-plane-contract.md](./runtime-control-plane-contract.md) 的组件归属和命名规则。
-2. 根包只新增薄门面文件，例如 `*_daemon.py`、`*_runloop.py` 或 service entry。
-3. 运行控制逻辑放入 `business/flows/runtime_*.py`、`execution_supervisor.py`、`runtime_views.py`、`watchdog_scanner.py` 或明确的新 control-plane flow。
+2. 入口新增在 `apps/**`，例如 `apps/daemons/{daemon_code}/main.py` 或 `apps/rpc_agent/server.py`。
+3. 运行控制逻辑放入 `control_plane/**`，业务差异继续放入 domain task/workflow/job/mapper/projection/policy。
 4. 新增 console script 时同步 `pyproject.toml`、部署模板、README/ops 文档和结构契约测试。
 5. 项目配置新增项必须同步 `project_env.py` / `config.py`、`*.env.example`、`docs/dev/project-configuration.md` 和测试。
 

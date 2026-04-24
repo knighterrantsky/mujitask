@@ -5,8 +5,23 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW_DEFS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business" / "workflow_defs"
-JOBS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business" / "jobs"
+CONTRACTS_WORKFLOW_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "contracts" / "workflow"
+WORKFLOW_DEFS_ROOT = (
+    REPO_ROOT
+    / "src"
+    / "automation_business_scaffold"
+    / "domains"
+    / "competitor_intelligence"
+    / "workflows"
+)
+JOBS_ROOT = (
+    REPO_ROOT
+    / "src"
+    / "automation_business_scaffold"
+    / "domains"
+    / "competitor_intelligence"
+    / "jobs"
+)
 OFFICIAL_WORKFLOW_CODES = (
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
@@ -52,12 +67,15 @@ def _module_entry(root: Path, name: str) -> Path | None:
 
 
 def test_workflow_defs_registry_and_core_types_exist() -> None:
-    assert WORKFLOW_DEFS_ROOT.exists(), "business.workflow_defs package must exist during the rewrite."
-    assert (WORKFLOW_DEFS_ROOT / "registry.py").exists(), (
-        "workflow_defs must provide a registry entrypoint for executor/reconciler discovery."
+    assert CONTRACTS_WORKFLOW_ROOT.exists(), "contracts.workflow must own shared workflow models."
+    assert WORKFLOW_DEFS_ROOT.exists(), "domain workflows package must own workflow definitions."
+    assert (WORKFLOW_DEFS_ROOT / "__init__.py").exists(), (
+        "domain workflows must provide a registry entrypoint for executor/reconciler discovery."
     )
 
     package_sources = []
+    for path in sorted(CONTRACTS_WORKFLOW_ROOT.glob("*.py")):
+        package_sources.append(path.read_text(encoding="utf-8"))
     for path in sorted(WORKFLOW_DEFS_ROOT.glob("*.py")):
         package_sources.append(path.read_text(encoding="utf-8"))
     combined_source = "\n".join(package_sources)
@@ -98,14 +116,16 @@ def test_workflow_definition_modules_expose_minimum_contract_fields() -> None:
 
 
 def test_runtime_job_modules_exist_and_point_to_job_definitions() -> None:
-    assert JOBS_ROOT.exists(), "business.jobs must expose runtime job definitions separately from workflows."
+    assert JOBS_ROOT.exists(), "domain jobs must expose runtime job definitions separately from workflows."
 
     problems: list[str] = []
     for job_code in OFFICIAL_JOB_CODES:
         if _module_entry(JOBS_ROOT, job_code) is None:
             problems.append(f"{job_code}: missing module")
             continue
-        module = importlib.import_module(f"automation_business_scaffold.business.jobs.{job_code}")
+        module = importlib.import_module(
+            f"automation_business_scaffold.domains.competitor_intelligence.jobs.{job_code}"
+        )
         job_definition = getattr(module, "JOB_DEFINITION", None)
         if getattr(job_definition, "job_code", "") != job_code:
             problems.append(f"{job_code}: JOB_DEFINITION.job_code mismatch")

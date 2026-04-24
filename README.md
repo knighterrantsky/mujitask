@@ -130,7 +130,7 @@ cp skills/mujitask-tiktok-feishu-sync/skill.local.env.example \
 启动本地 agent API：
 
 ```bash
-uvicorn automation_business_scaffold.agent:app --app-dir src --host 127.0.0.1 --port 8110
+uvicorn automation_business_scaffold.apps.rpc_agent.server:app --app-dir src --host 127.0.0.1 --port 8110
 ```
 
 查看已注册任务：

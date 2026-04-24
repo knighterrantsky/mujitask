@@ -14,7 +14,7 @@ from automation_business_scaffold.business.handlers import (
     register_api_handler,
     register_outbox_handler,
 )
-from automation_business_scaffold.business.tasks.tiktok_fastmoss_product_ingest import (
+from automation_business_scaffold.domains.competitor_intelligence.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore

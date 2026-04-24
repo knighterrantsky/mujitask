@@ -1,9 +1,3 @@
-"""Object storage media asset sync capability facade."""
+"""Migration note: media asset sync is owned by capabilities.media.asset_sync_handler."""
 
-from automation_business_scaffold.capabilities.media.asset_sync_handler import (
-    CONTRACT,
-    HANDLER_CODE,
-    media_asset_sync_handler,
-)
-
-__all__ = ["CONTRACT", "HANDLER_CODE", "media_asset_sync_handler"]
+__all__: list[str] = []

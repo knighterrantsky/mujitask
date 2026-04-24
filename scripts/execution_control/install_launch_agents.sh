@@ -52,10 +52,10 @@ for template_path in sorted(template_dir.glob("*.plist.template")):
     print(dest_path)
 PY
 
-pkill -f 'automation_business_scaffold.executor_daemon' >/dev/null 2>&1 || true
-pkill -f 'automation_business_scaffold.api_worker_daemon' >/dev/null 2>&1 || true
-pkill -f 'automation_business_scaffold.browser_runloop' >/dev/null 2>&1 || true
-pkill -f 'automation_business_scaffold.outbox_dispatcher' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.apps.daemons.executor.main' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.apps.daemons.api_worker.main' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.apps.daemons.browser_worker.main' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.apps.daemons.outbox.main' >/dev/null 2>&1 || true
 
 sleep 1
 
