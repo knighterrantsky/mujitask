@@ -108,7 +108,7 @@ def test_runtime_progress_helpers_and_stale_scans_cover_unified_tables(runtime_d
         current_stage="collect_product_data",
     )
 
-    enqueue_jobs = store.enqueue_api_worker_jobs(
+    store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code="tiktok_fastmoss_product_ingest",
         job_code="fastmoss_product_fetch",
@@ -239,7 +239,7 @@ def test_runtime_timeout_scans_and_outbox_lease_reclaim_helpers(runtime_db_url):
         status="waiting_children",
         current_stage="collect_product_data",
     )
-    jobs = store.enqueue_api_worker_jobs(
+    store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code="tiktok_fastmoss_product_ingest",
         job_code="fastmoss_product_fetch",

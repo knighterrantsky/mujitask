@@ -25,7 +25,6 @@ from .models import (
     WorkflowDefinition,
     contract,
     optional_field,
-    required_field,
 )
 
 
