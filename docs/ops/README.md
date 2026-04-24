@@ -1,6 +1,6 @@
 # Ops 文档索引
 
-更新时间: 2026-04-23
+更新时间: 2026-04-24
 
 本目录用于承载部署、运维、验收、回退和 runbook 文档。它不承载客户需求，也不承载系统架构设计。
 
@@ -20,6 +20,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [deployment.md](./deployment.md) | 当前部署说明 |
+| [release-flow.md](./release-flow.md) | 提交代码并发布的 MR / PR、tag 和 release 执行规则 |
 | [phase1-acceptance-and-rollback.md](./phase1-acceptance-and-rollback.md) | Phase 1 历史验收与回退 |
 | [archive/phase1-controlled-execution-pilot.md](./archive/phase1-controlled-execution-pilot.md) | Phase 1 历史 Pilot/runbook |
 

@@ -1,6 +1,6 @@
 # 文档修改治理规则
 
-更新时间: 2026-04-23
+更新时间: 2026-04-24
 
 状态: 开发维护约定
 
@@ -17,6 +17,7 @@
 - [../business/README.md](../business/README.md)
 - [../arch/README.md](../arch/README.md)
 - [../ops/README.md](../ops/README.md)
+- [../ops/release-flow.md](../ops/release-flow.md)
 - [../reference/README.md](../reference/README.md)
 
 ## 2. 快速决策表
@@ -29,7 +30,7 @@
 | `docs/arch/runtime-db-schema-design.md`、`fact-db-schema-design.md` | 受控修改 | schema 设计事实来源；变更必须有 migration、兼容策略和权限边界 |
 | `docs/arch/handler-contract-design.md`、`entry-output-contract-design.md` | 受控修改 | contract 事实来源；变更必须保持兼容，或显式说明 `contract_revision`、adapter、migration/回滚策略 |
 | `docs/dev/**` | 可随开发维护同步修改 | 开发、调试、代码维护、skill 集成说明 |
-| `docs/ops/**` | 可随部署/运维实现同步修改 | 部署、回退、巡检、runbook |
+| `docs/ops/**` | 可随部署/运维实现同步修改 | 部署、发布、回退、巡检、runbook |
 | `docs/reference/**` | 可补充参考资料 | 外部接口研究、页面分析、字段样例；不作为当前设计事实来源 |
 | `docs/business/**` | 视内容决定，通常先确认 | 客户需求、业务规则、飞书字段口径、验收口径 |
 | `README.md` | 可小改，慎重改入口口径 | 项目入口，不承载详细设计 |
@@ -46,7 +47,7 @@
 
 原因:
 
-- `.platform/**` 和 `AGENT.MD` 定义仓库角色、模型工作规则、受保护路径和发布流程。
+- `.platform/**` 和 `AGENT.MD` 定义仓库角色、模型工作规则和受保护路径；`AGENT.MD` 只保留发布摘要，详细发布流程归口到 `docs/ops/release-flow.md`。
 - framework public API、contract 和迁移说明不属于本仓库事实来源。
 - 修改这些内容会改变协作规则，而不是单个业务功能。
 
