@@ -34,6 +34,11 @@ TERMINAL_API_JOB_STATUSES = {"success", "failed", "cancelled"}
 ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
 TERMINAL_EXECUTION_STATUSES = {"success", "failed", "skipped", "cancelled"}
 MAX_EXECUTOR_STAGE_HOPS = 16
+DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER = {
+    "api_worker": 300.0,
+    "browser_worker": 900.0,
+    "outbox_dispatcher": 60.0,
+}
 PHASE2_NOT_READY_MESSAGE = (
     "Phase 2 runtime orchestration is currently wired only for tiktok_fastmoss_product_ingest."
 )
@@ -163,6 +168,18 @@ def run_sync_tk_influencer_pool_request(params: dict[str, Any]) -> dict[str, Any
 
 def run_tiktok_fastmoss_product_ingest_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(PRODUCT_INGEST_TASK_CODE, params)
+
+
+def _dispatch_api_runtime_handler(context: HandlerContext) -> Any:
+    return _build_bound_api_handler_registry().dispatch(context.handler_code, context)
+
+
+def _dispatch_browser_runtime_handler(context: HandlerContext) -> Any:
+    return _build_bound_browser_handler_registry().dispatch(context.handler_code, context)
+
+
+def _dispatch_outbox_runtime_handler(context: HandlerContext) -> Any:
+    return _build_bound_outbox_handler_registry().dispatch("outbox_dispatch", context)
 
 
 def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
@@ -325,7 +342,6 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
             message="No api_worker_job is ready for processing.",
         )
 
-    registry = _build_bound_api_handler_registry()
     context = HandlerContext(
         request_id=str(job["request_id"]),
         job_id=str(job["job_id"]),
@@ -346,7 +362,7 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
 
     outcome = run_supervised_handler(
         context=context,
-        dispatch=lambda runtime_context: registry.dispatch(str(job["job_code"]), runtime_context),
+        dispatch=_dispatch_api_runtime_handler,
         heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
         callbacks=ExecutionSupervisorCallbacks(
             heartbeat=lambda: store.heartbeat_api_worker_job(
@@ -359,7 +375,12 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
                 lease_seconds=settings.lease_seconds,
             ),
         ),
-        child_runner_config=_build_child_runner_config(params),
+        child_runner_config=_build_child_runner_config(
+            params,
+            worker_type="api_worker",
+            handler_code=str(job["job_code"]),
+            runtime_timeout_seconds=job.get("max_execution_seconds"),
+        ),
     )
     marked_job, success_count, failed_count = _persist_api_worker_outcome(
         store=store,
@@ -417,7 +438,6 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
             message="No browser execution is ready for processing.",
         )
 
-    registry = _build_bound_browser_handler_registry()
     payload_data = dict(execution.payload or {})
     context = HandlerContext(
         request_id=execution.request_id,
@@ -440,7 +460,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
 
     outcome = run_supervised_handler(
         context=context,
-        dispatch=lambda runtime_context: registry.dispatch(execution.item_code, runtime_context),
+        dispatch=_dispatch_browser_runtime_handler,
         heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
         callbacks=ExecutionSupervisorCallbacks(
             heartbeat=lambda: store.heartbeat_browser_execution(
@@ -453,7 +473,12 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
                 lease_seconds=settings.lease_seconds,
             ),
         ),
-        child_runner_config=_build_child_runner_config(params),
+        child_runner_config=_build_child_runner_config(
+            params,
+            worker_type="browser_worker",
+            handler_code=execution.item_code,
+            runtime_timeout_seconds=execution.max_execution_seconds,
+        ),
     )
     stored_execution, success_count, failed_count = _persist_browser_execution_outcome(
         store=store,
@@ -508,7 +533,6 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
             message="No outbox message is ready to dispatch.",
         )
 
-    registry = _build_bound_outbox_handler_registry()
     context = HandlerContext(
         request_id=outbox.ref_id,
         job_id=outbox.outbox_id,
@@ -525,7 +549,7 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
 
     outcome = run_supervised_handler(
         context=context,
-        dispatch=lambda runtime_context: registry.dispatch("outbox_dispatch", runtime_context),
+        dispatch=_dispatch_outbox_runtime_handler,
         heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
         callbacks=ExecutionSupervisorCallbacks(
             heartbeat=lambda: store.heartbeat_outbox(
@@ -538,7 +562,12 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
                 lease_seconds=settings.lease_seconds,
             ),
         ),
-        child_runner_config=_build_child_runner_config(params),
+        child_runner_config=_build_child_runner_config(
+            params,
+            worker_type="outbox_dispatcher",
+            handler_code="outbox_dispatch",
+            runtime_timeout_seconds=outbox.max_execution_seconds,
+        ),
     )
     if outcome.should_mark_failed:
         retryable = outcome.error.retryable if outcome.error is not None else True
@@ -763,23 +792,65 @@ def _supervisor_error_payload(outcome: ExecutionSupervisorOutcome) -> dict[str, 
     }
 
 
-def _build_child_runner_config(params: Mapping[str, Any]) -> ChildRunnerConfig | None:
-    mode = str(params.get("execution_child_runner_mode") or "").strip() or "inline"
+def _build_child_runner_config(
+    params: Mapping[str, Any],
+    *,
+    worker_type: str = "",
+    handler_code: str = "",
+    runtime_timeout_seconds: Any = None,
+) -> ChildRunnerConfig | None:
+    explicit_mode = str(params.get("execution_child_runner_mode") or "").strip()
+    mode = explicit_mode or _default_child_runner_mode(worker_type=worker_type, handler_code=handler_code)
+    if mode != "child_process":
+        return None
+
     timeout_raw = params.get("execution_child_timeout_seconds")
-    timeout_seconds = None if timeout_raw in (None, "") else max(float(timeout_raw), 0.01)
+    timeout_seconds = (
+        _default_child_timeout_seconds(
+            worker_type=worker_type,
+            runtime_timeout_seconds=runtime_timeout_seconds,
+        )
+        if timeout_raw in (None, "")
+        else max(float(timeout_raw), 0.01)
+    )
     poll_raw = params.get("execution_child_poll_interval_seconds")
     poll_interval_seconds = 0.02 if poll_raw in (None, "") else max(float(poll_raw), 0.005)
     grace_raw = params.get("execution_child_terminate_grace_seconds")
     terminate_grace_seconds = 0.2 if grace_raw in (None, "") else max(float(grace_raw), 0.01)
     start_method = str(params.get("execution_child_start_method") or "").strip() or None
-    config = ChildRunnerConfig(
-        mode="child_process" if mode == "child_process" else "inline",
+    return ChildRunnerConfig(
+        mode="child_process",
         timeout_seconds=timeout_seconds,
         start_method=start_method,
         poll_interval_seconds=poll_interval_seconds,
         terminate_grace_seconds=terminate_grace_seconds,
     )
-    return None if not config.enabled else config
+
+
+def _default_child_runner_mode(*, worker_type: str, handler_code: str) -> str:
+    del handler_code
+    if worker_type in DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER:
+        return "child_process"
+    return "inline"
+
+
+def _default_child_timeout_seconds(*, worker_type: str, runtime_timeout_seconds: Any) -> float | None:
+    runtime_timeout = _coerce_positive_float(runtime_timeout_seconds)
+    if runtime_timeout is not None:
+        return runtime_timeout
+    return DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER.get(worker_type)
+
+
+def _coerce_positive_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized <= 0:
+        return None
+    return max(normalized, 0.01)
 
 
 def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:

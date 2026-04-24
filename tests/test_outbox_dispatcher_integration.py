@@ -445,7 +445,9 @@ def test_outbox_dispatcher_marks_webhook_success_sent(
         dedupe_key="outbox:webhook-success",
     )
 
-    payload = runtime_orchestrator.dispatch_outbox_once(_runtime_params(runtime_db_url))
+    payload = runtime_orchestrator.dispatch_outbox_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
 
     assert payload["outbox_id"] == outbox_id
     assert payload["item"]["status"] == "sent"
