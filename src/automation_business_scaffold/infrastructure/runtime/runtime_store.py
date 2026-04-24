@@ -66,6 +66,15 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
+def _coerce_int(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _coerce_non_negative_float(value: Any) -> float:
     return max(_coerce_float(value), 0.0)
 
@@ -3346,47 +3355,132 @@ class RuntimeStore:
         action_type = str(normalized.get("action_type") or "").strip()
         target_table = str(normalized.get("target_table") or "").strip()
         target_id = str(normalized.get("target_id") or "").strip()
+        target_status = str(normalized.get("target_status") or "").strip()
         next_status = str(normalized.get("next_status") or "").strip()
         error_type = str(normalized.get("error_type") or "").strip()
         error_code = str(normalized.get("rule_code") or normalized.get("error_code") or "").strip()
         reason = str(normalized.get("reason") or "").strip()
+        action_metadata = normalized.get("metadata")
+        if not isinstance(action_metadata, Mapping):
+            action_metadata = {}
+        observed_attempt_count = _coerce_int(action_metadata.get("observed_attempt_count"))
+        observed_retry_count = _coerce_int(action_metadata.get("observed_retry_count"))
+        observed_lease_until = _coerce_float(action_metadata.get("observed_lease_until"))
+        observed_started_at = _coerce_float(action_metadata.get("observed_started_at"))
+        observed_last_progress_at = _coerce_float(action_metadata.get("observed_last_progress_at"))
+        observed_max_execution_seconds = _coerce_float(
+            action_metadata.get("observed_max_execution_seconds")
+        )
+        guard_attempt_count = 1 if observed_attempt_count > 0 else 0
+        guard_retry_count = 1 if "observed_retry_count" in action_metadata else 0
+        guard_lease_until = 1 if observed_lease_until > 0 else 0
+        guard_started_at = 1 if observed_started_at > 0 else 0
+        guard_last_progress_at = 1 if observed_last_progress_at > 0 else 0
+        guard_max_execution_seconds = 1 if observed_max_execution_seconds > 0 else 0
         dead_letter_reason = "watchdog_failed" if action_type == "fail" else ""
         now = time.time()
 
         if target_table == "task_request":
             if action_type == "repair":
                 repaired = self.reconcile_request_waiting_children(request_id=target_id)
+                applied = bool(repaired.get("transitioned"))
                 return {
                     "target_table": target_table,
                     "target_id": target_id,
                     "action_type": action_type,
                     "status": str(repaired["request"].status),
-                    "transitioned": bool(repaired.get("transitioned")),
+                    "applied": applied,
+                    "transitioned": applied,
                 }
-            updated = self.update_task_request(
-                request_id=target_id,
-                status=next_status or ("failed" if action_type == "fail" else "pending"),
-                progress_stage=next_status or action_type,
-                error_text=reason,
-                error_type=error_type,
-                error_code=error_code,
-                dead_letter_reason=dead_letter_reason,
-                worker_id="",
-                lease_until=0.0,
-                heartbeat_at=0.0,
-                last_progress_at=now,
-                finished_at=now if action_type == "fail" else None,
-            )
+            status = next_status or ("failed" if action_type == "fail" else "pending")
+            with self._engine.begin() as connection:
+                result = connection.execute(
+                    self._text(
+                        """
+                        UPDATE task_request
+                        SET status = CASE
+                                WHEN :action_type = 'retry' AND current_stage = 'ready_for_summary'
+                                    THEN 'ready_for_summary'
+                                ELSE :status
+                            END,
+                            current_stage = CASE
+                                WHEN :action_type = 'retry' AND current_stage <> 'ready_for_summary'
+                                    THEN ''
+                                ELSE current_stage
+                            END,
+                            progress_stage = CASE
+                                WHEN :action_type = 'retry' AND current_stage = 'ready_for_summary'
+                                    THEN 'ready_for_summary'
+                                ELSE :progress_stage
+                            END,
+                            stage_cursor_json = CASE
+                                WHEN :action_type = 'retry' AND current_stage <> 'ready_for_summary'
+                                    THEN '{}'
+                                ELSE stage_cursor_json
+                            END,
+                            error_text = :error_text,
+                            error_type = :error_type,
+                            error_code = :error_code,
+                            dead_letter_reason = :dead_letter_reason,
+                            worker_id = '',
+                            lease_until = NULL,
+                            heartbeat_at = NULL,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at,
+                            finished_at = CASE WHEN :action_type = 'fail' THEN :updated_at ELSE finished_at END
+                        WHERE request_id = :request_id
+                          AND (:target_status = '' OR status = :target_status)
+                          AND (:guard_lease_until = 0 OR COALESCE(lease_until, 0) = :observed_lease_until)
+                          AND (
+                              :guard_started_at = 0
+                              OR COALESCE(started_at, 0) = :observed_started_at
+                          )
+                          AND (
+                              :guard_last_progress_at = 0
+                              OR COALESCE(last_progress_at, 0) = :observed_last_progress_at
+                          )
+                          AND (
+                              :guard_max_execution_seconds = 0
+                              OR COALESCE(max_execution_seconds, 0) = :observed_max_execution_seconds
+                          )
+                        """
+                    ),
+                    {
+                        "request_id": target_id,
+                        "target_status": target_status,
+                        "action_type": action_type,
+                        "status": status,
+                        "progress_stage": status,
+                        "error_text": reason,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "dead_letter_reason": dead_letter_reason,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                        "guard_lease_until": guard_lease_until,
+                        "observed_lease_until": observed_lease_until,
+                        "guard_started_at": guard_started_at,
+                        "observed_started_at": observed_started_at,
+                        "guard_last_progress_at": guard_last_progress_at,
+                        "observed_last_progress_at": observed_last_progress_at,
+                        "guard_max_execution_seconds": guard_max_execution_seconds,
+                        "observed_max_execution_seconds": observed_max_execution_seconds,
+                    },
+                )
+                applied = int(result.rowcount or 0) > 0
+            updated = self.load_task_request(request_id=target_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
                 "action_type": action_type,
+                "applied": applied,
                 "status": updated.status,
             }
 
         if target_table == "api_worker_job":
+            status = next_status or ("failed" if action_type == "fail" else "retry_wait")
             with self._engine.begin() as connection:
-                connection.execute(
+                result = connection.execute(
                     self._text(
                         """
                         UPDATE api_worker_job
@@ -3405,13 +3499,32 @@ class RuntimeStore:
                             updated_at = :updated_at,
                             finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
                         WHERE job_id = :job_id
+                          AND (:target_status = '' OR status = :target_status)
+                          AND (
+                              :guard_attempt_count = 0
+                              OR COALESCE(attempt_count, 0) = :observed_attempt_count
+                          )
+                          AND (:guard_lease_until = 0 OR COALESCE(lease_until, 0) = :observed_lease_until)
+                          AND (
+                              :guard_started_at = 0
+                              OR COALESCE(started_at, 0) = :observed_started_at
+                          )
+                          AND (
+                              :guard_last_progress_at = 0
+                              OR COALESCE(last_progress_at, 0) = :observed_last_progress_at
+                          )
+                          AND (
+                              :guard_max_execution_seconds = 0
+                              OR COALESCE(max_execution_seconds, 0) = :observed_max_execution_seconds
+                          )
                         """
                     ),
                     {
                         "job_id": target_id,
-                        "status": next_status,
-                        "stage": next_status,
-                        "progress_stage": next_status,
+                        "target_status": target_status,
+                        "status": status,
+                        "stage": status,
+                        "progress_stage": status,
                         "available_at": now,
                         "error_text": reason,
                         "error_type": error_type,
@@ -3420,20 +3533,33 @@ class RuntimeStore:
                         "heartbeat_at": now,
                         "last_progress_at": now,
                         "updated_at": now,
+                        "guard_attempt_count": guard_attempt_count,
+                        "observed_attempt_count": observed_attempt_count,
+                        "guard_lease_until": guard_lease_until,
+                        "observed_lease_until": observed_lease_until,
+                        "guard_started_at": guard_started_at,
+                        "observed_started_at": observed_started_at,
+                        "guard_last_progress_at": guard_last_progress_at,
+                        "observed_last_progress_at": observed_last_progress_at,
+                        "guard_max_execution_seconds": guard_max_execution_seconds,
+                        "observed_max_execution_seconds": observed_max_execution_seconds,
                     },
                 )
+                applied = int(result.rowcount or 0) > 0
             updated = self.load_api_worker_job(job_id=target_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
                 "action_type": action_type,
+                "applied": applied,
                 "status": str(updated["status"]),
             }
 
         if target_table == "task_execution":
             execution = self.load_task_execution(execution_id=target_id)
+            status = next_status or ("failed" if action_type == "fail" else "retry_wait")
             with self._engine.begin() as connection:
-                connection.execute(
+                result = connection.execute(
                     self._text(
                         """
                         UPDATE task_execution
@@ -3450,12 +3576,39 @@ class RuntimeStore:
                             updated_at = :updated_at,
                             finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
                         WHERE execution_id = :execution_id
+                          AND (:target_status = '' OR status = :target_status)
+                          AND (
+                              :guard_attempt_count = 0
+                              OR COALESCE(attempt_count, 0) = :observed_attempt_count
+                          )
+                          AND (
+                              :guard_lease_until = 0
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM resource_lease lease
+                                  WHERE lease.execution_id = :execution_id
+                                    AND COALESCE(lease.lease_until, 0) = :observed_lease_until
+                              )
+                          )
+                          AND (
+                              :guard_started_at = 0
+                              OR COALESCE(started_at, 0) = :observed_started_at
+                          )
+                          AND (
+                              :guard_last_progress_at = 0
+                              OR COALESCE(last_progress_at, 0) = :observed_last_progress_at
+                          )
+                          AND (
+                              :guard_max_execution_seconds = 0
+                              OR COALESCE(max_execution_seconds, 0) = :observed_max_execution_seconds
+                          )
                         """
                     ),
                     {
                         "execution_id": target_id,
-                        "status": next_status,
-                        "progress_stage": next_status,
+                        "target_status": target_status,
+                        "status": status,
+                        "progress_stage": status,
                         "error_text": reason,
                         "error_type": error_type,
                         "error_code": error_code,
@@ -3464,29 +3617,50 @@ class RuntimeStore:
                         "heartbeat_at": now,
                         "last_progress_at": now,
                         "updated_at": now,
+                        "guard_attempt_count": guard_attempt_count,
+                        "observed_attempt_count": observed_attempt_count,
+                        "guard_lease_until": guard_lease_until,
+                        "observed_lease_until": observed_lease_until,
+                        "guard_started_at": guard_started_at,
+                        "observed_started_at": observed_started_at,
+                        "guard_last_progress_at": guard_last_progress_at,
+                        "observed_last_progress_at": observed_last_progress_at,
+                        "guard_max_execution_seconds": guard_max_execution_seconds,
+                        "observed_max_execution_seconds": observed_max_execution_seconds,
                     },
                 )
-                connection.execute(
-                    self._text("DELETE FROM resource_lease WHERE execution_id = :execution_id"),
-                    {"execution_id": target_id},
-                )
-                self._refresh_request_child_counts(connection, request_id=execution.request_id, now=now)
+                applied = int(result.rowcount or 0) > 0
+                if applied:
+                    connection.execute(
+                        self._text("DELETE FROM resource_lease WHERE execution_id = :execution_id"),
+                        {"execution_id": target_id},
+                    )
+                    self._refresh_request_child_counts(connection, request_id=execution.request_id, now=now)
             updated = self.load_task_execution(execution_id=target_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
                 "action_type": action_type,
+                "applied": applied,
                 "status": updated.status,
             }
 
         if target_table == "notification_outbox":
+            status = next_status or ("failed" if action_type == "fail" else "retry_wait")
             with self._engine.begin() as connection:
-                connection.execute(
+                result = connection.execute(
                     self._text(
                         """
                         UPDATE notification_outbox
                         SET status = :status,
                             progress_stage = :progress_stage,
+                            retry_count = CASE
+                                WHEN :action_type = 'retry' THEN retry_count + 1
+                                WHEN :action_type = 'fail'
+                                     AND max_retry_count > 0
+                                     AND retry_count < max_retry_count THEN retry_count + 1
+                                ELSE retry_count
+                            END,
                             worker_id = '',
                             lease_until = NULL,
                             heartbeat_at = NULL,
@@ -3498,27 +3672,54 @@ class RuntimeStore:
                             last_progress_at = :last_progress_at,
                             updated_at = :updated_at
                         WHERE outbox_id = :outbox_id
+                          AND (:target_status = '' OR status = :target_status)
+                          AND (
+                              :guard_retry_count = 0
+                              OR COALESCE(retry_count, 0) = :observed_retry_count
+                          )
+                          AND (:guard_lease_until = 0 OR COALESCE(lease_until, 0) = :observed_lease_until)
+                          AND (
+                              :guard_last_progress_at = 0
+                              OR COALESCE(last_progress_at, 0) = :observed_last_progress_at
+                          )
+                          AND (
+                              :guard_max_execution_seconds = 0
+                              OR COALESCE(max_execution_seconds, 0) = :observed_max_execution_seconds
+                          )
                         """
                     ),
                     {
                         "outbox_id": target_id,
-                        "status": next_status,
-                        "progress_stage": next_status,
-                        "next_retry_at": now if next_status == "retry_wait" else None,
+                        "target_status": target_status,
+                        "action_type": action_type,
+                        "status": status,
+                        "progress_stage": status,
+                        "next_retry_at": now if status == "retry_wait" else None,
                         "last_error_text": reason,
                         "error_type": error_type,
                         "error_code": error_code,
                         "dead_letter_reason": dead_letter_reason,
                         "last_progress_at": now,
                         "updated_at": now,
+                        "guard_retry_count": guard_retry_count,
+                        "observed_retry_count": observed_retry_count,
+                        "guard_lease_until": guard_lease_until,
+                        "observed_lease_until": observed_lease_until,
+                        "guard_last_progress_at": guard_last_progress_at,
+                        "observed_last_progress_at": observed_last_progress_at,
+                        "guard_max_execution_seconds": guard_max_execution_seconds,
+                        "observed_max_execution_seconds": observed_max_execution_seconds,
                     },
                 )
+                applied = int(result.rowcount or 0) > 0
             updated = self.load_outbox(outbox_id=target_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
                 "action_type": action_type,
+                "applied": applied,
                 "status": updated.status,
+                "retry_count": updated.retry_count,
             }
 
         raise ValueError(f"Unsupported watchdog target_table: {target_table}")

@@ -136,7 +136,7 @@ def test_watchdog_scan_decides_fail_for_timed_out_outbox_when_retries_exhausted(
             "outbox_id": "outbox-1",
             "status": "sending",
             "retry_count": 2,
-            "max_retries": 2,
+            "max_retry_count": 3,
         }
     )
 
@@ -148,6 +148,37 @@ def test_watchdog_scan_decides_fail_for_timed_out_outbox_when_retries_exhausted(
     assert outcome["action"]["action_type"] == "fail"
     assert outcome["action"]["next_status"] == "failed"
     assert outcome["action"]["error_type"] == "outbox_sending_timeout"
+
+
+def test_watchdog_scan_counts_only_store_confirmed_applications() -> None:
+    class SkippingStore(FakeWatchdogStore):
+        def apply_watchdog_action(self, *, action: Mapping[str, Any]) -> Mapping[str, Any]:
+            self.applied_actions.append(dict(action))
+            return {
+                "target_table": action.get("target_table", ""),
+                "target_id": action.get("target_id", ""),
+                "action_type": action.get("action_type", ""),
+                "applied": False,
+                "status": "success",
+            }
+
+    store = SkippingStore()
+    store.rows_by_helper["scan_expired_running_leases"].append(
+        {
+            "target_table": "api_worker_job",
+            "job_id": "job-skipped",
+            "request_id": "req-skipped",
+            "status": "running",
+            "attempt_count": 1,
+            "max_attempts": 3,
+        }
+    )
+
+    payload = execute_watchdog_scan_once({"now": 100.0}, store=store)
+
+    assert payload["action_count"] == 1
+    assert payload["applied_count"] == 0
+    assert payload["outcomes"][0]["applied"] is False
 
 
 def test_watchdog_collect_prefers_timeout_over_lease_for_same_target() -> None:
@@ -229,6 +260,29 @@ def test_watchdog_entrypoint_once_uses_single_scan_payload(monkeypatch, capsys) 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ok"
     assert payload["action_count"] == 1
+
+
+def test_watchdog_entrypoint_once_defaults_to_apply_actions(monkeypatch, capsys) -> None:
+    captured_params: dict[str, Any] = {}
+
+    def _fake_scan(params: Mapping[str, Any]) -> dict[str, Any]:
+        captured_params.update(dict(params))
+        return {
+            "status": "ok",
+            "action_count": 1,
+            "applied_count": 1,
+            "counts_by_action": {"retry": 1},
+            "outcomes": [],
+        }
+
+    monkeypatch.setattr(watchdog_cli, "execute_watchdog_scan_once", _fake_scan)
+
+    exit_code = watchdog_cli.main(["--once"])
+
+    assert exit_code == 0
+    assert captured_params["apply_actions"] is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["applied_count"] == 1
 
 
 def _seed_store(helper_name: str, row: Mapping[str, Any]) -> FakeWatchdogStore:

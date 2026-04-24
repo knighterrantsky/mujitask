@@ -307,7 +307,7 @@ def _candidate_from_mapping(rule_code: str, payload: Mapping[str, Any], spec: Wa
         attempt_count=_coerce_int(payload.get("attempt_count")),
         max_attempts=_coerce_int(payload.get("max_attempts")),
         retry_count=_coerce_int(payload.get("retry_count")),
-        max_retries=_coerce_int(payload.get("max_retries")),
+        max_retries=_coerce_int(payload.get("max_retries") or payload.get("max_retry_count")),
         lease_until=_coerce_float(payload.get("lease_until")),
         started_at=_coerce_float(payload.get("started_at")),
         heartbeat_at=_coerce_float(payload.get("heartbeat_at")),
@@ -359,6 +359,22 @@ def collect_watchdog_candidates(
     return _dedupe_candidates(candidates), missing_helpers
 
 
+def _action_metadata(candidate: WatchdogCandidate, **extra: Any) -> dict[str, Any]:
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "observed_attempt_count": candidate.attempt_count,
+            "observed_retry_count": candidate.retry_count,
+            "observed_lease_until": candidate.lease_until,
+            "observed_started_at": candidate.started_at,
+            "observed_last_progress_at": candidate.last_progress_at,
+            "observed_max_execution_seconds": candidate.max_execution_seconds,
+        }
+    )
+    metadata.update(extra)
+    return metadata
+
+
 def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
     target_table = candidate.target_table
     fail_status = str(candidate.metadata.get("fail_status") or FAIL_STATUS_BY_TABLE.get(target_table) or "failed")
@@ -378,15 +394,19 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
             error_type="waiting_children_unreconciled",
             reason=reason,
             repair_operation="reconcile_parent_waiting_children",
-            metadata={
-                "progress_stage": candidate.progress_stage,
-                "parent_request_id": candidate.parent_request_id,
-                **candidate.metadata,
-            },
+            metadata=_action_metadata(
+                candidate,
+                progress_stage=candidate.progress_stage,
+                parent_request_id=candidate.parent_request_id,
+            ),
         )
 
     if candidate.rule_code == OUTBOX_SENDING_TIMEOUT_RULE:
-        exhausted = candidate.retry_budget_exhausted
+        retry_budget = candidate.retry_budget
+        if retry_budget > 0:
+            exhausted = candidate.retry_count + 1 >= retry_budget
+        else:
+            exhausted = False
         action_type = FAIL_ACTION if exhausted else RETRY_ACTION
         next_status = fail_status if exhausted else retry_status
         reason = candidate.reason or "Outbox record stayed in sending beyond its watchdog timeout window."
@@ -400,7 +420,7 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
             next_status=next_status,
             error_type="outbox_sending_timeout",
             reason=reason,
-            metadata={"retry_budget_exhausted": exhausted, **candidate.metadata},
+            metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
         )
 
     if candidate.rule_code == EXECUTION_TIMEOUT_RULE:
@@ -418,7 +438,7 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
             next_status=next_status,
             error_type="timeout",
             reason=reason,
-            metadata={"retry_budget_exhausted": exhausted, **candidate.metadata},
+            metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
         )
 
     if candidate.rule_code == STALE_PROGRESS_RULE:
@@ -436,7 +456,7 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
             next_status=next_status,
             error_type="stale_progress",
             reason=reason,
-            metadata={"retry_budget_exhausted": exhausted, **candidate.metadata},
+            metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
         )
 
     exhausted = candidate.retry_budget_exhausted
@@ -453,7 +473,7 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
         next_status=next_status,
         error_type="lease_expired",
         reason=reason,
-        metadata={"retry_budget_exhausted": exhausted, **candidate.metadata},
+        metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
     )
 
 
@@ -493,8 +513,9 @@ def execute_watchdog_scan_once(
         applied = False
         if apply_actions and callable(getattr(resolved_store, "apply_watchdog_action", None)):
             store_result = apply_watchdog_action(resolved_store, action)
-            applied = True
-            applied_count += 1
+            applied = bool(store_result.get("applied", True))
+            if applied:
+                applied_count += 1
         outcomes.append(
             WatchdogActionOutcome(
                 candidate=candidate,
