@@ -40,14 +40,47 @@ uv run pytest -q tests/test_registry.py tests/test_workflow_defs_contract.py tes
 
 如果窗口任务涉及 runtime / worker / outbox / watchdog，再追加对应专项测试，而不是一上来全量跑全仓库。
 
-## 4. Worktree A: workflow-common-helper
+## 4. 首条提示词之后的开发循环
 
-### 4.1 基本信息
+每个 worktree 的首条提示词只是启动上下文。提示词完成之后，该窗口进入独立开发循环，目标是把本条线做到可提交、可合并、可验证。
+
+标准流程:
+
+1. 读上下文
+   - 读取本文档对应 worktree 小节。
+   - 读取负责范围内的源码和测试。
+   - 确认本窗口不改其他 worktree 的负责范围。
+2. 给出本窗口小计划
+   - 列出 3 到 5 个具体任务。
+   - 标出预计修改的文件。
+   - 标出准备运行的测试。
+3. 直接开发
+   - 写代码和测试。
+   - 旧实现只能参考 `achieve/`，不能从 runtime import。
+   - 如发现必须跨边界修改，先说明原因，并把改动压到最小。
+4. 本地验证
+   - 运行本小节列出的专项测试。
+   - 运行 `git diff --check`。
+   - 如改了公共 contract，再补跑 contract tests。
+5. 提交到本 worktree 分支
+   - 每条线完成一个可合并单元后，在自己的 worktree commit。
+   - 不要从 worktree 自己合并回主工作区。
+6. 向主窗口回报
+   - 回报 commit id。
+   - 回报改了哪些文件。
+   - 回报跑过哪些测试和结果。
+   - 回报是否有合并风险、跨线依赖或未完成事项。
+
+主窗口只负责汇总、集成和最终回归。三个 worktree 的开发成果先停留在各自工作目录和各自分支里。
+
+## 5. Worktree A: workflow-common-helper
+
+### 5.1 基本信息
 
 - 分支: `codex/workflow-common-helper`
 - 路径: `/Users/happyzhao/Work/mujitask-wt-workflow-common-helper`
 
-### 4.2 负责范围
+### 5.2 负责范围
 
 优先负责以下文件:
 
@@ -60,7 +93,7 @@ uv run pytest -q tests/test_registry.py tests/test_workflow_defs_contract.py tes
   - `tests/test_runtime_refresh_executor_integration.py`
   - `tests/test_runtime_keyword_executor_integration.py`
 
-### 4.3 主要目标
+### 5.3 主要目标
 
 这一条线继续做 `refresh` / `keyword` 的共享逻辑收敛，但前提是行为不变。
 
@@ -71,14 +104,21 @@ uv run pytest -q tests/test_registry.py tests/test_workflow_defs_contract.py tes
 3. browser fallback 之后 continuation resume 的重复判断
 4. refresh / keyword 之间仅参数不同、流程相同的小型 helper
 
-### 4.4 不要做的事
+### 5.4 完成标准
+
+- `refresh` / `keyword` 的重复逻辑被收敛到共享 helper。
+- 两个 workflow 的现有行为保持一致。
+- 没有修改 outbox / watchdog / runtime store 负责范围。
+- 对应专项测试通过。
+
+### 5.5 不要做的事
 
 - 不要改 `outbox_dispatcher`
 - 不要改 `watchdog_scanner`
 - 不要改 `runtime_store`
 - 不要把共享 helper 继续抽成新的业务层级
 
-### 4.5 建议验证
+### 5.6 建议验证
 
 ```bash
 uv run pytest -q \
@@ -99,20 +139,20 @@ uv run pytest -q \
   tests/test_runtime_keyword_executor_integration.py
 ```
 
-### 4.6 窗口首条提示词
+### 5.7 窗口首条提示词
 
 ```text
 你现在在 /Users/happyzhao/Work/mujitask-wt-workflow-common-helper 上工作。先阅读 docs/dev/worktree-parallel-development-handoff.md 的 Worktree A 部分，只做 refresh / keyword 的共享 helper 收敛，不要改 outbox/watchdog/runtime_store。先扫描 execution_helpers.py、runtime_refresh_current_competitor_table.py、runtime_search_keyword_competitor_products.py 里仍然重复的 stage-local dedupe / projection 逻辑，然后给出最小实现方案并直接开始改代码，最后跑文档里列出的测试。
 ```
 
-## 5. Worktree B: outbox-e2e
+## 6. Worktree B: outbox-e2e
 
-### 5.1 基本信息
+### 6.1 基本信息
 
 - 分支: `codex/outbox-e2e`
 - 路径: `/Users/happyzhao/Work/mujitask-wt-outbox-e2e`
 
-### 5.2 负责范围
+### 6.2 负责范围
 
 优先负责以下文件:
 
@@ -129,7 +169,7 @@ uv run pytest -q \
   - `tests/test_runtime_store.py`
   - 可新增 outbox integration tests
 
-### 5.3 主要目标
+### 6.3 主要目标
 
 这一条线的目标是把 outbox 从“能跑”推进到“端到端闭环可验证”。
 
@@ -140,13 +180,20 @@ uv run pytest -q \
 3. 失败分类、progress 更新、lease reclaim、sending timeout 之后的可恢复性
 4. 补齐从 request finalize 到 outbox dispatch 的联调测试
 
-### 5.4 不要做的事
+### 6.4 完成标准
+
+- `notification_outbox claim -> supervisor -> outbox_dispatch -> sent/retry/failed` 有 integration coverage。
+- `noop` / `console` 等当前支持 channel 的成功路径可验证。
+- dispatch 失败、重试或失败落库路径可验证。
+- 如触达 `runtime_orchestrator` 或 `execution_supervisor`，提交说明中写清原因。
+
+### 6.5 不要做的事
 
 - 不要改 refresh / keyword 的共享 helper
 - 不要改 watchdog 扫描规则本身
 - 不要借这个窗口去重写 workflow runtime
 
-### 5.5 建议验证
+### 6.6 建议验证
 
 ```bash
 uv run pytest -q \
@@ -158,20 +205,20 @@ uv run pytest -q \
 
 如果补了新的 outbox 端到端测试，再把新文件加进去一起跑。
 
-### 5.6 窗口首条提示词
+### 6.7 窗口首条提示词
 
 ```text
 你现在在 /Users/happyzhao/Work/mujitask-wt-outbox-e2e 上工作。先阅读 docs/dev/worktree-parallel-development-handoff.md 的 Worktree B 部分，目标是把 outbox_dispatcher 和 outbox handler 路径做成可验证的端到端闭环。优先处理 notification_outbox claim、supervisor 包装、dispatch 成功/失败/重试、lease reclaim 和 integration tests，不要去改 refresh/keyword 共享 helper，也不要碰 watchdog rule。
 ```
 
-## 6. Worktree C: watchdog-apply-integration
+## 7. Worktree C: watchdog-apply-integration
 
-### 6.1 基本信息
+### 7.1 基本信息
 
 - 分支: `codex/watchdog-apply-integration`
 - 路径: `/Users/happyzhao/Work/mujitask-wt-watchdog-apply-integration`
 
-### 6.2 负责范围
+### 7.2 负责范围
 
 优先负责以下文件:
 
@@ -183,7 +230,7 @@ uv run pytest -q \
   - `tests/test_runtime_lifecycle.py`
   - 可新增 watchdog apply/integration tests
 
-### 6.3 主要目标
+### 7.3 主要目标
 
 这一条线的重点是把 Watchdog 从“决定动作”推进到“真正把动作写回 Runtime DB 并验证结果”。
 
@@ -194,13 +241,20 @@ uv run pytest -q \
 3. 验证 `retry` / `fail` / `repair` 对各目标表的持久化结果
 4. 验证重复执行的幂等性和优先级去重
 
-### 6.4 不要做的事
+### 7.4 完成标准
+
+- 使用真实 Runtime DB 记录覆盖至少一条 `retry` 路径。
+- 使用真实 Runtime DB 记录覆盖至少一条 `fail` 或 `repair` 路径。
+- `apply_actions=True` 的 scanner 路径可验证。
+- 重复扫描不会造成不一致写回。
+
+### 7.5 不要做的事
 
 - 不要改 outbox handler 实现
 - 不要改 refresh / keyword workflow helper
 - 不要把 watchdog 逻辑再拆成新的架构层
 
-### 6.5 建议验证
+### 7.6 建议验证
 
 ```bash
 uv run pytest -q \
@@ -211,13 +265,13 @@ uv run pytest -q \
 
 如果新增了 apply/integration 测试，需要把新文件一起跑，并至少覆盖一次 `--once` 非 dry-run 场景。
 
-### 6.6 窗口首条提示词
+### 7.7 窗口首条提示词
 
 ```text
 你现在在 /Users/happyzhao/Work/mujitask-wt-watchdog-apply-integration 上工作。先阅读 docs/dev/worktree-parallel-development-handoff.md 的 Worktree C 部分，目标是把 watchdog 从 dry-run/decision 层推进到真实 apply integration。优先用真实 runtime 记录构造候选，覆盖 retry/fail/repair 写回和幂等性验证，不要去改 outbox handler，也不要动 refresh/keyword workflow helper。
 ```
 
-## 7. 合并建议
+## 8. 合并建议
 
 建议合并顺序:
 
@@ -230,7 +284,7 @@ uv run pytest -q \
 - `workflow-common-helper` 改的是共享 runtime workflow 代码，后续其他 workflow 线容易踩到这部分。
 - `outbox-e2e` 和 `watchdog-apply-integration` 边界更独立，但都依赖当前 runtime lifecycle / supervisor 基座已经稳定。
 
-## 8. 主工作区职责
+## 9. 主工作区职责
 
 主工作区 `/Users/happyzhao/Work/mujitask` 继续作为集成区使用，负责:
 
