@@ -474,7 +474,8 @@ def _advance_insert_seed_rows(
                     }
                 ],
                 mapper_code="competitor_seed_projection_mapper",
-                write_mode="insert",
+                write_mode="insert_if_absent",
+                request_payload=request.payload,
                 candidate_key=candidate["candidate_key"],
                 business_entity_key=candidate["business_entity_key"],
             )
@@ -1140,7 +1141,7 @@ def _normalize_search_candidates(
         if not isinstance(row, Mapping):
             continue
         product_identity = _resolve_product_identity(row)
-        business_entity_key = str(
+        raw_entity_key = str(
             product_identity.get("product_id")
             or product_identity.get("normalized_product_url")
             or product_identity.get("product_url")
@@ -1148,6 +1149,7 @@ def _normalize_search_candidates(
             or row.get("candidate_key")
             or index
         )
+        business_entity_key = _product_business_entity_key(raw_entity_key)
         if not business_entity_key or business_entity_key in seen:
             continue
         candidate_context = {
@@ -1267,6 +1269,8 @@ def _derive_row_status(
         _record_effective_status(fact_job),
         _record_effective_status(write_job),
     ]
+    if seed_status == "skipped" and not any(status for status in statuses[1:]):
+        return "skipped"
     if "success" in {_record_effective_status(write_job), _record_effective_status(fact_job)} and "failed" not in statuses:
         return "success"
     if "success" in statuses or "partial_success" in statuses:
@@ -1456,6 +1460,10 @@ def _resolve_product_identity(row: Mapping[str, Any]) -> dict[str, Any]:
         or _extract_tiktok_product_id(normalized_product_url)
         or ""
     ).strip()
+    if not normalized_product_url and product_id:
+        normalized_product_url = _tiktok_product_url(product_id)
+    if not product_url and normalized_product_url:
+        product_url = normalized_product_url
     product_key = str(base.get("product_key") or row.get("product_key") or row.get("fastmoss_product_key") or "").strip()
     return {
         "product_id": product_id,
@@ -1469,17 +1477,34 @@ def _normalize_product_url(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return re.sub(r"[?#].*$", "", text)
+    normalized = re.sub(r"[?#].*$", "", text)
+    product_id = _extract_tiktok_product_id(normalized)
+    if product_id:
+        return _tiktok_product_url(product_id)
+    return normalized
 
 
 def _extract_tiktok_product_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    match = re.search(r"/(?:pdp|product)/(\d+)", text)
+    match = re.search(r"/(?:pdp|product|detail)/(\d+)", text)
     if match:
         return str(match.group(1))
     return ""
+
+
+def _product_business_entity_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("product:"):
+        return text
+    return f"product:{text}"
+
+
+def _tiktok_product_url(product_id: str) -> str:
+    return f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else ""
 
 
 def _asset_source(asset: Mapping[str, Any]) -> str:

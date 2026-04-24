@@ -226,6 +226,120 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert fields.get("价格") is None
 
 
+def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:
+    class FakeClient:
+        created: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_records(self, app_token, table_id, page_size=100, view_id=None):
+            return list(self.rows)
+
+        def create_record(self, app_token, table_id, fields):
+            record_id = f"rec-{len(self.rows) + 1}"
+            self.created.append({"record_id": record_id, "fields": dict(fields)})
+            self.rows.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.created = []
+    FakeClient.rows = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        request_id="req-keyword-seed",
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        mapper_code="competitor_seed_projection_mapper",
+        write_mode="insert_if_absent",
+        records=[
+            {
+                "product_id": "123456789",
+                "search_query": "water bottle",
+                "search_rank": 1,
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert result.result["target_record_ids"] == ["rec-1"]
+    assert FakeClient.created[0]["fields"] == {
+        "SKU-ID": "123456789",
+        "产品链接": {
+            "text": "https://www.tiktok.com/shop/pdp/123456789",
+            "link": "https://www.tiktok.com/shop/pdp/123456789",
+        },
+        "关键词": "water bottle",
+        "备注": "通过搜索关键字：water bottle",
+        "达人查找状态": "待查找",
+    }
+    assert result.result["records"][0]["op"] == "append"
+
+
+def test_competitor_seed_projection_mapper_skips_existing_product_without_rewrite(monkeypatch) -> None:
+    class FakeClient:
+        created: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_records(self, app_token, table_id, page_size=100, view_id=None):
+            return list(self.rows)
+
+        def create_record(self, app_token, table_id, fields):
+            self.created.append({"fields": dict(fields)})
+            raise AssertionError("existing keyword seed rows must not be recreated")
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            raise AssertionError("existing keyword seed rows must not be updated")
+
+    FakeClient.created = []
+    FakeClient.updated = []
+    FakeClient.rows = [
+        {
+            "record_id": "rec-existing",
+            "fields": {
+                "SKU-ID": "123456789",
+                "备注": "manual note",
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        request_id="req-keyword-seed",
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        mapper_code="competitor_seed_projection_mapper",
+        write_mode="insert_if_absent",
+        records=[
+            {
+                "product_id": "123456789",
+                "product_url": "https://www.fastmoss.com/zh/e-commerce/detail/123456789",
+                "search_query": "water bottle",
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "skipped"
+    assert FakeClient.created == []
+    assert FakeClient.updated == []
+    assert result.result["written_count"] == 0
+    assert result.result["skipped_count"] == 1
+    assert result.result["records"][0]["record_id"] == "rec-existing"
+    assert result.result["records"][0]["op"] == "skip_existing"
+
+
 def test_feishu_table_write_classifies_schema_missing_before_write(monkeypatch) -> None:
     class FakeClient:
         def __init__(self, access_token: str) -> None:

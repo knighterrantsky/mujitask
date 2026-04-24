@@ -169,6 +169,7 @@ def build_projection_write_payload(
     records: Iterable[Mapping[str, Any]],
     mapper_code: str,
     write_mode: str,
+    request_payload: Mapping[str, Any] | None = None,
     source_record_id: str = "",
     candidate_key: str = "",
     business_entity_key: str = "",
@@ -193,6 +194,8 @@ def build_projection_write_payload(
             ),
         }
     )
+    if request_payload:
+        payload["request_payload"] = _clone_value(request_payload)
     return payload
 
 

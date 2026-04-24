@@ -10,6 +10,7 @@ from automation_business_scaffold.business.handlers import (
     HandlerNextAction,
     HandlerResult,
     build_api_handler_registry,
+    build_bound_api_handler_registry,
     build_browser_handler_registry,
     register_api_handler,
     register_browser_handler,
@@ -380,6 +381,116 @@ def test_keyword_executor_integration_happy_path(
     assert status_payload["result"]["row_results"][0]["writeback_status"] == "success"
     assert status_payload["result"]["stage_summary"]["sync_media"]["total_count"] == 1
     assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 1
+
+
+def test_keyword_search_seed_e2e_writes_competitor_seed_row(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        created: list[dict[str, object]] = []
+        rows: list[dict[str, object]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_records(self, app_token, table_id, page_size=100, view_id=None):
+            return list(self.rows)
+
+        def create_record(self, app_token, table_id, fields):
+            record_id = f"rec-seed-{len(self.rows) + 1}"
+            self.created.append({"record_id": record_id, "fields": dict(fields)})
+            self.rows.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            raise AssertionError("keyword seed e2e should create new rows, not update existing rows")
+
+    FakeClient.created = []
+    FakeClient.rows = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        FakeClient,
+    )
+
+    registry = build_bound_api_handler_registry()
+
+    def fake_fastmoss_product_search(context: HandlerContext) -> HandlerResult:
+        _emit_progress(context, "fastmoss_product_search")
+        return HandlerResult.success(
+            context,
+            summary={"candidates": 1},
+            result={
+                "candidates": [
+                    {
+                        "product_id": PRODUCT_ID,
+                        "product_url": "https://www.fastmoss.com/zh/e-commerce/detail/123456789",
+                        "rank": 1,
+                        "title": "Water bottle",
+                    }
+                ],
+                "condition_context": {"normalized": True},
+            },
+        )
+
+    register_api_handler(registry, "fastmoss_product_search", fake_fastmoss_product_search, replace=True)
+    monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
+
+    submitted = _submit_keyword_request(
+        runtime_db_url,
+        seed_table_ref=SEED_TABLE_REF,
+        table_refs={
+            SEED_TABLE_REF: {
+                "app_token": "app-token",
+                "table_id": "tbl-token",
+                "view_id": "vew-token",
+                "access_token": "access-token",
+            }
+        },
+    )
+    request_id = str(submitted["request_id"])
+    worker_params = _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+
+    search_wait = runtime_orchestrator.execute_executor_once(worker_params)
+    assert search_wait["request_status"] == "waiting_children"
+    assert search_wait["current_stage"] == "search_product_candidates"
+
+    search_worker = runtime_orchestrator.execute_api_worker_once(worker_params)
+    assert search_worker["api_worker_job"]["job_code"] == "fastmoss_product_search"
+    assert search_worker["api_worker_job"]["status"] == "success"
+
+    seed_wait = runtime_orchestrator.execute_executor_once(worker_params)
+    assert seed_wait["request_status"] == "waiting_children"
+    assert seed_wait["current_stage"] == "insert_seed_rows"
+    seed_jobs = _stage_jobs(seed_wait, stage_code="insert_seed_rows", job_code="feishu_table_write")
+    assert len(seed_jobs) == 1
+    assert seed_jobs[0]["payload"]["mapper_code"] == "competitor_seed_projection_mapper"
+    assert seed_jobs[0]["payload"]["write_mode"] == "insert_if_absent"
+    assert seed_jobs[0]["payload"]["request_payload"]["table_refs"][SEED_TABLE_REF]["table_id"] == "tbl-token"
+
+    seed_worker = runtime_orchestrator.execute_api_worker_once(worker_params)
+    assert seed_worker["request_id"] == request_id
+    assert seed_worker["api_worker_job"]["job_code"] == "feishu_table_write"
+    assert seed_worker["api_worker_job"]["payload"]["stage_code"] == "insert_seed_rows"
+    assert seed_worker["api_worker_job"]["summary"]["written_count"] == 1
+    assert seed_worker["parent_updates"] == [
+        {
+            "request_id": request_id,
+            "stage_code": "insert_seed_rows",
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]
+    assert FakeClient.created[0]["fields"] == {
+        "SKU-ID": PRODUCT_ID,
+        "产品链接": {
+            "text": PRODUCT_URL,
+            "link": PRODUCT_URL,
+        },
+        "关键词": SEARCH_QUERY,
+        "备注": f"通过搜索关键字：{SEARCH_QUERY}",
+        "达人查找状态": "待查找",
+    }
 
 
 def test_keyword_executor_integration_browser_fallback_path(
