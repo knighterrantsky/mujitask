@@ -12,18 +12,29 @@ from automation_business_scaffold.business.flows.runtime_common import (
 )
 from automation_business_scaffold.business.workflow_defs import WorkflowDefinition
 from automation_business_scaffold.business.workflow_defs.execution_helpers import (
+    all_child_records as _all_child_records,
+    any_api_jobs_active as _any_api_jobs_active,
+    any_browser_executions_active as _any_browser_executions_active,
+    api_jobs_for_stage as _api_jobs_for_stage,
+    browser_executions_for_stage as _browser_executions_for_stage,
+    build_projection_record,
+    build_projection_write_payload,
+    build_stage_local_dedupe_key,
     compute_final_status,
     extract_effective_result_payload,
     extract_handler_result_status,
-    recover_stage_after_browser_summary_promotion,
+    has_active_records as _has_active_children,
+    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
+    stage_child_records as _stage_child_records,
+    summarize_stage_children,
     summarize_child_outcomes,
+    timeout_seconds_for_workflow as _timeout_seconds,
+    update_request_stage_cursor as _update_request_cursor,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
-ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
-ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
 OPTIONAL_FINAL_STATUS_CODES = ("tiktok_product_browser_fetch",)
 
 
@@ -99,7 +110,12 @@ def finalize_request(
         "seed_total_count": len(_seed_contexts(store=store, request_id=request.request_id)),
         "row_results": row_results,
         "stage_summary": {
-            stage.stage_code: _stage_summary(store=store, request_id=request.request_id, stage_code=stage.stage_code)
+            stage.stage_code: summarize_stage_children(
+                store,
+                request_id=request.request_id,
+                stage_code=stage.stage_code,
+                optional_codes=OPTIONAL_FINAL_STATUS_CODES,
+            )
             for stage in workflow.stages
             if stage.execution_mode == "worker_jobs"
         },
@@ -216,15 +232,13 @@ def _recover_stage_after_browser_summary_promotion(
     store: RuntimeStore,
     request_id: str,
 ) -> str:
-    return recover_stage_after_browser_summary_promotion(
+    return recover_browser_fallback_resume_stage(
+        store,
+        request_id=request_id,
         current_stage="ready_for_summary",
         summary_stage_code="ready_for_summary",
-        browser_records=_browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback"),
-        continuation_started=bool(_api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media"))
-        or bool(_api_jobs_for_stage(store=store, request_id=request_id, stage_code="persist_facts"))
-        or bool(_api_jobs_for_stage(store=store, request_id=request_id, stage_code="writeback_competitor_rows")),
+        continuation_stage_codes=("sync_media", "persist_facts", "writeback_competitor_rows"),
         continuation_candidate_ready=True,
-        resume_stage_code="browser_fallback",
     )
 
 
@@ -350,12 +364,11 @@ def _advance_insert_seed_rows(
         seed_table_ref = str(request.payload.get("seed_table_ref") or "")
         items: list[dict[str, Any]] = []
         for candidate in candidates:
-            payload = {
-                "stage_code": stage_code,
-                "candidate_key": candidate["candidate_key"],
-                "business_entity_key": candidate["business_entity_key"],
-                "target_table_ref": seed_table_ref,
-                "records": [
+            payload = build_projection_write_payload(
+                stage_code=stage_code,
+                request_id=request.request_id,
+                target_table_ref=seed_table_ref,
+                records=[
                     {
                         "business_entity_key": candidate["business_entity_key"],
                         "product_id": candidate.get("product_id") or "",
@@ -365,13 +378,11 @@ def _advance_insert_seed_rows(
                         "candidate_key": candidate["candidate_key"],
                     }
                 ],
-                "mapper_code": "competitor_seed_projection_mapper",
-                "write_mode": "insert",
-                "idempotency_context": {
-                    "request_id": request.request_id,
-                    "candidate_key": candidate["candidate_key"],
-                },
-            }
+                mapper_code="competitor_seed_projection_mapper",
+                write_mode="insert",
+                candidate_key=candidate["candidate_key"],
+                business_entity_key=candidate["business_entity_key"],
+            )
             keys = render_job_keys(
                 job_def,
                 request.payload,
@@ -386,7 +397,7 @@ def _advance_insert_seed_rows(
             items.append(
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": _job_dedupe_key(
+                    "dedupe_key": build_stage_local_dedupe_key(
                         keys["dedupe_key"],
                         job_def.job_code,
                         stage_scope=stage_code,
@@ -469,7 +480,7 @@ def _advance_dispatch_product_collection(
         tiktok_jobs.append(
             {
                 "business_key": tiktok_keys["business_key"],
-                "dedupe_key": _job_dedupe_key(tiktok_keys["dedupe_key"], tiktok_job_def.job_code),
+                "dedupe_key": build_stage_local_dedupe_key(tiktok_keys["dedupe_key"], tiktok_job_def.job_code),
                 "payload": tiktok_payload,
                 "max_execution_seconds": _timeout_seconds(workflow, tiktok_job_def.job_code),
             }
@@ -498,7 +509,7 @@ def _advance_dispatch_product_collection(
         fastmoss_jobs.append(
             {
                 "business_key": fastmoss_keys["business_key"],
-                "dedupe_key": _job_dedupe_key(fastmoss_keys["dedupe_key"], fastmoss_job_def.job_code),
+                "dedupe_key": build_stage_local_dedupe_key(fastmoss_keys["dedupe_key"], fastmoss_job_def.job_code),
                 "payload": fastmoss_payload,
                 "max_execution_seconds": _timeout_seconds(workflow, fastmoss_job_def.job_code),
             }
@@ -609,7 +620,7 @@ def _advance_browser_fallback(
             items.append(
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": _job_dedupe_key(
+                    "dedupe_key": build_stage_local_dedupe_key(
                         keys["dedupe_key"],
                         job_def.job_code,
                         stage_scope=stage_code,
@@ -682,7 +693,7 @@ def _advance_sync_media(
             items.append(
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": _job_dedupe_key(keys["dedupe_key"], job_def.job_code),
+                    "dedupe_key": build_stage_local_dedupe_key(keys["dedupe_key"], job_def.job_code),
                     "payload": payload,
                     "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
                 }
@@ -752,7 +763,7 @@ def _advance_persist_facts(
             items.append(
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": _job_dedupe_key(keys["dedupe_key"], job_def.job_code),
+                    "dedupe_key": build_stage_local_dedupe_key(keys["dedupe_key"], job_def.job_code),
                     "payload": payload,
                     "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
                 }
@@ -797,21 +808,17 @@ def _advance_writeback_competitor_rows(
         for candidate in candidates:
             seed_context = _seed_context_by_candidate_key(store=store, request_id=request.request_id).get(candidate["candidate_key"], {})
             source_record_id = str(seed_context.get("source_record_id") or candidate["candidate_key"])
-            payload = {
-                "stage_code": stage_code,
-                "candidate_key": candidate["candidate_key"],
-                "business_entity_key": candidate["business_entity_key"],
-                "source_record_id": source_record_id,
-                "target_table_ref": target_table_ref,
-                "records": [_build_writeback_projection(store=store, request_id=request.request_id, candidate_context=candidate)],
-                "mapper_code": "competitor_table_projection_mapper",
-                "write_mode": "upsert",
-                "idempotency_context": {
-                    "request_id": request.request_id,
-                    "candidate_key": candidate["candidate_key"],
-                    "source_record_id": source_record_id,
-                },
-            }
+            payload = build_projection_write_payload(
+                stage_code=stage_code,
+                request_id=request.request_id,
+                target_table_ref=target_table_ref,
+                records=[_build_writeback_projection(store=store, request_id=request.request_id, candidate_context=candidate)],
+                mapper_code="competitor_table_projection_mapper",
+                write_mode="upsert",
+                source_record_id=source_record_id,
+                candidate_key=candidate["candidate_key"],
+                business_entity_key=candidate["business_entity_key"],
+            )
             keys = render_job_keys(
                 job_def,
                 request.payload,
@@ -827,7 +834,7 @@ def _advance_writeback_competitor_rows(
             items.append(
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": _job_dedupe_key(keys["dedupe_key"], job_def.job_code),
+                    "dedupe_key": build_stage_local_dedupe_key(keys["dedupe_key"], job_def.job_code),
                     "payload": payload,
                     "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
                 }
@@ -1135,15 +1142,15 @@ def _build_writeback_projection(
     candidate_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     row_result = _build_row_result(store=store, request_id=request_id, candidate_context=candidate_context)
-    return {
-        "source_record_id": row_result["source_record_id"],
-        "candidate_key": row_result["candidate_key"],
-        "product_id": row_result["product_id"],
-        "product_url": str(candidate_context.get("normalized_product_url") or candidate_context.get("product_url") or ""),
-        "refresh_status": row_result["row_status"],
-        "request_id": request_id,
-        "details": row_result,
-    }
+    return build_projection_record(
+        request_id=request_id,
+        source_record_id=str(row_result["source_record_id"]),
+        candidate_key=str(row_result["candidate_key"]),
+        product_id=str(row_result["product_id"]),
+        product_url=str(candidate_context.get("normalized_product_url") or candidate_context.get("product_url") or ""),
+        refresh_status=str(row_result["row_status"]),
+        details=row_result,
+    )
 
 
 def _derive_row_status(
@@ -1191,47 +1198,6 @@ def _derive_final_status(*, row_results: list[dict[str, Any]], fallback_status: 
     if fallback_status in {"success", "partial_success", "failed"}:
         return fallback_status
     return "failed"
-
-
-def _stage_summary(store: RuntimeStore, *, request_id: str, stage_code: str) -> dict[str, Any]:
-    child_records = _stage_child_records(store=store, request_id=request_id, stage_code=stage_code)
-    outcome = summarize_child_outcomes(child_records, optional_codes=OPTIONAL_FINAL_STATUS_CODES)
-    return {
-        "total_count": int(outcome["total_count"]),
-        "terminal_count": int(outcome["terminal_count"]),
-        "active_count": int(outcome["active_count"]),
-        "statuses": dict(outcome["statuses"]),
-    }
-
-
-def _stage_child_records(store: RuntimeStore, *, request_id: str, stage_code: str) -> list[Any]:
-    return [
-        *_api_jobs_for_stage(store=store, request_id=request_id, stage_code=stage_code),
-        *_browser_executions_for_stage(store=store, request_id=request_id, stage_code=stage_code),
-    ]
-
-
-def _all_child_records(store: RuntimeStore, *, request_id: str) -> list[Any]:
-    return [
-        *store.list_api_worker_jobs_for_request(request_id=request_id),
-        *store.list_task_executions(request_id=request_id),
-    ]
-
-
-def _api_jobs_for_stage(store: RuntimeStore, *, request_id: str, stage_code: str) -> list[dict[str, Any]]:
-    return [
-        job
-        for job in store.list_api_worker_jobs_for_request(request_id=request_id)
-        if str((job.get("payload") or {}).get("stage_code") or "") == stage_code
-    ]
-
-
-def _browser_executions_for_stage(store: RuntimeStore, *, request_id: str, stage_code: str) -> list[Any]:
-    return [
-        execution
-        for execution in store.list_task_executions(request_id=request_id)
-        if str((execution.payload or {}).get("stage_code") or "") == stage_code
-    ]
 
 
 def _latest_candidate_job(
@@ -1341,32 +1307,6 @@ def _collect_warnings(row_results: list[dict[str, Any]]) -> list[str]:
     return warnings
 
 
-def _timeout_seconds(workflow: WorkflowDefinition, target_code: str) -> float:
-    for rule in workflow.timeout_policy:
-        if rule.target_code == target_code:
-            return float(rule.timeout_seconds)
-    return 0.0
-
-
-def _update_request_cursor(
-    *,
-    store: RuntimeStore,
-    request: Any,
-    stage_code: str,
-    payload: Mapping[str, Any],
-) -> None:
-    cursor = dict(request.stage_cursor or {})
-    stage_results = dict(cursor.get("stage_results") or {})
-    stage_results[stage_code] = dict(payload)
-    cursor["stage_results"] = stage_results
-    store.update_task_request(
-        request_id=request.request_id,
-        stage_cursor=cursor,
-        progress_stage=stage_code,
-        last_progress_at=time.time(),
-    )
-
-
 def _waiting(*, stage_code: str, message: str, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {
         "action": "waiting",
@@ -1385,20 +1325,6 @@ def _require_keyword_workflow() -> WorkflowDefinition:
 def _browser_resource_code(candidate: Mapping[str, Any]) -> str:
     business_key = str(candidate.get("business_entity_key") or candidate.get("candidate_key") or "")
     return f"tiktok_product:{business_key}" if business_key else ""
-
-
-def _job_dedupe_key(base_key: str, job_code: str, *, stage_scope: str = "") -> str:
-    normalized = str(base_key or "").strip()
-    suffix = str(job_code or "").strip()
-    stage_suffix = str(stage_scope or "").strip()
-    parts = [normalized] if normalized else []
-    if stage_suffix and not normalized.endswith(f":{stage_suffix}"):
-        parts.append(stage_suffix)
-    if suffix and not normalized.endswith(f":{suffix}"):
-        parts.append(suffix)
-    if parts:
-        return ":".join(part for part in parts if part)
-    return suffix
 
 
 def _search_digest(*, search_query: str, filters: Mapping[str, Any]) -> str:
@@ -1477,19 +1403,3 @@ def _minimal_seed_context(payload: Mapping[str, Any]) -> dict[str, Any]:
         "normalized_product_url": str(product_identity.get("normalized_product_url") or payload.get("normalized_product_url") or ""),
         "source_context": dict(payload.get("source_context") or {}),
     }
-
-
-def _any_api_jobs_active(jobs: list[dict[str, Any]]) -> bool:
-    return any(str(job.get("status") or "") in ACTIVE_API_JOB_STATUSES for job in jobs)
-
-
-def _any_browser_executions_active(executions: list[Any]) -> bool:
-    return any(str(execution.status or "") in ACTIVE_EXECUTION_STATUSES for execution in executions)
-
-
-def _has_active_children(records: list[Any]) -> bool:
-    for record in records:
-        status = _record_effective_status(record)
-        if status in ACTIVE_API_JOB_STATUSES or status in ACTIVE_EXECUTION_STATUSES:
-            return True
-    return False

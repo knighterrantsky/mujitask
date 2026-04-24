@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import asdict, is_dataclass
 from string import Formatter
 from typing import Any, Iterable, Mapping, TypeAlias
@@ -118,6 +119,83 @@ def render_job_keys(
     }
 
 
+def build_stage_local_dedupe_key(base_key: str, job_code: str, *, stage_scope: str = "") -> str:
+    normalized = str(base_key or "").strip()
+    suffix = str(job_code or "").strip()
+    stage_suffix = str(stage_scope or "").strip()
+    parts = [normalized] if normalized else []
+    if stage_suffix and not normalized.endswith(f":{stage_suffix}"):
+        parts.append(stage_suffix)
+    if suffix and not normalized.endswith(f":{suffix}"):
+        parts.append(suffix)
+    if parts:
+        return ":".join(part for part in parts if part)
+    return suffix
+
+
+def build_projection_record(
+    *,
+    request_id: str,
+    source_record_id: str,
+    product_id: str,
+    product_url: str,
+    refresh_status: str,
+    details: Mapping[str, Any],
+    candidate_key: str = "",
+    extra_fields: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = {"source_record_id": str(source_record_id or "")}
+    if candidate_key:
+        record["candidate_key"] = str(candidate_key)
+    record.update(
+        {
+            "product_id": str(product_id or ""),
+            "product_url": str(product_url or ""),
+            "refresh_status": str(refresh_status or ""),
+            "request_id": str(request_id or ""),
+            "details": _clone_value(details),
+        }
+    )
+    if extra_fields:
+        record.update({str(key): _clone_value(value) for key, value in extra_fields.items()})
+    return record
+
+
+def build_projection_write_payload(
+    *,
+    stage_code: str,
+    request_id: str,
+    target_table_ref: str,
+    records: Iterable[Mapping[str, Any]],
+    mapper_code: str,
+    write_mode: str,
+    source_record_id: str = "",
+    candidate_key: str = "",
+    business_entity_key: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"stage_code": str(stage_code or "")}
+    if candidate_key:
+        payload["candidate_key"] = str(candidate_key)
+    if business_entity_key:
+        payload["business_entity_key"] = str(business_entity_key)
+    if source_record_id:
+        payload["source_record_id"] = str(source_record_id)
+    payload.update(
+        {
+            "target_table_ref": str(target_table_ref or ""),
+            "records": [_clone_value(record) for record in records],
+            "mapper_code": str(mapper_code or ""),
+            "write_mode": str(write_mode or ""),
+            "idempotency_context": _build_idempotency_context(
+                request_id=request_id,
+                candidate_key=candidate_key,
+                source_record_id=source_record_id,
+            ),
+        }
+    )
+    return payload
+
+
 def extract_handler_result(record_or_payload: RecordLike) -> dict[str, Any]:
     payload = _as_dict(record_or_payload)
     direct = payload.get("handler_result")
@@ -202,6 +280,30 @@ def recover_stage_after_browser_summary_promotion(
     if continuation_started:
         return ""
     return resume_stage_code if continuation_candidate_ready else ""
+
+
+def recover_browser_fallback_resume_stage(
+    store: Any,
+    *,
+    request_id: str,
+    current_stage: str,
+    summary_stage_code: str,
+    continuation_stage_codes: Iterable[str],
+    continuation_candidate_ready: bool,
+    browser_stage_code: str = "browser_fallback",
+    resume_stage_code: str = "browser_fallback",
+) -> str:
+    return recover_stage_after_browser_summary_promotion(
+        current_stage=current_stage,
+        summary_stage_code=summary_stage_code,
+        browser_records=stage_child_records(store, request_id=request_id, stage_code=browser_stage_code),
+        continuation_started=any(
+            stage_child_records(store, request_id=request_id, stage_code=stage_code)
+            for stage_code in continuation_stage_codes
+        ),
+        continuation_candidate_ready=continuation_candidate_ready,
+        resume_stage_code=resume_stage_code,
+    )
 
 
 def is_fallback_required(record_or_payload: RecordLike) -> bool:
@@ -352,6 +454,102 @@ def compute_final_status(
     return _coerce_final_status(candidate, allowed_statuses)
 
 
+def api_jobs_for_stage(store: Any, *, request_id: str, stage_code: str) -> list[dict[str, Any]]:
+    return [
+        job
+        for job in store.list_api_worker_jobs_for_request(request_id=request_id)
+        if str((job.get("payload") or {}).get("stage_code") or "") == stage_code
+    ]
+
+
+def browser_executions_for_stage(store: Any, *, request_id: str, stage_code: str) -> list[Any]:
+    return [
+        execution
+        for execution in store.list_task_executions(request_id=request_id)
+        if str((execution.payload or {}).get("stage_code") or "") == stage_code
+    ]
+
+
+def stage_child_records(store: Any, *, request_id: str, stage_code: str) -> list[Any]:
+    return [
+        *api_jobs_for_stage(store, request_id=request_id, stage_code=stage_code),
+        *browser_executions_for_stage(store, request_id=request_id, stage_code=stage_code),
+    ]
+
+
+def all_child_records(store: Any, *, request_id: str) -> list[Any]:
+    return [
+        *store.list_api_worker_jobs_for_request(request_id=request_id),
+        *store.list_task_executions(request_id=request_id),
+    ]
+
+
+def summarize_stage_children(
+    store: Any,
+    *,
+    request_id: str,
+    stage_code: str,
+    optional_codes: Iterable[str] = (),
+) -> dict[str, Any]:
+    outcome = summarize_child_outcomes(
+        stage_child_records(store, request_id=request_id, stage_code=stage_code),
+        optional_codes=optional_codes,
+    )
+    return {
+        "total_count": int(outcome["total_count"]),
+        "terminal_count": int(outcome["terminal_count"]),
+        "active_count": int(outcome["active_count"]),
+        "statuses": dict(outcome["statuses"]),
+    }
+
+
+def any_api_jobs_active(jobs: Iterable[RecordLike]) -> bool:
+    return any(_record_status(job) in _ACTIVE_RECORD_STATUSES for job in jobs)
+
+
+def any_browser_executions_active(executions: Iterable[RecordLike]) -> bool:
+    return any(_record_status(execution) in _ACTIVE_RECORD_STATUSES for execution in executions)
+
+
+def has_active_records(records: Iterable[RecordLike]) -> bool:
+    return any(record_effective_status(record) in _ACTIVE_RECORD_STATUSES for record in records)
+
+
+def record_effective_status(record_or_payload: RecordLike) -> str:
+    record = _as_dict(record_or_payload)
+    if record:
+        return _effective_outcome_status(record)
+    status = str(getattr(record_or_payload, "status", "") or "")
+    handler_status = extract_handler_result_status(getattr(record_or_payload, "result", {}) or {})
+    return handler_status or status
+
+
+def timeout_seconds_for_workflow(workflow: Any, target_code: str) -> float:
+    for rule in workflow.timeout_policy:
+        if rule.target_code == target_code:
+            return float(rule.timeout_seconds)
+    return 0.0
+
+
+def update_request_stage_cursor(
+    *,
+    store: Any,
+    request: Any,
+    stage_code: str,
+    payload: Mapping[str, Any],
+) -> None:
+    cursor = dict(request.stage_cursor or {})
+    stage_results = dict(cursor.get("stage_results") or {})
+    stage_results[stage_code] = dict(payload)
+    cursor["stage_results"] = stage_results
+    store.update_task_request(
+        request_id=request.request_id,
+        stage_cursor=cursor,
+        progress_stage=stage_code,
+        last_progress_at=time.time(),
+    )
+
+
 def allowed_final_statuses(summary_policy: SummaryPolicy) -> tuple[str, ...]:
     ordered: list[str] = []
     for rule in summary_policy.rules:
@@ -398,6 +596,15 @@ def _deep_merge_dict(target: dict[str, Any], incoming: Mapping[str, Any]) -> Non
             target[key] = tuple(_clone_value(item) for item in value)
             continue
         target[key] = value
+
+
+def _build_idempotency_context(*, request_id: str, candidate_key: str, source_record_id: str) -> dict[str, str]:
+    context = {"request_id": str(request_id or "")}
+    if candidate_key:
+        context["candidate_key"] = str(candidate_key)
+    if source_record_id:
+        context["source_record_id"] = str(source_record_id)
+    return context
 
 
 def _clone_value(value: Any) -> Any:
@@ -537,6 +744,13 @@ def _record_code(record: Mapping[str, Any]) -> str:
     )
 
 
+def _record_status(record_or_payload: RecordLike) -> str:
+    record = _as_dict(record_or_payload)
+    if record:
+        return str(record.get("status") or "")
+    return str(getattr(record_or_payload, "status", "") or "")
+
+
 def _record_sort_key(record: Mapping[str, Any], *, index: int) -> tuple[float, float, float, int]:
     return (
         _coerce_float(record.get("finished_at")),
@@ -576,14 +790,25 @@ class _DefaultTemplateValues(dict[str, str]):
 
 __all__ = [
     "allowed_final_statuses",
+    "all_child_records",
+    "any_api_jobs_active",
+    "any_browser_executions_active",
+    "api_jobs_for_stage",
+    "browser_executions_for_stage",
+    "build_projection_record",
+    "build_projection_write_payload",
+    "build_stage_local_dedupe_key",
     "build_template_context",
     "compute_final_status",
     "extract_effective_result_payload",
     "extract_effective_summary_payload",
     "extract_handler_result",
     "extract_handler_result_status",
+    "has_active_records",
     "is_fallback_required",
     "merge_stage_contexts",
+    "record_effective_status",
+    "recover_browser_fallback_resume_stage",
     "recover_stage_after_browser_summary_promotion",
     "render_job_keys",
     "render_key_template",
@@ -592,5 +817,9 @@ __all__ = [
     "select_latest_successful_browser_execution",
     "select_latest_successful_browser_execution_result",
     "select_latest_successful_record",
+    "stage_child_records",
+    "summarize_stage_children",
     "summarize_child_outcomes",
+    "timeout_seconds_for_workflow",
+    "update_request_stage_cursor",
 ]
