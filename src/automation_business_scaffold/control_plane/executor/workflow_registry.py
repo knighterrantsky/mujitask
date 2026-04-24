@@ -43,18 +43,18 @@ class WorkflowRuntimeModule(Protocol):
 
 WORKFLOW_RUNTIME_MODULES = {
     PRODUCT_INGEST_TASK_CODE: (
-        "automation_business_scaffold.domains.competitor_intelligence.flows."
+        "automation_business_scaffold.domains.tiktok.flows."
         "tiktok_fastmoss_product_ingest"
     ),
     REFRESH_TASK_CODE: (
-        "automation_business_scaffold.domains.competitor_intelligence.flows."
+        "automation_business_scaffold.domains.tiktok.flows."
         "refresh_current_competitor_table"
     ),
     INFLUENCER_POOL_TASK_CODE: (
-        "automation_business_scaffold.domains.competitor_intelligence.flows.sync_tk_influencer_pool"
+        "automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool"
     ),
     KEYWORD_TASK_CODE: (
-        "automation_business_scaffold.domains.competitor_intelligence.flows."
+        "automation_business_scaffold.domains.tiktok.flows."
         "search_keyword_competitor_products"
     ),
 }

@@ -1,7 +1,7 @@
 """Legacy workflow reference package.
 
 Runtime workflow builders live in
-``automation_business_scaffold.domains.competitor_intelligence.workflows``.
+``automation_business_scaffold.domains.tiktok.workflows``.
 Historical workflow references remain in the local ``achieve`` package.
 """
 

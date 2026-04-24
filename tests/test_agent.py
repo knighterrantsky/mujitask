@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from automation_business_scaffold.agent import app
+from automation_business_scaffold.apps.rpc_agent.server import app
 
 
 def test_agent_lists_current_tasks():

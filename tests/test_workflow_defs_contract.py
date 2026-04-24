@@ -11,7 +11,7 @@ WORKFLOW_DEFS_ROOT = (
     / "src"
     / "automation_business_scaffold"
     / "domains"
-    / "competitor_intelligence"
+    / "tiktok"
     / "workflows"
 )
 JOBS_ROOT = (
@@ -19,7 +19,7 @@ JOBS_ROOT = (
     / "src"
     / "automation_business_scaffold"
     / "domains"
-    / "competitor_intelligence"
+    / "tiktok"
     / "jobs"
 )
 OFFICIAL_WORKFLOW_CODES = (
@@ -124,7 +124,7 @@ def test_runtime_job_modules_exist_and_point_to_job_definitions() -> None:
             problems.append(f"{job_code}: missing module")
             continue
         module = importlib.import_module(
-            f"automation_business_scaffold.domains.competitor_intelligence.jobs.{job_code}"
+            f"automation_business_scaffold.domains.tiktok.jobs.{job_code}"
         )
         job_definition = getattr(module, "JOB_DEFINITION", None)
         if getattr(job_definition, "job_code", "") != job_code:

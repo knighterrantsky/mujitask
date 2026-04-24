@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
-TASKS_ROOT = SRC_ROOT / "domains" / "competitor_intelligence" / "tasks"
+TASKS_ROOT = SRC_ROOT / "domains" / "tiktok" / "tasks"
 TASKS_INIT = TASKS_ROOT / "__init__.py"
 REGISTRY_MODULE = SRC_ROOT / "registry.py"
 OFFICIAL_TASK_CODES = (
@@ -61,11 +61,11 @@ def _load_registry_module(default_tasks: list[object]):
 
     fake_root = ModuleType("automation_business_scaffold")
     fake_domains = ModuleType("automation_business_scaffold.domains")
-    fake_domain = ModuleType("automation_business_scaffold.domains.competitor_intelligence")
-    fake_tasks = ModuleType("automation_business_scaffold.domains.competitor_intelligence.tasks")
+    fake_domain = ModuleType("automation_business_scaffold.domains.tiktok")
+    fake_tasks = ModuleType("automation_business_scaffold.domains.tiktok.tasks")
     fake_tasks.DEFAULT_TASKS = default_tasks
     fake_domain.tasks = fake_tasks
-    fake_domains.competitor_intelligence = fake_domain
+    fake_domains.tiktok = fake_domain
     fake_root.domains = fake_domains
 
     module_names = (
@@ -73,8 +73,8 @@ def _load_registry_module(default_tasks: list[object]):
         "automation_framework.core",
         "automation_business_scaffold",
         "automation_business_scaffold.domains",
-        "automation_business_scaffold.domains.competitor_intelligence",
-        "automation_business_scaffold.domains.competitor_intelligence.tasks",
+        "automation_business_scaffold.domains.tiktok",
+        "automation_business_scaffold.domains.tiktok.tasks",
     )
     previous = {name: sys.modules.get(name) for name in module_names}
     sys.modules.update(
@@ -83,8 +83,8 @@ def _load_registry_module(default_tasks: list[object]):
             "automation_framework.core": fake_framework_core,
             "automation_business_scaffold": fake_root,
             "automation_business_scaffold.domains": fake_domains,
-            "automation_business_scaffold.domains.competitor_intelligence": fake_domain,
-            "automation_business_scaffold.domains.competitor_intelligence.tasks": fake_tasks,
+            "automation_business_scaffold.domains.tiktok": fake_domain,
+            "automation_business_scaffold.domains.tiktok.tasks": fake_tasks,
         }
     )
 

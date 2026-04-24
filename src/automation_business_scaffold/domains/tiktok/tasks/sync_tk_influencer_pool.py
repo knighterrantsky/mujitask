@@ -5,7 +5,7 @@ from automation_framework.runtime import WorkflowSpec
 from automation_business_scaffold.control_plane.executor.runner import (
     run_sync_tk_influencer_pool_request,
 )
-from automation_business_scaffold.domains.competitor_intelligence.workflows import build_sync_tk_influencer_pool_workflow
+from automation_business_scaffold.domains.tiktok.workflows import build_sync_tk_influencer_pool_workflow
 
 from automation_business_scaffold.contracts.workflow import RuntimeTaskShell
 

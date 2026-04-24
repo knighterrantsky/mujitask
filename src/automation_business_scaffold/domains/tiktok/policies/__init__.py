@@ -1,4 +1,4 @@
-from automation_business_scaffold.domains.competitor_intelligence.policies.workflow_policies import (
+from automation_business_scaffold.domains.tiktok.policies.workflow_policies import (
     DEFAULT_CONTRACT_REVISION,
     STANDARD_ERROR_CONTRACT,
     STANDARD_SUMMARY_CONTRACT,

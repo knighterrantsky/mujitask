@@ -6,11 +6,11 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-from automation_business_scaffold.business.handlers import HandlerContext
-from automation_business_scaffold.business.handlers.api import build_bound_api_handler_registry
-from automation_business_scaffold.business.handlers.api.implementations import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_search_handler import (
     fastmoss_product_search_handler,
 )
+from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
 
 
@@ -219,7 +219,7 @@ def test_fastmoss_product_search_fetches_live_pages_with_one_session(monkeypatch
             return {"has_fd_tk": True, "cookie_count": 1}
 
     monkeypatch.setattr(
-        "automation_business_scaffold.business.handlers.api.implementations.FastMossHTTPSession",
+        "automation_business_scaffold.capabilities.fact_sources.fastmoss.product_search_handler.FastMossHTTPSession",
         FakeFastMossSession,
     )
 

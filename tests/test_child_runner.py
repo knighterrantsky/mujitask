@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 
-from automation_business_scaffold.business.flows.child_runner import ChildRunner, ChildRunnerConfig
-from automation_business_scaffold.business.handlers.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunner, ChildRunnerConfig
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 
 
 def _build_context() -> HandlerContext:

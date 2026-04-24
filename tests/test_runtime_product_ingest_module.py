@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from automation_business_scaffold.business.flows.runtime_common import PRODUCT_INGEST_TASK_CODE
-from automation_business_scaffold.business.flows.runtime_product_ingest import (
+from automation_business_scaffold.control_plane.runtime_config.settings import PRODUCT_INGEST_TASK_CODE
+from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest import (
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
 )
-from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_records import (
     RuntimeTaskExecutionRecord,
     RuntimeTaskRequestRecord,

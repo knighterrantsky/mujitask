@@ -3,22 +3,24 @@ from typing import Iterable
 
 import pytest
 
-from automation_business_scaffold.business.flows import runtime_orchestrator
-from automation_business_scaffold.business.flows.runtime_sync_tk_influencer_pool import (
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
     COLLECT_CREATOR_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
     READ_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
     WRITE_POOL_STAGE_CODE,
 )
-from automation_business_scaffold.business.handlers import (
-    HandlerContext,
-    HandlerError,
-    HandlerResult,
+from automation_business_scaffold.contracts.handler.api import (
     build_api_handler_registry,
     register_api_handler,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.contracts.handler.contract import (
+    HandlerContext,
+    HandlerError,
+    HandlerResult,
+)
+from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 

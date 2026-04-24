@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import time
 
-from automation_business_scaffold.business.flows.child_runner import ChildRunnerConfig
-from automation_business_scaffold.business.flows.execution_supervisor import (
+from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
+from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
     ExecutionSupervisorCallbacks,
     run_supervised_handler,
 )
-from automation_business_scaffold.business.handlers.contract import HandlerContext, HandlerError, HandlerResult
-from automation_business_scaffold.business.handlers.registry import HandlerInvocationContractError
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerError, HandlerResult
+from automation_business_scaffold.contracts.handler.registry import HandlerInvocationContractError
 
 
 def _build_context() -> HandlerContext:

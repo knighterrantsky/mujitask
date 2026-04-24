@@ -10,7 +10,7 @@ from automation_business_scaffold.contracts.workflow import (
     optional_field,
     required_field,
 )
-from automation_business_scaffold.domains.competitor_intelligence.jobs import (
+from automation_business_scaffold.domains.tiktok.jobs import (
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
 

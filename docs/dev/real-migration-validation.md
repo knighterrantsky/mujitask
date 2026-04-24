@@ -22,8 +22,8 @@ The check fails on:
 - A present `src/automation_business_scaffold/capabilities/_implementations`
   directory.
 - Legacy domain aggregate modules such as
-  `domains/competitor_intelligence/mappers/feishu_source_adapters.py` and
-  `domains/competitor_intelligence/projections/feishu_projection_mappers.py`.
+  `domains/tiktok/mappers/feishu_source_adapters.py` and
+  `domains/tiktok/projections/feishu_projection_mappers.py`.
   Specific mapper/projection modules must own the implementation; `registry.py`
   is only for lookup by stable code.
 - Imports from `automation_business_scaffold.business.*` in the runtime main

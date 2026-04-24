@@ -11,8 +11,8 @@ from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
     map_fastmoss_video_goods,
     map_fastmoss_video_overview,
 )
-from automation_business_scaffold.business.handlers.api.registry import build_bound_api_handler_registry
-from automation_business_scaffold.business.handlers.contract import HandlerContext
+from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService

@@ -5,10 +5,11 @@ from typing import Any
 
 import pytest
 
-import automation_business_scaffold.business.feishu_common as feishu_common
-import automation_business_scaffold.business.handlers.api.implementations as api_impl
-from automation_business_scaffold.business.flows import runtime_orchestrator
-from automation_business_scaffold.business.flows.runtime_sync_tk_influencer_pool import (
+import automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler as creator_fetch_impl
+import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler as product_fetch_impl
+import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
     COLLECT_CREATOR_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
     PERSIST_FACTS_STAGE_CODE,
@@ -16,7 +17,7 @@ from automation_business_scaffold.business.flows.runtime_sync_tk_influencer_pool
     WRITEBACK_STAGE_CODE,
     WRITE_POOL_STAGE_CODE,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
@@ -358,7 +359,8 @@ def _bind_fake_business_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, An
             }
 
     monkeypatch.setattr(feishu_common, "FeishuBitableClient", FakeFeishuBitableClient)
-    monkeypatch.setattr(api_impl, "FastMossHTTPSession", FakeFastMossHTTPSession)
+    monkeypatch.setattr(product_fetch_impl, "FastMossHTTPSession", FakeFastMossHTTPSession)
+    monkeypatch.setattr(creator_fetch_impl, "FastMossHTTPSession", FakeFastMossHTTPSession)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)
     return state
 

@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_competitor_row_mapper import (
+from automation_business_scaffold.domains.tiktok.mappers.feishu_competitor_row_mapper import (
     competitor_table_source_adapter,
 )
-from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_influencer_source_mapper import (
+from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_source_mapper import (
     influencer_pool_source_adapter,
 )
-from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_selection_row_mapper import (
+from automation_business_scaffold.domains.tiktok.mappers.feishu_selection_row_mapper import (
     selection_table_source_adapter,
 )
 

@@ -209,7 +209,7 @@ agent_artifacts/skills/competitor-refresh/
   run_refresh_step.sh
   skill.env.example
 
-src/{project}/domains/competitor_intelligence/
+src/{project}/domains/tiktok/
   tasks/refresh_competitor_table.py
   workflows/refresh_competitor_table.py
   jobs/read_competitor_rows.py

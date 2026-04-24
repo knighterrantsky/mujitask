@@ -12,7 +12,7 @@ from automation_business_scaffold.control_plane.reconciler.views import (
     build_request_view_fragment,
     summarize_child_status_counts,
 )
-from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_effective_result_payload,
     extract_handler_result_status,

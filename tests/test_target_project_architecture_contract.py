@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "target-project-architecture-contract.md"
 PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
-DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "competitor_intelligence"
+DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "tiktok"
 
 
 def _read(path: Path) -> str:
@@ -299,7 +299,7 @@ def test_agent_artifact_boundary() -> None:
     assert missing == [], "agent artifact boundary contract is missing tokens:\n" + "\n".join(missing)
 
 
-def test_competitor_intelligence_domain_structure() -> None:
+def test_tiktok_domain_structure() -> None:
     required_dirs = (
         "tasks",
         "workflows",
@@ -310,7 +310,7 @@ def test_competitor_intelligence_domain_structure() -> None:
         "policies",
     )
     missing_dirs = [path for path in required_dirs if not (DOMAIN_ROOT / path).is_dir()]
-    assert missing_dirs == [], "competitor_intelligence domain dirs are missing:\n" + "\n".join(missing_dirs)
+    assert missing_dirs == [], "tiktok domain dirs are missing:\n" + "\n".join(missing_dirs)
 
     required_files = (
         "tasks/refresh_current_competitor_table.py",
@@ -330,12 +330,12 @@ def test_competitor_intelligence_domain_structure() -> None:
         "policies/workflow_policies.py",
     )
     missing_files = [path for path in required_files if not (DOMAIN_ROOT / path).is_file()]
-    assert missing_files == [], "competitor_intelligence domain files are missing:\n" + "\n".join(
+    assert missing_files == [], "tiktok domain files are missing:\n" + "\n".join(
         missing_files
     )
 
 
-def test_competitor_intelligence_domain_files_must_not_reexport_business_modules() -> None:
+def test_tiktok_domain_files_must_not_reexport_business_modules() -> None:
     domain_files = [
         path
         for path in DOMAIN_ROOT.rglob("*.py")

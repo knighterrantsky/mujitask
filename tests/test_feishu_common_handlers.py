@@ -4,8 +4,8 @@ from typing import Any
 
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
-from automation_business_scaffold.domains.competitor_intelligence.projections.registry import PROJECTION_MAPPER_CODES
-from automation_business_scaffold.domains.competitor_intelligence.mappers.registry import SOURCE_ADAPTER_CODES
+from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
+from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 
@@ -97,7 +97,7 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
             }
 
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -149,7 +149,7 @@ def test_feishu_table_write_upsert_is_idempotent_on_upsert_key(monkeypatch) -> N
     FakeClient.updated = []
     FakeClient.rows = []
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -205,7 +205,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
 
     FakeClient.updated = []
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -263,7 +263,7 @@ def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch)
     FakeClient.created = []
     FakeClient.rows = []
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -329,7 +329,7 @@ def test_competitor_seed_projection_mapper_skips_existing_product_without_rewrit
         }
     ]
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -366,7 +366,7 @@ def test_feishu_table_write_classifies_schema_missing_before_write(monkeypatch) 
             return [{"field_name": "SKU-ID"}]
 
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(
@@ -399,7 +399,7 @@ def test_feishu_table_read_classifies_rate_limit_as_retryable(monkeypatch) -> No
             raise FeishuAPIError("too many requests", status=429, code=1254290)
 
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
     payload = _table_payload(source_table_ref="feishu://mujitask/TK竞品收集")

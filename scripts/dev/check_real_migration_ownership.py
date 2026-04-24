@@ -26,8 +26,8 @@ LEGACY_ROOT_ENTRYPOINT_MODULES = frozenset(
 )
 LEGACY_DOMAIN_AGGREGATE_FILES = frozenset(
     {
-        Path("domains/competitor_intelligence/mappers/feishu_source_adapters.py"),
-        Path("domains/competitor_intelligence/projections/feishu_projection_mappers.py"),
+        Path("domains/tiktok/mappers/feishu_source_adapters.py"),
+        Path("domains/tiktok/projections/feishu_projection_mappers.py"),
     }
 )
 

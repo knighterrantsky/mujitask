@@ -7,11 +7,10 @@ from typing import Any
 import pytest
 import requests
 
-from automation_business_scaffold.business.flows import runtime_orchestrator
-from automation_business_scaffold.business.handlers import HandlerContext
-from automation_business_scaffold.business.handlers.outbox import (
-    implementations as outbox_implementations,
-)
+import automation_business_scaffold.control_plane.executor.runner as _runtime_runner  # noqa: F401
+import automation_business_scaffold.control_plane.outbox.dispatcher as runtime_orchestrator
+import automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler as outbox_implementations
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 

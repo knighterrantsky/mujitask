@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from automation_business_scaffold.business.flows.runtime_search_keyword_competitor_products import (
+from automation_business_scaffold.domains.tiktok.flows.search_keyword_competitor_products import (
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
 )
-from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 TASK_CODE = "search_keyword_competitor_products"

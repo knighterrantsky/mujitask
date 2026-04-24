@@ -1594,7 +1594,7 @@ def _waiting(*, stage_code: str, message: str, details: Mapping[str, Any] | None
 
 
 def _require_keyword_workflow() -> WorkflowDefinition:
-    from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+    from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     return get_workflow_definition(KEYWORD_TASK_CODE)
 

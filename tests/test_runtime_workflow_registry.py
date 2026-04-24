@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from automation_business_scaffold.business.flows.runtime_common import (
+from automation_business_scaffold.control_plane.runtime_config.settings import (
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
     REFRESH_TASK_CODE,
 )
-from automation_business_scaffold.business.flows.runtime_orchestrator import _resolve_workflow_runtime
-from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
+from automation_business_scaffold.control_plane.executor.runner import _resolve_workflow_runtime
+from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 
 
 def test_product_ingest_runtime_can_resolve_to_module_or_safe_fallback() -> None:

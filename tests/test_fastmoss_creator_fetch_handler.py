@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from automation_business_scaffold.business.handlers import (
-    HandlerContext,
-    build_bound_api_handler_registry,
-)
-from automation_business_scaffold.business.handlers.api.implementations import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler import (
     fastmoss_creator_fetch_handler,
 )
+from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
+from automation_business_scaffold.contracts.handler.contract import HandlerContext
 
 
 def _context(payload: dict) -> HandlerContext:

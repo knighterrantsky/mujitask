@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from typing import Any, Mapping
 
-from automation_business_scaffold import watchdog_scanner as watchdog_cli
-from automation_business_scaffold.business.flows.watchdog_scanner import (
+watchdog_cli = import_module("automation_business_scaffold.apps.daemons.watchdog.main")
+from automation_business_scaffold.control_plane.watchdog.scanner import (
     EXECUTION_TIMEOUT_RULE,
     LEASE_EXPIRED_RULE,
     OUTBOX_SENDING_TIMEOUT_RULE,

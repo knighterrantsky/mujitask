@@ -5,16 +5,22 @@ import time
 
 import pytest
 
-from automation_business_scaffold.business.flows import runtime_orchestrator
-from automation_business_scaffold.business.handlers import (
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+import automation_business_scaffold.control_plane.outbox.dispatcher as outbox_dispatcher
+from automation_business_scaffold.control_plane.executor.looping import build_child_runner_config
+from automation_business_scaffold.contracts.handler.api import (
+    build_api_handler_registry,
+    register_api_handler,
+)
+from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerResult,
-    build_api_handler_registry,
+)
+from automation_business_scaffold.contracts.handler.outbox import (
     build_outbox_handler_registry,
-    register_api_handler,
     register_outbox_handler,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.tiktok_fastmoss_product_ingest import (
+from automation_business_scaffold.domains.tiktok.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -97,15 +103,14 @@ def test_outbox_dispatcher_runs_through_execution_supervisor(
         summary={"final_status": "success"},
         result={"normalized_product_result": {"product_id": "123"}},
     )
-    runtime_orchestrator.ensure_request_outbox(store=store, request_id=request_id)
+    outbox_dispatcher.ensure_request_outbox(store=store, request_id=request_id)
 
     registry = build_outbox_handler_registry()
 
     register_outbox_handler(registry, "outbox_dispatch", _fake_outbox_dispatch_with_progress)
-    monkeypatch.setattr(runtime_orchestrator, "build_outbox_handler_registry", lambda: registry, raising=False)
-    monkeypatch.setattr(runtime_orchestrator, "OUTBOX_HANDLER_REGISTRY", registry, raising=False)
+    monkeypatch.setattr(outbox_dispatcher, "OUTBOX_HANDLER_REGISTRY", registry, raising=False)
 
-    payload = runtime_orchestrator.dispatch_outbox_once(_runtime_params(runtime_db_url))
+    payload = outbox_dispatcher.dispatch_outbox_once(_runtime_params(runtime_db_url))
 
     assert payload["request_id"] == request_id
     assert payload["channel_code"] == "feishu"
@@ -138,14 +143,13 @@ def test_outbox_dispatcher_can_use_child_process_runner(
         summary={"final_status": "success"},
         result={"normalized_product_result": {"product_id": "123"}},
     )
-    runtime_orchestrator.ensure_request_outbox(store=store, request_id=request_id)
+    outbox_dispatcher.ensure_request_outbox(store=store, request_id=request_id)
 
     registry = build_outbox_handler_registry()
     register_outbox_handler(registry, "outbox_dispatch", _fake_outbox_dispatch_with_progress)
-    monkeypatch.setattr(runtime_orchestrator, "build_outbox_handler_registry", lambda: registry, raising=False)
-    monkeypatch.setattr(runtime_orchestrator, "OUTBOX_HANDLER_REGISTRY", registry, raising=False)
+    monkeypatch.setattr(outbox_dispatcher, "OUTBOX_HANDLER_REGISTRY", registry, raising=False)
 
-    payload = runtime_orchestrator.dispatch_outbox_once(
+    payload = outbox_dispatcher.dispatch_outbox_once(
         _runtime_params(
             runtime_db_url,
             execution_child_runner_mode="child_process",
@@ -160,19 +164,19 @@ def test_outbox_dispatcher_can_use_child_process_runner(
 
 
 def test_runtime_workers_default_to_child_process_with_record_timeout() -> None:
-    api_config = runtime_orchestrator._build_child_runner_config(
+    api_config = build_child_runner_config(
         {},
         worker_type="api_worker",
         handler_code="fastmoss_product_fetch",
         runtime_timeout_seconds=240.0,
     )
-    browser_config = runtime_orchestrator._build_child_runner_config(
+    browser_config = build_child_runner_config(
         {},
         worker_type="browser_worker",
         handler_code="tiktok_product_browser_fetch",
         runtime_timeout_seconds=600.0,
     )
-    outbox_config = runtime_orchestrator._build_child_runner_config(
+    outbox_config = build_child_runner_config(
         {},
         worker_type="outbox_dispatcher",
         handler_code="outbox_dispatch",
@@ -190,7 +194,7 @@ def test_runtime_workers_default_to_child_process_with_record_timeout() -> None:
 
 
 def test_runtime_child_process_policy_allows_explicit_inline_override() -> None:
-    config = runtime_orchestrator._build_child_runner_config(
+    config = build_child_runner_config(
         {"execution_child_runner_mode": "inline"},
         worker_type="browser_worker",
         handler_code="tiktok_product_browser_fetch",
@@ -201,7 +205,7 @@ def test_runtime_child_process_policy_allows_explicit_inline_override() -> None:
 
 
 def test_runtime_child_process_policy_allows_explicit_timeout_override() -> None:
-    config = runtime_orchestrator._build_child_runner_config(
+    config = build_child_runner_config(
         {
             "execution_child_runner_mode": "child_process",
             "execution_child_timeout_seconds": 1.5,

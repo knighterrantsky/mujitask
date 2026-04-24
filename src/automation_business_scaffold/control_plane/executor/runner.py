@@ -35,7 +35,7 @@ from automation_business_scaffold.control_plane.supervisor.execution_supervisor 
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
-from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}

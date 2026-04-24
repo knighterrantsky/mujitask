@@ -1520,7 +1520,7 @@ def _waiting(*, stage_code: str, message: str, details: Mapping[str, Any] | None
 
 
 def _require_refresh_workflow(task_code: str) -> WorkflowDefinition:
-    from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+    from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     workflow = get_workflow_definition(task_code)
     if workflow.workflow_code != REFRESH_TASK_CODE:

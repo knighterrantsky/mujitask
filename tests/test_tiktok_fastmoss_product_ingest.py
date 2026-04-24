@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from automation_business_scaffold.domains.competitor_intelligence.tasks.tiktok_fastmoss_product_ingest import (
+from automation_business_scaffold.domains.tiktok.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
-from automation_business_scaffold.cli import run_registered_task
+from automation_business_scaffold.apps.cli.main import run_registered_task
 
 
 DIRECT_PRODUCT_ID = "123"

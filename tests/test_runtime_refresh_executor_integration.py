@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import pytest
 
-from automation_business_scaffold.business.flows import runtime_orchestrator
-from automation_business_scaffold.business.flows.runtime_workflow_registry import load_workflow_runtime
-from automation_business_scaffold.business.handlers import (
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
+from automation_business_scaffold.contracts.handler.api import (
+    build_api_handler_registry,
+    register_api_handler,
+)
+from automation_business_scaffold.contracts.handler.browser import (
+    build_browser_handler_registry,
+    register_browser_handler,
+)
+from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerError,
     HandlerNextAction,
     HandlerResult,
-    build_api_handler_registry,
-    build_browser_handler_registry,
-    register_api_handler,
-    register_browser_handler,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.refresh_current_competitor_table import (
+from automation_business_scaffold.domains.tiktok.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
@@ -474,7 +478,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     ]
     FakeFeishuClient.updated = []
     monkeypatch.setattr(
-        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeFeishuClient,
     )
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)

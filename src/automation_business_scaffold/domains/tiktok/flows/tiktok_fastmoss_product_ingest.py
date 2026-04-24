@@ -11,7 +11,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     build_outbox_message_text,
 )
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
-from automation_business_scaffold.domains.competitor_intelligence.workflows import get_workflow_definition
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}

@@ -134,13 +134,13 @@ handler-to-handler 实现复用禁止规则:
 调用方必须导入真实模块路径，例如:
 
 ```python
-from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_competitor_row_mapper import map_competitor_row
+from automation_business_scaffold.domains.tiktok.mappers.feishu_competitor_row_mapper import map_competitor_row
 ```
 
 禁止依赖包级入口，例如:
 
 ```python
-from automation_business_scaffold.domains.competitor_intelligence.mappers import map_competitor_row
+from automation_business_scaffold.domains.tiktok.mappers import map_competitor_row
 ```
 
 ## 6. Legacy Business 路径边界

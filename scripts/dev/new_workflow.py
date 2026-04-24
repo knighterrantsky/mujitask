@@ -65,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(__file__).resolve().parents[2],
     )
-    parser.add_argument("--domain", required=True, help="Business domain code, e.g. competitor_intelligence.")
+    parser.add_argument("--domain", required=True, help="Business domain code, e.g. tiktok.")
     parser.add_argument("--workflow-code", required=True, help="Workflow code in snake_case.")
     parser.add_argument("--task-code", default="", help="Task code. Defaults to workflow-code.")
     parser.add_argument("--skill-code", required=True, help="Agent skill code owning the user entrypoint.")

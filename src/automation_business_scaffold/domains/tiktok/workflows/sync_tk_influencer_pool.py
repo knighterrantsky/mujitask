@@ -3,7 +3,7 @@ from __future__ import annotations
 from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
-from automation_business_scaffold.domains.competitor_intelligence.jobs import (
+from automation_business_scaffold.domains.tiktok.jobs import (
     FACT_BUNDLE_UPSERT_JOB,
     FASTMOSS_CREATOR_FETCH_JOB,
     FASTMOSS_PRODUCT_FETCH_JOB,
@@ -11,7 +11,7 @@ from automation_business_scaffold.domains.competitor_intelligence.jobs import (
     FEISHU_TABLE_WRITE_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
-from automation_business_scaffold.domains.competitor_intelligence.policies import (
+from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
     STANDARD_ERROR_CONTRACT,
     STANDARD_SUMMARY_CONTRACT,

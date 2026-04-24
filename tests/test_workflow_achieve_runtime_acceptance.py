@@ -11,16 +11,17 @@ from automation_business_scaffold.acceptance import (
     build_runtime_acceptance_artifacts,
     compare_achieve_payload,
 )
-import automation_business_scaffold.business.feishu_common as feishu_common
-from automation_business_scaffold.business.flows import runtime_orchestrator
-import automation_business_scaffold.business.handlers.api.implementations as api_impl
-from automation_business_scaffold.domains.competitor_intelligence.tasks.refresh_current_competitor_table import (
+import automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler as creator_fetch_impl
+import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler as product_fetch_impl
+import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+from automation_business_scaffold.domains.tiktok.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.search_keyword_competitor_products import (
+from automation_business_scaffold.domains.tiktok.tasks.search_keyword_competitor_products import (
     SearchKeywordCompetitorProductsTask,
 )
-from automation_business_scaffold.domains.competitor_intelligence.tasks.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -402,7 +403,8 @@ def test_sync_tk_influencer_pool_runtime_matches_achieve_acceptance(
     )
     state.seed_table(INFLUENCER_POOL_TABLE, [])
     _bind_fake_feishu(monkeypatch, state)
-    monkeypatch.setattr(api_impl, "FastMossHTTPSession", _FakeFastMossHTTPSession)
+    monkeypatch.setattr(product_fetch_impl, "FastMossHTTPSession", _FakeFastMossHTTPSession)
+    monkeypatch.setattr(creator_fetch_impl, "FastMossHTTPSession", _FakeFastMossHTTPSession)
 
     submitted = SyncTKInfluencerPoolTask().run_runtime_request(
         _runtime_params(

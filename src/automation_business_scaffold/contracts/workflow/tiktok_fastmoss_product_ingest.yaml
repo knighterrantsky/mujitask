@@ -1,18 +1,18 @@
 schema_version: 1
 workflow_origin: migrated_existing
 workflow_code: tiktok_fastmoss_product_ingest
-domain: competitor_intelligence
+domain: tiktok
 agent_artifact:
   skill_code: mujitask-tiktok-feishu-sync
   path: skills/mujitask-tiktok-feishu-sync
   status: legacy_skills_directory
 task:
   code: tiktok_fastmoss_product_ingest
-  module: automation_business_scaffold.domains.competitor_intelligence.tasks.tiktok_fastmoss_product_ingest
+  module: automation_business_scaffold.domains.tiktok.tasks.tiktok_fastmoss_product_ingest
   exports:
     - TikTokFastMossProductIngestTask
 workflow:
-  module: automation_business_scaffold.domains.competitor_intelligence.workflows.tiktok_fastmoss_product_ingest
+  module: automation_business_scaffold.domains.tiktok.workflows.tiktok_fastmoss_product_ingest
   definition_export: build_tiktok_fastmoss_product_ingest_definition
   runtime_export: build_tiktok_fastmoss_product_ingest_workflow
   exports:
@@ -20,11 +20,11 @@ workflow:
 custom_logic:
   mappers:
     - code: selection_table_source_adapter
-      module: automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_selection_row_mapper
+      module: automation_business_scaffold.domains.tiktok.mappers.feishu_selection_row_mapper
       export: selection_table_source_adapter
   policies:
     - code: ingest_workflow_policies
-      module: automation_business_scaffold.domains.competitor_intelligence.policies.workflow_policies
+      module: automation_business_scaffold.domains.tiktok.policies.workflow_policies
       exports:
         - ingest_idempotency_rules
         - single_product_timeout_rules
@@ -32,7 +32,7 @@ custom_logic:
         - notification_summary_policy
   projections:
     - code: selection_table_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_selection_projection
+      module: automation_business_scaffold.domains.tiktok.projections.feishu_selection_projection
       export: selection_table_projection_mapper
 outbox:
   job_code: task_completed_notification
@@ -44,7 +44,7 @@ outbox:
     export: outbox_dispatch_handler
 jobs:
   - code: feishu_table_read
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.feishu_table_read
+    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_read
     handler_code: feishu_table_read
     capability:
       role: input_source
@@ -55,7 +55,7 @@ jobs:
       mappers:
         - selection_table_source_adapter
   - code: tiktok_product_request_fetch
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.tiktok_product_request_fetch
+    module: automation_business_scaffold.domains.tiktok.jobs.tiktok_product_request_fetch
     handler_code: tiktok_product_request_fetch
     capability:
       role: fact_source
@@ -63,7 +63,7 @@ jobs:
       module: automation_business_scaffold.capabilities.fact_sources.tiktok.product_request_fetch_handler
       export: tiktok_product_request_fetch_handler
   - code: fastmoss_product_fetch
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.fastmoss_product_fetch
+    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_product_fetch
     handler_code: fastmoss_product_fetch
     capability:
       role: fact_source
@@ -71,7 +71,7 @@ jobs:
       module: automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler
       export: fastmoss_product_fetch_handler
   - code: tiktok_product_browser_fetch
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.tiktok_product_browser_fetch
+    module: automation_business_scaffold.domains.tiktok.jobs.tiktok_product_browser_fetch
     handler_code: tiktok_product_browser_fetch
     capability:
       role: browser
@@ -79,7 +79,7 @@ jobs:
       module: automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler
       export: tiktok_product_browser_fetch_handler
   - code: media_asset_sync
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.media_asset_sync
+    module: automation_business_scaffold.domains.tiktok.jobs.media_asset_sync
     handler_code: media_asset_sync
     capability:
       role: media
@@ -87,7 +87,7 @@ jobs:
       module: automation_business_scaffold.capabilities.media.asset_sync_handler
       export: media_asset_sync_handler
   - code: fact_bundle_upsert
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.fact_bundle_upsert
+    module: automation_business_scaffold.domains.tiktok.jobs.fact_bundle_upsert
     handler_code: fact_bundle_upsert
     capability:
       role: persistence
@@ -95,7 +95,7 @@ jobs:
       module: automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler
       export: fact_bundle_upsert_handler
   - code: feishu_table_write
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.feishu_table_write
+    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_write
     handler_code: feishu_table_write
     capability:
       role: channel
@@ -106,7 +106,7 @@ jobs:
       projections:
         - selection_table_projection_mapper
   - code: task_completed_notification
-    module: automation_business_scaffold.domains.competitor_intelligence.jobs.task_completed_notification
+    module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification
     handler_code: outbox_dispatch
     capability:
       role: channel

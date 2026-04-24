@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from automation_business_scaffold.business.flows.watchdog_scanner import (
+from automation_business_scaffold.control_plane.watchdog.scanner import (
     EXECUTION_TIMEOUT_RULE,
     LEASE_EXPIRED_RULE,
     OUTBOX_SENDING_TIMEOUT_RULE,
