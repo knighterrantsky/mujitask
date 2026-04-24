@@ -48,6 +48,9 @@ DEFAULT_INFLUENCER_RECORD_TIME_FIELD_NAME = "记录时间"
 DEFAULT_INFLUENCER_DUPLICATE_CHECK_FIELD_NAME = "检查达人名称是否重复"
 
 DEFAULT_EXCLUDED_WRITABLE_FIELD_NAMES = {DEFAULT_INFLUENCER_DUPLICATE_CHECK_FIELD_NAME}
+CONTACT_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+CONTACT_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+CONTACT_PHONE_RE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 
 
 @dataclass
@@ -127,21 +130,77 @@ def format_influencer_contacts(raw_contact_payload: Any) -> str:
     seen_names: set[str] = set()
 
     for item in contact_items:
-        if not isinstance(item, Mapping):
+        formatted = _format_influencer_contact_item(item)
+        if not formatted:
             continue
-        if not _is_truthy(item.get("has")):
-            continue
-
-        channel_name = str(item.get("name") or item.get("channel_name") or item.get("id") or "").strip()
+        channel_name = formatted.split(":", 1)[0]
         if not channel_name or channel_name in seen_names:
             continue
-        contact_value = _first_non_empty(item.get("link"), item.get("channel_name"), item.get("id"))
-        if not contact_value:
-            continue
         seen_names.add(channel_name)
-        lines.append(f"{channel_name}:{contact_value}")
+        lines.append(formatted)
 
     return "\n".join(lines)
+
+
+def format_first_influencer_contact(raw_contact_payload: Any) -> str:
+    for item in _extract_contact_items(raw_contact_payload):
+        formatted = _format_influencer_contact_item(item)
+        if formatted:
+            return formatted
+    return ""
+
+
+def _format_influencer_contact_item(item: Any) -> str:
+    if not isinstance(item, Mapping):
+        return ""
+    if not _is_truthy(item.get("has")):
+        return ""
+
+    channel_name = str(item.get("name") or item.get("channel_name") or item.get("id") or "").strip()
+    if not channel_name:
+        return ""
+    channel_key = channel_name.strip().lower()
+    contact_value = _extract_contact_value_for_channel(item, channel_key=channel_key)
+    if not contact_value:
+        return ""
+    return f"{channel_name}:{contact_value}"
+
+
+def _extract_contact_value_for_channel(item: Mapping[str, Any], *, channel_key: str) -> str:
+    if channel_key == "email":
+        return _extract_first_email(_first_non_empty(item.get("id"), item.get("channel_name"), item.get("link")))
+
+    if channel_key == "bio":
+        raw_text = _first_non_empty(item.get("link"), item.get("channel_name"), item.get("value"), item.get("text"))
+        return _extract_contactable_text(raw_text)
+
+    for key in ("link", "id", "channel_name", "value", "text"):
+        value = str(item.get(key) or "").strip()
+        if not value or value.lower() == channel_key:
+            continue
+        return value
+    return ""
+
+
+def _extract_contactable_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    url_match = CONTACT_URL_RE.search(text)
+    if url_match:
+        return url_match.group(0).rstrip(".,;")
+    email = _extract_first_email(text)
+    if email:
+        return email
+    phone_match = CONTACT_PHONE_RE.search(text)
+    if phone_match:
+        return phone_match.group(0).strip()
+    return ""
+
+
+def _extract_first_email(value: Any) -> str:
+    match = CONTACT_EMAIL_RE.search(str(value or ""))
+    return match.group(0) if match else ""
 
 
 def prepare_remote_attachment_field(
