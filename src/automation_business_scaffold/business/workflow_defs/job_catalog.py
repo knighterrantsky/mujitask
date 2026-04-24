@@ -351,6 +351,7 @@ def influencer_timeout_rules() -> tuple[TimeoutRule, ...]:
         TimeoutRule("feishu_table_read", 180, "Competitor candidate reads should finish quickly."),
         TimeoutRule("fastmoss_product_fetch", 300, "Related creator discovery timeout."),
         TimeoutRule("fastmoss_creator_fetch", 300, "Creator detail fetch timeout."),
+        TimeoutRule("fact_bundle_upsert", 180, "Influencer fact persistence timeout."),
         TimeoutRule("feishu_table_write", 180, "Influencer pool and competitor status write timeout."),
     )
 
