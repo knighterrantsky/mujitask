@@ -101,6 +101,7 @@ def map_fastmoss_goods_author(
         for video_row in _extract_rows(row, "videos", "video_list", "aweme_list"):
             video = _video_from_mapping(video_row, creator=creator, product_id=row_product_id)
             _append(result["videos"], video)
+            _append(result["relations"]["creator_videos"], _creator_video_relation(creator, video, video_row))
             _append_media(result, _video_media(video, video_row))
     return result
 
@@ -132,6 +133,7 @@ def map_fastmoss_goods_video(
         _append(result["videos"], video)
         _append(result["relations"]["product_shops"], _product_shop_relation(product, shop))
         _append(result["relations"]["creator_products"], _creator_product_relation(creator, row_product_id, row))
+        _append(result["relations"]["creator_videos"], _creator_video_relation(creator, video, row))
         _append(result["relations"]["shop_creators"], _shop_creator_relation(shop, creator, row))
         _append_media(result, _product_media(product, row))
         _append_media(result, _creator_media(creator, row))
@@ -235,6 +237,33 @@ def map_fastmoss_author_shop_list(
     return result
 
 
+def map_fastmoss_author_goods_list(
+    payload: Mapping[str, Any],
+    *,
+    uid: str = "",
+    creator_id: str = "",
+    unique_id: str = "",
+) -> FactMapping:
+    data = extract_fastmoss_data(payload)
+    result = _empty_mapping()
+    creator = _creator_from_mapping({"uid": uid, "unique_id": unique_id}, fallback_creator_id=creator_id, fallback_uid=uid)
+    _append(result["creators"], creator)
+    for row in _extract_rows(data, "list", "product_list", "goods_list"):
+        nested_shop = _as_mapping(row.get("shop") or row.get("shop_info"))
+        shop = _shop_from_mapping({**row, **nested_shop})
+        product = _product_from_mapping(row, shop=shop)
+        relation = _creator_product_relation(creator, product.get("product_id"), row)
+        if relation:
+            relation["sale_amount"] = row.get("sale_amount")
+            relation["commission_rate"] = row.get("commission_rate")
+        _append(result["products"], product)
+        _append(result["shops"], shop)
+        _append(result["relations"]["creator_products"], relation)
+        _append(result["relations"]["product_shops"], _product_shop_relation(product, shop, row))
+        _append_media(result, _product_media(product, row))
+    return result
+
+
 def map_fastmoss_author_video_list(
     payload: Mapping[str, Any],
     *,
@@ -249,6 +278,7 @@ def map_fastmoss_author_video_list(
     for row in _extract_rows(data, "list"):
         video = _video_from_mapping(row, creator=creator)
         _append(result["videos"], video)
+        _append(result["relations"]["creator_videos"], _creator_video_relation(creator, video, row))
         _append_media(result, _video_media(video, row))
         for product in _products_from_product_info(row.get("product_info")):
             _append(result["products"], product)
@@ -439,8 +469,10 @@ def _product_from_mapping(
         return {}
     shop_name = _first_non_empty(
         payload.get("shop_name"),
+        payload.get("shop_title"),
         payload.get("seller_name"),
         shop_payload.get("shop_name"),
+        shop_payload.get("shop_title"),
         shop_payload.get("name"),
     )
     seller_id = _first_non_empty(
@@ -481,6 +513,7 @@ def _shop_from_mapping(
     )
     shop_name = _first_non_empty(
         row.get("shop_name"),
+        row.get("shop_title"),
         row.get("seller_name"),
         row.get("name"),
         fallback_shop_name,
@@ -552,6 +585,7 @@ def _video_from_mapping(
     creator_id = _first_non_empty(payload.get("creator_id"), creator_payload.get("creator_id"), unique_id)
     return {
         "video_id": video_id,
+        "creator_key": _creator_key({"creator_id": creator_id, "uid": uid, "unique_id": unique_id}),
         "creator_id": creator_id,
         "uid": uid,
         "unique_id": unique_id,
@@ -631,6 +665,27 @@ def _shop_creator_relation(
         "creator_id": _first_non_empty(creator.get("creator_id"), creator.get("unique_id")),
         "uid": _first_non_empty(creator.get("uid")),
         "unique_id": _first_non_empty(creator.get("unique_id")),
+        "metadata": {"raw": dict(metadata_source or {})},
+    }
+
+
+def _creator_video_relation(
+    creator: Mapping[str, Any],
+    video: Mapping[str, Any],
+    metadata_source: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    creator_key = _creator_key(creator)
+    video_id = _first_non_empty(video.get("video_id"))
+    if not creator_key or not video_id:
+        return {}
+    return {
+        "creator_key": creator_key,
+        "creator_id": _first_non_empty(creator.get("creator_id"), creator.get("unique_id")),
+        "uid": _first_non_empty(creator.get("uid")),
+        "unique_id": _first_non_empty(creator.get("unique_id")),
+        "video_key": f"video:{video_id}",
+        "video_id": video_id,
+        "source_platform": "fastmoss",
         "metadata": {"raw": dict(metadata_source or {})},
     }
 

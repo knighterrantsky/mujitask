@@ -9,6 +9,7 @@ from .implementations import (
     fact_bundle_upsert_handler,
     feishu_table_read_handler,
     feishu_table_write_handler,
+    fastmoss_creator_fetch_handler,
     fastmoss_product_fetch_handler,
     fastmoss_product_search_handler,
     media_asset_sync_handler,
@@ -22,6 +23,7 @@ BOUND_API_HANDLERS = MappingProxyType(
         "tiktok_product_request_fetch": tiktok_product_request_fetch_handler,
         "fastmoss_product_search": fastmoss_product_search_handler,
         "fastmoss_product_fetch": fastmoss_product_fetch_handler,
+        "fastmoss_creator_fetch": fastmoss_creator_fetch_handler,
         "media_asset_sync": media_asset_sync_handler,
         "fact_bundle_upsert": fact_bundle_upsert_handler,
     }
