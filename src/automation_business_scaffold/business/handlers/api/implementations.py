@@ -163,6 +163,13 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
         "failed_count": failed_count,
     }
     if failed_count <= 0:
+        if written_count <= 0 and skipped_count > 0:
+            return skipped_result(
+                context,
+                summary=summary,
+                result=write_result,
+                warnings=("All Feishu write records were skipped.",),
+            )
         return success_result(context, summary=summary, result=write_result)
 
     partial_allowed = coerce_bool(coerce_mapping(payload.get("write_policy")).get("partial_success_allowed"), default=True)

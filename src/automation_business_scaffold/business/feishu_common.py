@@ -268,6 +268,22 @@ def execute_write_records(
             continue
 
         try:
+            op = _text(command.get("op"))
+            upsert_key = _mapping(command.get("upsert_key"))
+            if op in {"insert_if_absent", "create_if_absent"} and upsert_key:
+                existing_id = _find_existing_record_id(client, target, upsert_key)
+                if existing_id:
+                    skipped_count += 1
+                    result_records.append(
+                        _write_result_record(
+                            command,
+                            status="skipped",
+                            record_id=existing_id,
+                            op="skip_existing",
+                            message="existing_record",
+                        )
+                    )
+                    continue
             raw_result, target_record_id, effective_op = _execute_one_write(client, target, command)
         except Exception as exc:
             failed_count += 1
@@ -714,19 +730,33 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
 
 def _map_competitor_seed_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     product_id = _first_non_empty(record.get("product_id"), _extract_product_id(record.get("product_url")))
-    product_url = _normalize_product_url(record.get("product_url"))
+    product_url = _normalize_product_url(
+        _first_non_empty(record.get("product_url"), f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else "")
+    )
     search_query = _text(record.get("search_query"))
     fields = {
         "SKU-ID": product_id,
         "产品链接": _link_value(product_url),
+        "关键词": search_query,
         "备注": f"通过搜索关键字：{search_query}" if search_query else "",
         "达人查找状态": "待查找",
     }
+    upsert_key = (
+        {"field": "SKU-ID", "value": product_id}
+        if product_id
+        else {"field": "产品链接", "value": product_url}
+    )
     return _normalize_write_record(
         {
-            "op": "upsert",
-            "business_entity_key": _first_non_empty(record.get("business_entity_key"), _candidate_key({"product_id": product_id, "product_url": product_url})),
-            "upsert_key": {"field": "SKU-ID", "value": product_id},
+            "op": "insert_if_absent",
+            "business_entity_key": _candidate_key(
+                {
+                    "product_id": product_id,
+                    "business_entity_key": record.get("business_entity_key"),
+                    "product_url": product_url,
+                }
+            ),
+            "upsert_key": upsert_key,
             "fields": fields,
             "source_context": _source_context_from_record(record, payload),
         },
@@ -1114,6 +1144,10 @@ def _execute_one_write(
         raw = client.update_record(target.app_token, target.table_id, record_id, fields)
         return raw, record_id, "update"
 
+    if op in {"insert_if_absent", "create_if_absent"}:
+        raw = client.create_record(target.app_token, target.table_id, fields)
+        return raw, _response_record_id(raw), "append"
+
     raw = client.create_record(target.app_token, target.table_id, fields)
     return raw, _response_record_id(raw), "append"
 
@@ -1235,8 +1269,18 @@ def _identity_matches(identity: Mapping[str, Any], target: Mapping[str, Any]) ->
 
 def _candidate_key(identity: Any) -> str:
     item = _mapping(identity)
-    value = _first_non_empty(item.get("product_id"), item.get("normalized_product_url"), item.get("product_url"))
+    value = _first_non_empty(
+        item.get("product_id"),
+        _strip_product_key_prefix(item.get("business_entity_key")),
+        item.get("normalized_product_url"),
+        item.get("product_url"),
+    )
     return f"product:{value}" if value else ""
+
+
+def _strip_product_key_prefix(value: Any) -> str:
+    text = _text(value)
+    return text.removeprefix("product:") if text.startswith("product:") else text
 
 
 def _extract_product_id(*values: Any) -> str:
