@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from ..allowlist import API_HANDLER_CODES, API_HANDLER_CONTRACTS
+from ..allowlist import API_HANDLER_CODES as API_HANDLER_CODES, API_HANDLER_CONTRACTS
 from ..contract import HandlerCallable
 from ..registry import HandlerRegistry, RegisteredHandler
 from .implementations import (
@@ -10,6 +10,7 @@ from .implementations import (
     feishu_table_read_handler,
     feishu_table_write_handler,
     fastmoss_product_fetch_handler,
+    fastmoss_product_search_handler,
     media_asset_sync_handler,
     tiktok_product_request_fetch_handler,
 )
@@ -19,6 +20,7 @@ BOUND_API_HANDLERS = MappingProxyType(
         "feishu_table_read": feishu_table_read_handler,
         "feishu_table_write": feishu_table_write_handler,
         "tiktok_product_request_fetch": tiktok_product_request_fetch_handler,
+        "fastmoss_product_search": fastmoss_product_search_handler,
         "fastmoss_product_fetch": fastmoss_product_fetch_handler,
         "media_asset_sync": media_asset_sync_handler,
         "fact_bundle_upsert": fact_bundle_upsert_handler,

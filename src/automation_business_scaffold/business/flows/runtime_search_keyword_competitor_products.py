@@ -252,16 +252,70 @@ def _advance_search_product_candidates(
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     job_def = workflow.require_job("fastmoss_product_search")
     if not jobs:
-        search_query = str(request.payload.get("search_query") or "").strip()
+        search_query = str(
+            request.payload.get("search_query")
+            or request.payload.get("search_keyword")
+            or request.payload.get("keyword")
+            or ""
+        ).strip()
         filters = dict(request.payload.get("filters") or {})
+        output_conditions = dict(request.payload.get("output_conditions") or {})
+        sales_7d_threshold = str(request.payload.get("sales_7d_threshold") or "").strip()
+        if sales_7d_threshold:
+            business_conditions = dict(output_conditions.get("business_conditions") or {})
+            business_conditions.setdefault("min_day7_sold_count", sales_7d_threshold)
+            output_conditions["business_conditions"] = business_conditions
+        max_candidates = _positive_int_param(
+            request.payload.get("max_candidates") or output_conditions.get("max_candidates"),
+            20,
+        )
         payload = {
             "stage_code": stage_code,
+            "search_mode": "keyword",
+            "keyword": search_query,
             "search_query": search_query,
             "filters": filters,
-            "limit": int(request.payload.get("max_candidates") or 20),
-            "condition_context": dict(request.payload.get("output_conditions") or {}),
+            "limit": max_candidates,
+            "condition_context": output_conditions,
+            "output_conditions": output_conditions,
+            "sort": {
+                "field": "day7_sold_count",
+                "direction": "desc",
+                "source_order": str(request.payload.get("fastmoss_search_order") or "2,2"),
+            },
+            "pagination": {
+                "page": _positive_int_param(request.payload.get("fastmoss_search_page"), 1),
+                "page_size": _positive_int_param(request.payload.get("fastmoss_search_page_size"), 10),
+                "max_pages": _positive_int_param(request.payload.get("fastmoss_search_max_pages"), 50),
+                "stop_when_no_new_product": True,
+            },
+            "session_policy": {
+                "require_login": True,
+                "degraded_preview_allowed": _bool_param(
+                    request.payload.get("degraded_preview_allowed"),
+                    False,
+                ),
+            },
+            "raw_capture_policy": {"store_raw_response": True},
             "search_digest": _search_digest(search_query=search_query, filters=filters),
         }
+        fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
+        if fastmoss_settings:
+            payload["fastmoss"] = fastmoss_settings
+        for source_key, target_key in (
+            ("execution_control_artifact_root", "artifact_root"),
+            ("execution_control_artifact_bucket", "artifact_bucket"),
+            ("execution_control_artifact_store_provider", "artifact_store_provider"),
+            ("execution_control_artifact_object_prefix", "artifact_object_prefix"),
+            ("execution_control_minio_endpoint", "minio_endpoint"),
+            ("execution_control_minio_access_key", "minio_access_key"),
+            ("execution_control_minio_secret_key", "minio_secret_key"),
+            ("execution_control_minio_region", "minio_region"),
+            ("execution_control_minio_secure", "minio_secure"),
+            ("execution_control_minio_create_bucket", "minio_create_bucket"),
+        ):
+            if request.payload.get(source_key) not in (None, ""):
+                payload[target_key] = request.payload.get(source_key)
         keys = render_job_keys(
             job_def,
             request.payload,
@@ -310,6 +364,47 @@ def _advance_search_product_candidates(
         "next_stage": "process_product_candidates",
         "details": {"raw_candidate_count": len(candidates)},
     }
+
+
+def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = dict(request_payload.get("fastmoss") or {}) if isinstance(request_payload.get("fastmoss"), Mapping) else {}
+    for source_key, target_key in (
+        ("fastmoss_phone", "phone"),
+        ("fastmoss_password", "password"),
+        ("fastmoss_phone_env", "phone_env"),
+        ("fastmoss_password_env", "password_env"),
+        ("fastmoss_base_url", "base_url"),
+        ("region", "region"),
+        ("fastmoss_timeout", "timeout"),
+        ("browser_cookies", "browser_cookies"),
+    ):
+        value = request_payload.get(source_key)
+        if value not in (None, "", [], {}):
+            settings.setdefault(target_key, value)
+    settings.setdefault("live_fetch", True)
+    settings.setdefault("ensure_logged_in", True)
+    return {key: value for key, value in settings.items() if value not in (None, "", [], {})}
+
+
+def _positive_int_param(value: Any, default: int) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _bool_param(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def _advance_process_product_candidates(
