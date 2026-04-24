@@ -1,6 +1,6 @@
 # OpenClaw Skills
 
-更新时间：`2026-04-14`
+更新时间：`2026-04-24`
 
 状态：开发/集成说明。本文描述 OpenClaw skill 的集成边界、入口脚本和调试口径；客户需求以 `docs/business` 为准，系统架构以 `docs/arch` 为准。
 
@@ -89,6 +89,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 - 如果用户没有明确给出 `7日销量阈值`，默认使用 `200`
 - `TABLE_URL`、`FEISHU_ACCESS_TOKEN`、`BROWSER_PROFILE_REF`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
+- Runtime DB / MinIO 默认配置来自项目自动加载的 `scripts/execution_control/executor.local.env`
 - 不在对话中向用户索取这些部署级配置
 
 ## 5. 当前输出契约

@@ -6,6 +6,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+from automation_business_scaffold.project_env import bootstrap_project_env
+
+bootstrap_project_env()
+
 config = context.config
 
 if config.config_file_name is not None:

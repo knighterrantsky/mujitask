@@ -1,6 +1,6 @@
 # Dev 文档索引
 
-更新时间: 2026-04-23
+更新时间: 2026-04-24
 
 本目录用于承载开发、调试、集成、本地验证和代码维护相关文档。
 
@@ -23,6 +23,8 @@
 | --- | --- |
 | [documentation-change-policy.md](./documentation-change-policy.md) | 代码实现时哪些文档可同步修改、哪些需要确认、哪些不应修改 |
 | [openclaw-skills.md](./openclaw-skills.md) | OpenClaw skill 的开发集成边界、入口脚本和调试口径 |
+| [project-configuration.md](./project-configuration.md) | 项目级 `.env` / `executor.local.env` / `skill.local.env` 的自动加载规则和优先级 |
+| [rewrite-development-plan.md](./rewrite-development-plan.md) | 本轮重构的依赖关系、开发顺序、subagent 并行拆分和 worktree 计划 |
 
 ## 维护规则
 

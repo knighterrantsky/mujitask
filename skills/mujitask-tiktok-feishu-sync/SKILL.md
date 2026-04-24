@@ -46,6 +46,7 @@ metadata:
   - `BROWSER_PROFILE_REF`
   - `FASTMOSS_PHONE`
   - `FASTMOSS_PASSWORD`
+- Runtime DB / MinIO 默认配置来自项目自动加载的 `scripts/execution_control/executor.local.env`
 - 不要在对话中向用户索取这些固定配置。
 - 不要手动 `source skill.local.env` 或自己拼接环境变量；wrapper 脚本会自行读取并解析它。
 

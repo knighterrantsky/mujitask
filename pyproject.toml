@@ -21,6 +21,7 @@ automation-business-scaffold-browser-runloop = "automation_business_scaffold.bro
 automation-business-scaffold-executor = "automation_business_scaffold.executor_daemon:main"
 automation-business-scaffold-outbox-dispatcher = "automation_business_scaffold.outbox_dispatcher:main"
 automation-business-scaffold-run = "automation_business_scaffold.cli:main"
+automation-business-scaffold-watchdog = "automation_business_scaffold.watchdog_scanner:main"
 
 [project.optional-dependencies]
 dev = [

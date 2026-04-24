@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any
 
-from automation_business_scaffold.business.flows.refresh_current_competitor_table_flow import (
+from automation_business_scaffold.business.flows.runtime_orchestrator import (
     execute_executor_once,
     run_executor_daemon,
 )

@@ -491,7 +491,10 @@ class TKFactStore:
         resolved_db_url = _clean_text(db_url)
         if not resolved_db_url:
             raise RuntimeError(
-                "TKFactStore requires db_url or runtime_store. SQLite/db_path fallback has been removed."
+                "TKFactStore requires db_url or runtime_store. Fill "
+                "BUSINESS_EXECUTION_CONTROL_DB_URL / EXECUTION_CONTROL_DB_URL in "
+                "scripts/execution_control/executor.local.env or pass fact_db_url explicitly. "
+                "SQLite/db_path fallback has been removed."
             )
         if resolved_db_url.lower().startswith("sqlite"):
             raise RuntimeError("SQLite is no longer supported for TKFactStore; use Postgres.")

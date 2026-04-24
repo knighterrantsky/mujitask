@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from automation_business_scaffold.config import get_execution_control_defaults
+from automation_business_scaffold.project_env import load_project_env_files
 
 
 def test_get_execution_control_defaults_accepts_legacy_execution_control_env_names(monkeypatch):
@@ -53,3 +57,76 @@ def test_get_execution_control_defaults_accepts_legacy_execution_control_env_nam
     assert defaults.sync_referenced_files is True
     assert defaults.requested_by == "openclaw-skill"
     assert defaults.worker_id == "worker-legacy"
+
+
+def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(monkeypatch, tmp_path: Path):
+    executor_env = tmp_path / "scripts" / "execution_control" / "executor.local.env"
+    skill_env = tmp_path / "skills" / "mujitask-tiktok-feishu-sync" / "skill.local.env"
+    root_env = tmp_path / ".env"
+
+    executor_env.parent.mkdir(parents=True, exist_ok=True)
+    skill_env.parent.mkdir(parents=True, exist_ok=True)
+
+    executor_env.write_text(
+        "SHARED_KEY=executor\nEXECUTOR_ONLY=executor\nBUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://executor@/runtime?host=/tmp\n",
+        encoding="utf-8",
+    )
+    skill_env.write_text(
+        "SHARED_KEY=skill\nSKILL_ONLY=skill\nEXECUTION_CONTROL_DB_URL=postgresql+psycopg://skill@/runtime?host=/tmp\n",
+        encoding="utf-8",
+    )
+    root_env.write_text(
+        "SHARED_KEY=root\nROOT_ONLY=root\nBROWSER_PROFILE_REF=root-profile\n",
+        encoding="utf-8",
+    )
+
+    for key in [
+        "SHARED_KEY",
+        "EXECUTOR_ONLY",
+        "SKILL_ONLY",
+        "ROOT_ONLY",
+        "BUSINESS_EXECUTION_CONTROL_DB_URL",
+        "EXECUTION_CONTROL_DB_URL",
+        "BROWSER_PROFILE_REF",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+
+    loaded = load_project_env_files(root_dir=tmp_path)
+
+    assert loaded == {
+        "scripts/execution_control/executor.local.env": [
+            "SHARED_KEY",
+            "EXECUTOR_ONLY",
+            "BUSINESS_EXECUTION_CONTROL_DB_URL",
+        ],
+        "skills/mujitask-tiktok-feishu-sync/skill.local.env": [
+            "SKILL_ONLY",
+            "EXECUTION_CONTROL_DB_URL",
+        ],
+        ".env": [
+            "ROOT_ONLY",
+            "BROWSER_PROFILE_REF",
+        ],
+    }
+    assert os.environ["SHARED_KEY"] == "executor"
+    assert os.environ["EXECUTOR_ONLY"] == "executor"
+    assert os.environ["SKILL_ONLY"] == "skill"
+    assert os.environ["ROOT_ONLY"] == "root"
+    assert os.environ["BUSINESS_EXECUTION_CONTROL_DB_URL"] == "postgresql+psycopg://executor@/runtime?host=/tmp"
+    assert os.environ["EXECUTION_CONTROL_DB_URL"] == "postgresql+psycopg://skill@/runtime?host=/tmp"
+    assert os.environ["BROWSER_PROFILE_REF"] == "root-profile"
+
+
+def test_load_project_env_files_does_not_override_existing_process_env(monkeypatch, tmp_path: Path):
+    executor_env = tmp_path / "scripts" / "execution_control" / "executor.local.env"
+    executor_env.parent.mkdir(parents=True, exist_ok=True)
+    executor_env.write_text(
+        "BUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://file@/runtime?host=/tmp\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_URL", "postgresql+psycopg://process@/runtime?host=/tmp")
+
+    load_project_env_files(root_dir=tmp_path)
+
+    assert os.environ["BUSINESS_EXECUTION_CONTROL_DB_URL"] == "postgresql+psycopg://process@/runtime?host=/tmp"

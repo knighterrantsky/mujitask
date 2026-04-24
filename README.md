@@ -110,13 +110,20 @@ cp .env.example .env
 cp config/browser_profiles.example.json config/browser_profiles.json
 ```
 
-如果只跑 Runtime DB 相关流程，需要准备：
+准备 Runtime / 外部系统连接配置：
 
 ```bash
 cp scripts/execution_control/executor.local.env.example scripts/execution_control/executor.local.env
+cp skills/mujitask-tiktok-feishu-sync/skill.local.env.example \
+  skills/mujitask-tiktok-feishu-sync/skill.local.env
 ```
 
-然后填写 Postgres / MinIO / worker 相关配置。
+说明：
+
+- `scripts/execution_control/executor.local.env` 是 Runtime DB、MinIO、worker lease/heartbeat 的主配置入口。
+- `skills/mujitask-tiktok-feishu-sync/skill.local.env` 是 skill 固定输入配置入口。
+- `.env` 是浏览器、agent、通用本地默认配置入口。
+- Python 运行时、CLI、daemon、Alembic 和 pytest 会自动尝试读取这三份文件，不需要每次手工 `source`。
 
 启动本地 agent API：
 
@@ -238,9 +245,18 @@ automation-business-scaffold-run run \
 
 | 配置来源 | 说明 |
 | --- | --- |
-| `.env` | 本地 agent / browser profile 等基础配置 |
+| `.env` | 本地 agent / browser profile / 通用调试配置 |
 | `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
-| `scripts/execution_control/executor.local.env` | Runtime DB、MinIO、lease、heartbeat、worker 等执行控制配置 |
+| `scripts/execution_control/executor.local.env` | Runtime DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
+| `skills/mujitask-tiktok-feishu-sync/skill.local.env` | skill 固定输入配置和兼容 `EXECUTION_CONTROL_*` 参数 |
+
+当前代码自动加载的优先级是：
+
+1. CLI 参数
+2. 当前 shell / launchd / CI 显式环境变量
+3. `scripts/execution_control/executor.local.env`
+4. `skills/mujitask-tiktok-feishu-sync/skill.local.env`
+5. `.env`
 
 常见执行控制环境变量：
 
@@ -254,6 +270,7 @@ automation-business-scaffold-run run \
 - `BUSINESS_EXECUTION_CONTROL_HEARTBEAT_INTERVAL_SECONDS`
 
 详细 storage 规则见 [docs/arch/storage-architecture-design.md](./docs/arch/storage-architecture-design.md)。
+本地配置规则详见 [docs/dev/project-configuration.md](./docs/dev/project-configuration.md)。
 
 ### 8.1 数据库和 Contract 安全边界
 

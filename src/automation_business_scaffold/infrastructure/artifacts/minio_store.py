@@ -26,9 +26,17 @@ class MinioArtifactStore:
         self._region = str(region or "").strip()
         self._create_bucket = bool(create_bucket)
         if not self._endpoint:
-            raise ValueError("MinIO artifact store requires minio_endpoint.")
+            raise ValueError(
+                "MinIO artifact store requires minio_endpoint. Fill "
+                "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT / EXECUTION_CONTROL_MINIO_ENDPOINT "
+                "in scripts/execution_control/executor.local.env."
+            )
         if not self._access_key or not self._secret_key:
-            raise ValueError("MinIO artifact store requires minio_access_key and minio_secret_key.")
+            raise ValueError(
+                "MinIO artifact store requires minio_access_key and minio_secret_key. Fill "
+                "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY / SECRET_KEY in "
+                "scripts/execution_control/executor.local.env."
+            )
         try:
             from minio import Minio
         except Exception as exc:

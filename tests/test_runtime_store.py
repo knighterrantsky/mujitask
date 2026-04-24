@@ -19,6 +19,8 @@ def test_claim_next_task_request_requeues_expired_cleanup_request(runtime_db_url
         payload={"table_url": "https://example.com/table"},
         requested_by="pytest",
     )
+    assert request.progress_stage == "submitted"
+    assert request.max_execution_seconds == 0.0
     claimed = store.claim_next_task_request(worker_id="worker-a", lease_seconds=30.0)
     assert claimed is not None
     store.update_task_request(
@@ -36,6 +38,7 @@ def test_claim_next_task_request_requeues_expired_cleanup_request(runtime_db_url
     assert reclaimed.request_id == request.request_id
     assert reclaimed.status == "running"
     assert reclaimed.current_stage == ""
+    assert reclaimed.progress_stage == "claimed"
     assert reclaimed.worker_id == "worker-b"
     assert reclaimed.stage_cursor == {}
 
@@ -142,6 +145,7 @@ def test_api_worker_job_queue_round_trip(runtime_db_url):
     assert claimed["request_id"] == request.request_id
     assert claimed["job_code"] == "tiktok_fastmoss_product_ingest"
     assert claimed["status"] == "running"
+    assert claimed["progress_stage"] == "running"
 
     store.mark_api_worker_job_success(
         job_id=claimed["job_id"],
@@ -154,6 +158,7 @@ def test_api_worker_job_queue_round_trip(runtime_db_url):
     assert summary["total"] == 1
     assert summary["success_count"] == 1
     assert summary["active_count"] == 0
+    assert store.load_api_worker_job(job_id=claimed["job_id"])["progress_stage"] == "completed"
 
 
 def test_fastmoss_cookie_cache_round_trip(runtime_db_url):

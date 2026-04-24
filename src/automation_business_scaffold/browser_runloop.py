@@ -6,9 +6,9 @@ import json
 import sys
 from typing import Any
 
-from automation_business_scaffold.business.flows.refresh_current_competitor_table_flow import (
-    execute_phase1_browser_once,
-    run_phase1_browser_runloop,
+from automation_business_scaffold.business.flows.runtime_orchestrator import (
+    execute_browser_once,
+    run_browser_runloop,
 )
 
 
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     params = _build_params(args)
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            payload = execute_phase1_browser_once(params) if args.once else run_phase1_browser_runloop(params)
+            payload = execute_browser_once(params) if args.once else run_browser_runloop(params)
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1

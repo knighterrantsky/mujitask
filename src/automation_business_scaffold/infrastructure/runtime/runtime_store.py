@@ -24,6 +24,10 @@ TERMINAL_EXECUTION_STATUSES = {"success", "failed", "skipped", "cancelled"}
 ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "retry_wait"}
 TERMINAL_API_WORKER_JOB_STATUSES = {"success", "failed", "skipped", "cancelled"}
 TERMINAL_REQUEST_STATUSES = {"success", "failed", "cancelled"}
+DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES = ("running", "waiting_children")
+DEFAULT_ACTIVE_JOB_SCAN_STATUSES = ("running",)
+DEFAULT_OUTBOX_SCAN_STATUSES = ("sending",)
+DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
 POSTGRES_SCHEMA_LOCK_KEY = 426319877301
 
 
@@ -62,6 +66,20 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
+def _coerce_non_negative_float(value: Any) -> float:
+    return max(_coerce_float(value), 0.0)
+
+
+def _build_bind_placeholders(prefix: str, values: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+    placeholders: list[str] = []
+    params: dict[str, Any] = {}
+    for index, value in enumerate(values):
+        key = f"{prefix}_{index}"
+        placeholders.append(f":{key}")
+        params[key] = value
+    return ", ".join(placeholders), params
+
+
 def _postgres_advisory_lock_key(value: str) -> int:
     digest = hashlib.sha256(value.encode("utf-8")).digest()
     raw_value = int.from_bytes(digest[:8], byteorder="big", signed=False)
@@ -81,7 +99,9 @@ class RuntimeStore:
         if not resolved_db_url:
             raise RuntimeError(
                 "RuntimeStore requires BUSINESS_EXECUTION_CONTROL_DB_URL / "
-                "EXECUTION_CONTROL_DB_URL. SQLite/db_path fallback has been removed."
+                "EXECUTION_CONTROL_DB_URL. Fill scripts/execution_control/executor.local.env "
+                "or skills/mujitask-tiktok-feishu-sync/skill.local.env, or pass "
+                "execution_control_db_url explicitly. SQLite/db_path fallback has been removed."
             )
         if resolved_db_url.lower().startswith("sqlite"):
             raise RuntimeError("SQLite is no longer supported for RuntimeStore; use Postgres.")
@@ -108,10 +128,14 @@ class RuntimeStore:
                 idempotency_key TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 current_stage TEXT NOT NULL DEFAULT '',
+                progress_stage TEXT NOT NULL DEFAULT '',
                 stage_cursor_json TEXT NOT NULL DEFAULT '{}',
                 summary_json TEXT NOT NULL DEFAULT '{}',
                 result_json TEXT NOT NULL DEFAULT '{}',
                 error_text TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                dead_letter_reason TEXT NOT NULL DEFAULT '',
                 child_total_count INTEGER NOT NULL DEFAULT 0,
                 child_terminal_count INTEGER NOT NULL DEFAULT 0,
                 child_success_count INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +145,8 @@ class RuntimeStore:
                 worker_id TEXT NOT NULL DEFAULT '',
                 lease_until DOUBLE PRECISION,
                 heartbeat_at DOUBLE PRECISION,
+                last_progress_at DOUBLE PRECISION,
+                max_execution_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
                 created_at DOUBLE PRECISION NOT NULL,
                 updated_at DOUBLE PRECISION NOT NULL,
                 started_at DOUBLE PRECISION,
@@ -139,20 +165,26 @@ class RuntimeStore:
                 resource_code TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 queue_seq INTEGER NOT NULL,
+                progress_stage TEXT NOT NULL DEFAULT '',
                 available_at DOUBLE PRECISION NOT NULL,
                 worker_id TEXT NOT NULL DEFAULT '',
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 3,
+                max_execution_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 summary_json TEXT NOT NULL DEFAULT '{}',
                 result_json TEXT NOT NULL DEFAULT '{}',
                 error_text TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                dead_letter_reason TEXT NOT NULL DEFAULT '',
                 run_id TEXT NOT NULL DEFAULT '',
                 created_at DOUBLE PRECISION NOT NULL,
                 updated_at DOUBLE PRECISION NOT NULL,
                 started_at DOUBLE PRECISION,
                 finished_at DOUBLE PRECISION,
-                heartbeat_at DOUBLE PRECISION
+                heartbeat_at DOUBLE PRECISION,
+                last_progress_at DOUBLE PRECISION
             )
             """,
             """
@@ -185,12 +217,17 @@ class RuntimeStore:
                 dedupe_key TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 stage TEXT NOT NULL DEFAULT '',
+                progress_stage TEXT NOT NULL DEFAULT '',
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 3,
+                max_execution_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 summary_json TEXT NOT NULL DEFAULT '{}',
                 result_json TEXT NOT NULL DEFAULT '{}',
                 error_text TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                dead_letter_reason TEXT NOT NULL DEFAULT '',
                 worker_id TEXT NOT NULL DEFAULT '',
                 lease_until DOUBLE PRECISION,
                 available_at DOUBLE PRECISION NOT NULL,
@@ -199,7 +236,8 @@ class RuntimeStore:
                 updated_at DOUBLE PRECISION NOT NULL,
                 started_at DOUBLE PRECISION,
                 finished_at DOUBLE PRECISION,
-                heartbeat_at DOUBLE PRECISION
+                heartbeat_at DOUBLE PRECISION,
+                last_progress_at DOUBLE PRECISION
             )
             """,
             """
@@ -273,14 +311,20 @@ class RuntimeStore:
                 dedupe_key TEXT NOT NULL DEFAULT '',
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL,
+                progress_stage TEXT NOT NULL DEFAULT '',
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 max_retry_count INTEGER NOT NULL DEFAULT 10,
+                max_execution_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
                 next_retry_at DOUBLE PRECISION,
                 worker_id TEXT NOT NULL DEFAULT '',
                 lease_until DOUBLE PRECISION,
                 heartbeat_at DOUBLE PRECISION,
                 last_error_text TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                dead_letter_reason TEXT NOT NULL DEFAULT '',
                 sent_at DOUBLE PRECISION,
+                last_progress_at DOUBLE PRECISION,
                 created_at DOUBLE PRECISION NOT NULL,
                 updated_at DOUBLE PRECISION NOT NULL
             )
@@ -401,103 +445,265 @@ class RuntimeStore:
         ]
         with self._engine.begin() as connection:
             dialect_name = str(connection.dialect.name or "").lower()
-            has_postgres_lock = False
             if dialect_name.startswith("postgres"):
-                connection.exec_driver_sql(f"SELECT pg_advisory_lock({POSTGRES_SCHEMA_LOCK_KEY})")
-                has_postgres_lock = True
-            try:
-                for statement in statements:
-                    connection.exec_driver_sql(statement)
-                ensure_tk_fact_schema(connection)
-                self._ensure_column(
-                    connection,
-                    table_name="task_request",
-                    column_name="worker_id",
-                    column_definition="TEXT NOT NULL DEFAULT ''",
-                )
+                connection.exec_driver_sql(f"SELECT pg_advisory_xact_lock({POSTGRES_SCHEMA_LOCK_KEY})")
+            for statement in statements:
+                connection.exec_driver_sql(statement)
+            ensure_tk_fact_schema(connection)
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="worker_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
 
-                self._ensure_column(
-                    connection,
-                    table_name="task_request",
-                    column_name="lease_until",
-                    column_definition="DOUBLE PRECISION",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="task_request",
-                    column_name="heartbeat_at",
-                    column_definition="DOUBLE PRECISION",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="notification_outbox",
-                    column_name="worker_id",
-                    column_definition="TEXT NOT NULL DEFAULT ''",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="notification_outbox",
-                    column_name="lease_until",
-                    column_definition="DOUBLE PRECISION",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="notification_outbox",
-                    column_name="heartbeat_at",
-                    column_definition="DOUBLE PRECISION",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="influencer_pool_author_job",
-                    column_name="force_refresh",
-                    column_definition="INTEGER NOT NULL DEFAULT 0",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="influencer_pool_product_job",
-                    column_name="request_id",
-                    column_definition="TEXT NOT NULL DEFAULT ''",
-                )
-                self._ensure_column(
-                    connection,
-                    table_name="influencer_pool_author_job",
-                    column_name="request_id",
-                    column_definition="TEXT NOT NULL DEFAULT ''",
-                )
-                self._ensure_postgres_double_precision_columns(connection)
-                connection.exec_driver_sql(
-                    "DROP INDEX IF EXISTS idx_influencer_pool_product_job_source_product"
-                )
-                connection.exec_driver_sql(
-                    "DROP INDEX IF EXISTS idx_influencer_pool_author_job_source_product_influencer"
-                )
-                connection.exec_driver_sql(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_influencer_pool_product_job_request_source_product
-                        ON influencer_pool_product_job(request_id, source_record_id, product_id)
-                    """
-                )
-                connection.exec_driver_sql(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_influencer_pool_author_job_request_source_product_influencer
-                        ON influencer_pool_author_job(request_id, source_record_id, product_id, influencer_id)
-                    """
-                )
-                connection.exec_driver_sql(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_task_request_status_lease_until
-                        ON task_request(status, lease_until)
-                    """
-                )
-                connection.exec_driver_sql(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_lease_until
-                        ON notification_outbox(status, lease_until)
-                    """
-                )
-            finally:
-                if has_postgres_lock:
-                    connection.exec_driver_sql(f"SELECT pg_advisory_unlock({POSTGRES_SCHEMA_LOCK_KEY})")
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="lease_until",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="heartbeat_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="progress_stage",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="last_progress_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="max_execution_seconds",
+                column_definition="DOUBLE PRECISION NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="error_type",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="error_code",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_request",
+                column_name="dead_letter_reason",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="progress_stage",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="last_progress_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="max_execution_seconds",
+                column_definition="DOUBLE PRECISION NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="error_type",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="error_code",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="task_execution",
+                column_name="dead_letter_reason",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="progress_stage",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="last_progress_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="max_execution_seconds",
+                column_definition="DOUBLE PRECISION NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="error_type",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="error_code",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="api_worker_job",
+                column_name="dead_letter_reason",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="worker_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="lease_until",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="heartbeat_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="progress_stage",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="last_progress_at",
+                column_definition="DOUBLE PRECISION",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="max_execution_seconds",
+                column_definition="DOUBLE PRECISION NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="error_type",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="error_code",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="notification_outbox",
+                column_name="dead_letter_reason",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="influencer_pool_author_job",
+                column_name="force_refresh",
+                column_definition="INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                table_name="influencer_pool_product_job",
+                column_name="request_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                table_name="influencer_pool_author_job",
+                column_name="request_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_postgres_double_precision_columns(connection)
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS idx_influencer_pool_product_job_source_product"
+            )
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS idx_influencer_pool_author_job_source_product_influencer"
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_influencer_pool_product_job_request_source_product
+                    ON influencer_pool_product_job(request_id, source_record_id, product_id)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_influencer_pool_author_job_request_source_product_influencer
+                    ON influencer_pool_author_job(request_id, source_record_id, product_id, influencer_id)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_request_status_lease_until
+                    ON task_request(status, lease_until)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_request_status_last_progress_at
+                    ON task_request(status, last_progress_at)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_execution_status_last_progress_at
+                    ON task_execution(status, last_progress_at)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_api_worker_job_status_last_progress_at
+                    ON api_worker_job(status, last_progress_at)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_lease_until
+                    ON notification_outbox(status, lease_until)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_last_progress_at
+                    ON notification_outbox(status, last_progress_at)
+                """
+            )
 
     def _has_column(self, connection: Any, *, table_name: str, column_name: str) -> bool:
         row = (
@@ -538,6 +744,8 @@ class RuntimeStore:
             "task_request": [
                 "lease_until",
                 "heartbeat_at",
+                "last_progress_at",
+                "max_execution_seconds",
                 "created_at",
                 "updated_at",
                 "started_at",
@@ -545,11 +753,13 @@ class RuntimeStore:
             ],
             "task_execution": [
                 "available_at",
+                "max_execution_seconds",
                 "created_at",
                 "updated_at",
                 "started_at",
                 "finished_at",
                 "heartbeat_at",
+                "last_progress_at",
             ],
             "resource_lease": ["lease_until", "heartbeat_at", "created_at", "updated_at"],
             "notification_outbox": [
@@ -557,6 +767,8 @@ class RuntimeStore:
                 "lease_until",
                 "heartbeat_at",
                 "sent_at",
+                "last_progress_at",
+                "max_execution_seconds",
                 "created_at",
                 "updated_at",
             ],
@@ -564,11 +776,13 @@ class RuntimeStore:
             "api_worker_job": [
                 "lease_until",
                 "available_at",
+                "max_execution_seconds",
                 "created_at",
                 "updated_at",
                 "started_at",
                 "finished_at",
                 "heartbeat_at",
+                "last_progress_at",
             ],
             "fastmoss_session_cookie_cache": [
                 "expires_at",
@@ -632,6 +846,7 @@ class RuntimeStore:
             status=str(row["status"]),
             payload=_load_json_dict(row["payload_json"]),
             current_stage=str(row["current_stage"] or ""),
+            progress_stage=str(row.get("progress_stage", "") or ""),
             trigger_mode=str(row["trigger_mode"] or "manual"),
             source_channel_code=str(row["source_channel_code"] or ""),
             source_session_id=str(row["source_session_id"] or ""),
@@ -642,6 +857,9 @@ class RuntimeStore:
             result=_load_json_dict(row["result_json"]),
             stage_cursor=_load_json_dict(row["stage_cursor_json"]),
             error_text=str(row["error_text"] or ""),
+            error_type=str(row.get("error_type", "") or ""),
+            error_code=str(row.get("error_code", "") or ""),
+            dead_letter_reason=str(row.get("dead_letter_reason", "") or ""),
             child_total_count=int(row["child_total_count"] or 0),
             child_terminal_count=int(row["child_terminal_count"] or 0),
             child_success_count=int(row["child_success_count"] or 0),
@@ -650,6 +868,8 @@ class RuntimeStore:
             worker_id=str(row.get("worker_id", "") or ""),
             lease_until=_coerce_float(row.get("lease_until")),
             heartbeat_at=_coerce_float(row.get("heartbeat_at")),
+            last_progress_at=_coerce_float(row.get("last_progress_at")),
+            max_execution_seconds=_coerce_non_negative_float(row.get("max_execution_seconds")),
             created_at=_coerce_float(row["created_at"]),
             updated_at=_coerce_float(row["updated_at"]),
             started_at=_coerce_float(row["started_at"]),
@@ -667,6 +887,7 @@ class RuntimeStore:
             resource_code=str(row["resource_code"] or ""),
             status=str(row["status"]),
             queue_seq=int(row["queue_seq"]),
+            progress_stage=str(row.get("progress_stage", "") or ""),
             available_at=_coerce_float(row["available_at"]),
             worker_id=str(row["worker_id"] or ""),
             attempt_count=int(row["attempt_count"] or 0),
@@ -675,12 +896,17 @@ class RuntimeStore:
             summary=_load_json_dict(row["summary_json"]),
             result=_load_json_dict(row["result_json"]),
             error_text=str(row["error_text"] or ""),
+            error_type=str(row.get("error_type", "") or ""),
+            error_code=str(row.get("error_code", "") or ""),
+            dead_letter_reason=str(row.get("dead_letter_reason", "") or ""),
             run_id=str(row["run_id"] or ""),
             created_at=_coerce_float(row["created_at"]),
             updated_at=_coerce_float(row["updated_at"]),
             started_at=_coerce_float(row["started_at"]),
             finished_at=_coerce_float(row["finished_at"]),
             heartbeat_at=_coerce_float(row["heartbeat_at"]),
+            last_progress_at=_coerce_float(row.get("last_progress_at")),
+            max_execution_seconds=_coerce_non_negative_float(row.get("max_execution_seconds")),
         )
 
     def _lease_from_row(self, row: Mapping[str, Any] | None) -> ResourceLeaseRecord | None:
@@ -704,6 +930,7 @@ class RuntimeStore:
             ref_type=str(row["ref_type"]),
             ref_id=str(row["ref_id"]),
             status=str(row["status"]),
+            progress_stage=str(row.get("progress_stage", "") or ""),
             payload=_load_json_dict(row["payload_json"]),
             reply_target=str(row["reply_target"] or ""),
             dedupe_key=str(row["dedupe_key"] or ""),
@@ -714,7 +941,12 @@ class RuntimeStore:
             lease_until=_coerce_float(row.get("lease_until")),
             heartbeat_at=_coerce_float(row.get("heartbeat_at")),
             last_error_text=str(row["last_error_text"] or ""),
+            error_type=str(row.get("error_type", "") or ""),
+            error_code=str(row.get("error_code", "") or ""),
+            dead_letter_reason=str(row.get("dead_letter_reason", "") or ""),
             sent_at=_coerce_float(row["sent_at"]),
+            last_progress_at=_coerce_float(row.get("last_progress_at")),
+            max_execution_seconds=_coerce_non_negative_float(row.get("max_execution_seconds")),
             created_at=_coerce_float(row["created_at"]),
             updated_at=_coerce_float(row["updated_at"]),
         )
@@ -747,12 +979,17 @@ class RuntimeStore:
             "dedupe_key": str(row["dedupe_key"] or ""),
             "status": str(row["status"] or ""),
             "stage": str(row["stage"] or ""),
+            "progress_stage": str(row.get("progress_stage", "") or ""),
             "attempt_count": int(row["attempt_count"] or 0),
             "max_attempts": int(row["max_attempts"] or 0),
+            "max_execution_seconds": _coerce_non_negative_float(row.get("max_execution_seconds")),
             "payload": _load_json_dict(row["payload_json"]),
             "summary": _load_json_dict(row["summary_json"]),
             "result": _load_json_dict(row["result_json"]),
             "error_text": str(row["error_text"] or ""),
+            "error_type": str(row.get("error_type", "") or ""),
+            "error_code": str(row.get("error_code", "") or ""),
+            "dead_letter_reason": str(row.get("dead_letter_reason", "") or ""),
             "worker_id": str(row.get("worker_id", "") or ""),
             "lease_until": _coerce_float(row.get("lease_until")),
             "available_at": _coerce_float(row["available_at"]),
@@ -762,6 +999,7 @@ class RuntimeStore:
             "started_at": _coerce_float(row["started_at"]),
             "finished_at": _coerce_float(row["finished_at"]),
             "heartbeat_at": _coerce_float(row["heartbeat_at"]),
+            "last_progress_at": _coerce_float(row.get("last_progress_at")),
         }
 
     def submit_task_request(
@@ -776,6 +1014,7 @@ class RuntimeStore:
         source_session_id: str = "",
         reply_target: str = "",
         idempotency_key: str = "",
+        max_execution_seconds: float = 0.0,
     ) -> RuntimeTaskRequestRecord:
         request_id = uuid.uuid4().hex
         now = time.time()
@@ -811,18 +1050,20 @@ class RuntimeStore:
                     INSERT INTO task_request (
                         request_id, project_code, skill_code, task_name, task_code, resource_code,
                         trigger_mode, source_channel_code, source_session_id, reply_target,
-                        payload_json, idempotency_key, status, current_stage, stage_cursor_json,
-                        summary_json, result_json, error_text,
+                        payload_json, idempotency_key, status, current_stage, progress_stage, stage_cursor_json,
+                        summary_json, result_json, error_text, error_type, error_code, dead_letter_reason,
                         child_total_count, child_terminal_count, child_success_count,
                         child_failed_count, child_skipped_count,
-                        requested_by, created_at, updated_at, started_at, finished_at
+                        requested_by, created_at, updated_at, started_at, finished_at,
+                        last_progress_at, max_execution_seconds
                     ) VALUES (
                         :request_id, :project_code, '', :task_name, :task_code, '',
                         :trigger_mode, :source_channel_code, :source_session_id, :reply_target,
-                        :payload_json, :idempotency_key, 'pending', '', '{}',
-                        '{}', '{}', '',
+                        :payload_json, :idempotency_key, 'pending', '', 'submitted', '{}',
+                        '{}', '{}', '', '', '', '',
                         0, 0, 0, 0, 0,
-                        :requested_by, :created_at, :updated_at, NULL, NULL
+                        :requested_by, :created_at, :updated_at, NULL, NULL,
+                        :last_progress_at, :max_execution_seconds
                     )
                     """
                 ),
@@ -840,6 +1081,8 @@ class RuntimeStore:
                     "requested_by": requested_by,
                     "created_at": now,
                     "updated_at": now,
+                    "last_progress_at": now,
+                    "max_execution_seconds": _coerce_non_negative_float(max_execution_seconds),
                 },
             )
         return self.load_task_request(request_id=request_id)
@@ -942,11 +1185,15 @@ class RuntimeStore:
                 "request_id": request_id,
                 "status": reset_status,
                 "current_stage": reset_stage,
+                "progress_stage": reset_stage,
+                "last_progress_at": now,
                 "updated_at": now,
             }
             assignments = [
                 "status = :status",
                 "current_stage = :current_stage",
+                "progress_stage = :progress_stage",
+                "last_progress_at = :last_progress_at",
                 "updated_at = :updated_at",
                 "worker_id = ''",
                 "lease_until = NULL",
@@ -993,9 +1240,14 @@ class RuntimeStore:
                     """
                     UPDATE task_request
                     SET status = 'running',
+                        progress_stage = CASE
+                            WHEN current_stage <> '' THEN current_stage
+                            ELSE 'claimed'
+                        END,
                         worker_id = :worker_id,
                         lease_until = :lease_until,
                         heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at,
                         started_at = CASE WHEN started_at IS NULL THEN :updated_at ELSE started_at END
                     WHERE request_id = :request_id
@@ -1006,6 +1258,7 @@ class RuntimeStore:
                     "worker_id": worker_id,
                     "lease_until": now + lease_seconds,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )
@@ -1027,10 +1280,14 @@ class RuntimeStore:
         request_id: str,
         status: str | None = None,
         current_stage: str | None = None,
+        progress_stage: str | None = None,
         summary: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         stage_cursor: dict[str, Any] | None = None,
         error_text: str | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        dead_letter_reason: str | None = None,
         child_total_count: int | None = None,
         child_terminal_count: int | None = None,
         child_success_count: int | None = None,
@@ -1039,6 +1296,8 @@ class RuntimeStore:
         worker_id: str | None = None,
         lease_until: float | None = None,
         heartbeat_at: float | None = None,
+        last_progress_at: float | None = None,
+        max_execution_seconds: float | None = None,
         started_at: float | None = None,
         finished_at: float | None = None,
     ) -> RuntimeTaskRequestRecord:
@@ -1050,6 +1309,9 @@ class RuntimeStore:
         if current_stage is not None:
             assignments.append("current_stage = :current_stage")
             values["current_stage"] = current_stage
+        if progress_stage is not None:
+            assignments.append("progress_stage = :progress_stage")
+            values["progress_stage"] = progress_stage
         if summary is not None:
             assignments.append("summary_json = :summary_json")
             values["summary_json"] = _json_dumps(summary)
@@ -1062,6 +1324,15 @@ class RuntimeStore:
         if error_text is not None:
             assignments.append("error_text = :error_text")
             values["error_text"] = error_text
+        if error_type is not None:
+            assignments.append("error_type = :error_type")
+            values["error_type"] = error_type
+        if error_code is not None:
+            assignments.append("error_code = :error_code")
+            values["error_code"] = error_code
+        if dead_letter_reason is not None:
+            assignments.append("dead_letter_reason = :dead_letter_reason")
+            values["dead_letter_reason"] = dead_letter_reason
         if child_total_count is not None:
             assignments.append("child_total_count = :child_total_count")
             values["child_total_count"] = child_total_count
@@ -1086,6 +1357,12 @@ class RuntimeStore:
         if heartbeat_at is not None:
             assignments.append("heartbeat_at = :heartbeat_at")
             values["heartbeat_at"] = heartbeat_at
+        if last_progress_at is not None:
+            assignments.append("last_progress_at = :last_progress_at")
+            values["last_progress_at"] = last_progress_at
+        if max_execution_seconds is not None:
+            assignments.append("max_execution_seconds = :max_execution_seconds")
+            values["max_execution_seconds"] = _coerce_non_negative_float(max_execution_seconds)
         if started_at is not None:
             assignments.append("started_at = :started_at")
             values["started_at"] = started_at
@@ -1104,6 +1381,27 @@ class RuntimeStore:
                 values,
             )
         return self.load_task_request(request_id=request_id)
+
+    def update_task_request_progress(
+        self,
+        *,
+        request_id: str,
+        progress_stage: str,
+        lease_seconds: float | None = None,
+    ) -> RuntimeTaskRequestRecord:
+        now = time.time()
+        lease_until = None
+        heartbeat_at = None
+        if lease_seconds is not None:
+            heartbeat_at = now
+            lease_until = now + max(lease_seconds, 0.1)
+        return self.update_task_request(
+            request_id=request_id,
+            progress_stage=progress_stage,
+            last_progress_at=now,
+            heartbeat_at=heartbeat_at,
+            lease_until=lease_until,
+        )
 
     def heartbeat_task_request(self, *, request_id: str, lease_seconds: float) -> None:
         with self._engine.begin() as connection:
@@ -1184,15 +1482,17 @@ class RuntimeStore:
                         INSERT INTO task_execution (
                             execution_id, request_id, task_name, item_code, workflow_code,
                             business_key, dedupe_key, resource_code, status, queue_seq,
-                            available_at, worker_id, attempt_count, max_attempts,
-                            payload_json, summary_json, result_json, error_text, run_id,
-                            created_at, updated_at, started_at, finished_at, heartbeat_at
+                            progress_stage, available_at, worker_id, attempt_count, max_attempts,
+                            max_execution_seconds, payload_json, summary_json, result_json, error_text,
+                            error_type, error_code, dead_letter_reason, run_id,
+                            created_at, updated_at, started_at, finished_at, heartbeat_at, last_progress_at
                         ) VALUES (
                             :execution_id, :request_id, :task_name, :item_code, :workflow_code,
                             :business_key, :dedupe_key, :resource_code, 'pending', :queue_seq,
-                            :available_at, '', 0, :max_attempts,
-                            :payload_json, '{}', '{}', '', '',
-                            :created_at, :updated_at, NULL, NULL, NULL
+                            'queued', :available_at, '', 0, :max_attempts,
+                            :max_execution_seconds, :payload_json, '{}', '{}', '',
+                            '', '', '', '',
+                            :created_at, :updated_at, NULL, NULL, NULL, :last_progress_at
                         )
                         """
                     ),
@@ -1208,9 +1508,11 @@ class RuntimeStore:
                         "queue_seq": next_queue_seq,
                         "available_at": now,
                         "max_attempts": int(item.get("max_attempts", 3) or 3),
+                        "max_execution_seconds": _coerce_non_negative_float(item.get("max_execution_seconds")),
                         "payload_json": _json_dumps(payload),
                         "created_at": now,
                         "updated_at": now,
+                        "last_progress_at": now,
                     },
                 )
                 created_records.append(
@@ -1224,9 +1526,12 @@ class RuntimeStore:
                         resource_code=resource_code,
                         status="pending",
                         queue_seq=next_queue_seq,
+                        progress_stage="queued",
                         available_at=now,
                         max_attempts=int(item.get("max_attempts", 3) or 3),
+                        max_execution_seconds=_coerce_non_negative_float(item.get("max_execution_seconds")),
                         payload=payload,
+                        last_progress_at=now,
                         created_at=now,
                         updated_at=now,
                     )
@@ -1259,6 +1564,7 @@ class RuntimeStore:
                 dedupe_key = str(job.get("dedupe_key", "") or "")
                 payload = dict(job.get("payload") or {})
                 max_attempts = int(job.get("max_attempts", 3) or 3)
+                max_execution_seconds = _coerce_non_negative_float(job.get("max_execution_seconds"))
                 existing = None
                 if dedupe_key:
                     existing = (
@@ -1298,14 +1604,20 @@ class RuntimeStore:
                                 business_key = :business_key,
                                 status = 'pending',
                                 stage = 'queued',
+                                progress_stage = 'queued',
                                 payload_json = :payload_json,
                                 summary_json = '{}',
                                 result_json = '{}',
                                 error_text = '',
+                                error_type = '',
+                                error_code = '',
+                                dead_letter_reason = '',
                                 worker_id = '',
                                 lease_until = NULL,
                                 available_at = :available_at,
                                 max_attempts = :max_attempts,
+                                max_execution_seconds = :max_execution_seconds,
+                                last_progress_at = :last_progress_at,
                                 updated_at = :updated_at,
                                 finished_at = NULL,
                                 heartbeat_at = NULL
@@ -1321,6 +1633,8 @@ class RuntimeStore:
                             "payload_json": _json_dumps(payload),
                             "available_at": now,
                             "max_attempts": max_attempts,
+                            "max_execution_seconds": max_execution_seconds,
+                            "last_progress_at": now,
                             "updated_at": now,
                         },
                     )
@@ -1342,16 +1656,17 @@ class RuntimeStore:
                         """
                         INSERT INTO api_worker_job (
                             job_id, request_id, task_code, job_code, business_key, dedupe_key,
-                            status, stage, attempt_count, max_attempts, payload_json,
-                            summary_json, result_json, error_text, worker_id, lease_until,
+                            status, stage, progress_stage, attempt_count, max_attempts, max_execution_seconds,
+                            payload_json, summary_json, result_json, error_text, error_type, error_code,
+                            dead_letter_reason, worker_id, lease_until,
                             available_at, run_id, created_at, updated_at, started_at,
-                            finished_at, heartbeat_at
+                            finished_at, heartbeat_at, last_progress_at
                         ) VALUES (
                             :job_id, :request_id, :task_code, :job_code, :business_key, :dedupe_key,
-                            'pending', 'queued', 0, :max_attempts, :payload_json,
-                            '{}', '{}', '', '', NULL,
+                            'pending', 'queued', 'queued', 0, :max_attempts, :max_execution_seconds, :payload_json,
+                            '{}', '{}', '', '', '', '', '', NULL,
                             :available_at, '', :created_at, :updated_at, NULL,
-                            NULL, NULL
+                            NULL, NULL, :last_progress_at
                         )
                         """
                     ),
@@ -1363,10 +1678,12 @@ class RuntimeStore:
                         "business_key": business_key,
                         "dedupe_key": dedupe_key,
                         "max_attempts": max_attempts,
+                        "max_execution_seconds": max_execution_seconds,
                         "payload_json": _json_dumps(payload),
                         "available_at": now,
                         "created_at": now,
                         "updated_at": now,
+                        "last_progress_at": now,
                     },
                 )
                 created = (
@@ -1415,6 +1732,7 @@ class RuntimeStore:
                     UPDATE api_worker_job
                     SET status = :status,
                         stage = 'lease_expired',
+                        progress_stage = 'lease_expired',
                         worker_id = '',
                         lease_until = NULL,
                         available_at = :available_at,
@@ -1422,6 +1740,19 @@ class RuntimeStore:
                             WHEN error_text = '' THEN 'API worker job lease expired and was reclaimed.'
                             ELSE error_text
                         END,
+                        error_type = CASE
+                            WHEN error_type = '' THEN 'timeout'
+                            ELSE error_type
+                        END,
+                        error_code = CASE
+                            WHEN error_code = '' THEN 'lease_expired'
+                            ELSE error_code
+                        END,
+                        dead_letter_reason = CASE
+                            WHEN :status = 'failed' THEN 'lease_expired'
+                            ELSE dead_letter_reason
+                        END,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at,
                         finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
                     WHERE job_id = :job_id
@@ -1431,6 +1762,7 @@ class RuntimeStore:
                     "job_id": row["job_id"],
                     "status": status,
                     "available_at": now,
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )
@@ -1480,13 +1812,15 @@ class RuntimeStore:
                     UPDATE api_worker_job
                     SET status = 'running',
                         stage = 'running',
+                        progress_stage = 'running',
                         attempt_count = COALESCE(attempt_count, 0) + 1,
                         worker_id = :worker_id,
                         lease_until = :lease_until,
                         run_id = CASE WHEN run_id = '' THEN :run_id ELSE run_id END,
                         updated_at = :updated_at,
                         started_at = CASE WHEN started_at IS NULL THEN :updated_at ELSE started_at END,
-                        heartbeat_at = :heartbeat_at
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at
                     WHERE job_id = :job_id
                     """
                 ),
@@ -1497,6 +1831,7 @@ class RuntimeStore:
                     "run_id": run_id,
                     "updated_at": now,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                 },
             )
             claimed = (
@@ -1531,6 +1866,47 @@ class RuntimeStore:
                 },
             )
 
+    def update_api_worker_job_progress(
+        self,
+        *,
+        job_id: str,
+        progress_stage: str,
+        lease_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._engine.begin() as connection:
+            assignments = [
+                "progress_stage = :progress_stage",
+                "last_progress_at = :last_progress_at",
+                "updated_at = :updated_at",
+            ]
+            values: dict[str, Any] = {
+                "job_id": job_id,
+                "progress_stage": progress_stage,
+                "last_progress_at": now,
+                "updated_at": now,
+            }
+            if lease_seconds is not None:
+                assignments.extend(
+                    [
+                        "heartbeat_at = :heartbeat_at",
+                        "lease_until = :lease_until",
+                    ]
+                )
+                values["heartbeat_at"] = now
+                values["lease_until"] = now + max(lease_seconds, 0.1)
+            connection.execute(
+                self._text(
+                    f"""
+                    UPDATE api_worker_job
+                    SET {", ".join(assignments)}
+                    WHERE job_id = :job_id
+                    """
+                ),
+                values,
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
     def mark_api_worker_job_success(
         self,
         *,
@@ -1548,13 +1924,18 @@ class RuntimeStore:
                     UPDATE api_worker_job
                     SET status = 'success',
                         stage = :stage,
+                        progress_stage = :progress_stage,
                         run_id = :run_id,
                         summary_json = :summary_json,
                         result_json = :result_json,
                         error_text = '',
+                        error_type = '',
+                        error_code = '',
+                        dead_letter_reason = '',
                         worker_id = '',
                         lease_until = NULL,
                         heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at,
                         finished_at = :finished_at
                     WHERE job_id = :job_id
@@ -1563,10 +1944,12 @@ class RuntimeStore:
                 {
                     "job_id": job_id,
                     "stage": stage,
+                    "progress_stage": stage,
                     "run_id": run_id,
                     "summary_json": _json_dumps(summary),
                     "result_json": _json_dumps(result),
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "updated_at": now,
                     "finished_at": now,
                 },
@@ -1582,6 +1965,9 @@ class RuntimeStore:
         summary: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         retry_delay_seconds: float = 30.0,
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
     ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             now = time.time()
@@ -1605,14 +1991,19 @@ class RuntimeStore:
                     UPDATE api_worker_job
                     SET status = :status,
                         stage = :stage,
+                        progress_stage = :progress_stage,
                         run_id = :run_id,
                         summary_json = :summary_json,
                         result_json = :result_json,
                         error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
                         worker_id = '',
                         lease_until = NULL,
                         available_at = :available_at,
                         heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at,
                         finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
                     WHERE job_id = :job_id
@@ -1622,12 +2013,17 @@ class RuntimeStore:
                     "job_id": job_id,
                     "status": status,
                     "stage": "retry_wait" if status == "retry_wait" else "failed",
+                    "progress_stage": "retry_wait" if status == "retry_wait" else "failed",
                     "run_id": run_id,
                     "summary_json": _json_dumps(summary or {}),
                     "result_json": _json_dumps(result or {}),
                     "error_text": error_text,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
                     "available_at": available_at,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )
@@ -1884,6 +2280,16 @@ class RuntimeStore:
                     """
                     UPDATE task_execution
                     SET status = 'pending',
+                        progress_stage = 'lease_expired',
+                        error_type = CASE
+                            WHEN error_type = '' THEN 'timeout'
+                            ELSE error_type
+                        END,
+                        error_code = CASE
+                            WHEN error_code = '' THEN 'lease_expired'
+                            ELSE error_code
+                        END,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at,
                         heartbeat_at = NULL,
                         worker_id = ''
@@ -1892,6 +2298,7 @@ class RuntimeStore:
                     """
                 ),
                 {
+                    "last_progress_at": now,
                     "updated_at": now,
                     "execution_id": row["execution_id"],
                 },
@@ -1972,9 +2379,11 @@ class RuntimeStore:
                             worker_id = :worker_id,
                             attempt_count = COALESCE(attempt_count, 0) + 1,
                             run_id = CASE WHEN run_id = '' THEN :run_id ELSE run_id END,
+                            progress_stage = 'running',
                             updated_at = :updated_at,
                             started_at = CASE WHEN started_at IS NULL THEN :updated_at ELSE started_at END,
-                            heartbeat_at = :heartbeat_at
+                            heartbeat_at = :heartbeat_at,
+                            last_progress_at = :last_progress_at
                         WHERE execution_id = :execution_id
                         """
                     ),
@@ -1983,6 +2392,7 @@ class RuntimeStore:
                         "run_id": run_id,
                         "updated_at": now,
                         "heartbeat_at": now,
+                        "last_progress_at": now,
                         "execution_id": row["execution_id"],
                     },
                 )
@@ -2085,9 +2495,11 @@ class RuntimeStore:
                         worker_id = :worker_id,
                         attempt_count = COALESCE(attempt_count, 0) + 1,
                         run_id = CASE WHEN run_id = '' THEN :run_id ELSE run_id END,
+                        progress_stage = 'running',
                         updated_at = :updated_at,
                         started_at = CASE WHEN started_at IS NULL THEN :updated_at ELSE started_at END,
-                        heartbeat_at = :heartbeat_at
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at
                     WHERE execution_id = :execution_id
                     """
                 ),
@@ -2096,6 +2508,7 @@ class RuntimeStore:
                     "run_id": run_id,
                     "updated_at": now,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "execution_id": execution_id,
                 },
             )
@@ -2172,6 +2585,85 @@ class RuntimeStore:
                 },
             )
 
+    def update_task_execution_progress(
+        self,
+        *,
+        execution_id: str,
+        progress_stage: str,
+        lease_seconds: float | None = None,
+    ) -> RuntimeTaskExecutionRecord:
+        now = time.time()
+        with self._engine.begin() as connection:
+            assignments = [
+                "progress_stage = :progress_stage",
+                "last_progress_at = :last_progress_at",
+                "updated_at = :updated_at",
+            ]
+            values: dict[str, Any] = {
+                "execution_id": execution_id,
+                "progress_stage": progress_stage,
+                "last_progress_at": now,
+                "updated_at": now,
+            }
+            if lease_seconds is not None:
+                assignments.append("heartbeat_at = :heartbeat_at")
+                values["heartbeat_at"] = now
+                lease_row = (
+                    connection.execute(
+                        self._text(
+                            """
+                            SELECT resource_code
+                            FROM task_execution
+                            WHERE execution_id = :execution_id
+                            LIMIT 1
+                            """
+                        ),
+                        {"execution_id": execution_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                connection.execute(
+                    self._text(
+                        f"""
+                        UPDATE task_execution
+                        SET {", ".join(assignments)}
+                        WHERE execution_id = :execution_id
+                        """
+                    ),
+                    values,
+                )
+                if lease_row is not None and str(lease_row["resource_code"] or ""):
+                    connection.execute(
+                        self._text(
+                            """
+                            UPDATE resource_lease
+                            SET heartbeat_at = :heartbeat_at,
+                                lease_until = :lease_until,
+                                updated_at = :updated_at
+                            WHERE execution_id = :execution_id
+                            """
+                        ),
+                        {
+                            "execution_id": execution_id,
+                            "heartbeat_at": now,
+                            "lease_until": now + max(lease_seconds, 0.1),
+                            "updated_at": now,
+                        },
+                    )
+            else:
+                connection.execute(
+                    self._text(
+                        f"""
+                        UPDATE task_execution
+                        SET {", ".join(assignments)}
+                        WHERE execution_id = :execution_id
+                        """
+                    ),
+                    values,
+                )
+        return self.load_task_execution(execution_id=execution_id)
+
     def _finalize_browser_execution(
         self,
         *,
@@ -2207,24 +2699,31 @@ class RuntimeStore:
                     UPDATE task_execution
                     SET status = :status,
                         run_id = :run_id,
+                        progress_stage = :progress_stage,
                         summary_json = :summary_json,
                         result_json = :result_json,
                         error_text = :error_text,
+                        error_type = '',
+                        error_code = '',
+                        dead_letter_reason = '',
                         updated_at = :updated_at,
                         finished_at = :finished_at,
-                        heartbeat_at = :heartbeat_at
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at
                     WHERE execution_id = :execution_id
                     """
                 ),
                 {
                     "status": status,
                     "run_id": run_id,
+                    "progress_stage": status,
                     "summary_json": _json_dumps(summary),
                     "result_json": _json_dumps(result),
                     "error_text": error_text,
                     "updated_at": now,
                     "finished_at": now,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "execution_id": execution_id,
                 },
             )
@@ -2293,6 +2792,9 @@ class RuntimeStore:
         summary: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         retry_delay_seconds: float = 30.0,
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
     ) -> RuntimeTaskExecutionRecord:
         with self._engine.begin() as connection:
             now = time.time()
@@ -2317,25 +2819,35 @@ class RuntimeStore:
                     UPDATE task_execution
                     SET status = :status,
                         run_id = :run_id,
+                        progress_stage = :progress_stage,
                         summary_json = :summary_json,
                         result_json = :result_json,
                         error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
                         available_at = :available_at,
                         updated_at = :updated_at,
                         finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END,
-                        heartbeat_at = :heartbeat_at
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at
                     WHERE execution_id = :execution_id
                     """
                 ),
                 {
                     "status": status,
                     "run_id": run_id,
+                    "progress_stage": status,
                     "summary_json": _json_dumps(summary or {}),
                     "result_json": _json_dumps(result or {}),
                     "error_text": error_text,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
                     "available_at": available_at,
                     "updated_at": now,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "execution_id": execution_id,
                 },
             )
@@ -2365,6 +2877,861 @@ class RuntimeStore:
             if row is None:
                 raise ValueError("Task execution not found.")
             return self._execution_from_row(row)
+
+    def _scan_runtime_rows(
+        self,
+        *,
+        table_name: str,
+        statuses: tuple[str, ...],
+        predicate_sql: str,
+        predicate_params: Mapping[str, Any],
+        limit: int,
+        order_by_sql: str,
+    ) -> list[dict[str, Any]]:
+        normalized_statuses = tuple(str(status or "").strip() for status in statuses if str(status or "").strip())
+        if not normalized_statuses:
+            return []
+        placeholders, status_params = _build_bind_placeholders("status", normalized_statuses)
+        query = f"""
+            SELECT *
+            FROM {table_name}
+            WHERE status IN ({placeholders})
+              AND {predicate_sql}
+            ORDER BY {order_by_sql}
+            LIMIT :limit
+        """
+        params = dict(predicate_params)
+        params.update(status_params)
+        params["limit"] = max(int(limit or 1), 1)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(self._text(query), params)
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in rows]
+
+    def scan_stale_task_requests(
+        self,
+        *,
+        stale_after_seconds: float,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[RuntimeTaskRequestRecord]:
+        now = time.time()
+        rows = self._scan_runtime_rows(
+            table_name="task_request",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) <= :threshold"
+            ),
+            predicate_params={"threshold": now - max(stale_after_seconds, 0.0)},
+            limit=limit,
+            order_by_sql="COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) ASC, created_at ASC",
+        )
+        return [self._request_from_row(row) for row in rows]
+
+    def scan_stale_api_worker_jobs(
+        self,
+        *,
+        stale_after_seconds: float,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_JOB_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        now = time.time()
+        rows = self._scan_runtime_rows(
+            table_name="api_worker_job",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) <= :threshold"
+            ),
+            predicate_params={"threshold": now - max(stale_after_seconds, 0.0)},
+            limit=limit,
+            order_by_sql="COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) ASC, created_at ASC",
+        )
+        return [self._api_worker_job_from_row(row) for row in rows]
+
+    def scan_stale_task_executions(
+        self,
+        *,
+        stale_after_seconds: float,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_JOB_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[RuntimeTaskExecutionRecord]:
+        now = time.time()
+        rows = self._scan_runtime_rows(
+            table_name="task_execution",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) <= :threshold"
+            ),
+            predicate_params={"threshold": now - max(stale_after_seconds, 0.0)},
+            limit=limit,
+            order_by_sql="COALESCE(last_progress_at, heartbeat_at, started_at, updated_at, created_at) ASC, created_at ASC",
+        )
+        return [self._execution_from_row(row) for row in rows]
+
+    def scan_stale_outbox_items(
+        self,
+        *,
+        stale_after_seconds: float,
+        statuses: tuple[str, ...] = DEFAULT_OUTBOX_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[NotificationOutboxRecord]:
+        now = time.time()
+        rows = self._scan_runtime_rows(
+            table_name="notification_outbox",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(last_progress_at, heartbeat_at, updated_at, created_at) <= :threshold"
+            ),
+            predicate_params={"threshold": now - max(stale_after_seconds, 0.0)},
+            limit=limit,
+            order_by_sql="COALESCE(last_progress_at, heartbeat_at, updated_at, created_at) ASC, created_at ASC",
+        )
+        return [self._outbox_from_row(row) for row in rows]
+
+    def scan_task_request_execution_timeouts(
+        self,
+        *,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[RuntimeTaskRequestRecord]:
+        rows = self._scan_runtime_rows(
+            table_name="task_request",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(max_execution_seconds, 0) > 0 "
+                "AND COALESCE(started_at, created_at) + max_execution_seconds <= :now"
+            ),
+            predicate_params={"now": time.time()},
+            limit=limit,
+            order_by_sql="COALESCE(started_at, created_at) ASC, created_at ASC",
+        )
+        return [self._request_from_row(row) for row in rows]
+
+    def scan_api_worker_job_execution_timeouts(
+        self,
+        *,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_JOB_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        rows = self._scan_runtime_rows(
+            table_name="api_worker_job",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(max_execution_seconds, 0) > 0 "
+                "AND COALESCE(started_at, created_at) + max_execution_seconds <= :now"
+            ),
+            predicate_params={"now": time.time()},
+            limit=limit,
+            order_by_sql="COALESCE(started_at, created_at) ASC, created_at ASC",
+        )
+        return [self._api_worker_job_from_row(row) for row in rows]
+
+    def scan_task_execution_timeouts(
+        self,
+        *,
+        statuses: tuple[str, ...] = DEFAULT_ACTIVE_JOB_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[RuntimeTaskExecutionRecord]:
+        rows = self._scan_runtime_rows(
+            table_name="task_execution",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(max_execution_seconds, 0) > 0 "
+                "AND COALESCE(started_at, created_at) + max_execution_seconds <= :now"
+            ),
+            predicate_params={"now": time.time()},
+            limit=limit,
+            order_by_sql="COALESCE(started_at, created_at) ASC, created_at ASC",
+        )
+        return [self._execution_from_row(row) for row in rows]
+
+    def scan_outbox_execution_timeouts(
+        self,
+        *,
+        statuses: tuple[str, ...] = DEFAULT_OUTBOX_SCAN_STATUSES,
+        limit: int = 100,
+    ) -> list[NotificationOutboxRecord]:
+        rows = self._scan_runtime_rows(
+            table_name="notification_outbox",
+            statuses=statuses,
+            predicate_sql=(
+                "COALESCE(max_execution_seconds, 0) > 0 "
+                "AND COALESCE(last_progress_at, heartbeat_at, updated_at, created_at) + max_execution_seconds <= :now"
+            ),
+            predicate_params={"now": time.time()},
+            limit=limit,
+            order_by_sql="COALESCE(last_progress_at, heartbeat_at, updated_at, created_at) ASC, created_at ASC",
+        )
+        return [self._outbox_from_row(row) for row in rows]
+
+    def scan_expired_outbox_leases(self, *, limit: int = 100) -> list[NotificationOutboxRecord]:
+        rows = self._scan_runtime_rows(
+            table_name="notification_outbox",
+            statuses=("sending",),
+            predicate_sql="COALESCE(lease_until, 0) <= :now",
+            predicate_params={"now": time.time()},
+            limit=limit,
+            order_by_sql="COALESCE(lease_until, 0) ASC, created_at ASC",
+        )
+        return [self._outbox_from_row(row) for row in rows]
+
+    def _watchdog_payload(
+        self,
+        *,
+        target_table: str,
+        target_id: str,
+        status: str,
+        record: Mapping[str, Any],
+        request_id: str = "",
+        reason: str = "",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(record)
+        payload["target_table"] = target_table
+        payload["target_id"] = target_id
+        payload["status"] = status
+        if request_id:
+            payload["request_id"] = request_id
+        if reason:
+            payload["reason"] = reason
+        payload["metadata"] = dict(metadata or {})
+        return payload
+
+    def scan_expired_running_leases(self, *, now: float, limit: int | None = None) -> list[dict[str, Any]]:
+        max_limit = max(int(limit or 100), 1)
+        candidates: list[dict[str, Any]] = []
+
+        request_rows = self._scan_runtime_rows(
+            table_name="task_request",
+            statuses=("running",),
+            predicate_sql="COALESCE(lease_until, 0) <= :now",
+            predicate_params={"now": now},
+            limit=max_limit,
+            order_by_sql="COALESCE(lease_until, 0) ASC, created_at ASC",
+        )
+        for row in request_rows:
+            request = self._request_from_row(row)
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_request",
+                    target_id=request.request_id,
+                    request_id=request.request_id,
+                    status=request.status,
+                    record=request.to_dict(),
+                    reason="Task request lease expired while still running.",
+                )
+            )
+
+        job_rows = self._scan_runtime_rows(
+            table_name="api_worker_job",
+            statuses=("running",),
+            predicate_sql="COALESCE(lease_until, 0) <= :now",
+            predicate_params={"now": now},
+            limit=max_limit,
+            order_by_sql="COALESCE(lease_until, 0) ASC, created_at ASC",
+        )
+        for row in job_rows:
+            job = self._api_worker_job_from_row(row)
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="api_worker_job",
+                    target_id=str(job["job_id"]),
+                    request_id=str(job.get("request_id") or ""),
+                    status=str(job.get("status") or ""),
+                    record=job,
+                    reason="API worker job lease expired while still running.",
+                )
+            )
+
+        with self._engine.connect() as connection:
+            execution_rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT execution.*, lease.lease_until
+                        FROM task_execution execution
+                        JOIN resource_lease lease ON lease.execution_id = execution.execution_id
+                        WHERE execution.status = 'running'
+                          AND lease.lease_until <= :now
+                        ORDER BY lease.lease_until ASC, execution.created_at ASC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"now": now, "limit": max_limit},
+                )
+                .mappings()
+                .all()
+            )
+        for row in execution_rows:
+            execution = self._execution_from_row(row)
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_execution",
+                    target_id=execution.execution_id,
+                    request_id=execution.request_id,
+                    status=execution.status,
+                    record=execution.to_dict(),
+                    reason="Browser execution resource lease expired while still running.",
+                )
+            )
+        return candidates[:max_limit]
+
+    def scan_stale_progress(self, *, now: float, limit: int | None = None) -> list[dict[str, Any]]:
+        max_limit = max(int(limit or 100), 1)
+        stale_after_seconds = DEFAULT_WATCHDOG_STALE_AFTER_SECONDS
+        candidates: list[dict[str, Any]] = []
+
+        for request in self.scan_stale_task_requests(
+            stale_after_seconds=stale_after_seconds,
+            statuses=("running",),
+            limit=max_limit,
+        ):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_request",
+                    target_id=request.request_id,
+                    request_id=request.request_id,
+                    status=request.status,
+                    record=request.to_dict(),
+                    reason="Task request heartbeat is alive but progress is stale.",
+                )
+            )
+        for job in self.scan_stale_api_worker_jobs(
+            stale_after_seconds=stale_after_seconds,
+            statuses=("running",),
+            limit=max_limit,
+        ):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="api_worker_job",
+                    target_id=str(job["job_id"]),
+                    request_id=str(job.get("request_id") or ""),
+                    status=str(job.get("status") or ""),
+                    record=job,
+                    reason="API worker job heartbeat is alive but progress is stale.",
+                )
+            )
+        for execution in self.scan_stale_task_executions(
+            stale_after_seconds=stale_after_seconds,
+            statuses=("running",),
+            limit=max_limit,
+        ):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_execution",
+                    target_id=execution.execution_id,
+                    request_id=execution.request_id,
+                    status=execution.status,
+                    record=execution.to_dict(),
+                    reason="Browser execution heartbeat is alive but progress is stale.",
+                )
+            )
+        return candidates[:max_limit]
+
+    def scan_execution_timeouts(self, *, now: float, limit: int | None = None) -> list[dict[str, Any]]:
+        max_limit = max(int(limit or 100), 1)
+        candidates: list[dict[str, Any]] = []
+
+        for request in self.scan_task_request_execution_timeouts(limit=max_limit):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_request",
+                    target_id=request.request_id,
+                    request_id=request.request_id,
+                    status=request.status,
+                    record=request.to_dict(),
+                    reason="Task request exceeded max_execution_seconds.",
+                )
+            )
+        for job in self.scan_api_worker_job_execution_timeouts(limit=max_limit):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="api_worker_job",
+                    target_id=str(job["job_id"]),
+                    request_id=str(job.get("request_id") or ""),
+                    status=str(job.get("status") or ""),
+                    record=job,
+                    reason="API worker job exceeded max_execution_seconds.",
+                )
+            )
+        for execution in self.scan_task_execution_timeouts(limit=max_limit):
+            candidates.append(
+                self._watchdog_payload(
+                    target_table="task_execution",
+                    target_id=execution.execution_id,
+                    request_id=execution.request_id,
+                    status=execution.status,
+                    record=execution.to_dict(),
+                    reason="Browser execution exceeded max_execution_seconds.",
+                )
+            )
+        return candidates[:max_limit]
+
+    def scan_waiting_children_reconciliation(self, *, now: float, limit: int | None = None) -> list[dict[str, Any]]:
+        del now
+        max_limit = max(int(limit or 100), 1)
+        rows = self._scan_runtime_rows(
+            table_name="task_request",
+            statuses=("waiting_children",),
+            predicate_sql="1 = 1",
+            predicate_params={},
+            limit=max_limit,
+            order_by_sql="updated_at ASC, created_at ASC",
+        )
+        candidates: list[dict[str, Any]] = []
+        with self._engine.connect() as connection:
+            for row in rows:
+                request = self._request_from_row(row)
+                counts = self._aggregate_runtime_request_children(connection, request_id=request.request_id)
+                if counts["total_count"] <= 0 or counts["active_count"] > 0:
+                    continue
+                candidates.append(
+                    self._watchdog_payload(
+                        target_table="task_request",
+                        target_id=request.request_id,
+                        request_id=request.request_id,
+                        status=request.status,
+                        record=request.to_dict(),
+                        reason="Parent request is still waiting_children even though all child work is terminal.",
+                        metadata=counts,
+                    )
+                )
+        return candidates
+
+    def scan_expired_outbox_sending(self, *, now: float, limit: int | None = None) -> list[dict[str, Any]]:
+        max_limit = max(int(limit or 100), 1)
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        for outbox in self.scan_expired_outbox_leases(limit=max_limit):
+            candidates_by_id[outbox.outbox_id] = self._watchdog_payload(
+                target_table="notification_outbox",
+                target_id=outbox.outbox_id,
+                request_id=outbox.ref_id if outbox.ref_type == "task_request" else "",
+                status=outbox.status,
+                record=outbox.to_dict(),
+                reason="Outbox sending lease expired while dispatch was still running.",
+            )
+        for outbox in self.scan_outbox_execution_timeouts(limit=max_limit):
+            candidates_by_id[outbox.outbox_id] = self._watchdog_payload(
+                target_table="notification_outbox",
+                target_id=outbox.outbox_id,
+                request_id=outbox.ref_id if outbox.ref_type == "task_request" else "",
+                status=outbox.status,
+                record=outbox.to_dict(),
+                reason="Outbox sending exceeded max_execution_seconds.",
+            )
+        for outbox in self.scan_stale_outbox_items(
+            stale_after_seconds=DEFAULT_WATCHDOG_STALE_AFTER_SECONDS,
+            statuses=("sending",),
+            limit=max_limit,
+        ):
+            candidates_by_id.setdefault(
+                outbox.outbox_id,
+                self._watchdog_payload(
+                    target_table="notification_outbox",
+                    target_id=outbox.outbox_id,
+                    request_id=outbox.ref_id if outbox.ref_type == "task_request" else "",
+                    status=outbox.status,
+                    record=outbox.to_dict(),
+                    reason="Outbox sending heartbeat is alive but progress is stale.",
+                ),
+            )
+        return list(candidates_by_id.values())[:max_limit]
+
+    def apply_watchdog_action(self, *, action: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(action)
+        action_type = str(normalized.get("action_type") or "").strip()
+        target_table = str(normalized.get("target_table") or "").strip()
+        target_id = str(normalized.get("target_id") or "").strip()
+        next_status = str(normalized.get("next_status") or "").strip()
+        error_type = str(normalized.get("error_type") or "").strip()
+        error_code = str(normalized.get("rule_code") or normalized.get("error_code") or "").strip()
+        reason = str(normalized.get("reason") or "").strip()
+        dead_letter_reason = "watchdog_failed" if action_type == "fail" else ""
+        now = time.time()
+
+        if target_table == "task_request":
+            if action_type == "repair":
+                repaired = self.reconcile_request_waiting_children(request_id=target_id)
+                return {
+                    "target_table": target_table,
+                    "target_id": target_id,
+                    "action_type": action_type,
+                    "status": str(repaired["request"].status),
+                    "transitioned": bool(repaired.get("transitioned")),
+                }
+            updated = self.update_task_request(
+                request_id=target_id,
+                status=next_status or ("failed" if action_type == "fail" else "pending"),
+                progress_stage=next_status or action_type,
+                error_text=reason,
+                error_type=error_type,
+                error_code=error_code,
+                dead_letter_reason=dead_letter_reason,
+                worker_id="",
+                lease_until=0.0,
+                heartbeat_at=0.0,
+                last_progress_at=now,
+                finished_at=now if action_type == "fail" else None,
+            )
+            return {
+                "target_table": target_table,
+                "target_id": target_id,
+                "action_type": action_type,
+                "status": updated.status,
+            }
+
+        if target_table == "api_worker_job":
+            with self._engine.begin() as connection:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE api_worker_job
+                        SET status = :status,
+                            stage = :stage,
+                            progress_stage = :progress_stage,
+                            worker_id = '',
+                            lease_until = NULL,
+                            available_at = :available_at,
+                            error_text = :error_text,
+                            error_type = :error_type,
+                            error_code = :error_code,
+                            dead_letter_reason = :dead_letter_reason,
+                            heartbeat_at = :heartbeat_at,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at,
+                            finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                        WHERE job_id = :job_id
+                        """
+                    ),
+                    {
+                        "job_id": target_id,
+                        "status": next_status,
+                        "stage": next_status,
+                        "progress_stage": next_status,
+                        "available_at": now,
+                        "error_text": reason,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "dead_letter_reason": dead_letter_reason,
+                        "heartbeat_at": now,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                    },
+                )
+            updated = self.load_api_worker_job(job_id=target_id)
+            return {
+                "target_table": target_table,
+                "target_id": target_id,
+                "action_type": action_type,
+                "status": str(updated["status"]),
+            }
+
+        if target_table == "task_execution":
+            execution = self.load_task_execution(execution_id=target_id)
+            with self._engine.begin() as connection:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE task_execution
+                        SET status = :status,
+                            progress_stage = :progress_stage,
+                            worker_id = '',
+                            error_text = :error_text,
+                            error_type = :error_type,
+                            error_code = :error_code,
+                            dead_letter_reason = :dead_letter_reason,
+                            available_at = :available_at,
+                            heartbeat_at = :heartbeat_at,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at,
+                            finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                        WHERE execution_id = :execution_id
+                        """
+                    ),
+                    {
+                        "execution_id": target_id,
+                        "status": next_status,
+                        "progress_stage": next_status,
+                        "error_text": reason,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "dead_letter_reason": dead_letter_reason,
+                        "available_at": now,
+                        "heartbeat_at": now,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                    },
+                )
+                connection.execute(
+                    self._text("DELETE FROM resource_lease WHERE execution_id = :execution_id"),
+                    {"execution_id": target_id},
+                )
+                self._refresh_request_child_counts(connection, request_id=execution.request_id, now=now)
+            updated = self.load_task_execution(execution_id=target_id)
+            return {
+                "target_table": target_table,
+                "target_id": target_id,
+                "action_type": action_type,
+                "status": updated.status,
+            }
+
+        if target_table == "notification_outbox":
+            with self._engine.begin() as connection:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE notification_outbox
+                        SET status = :status,
+                            progress_stage = :progress_stage,
+                            worker_id = '',
+                            lease_until = NULL,
+                            heartbeat_at = NULL,
+                            next_retry_at = :next_retry_at,
+                            last_error_text = :last_error_text,
+                            error_type = :error_type,
+                            error_code = :error_code,
+                            dead_letter_reason = :dead_letter_reason,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at
+                        WHERE outbox_id = :outbox_id
+                        """
+                    ),
+                    {
+                        "outbox_id": target_id,
+                        "status": next_status,
+                        "progress_stage": next_status,
+                        "next_retry_at": now if next_status == "retry_wait" else None,
+                        "last_error_text": reason,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "dead_letter_reason": dead_letter_reason,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                    },
+                )
+            updated = self.load_outbox(outbox_id=target_id)
+            return {
+                "target_table": target_table,
+                "target_id": target_id,
+                "action_type": action_type,
+                "status": updated.status,
+            }
+
+        raise ValueError(f"Unsupported watchdog target_table: {target_table}")
+
+    def reclaim_expired_outbox_claims(self, *, limit: int = 100) -> list[NotificationOutboxRecord]:
+        candidates = self.scan_expired_outbox_leases(limit=limit)
+        if not candidates:
+            return []
+        now = time.time()
+        with self._engine.begin() as connection:
+            for candidate in candidates:
+                row = (
+                    connection.execute(
+                        self._text(
+                            """
+                            SELECT retry_count, max_retry_count
+                            FROM notification_outbox
+                            WHERE outbox_id = :outbox_id
+                              AND status = 'sending'
+                            LIMIT 1
+                            """
+                        ),
+                        {"outbox_id": candidate.outbox_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    continue
+                retry_count = int(row["retry_count"] or 0) + 1
+                max_retry_count = int(row["max_retry_count"] or 0)
+                status = "retry_wait" if retry_count < max_retry_count else "failed"
+                next_retry_at = now if status == "retry_wait" else None
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE notification_outbox
+                        SET status = :status,
+                            progress_stage = :progress_stage,
+                            retry_count = :retry_count,
+                            next_retry_at = :next_retry_at,
+                            worker_id = '',
+                            lease_until = NULL,
+                            heartbeat_at = NULL,
+                            last_error_text = :last_error_text,
+                            error_type = 'timeout',
+                            error_code = 'outbox_lease_expired',
+                            dead_letter_reason = :dead_letter_reason,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at
+                        WHERE outbox_id = :outbox_id
+                        """
+                    ),
+                    {
+                        "outbox_id": candidate.outbox_id,
+                        "status": status,
+                        "progress_stage": "failed" if status == "failed" else "retry_wait",
+                        "retry_count": retry_count,
+                        "next_retry_at": next_retry_at,
+                        "last_error_text": "Outbox sending lease expired and was reclaimed.",
+                        "dead_letter_reason": "lease_expired" if status == "failed" else "",
+                        "last_progress_at": now,
+                        "updated_at": now,
+                    },
+                )
+        return [self.load_outbox(outbox_id=item.outbox_id) for item in candidates]
+
+    def _aggregate_runtime_request_children(self, connection: Any, *, request_id: str) -> dict[str, int]:
+        task_stats = (
+            connection.execute(
+                self._text(
+                    """
+                    SELECT
+                        COUNT(*) AS total_count,
+                        SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
+                    FROM task_execution
+                    WHERE request_id = :request_id
+                    """
+                ),
+                {"request_id": request_id},
+            )
+            .mappings()
+            .first()
+        ) or {}
+        api_stats = (
+            connection.execute(
+                self._text(
+                    """
+                    SELECT
+                        COUNT(*) AS total_count,
+                        SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
+                    FROM api_worker_job
+                    WHERE request_id = :request_id
+                    """
+                ),
+                {"request_id": request_id},
+            )
+            .mappings()
+            .first()
+        ) or {}
+        return {
+            "total_count": int(task_stats.get("total_count") or 0) + int(api_stats.get("total_count") or 0),
+            "terminal_count": int(task_stats.get("terminal_count") or 0) + int(api_stats.get("terminal_count") or 0),
+            "success_count": int(task_stats.get("success_count") or 0) + int(api_stats.get("success_count") or 0),
+            "failed_count": int(task_stats.get("failed_count") or 0) + int(api_stats.get("failed_count") or 0),
+            "skipped_count": int(task_stats.get("skipped_count") or 0) + int(api_stats.get("skipped_count") or 0),
+            "active_count": int(task_stats.get("active_count") or 0) + int(api_stats.get("active_count") or 0),
+        }
+
+    def reconcile_request_waiting_children(self, *, request_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._engine.begin() as connection:
+            request_row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM task_request
+                        WHERE request_id = :request_id
+                        LIMIT 1
+                        """
+                    ),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+            if request_row is None:
+                raise ValueError("Task request not found.")
+
+            counts = self._aggregate_runtime_request_children(connection, request_id=request_id)
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE task_request
+                    SET child_total_count = :child_total_count,
+                        child_terminal_count = :child_terminal_count,
+                        child_success_count = :child_success_count,
+                        child_failed_count = :child_failed_count,
+                        child_skipped_count = :child_skipped_count,
+                        updated_at = :updated_at
+                    WHERE request_id = :request_id
+                    """
+                ),
+                {
+                    "request_id": request_id,
+                    "child_total_count": counts["total_count"],
+                    "child_terminal_count": counts["terminal_count"],
+                    "child_success_count": counts["success_count"],
+                    "child_failed_count": counts["failed_count"],
+                    "child_skipped_count": counts["skipped_count"],
+                    "updated_at": now,
+                },
+            )
+
+            transitioned = False
+            if str(request_row["status"] or "") == "waiting_children" and counts["active_count"] == 0:
+                connection.execute(
+                    self._text(
+                        """
+                        UPDATE task_request
+                        SET status = 'ready_for_summary',
+                            current_stage = 'ready_for_summary',
+                            progress_stage = 'ready_for_summary',
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at
+                        WHERE request_id = :request_id
+                        """
+                    ),
+                    {
+                        "request_id": request_id,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                    },
+                )
+                transitioned = True
+
+            updated_row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM task_request
+                        WHERE request_id = :request_id
+                        LIMIT 1
+                        """
+                    ),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+
+        if updated_row is None:
+            raise ValueError("Task request not found after reconcile.")
+        return {
+            "request": self._request_from_row(updated_row),
+            "transitioned": transitioned,
+            "child_total_count": counts["total_count"],
+            "child_terminal_count": counts["terminal_count"],
+            "child_success_count": counts["success_count"],
+            "child_failed_count": counts["failed_count"],
+            "child_skipped_count": counts["skipped_count"],
+            "active_count": counts["active_count"],
+        }
 
     def _refresh_request_child_counts(self, connection: Any, *, request_id: str, now: float) -> None:
         stats = (
@@ -2463,6 +3830,7 @@ class RuntimeStore:
         reply_target: str,
         payload: dict[str, Any],
         dedupe_key: str,
+        max_execution_seconds: float = 0.0,
     ) -> NotificationOutboxRecord:
         outbox_id = uuid.uuid4().hex
         now = time.time()
@@ -2490,13 +3858,15 @@ class RuntimeStore:
                     """
                     INSERT INTO notification_outbox (
                         outbox_id, channel_code, event_type, ref_type, ref_id,
-                        reply_target, dedupe_key, payload_json, status, retry_count,
-                        max_retry_count, next_retry_at, last_error_text, sent_at,
+                        reply_target, dedupe_key, payload_json, status, progress_stage, retry_count,
+                        max_retry_count, max_execution_seconds, next_retry_at, last_error_text,
+                        error_type, error_code, dead_letter_reason, sent_at, last_progress_at,
                         created_at, updated_at
                     ) VALUES (
                         :outbox_id, :channel_code, :event_type, 'task_request', :ref_id,
-                        :reply_target, :dedupe_key, :payload_json, 'pending', 0,
-                        10, NULL, '', NULL,
+                        :reply_target, :dedupe_key, :payload_json, 'pending', 'queued', 0,
+                        10, :max_execution_seconds, NULL, '',
+                        '', '', '', NULL, :last_progress_at,
                         :created_at, :updated_at
                     )
                     """
@@ -2509,6 +3879,8 @@ class RuntimeStore:
                     "reply_target": reply_target,
                     "dedupe_key": dedupe_key,
                     "payload_json": _json_dumps(payload),
+                    "max_execution_seconds": _coerce_non_negative_float(max_execution_seconds),
+                    "last_progress_at": now,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -2555,12 +3927,23 @@ class RuntimeStore:
                     """
                     UPDATE notification_outbox
                     SET status = :status,
+                        progress_stage = CASE
+                            WHEN :status = 'failed' THEN 'failed'
+                            ELSE 'retry_wait'
+                        END,
                         retry_count = :retry_count,
                         next_retry_at = :next_retry_at,
                         worker_id = '',
                         lease_until = NULL,
                         heartbeat_at = NULL,
                         last_error_text = :last_error_text,
+                        error_type = 'timeout',
+                        error_code = 'outbox_lease_expired',
+                        dead_letter_reason = CASE
+                            WHEN :status = 'failed' THEN 'lease_expired'
+                            ELSE dead_letter_reason
+                        END,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at
                     WHERE outbox_id = :outbox_id
                     """
@@ -2571,6 +3954,7 @@ class RuntimeStore:
                     "retry_count": retry_count,
                     "next_retry_at": next_retry_at,
                     "last_error_text": "Outbox sending lease expired and was reclaimed.",
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )
@@ -2603,9 +3987,11 @@ class RuntimeStore:
                     """
                     UPDATE notification_outbox
                     SET status = 'sending',
+                        progress_stage = 'sending',
                         worker_id = :worker_id,
                         lease_until = :lease_until,
                         heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at
                     WHERE outbox_id = :outbox_id
                     """
@@ -2615,6 +4001,7 @@ class RuntimeStore:
                     "worker_id": worker_id,
                     "lease_until": now + lease_seconds,
                     "heartbeat_at": now,
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )
@@ -2652,6 +4039,42 @@ class RuntimeStore:
                 },
             )
 
+    def update_outbox_progress(
+        self,
+        *,
+        outbox_id: str,
+        progress_stage: str,
+        lease_seconds: float | None = None,
+    ) -> NotificationOutboxRecord:
+        now = time.time()
+        with self._engine.begin() as connection:
+            assignments = [
+                "progress_stage = :progress_stage",
+                "last_progress_at = :last_progress_at",
+                "updated_at = :updated_at",
+            ]
+            values: dict[str, Any] = {
+                "outbox_id": outbox_id,
+                "progress_stage": progress_stage,
+                "last_progress_at": now,
+                "updated_at": now,
+            }
+            if lease_seconds is not None:
+                assignments.extend(["heartbeat_at = :heartbeat_at", "lease_until = :lease_until"])
+                values["heartbeat_at"] = now
+                values["lease_until"] = now + max(lease_seconds, 0.1)
+            connection.execute(
+                self._text(
+                    f"""
+                    UPDATE notification_outbox
+                    SET {", ".join(assignments)}
+                    WHERE outbox_id = :outbox_id
+                    """
+                ),
+                values,
+            )
+        return self.load_outbox(outbox_id=outbox_id)
+
     def mark_outbox_sent(self, *, outbox_id: str) -> NotificationOutboxRecord:
         with self._engine.begin() as connection:
             now = time.time()
@@ -2660,16 +4083,21 @@ class RuntimeStore:
                     """
                     UPDATE notification_outbox
                     SET status = 'sent',
+                        progress_stage = 'sent',
                         sent_at = :sent_at,
                         updated_at = :updated_at,
                         worker_id = '',
                         lease_until = NULL,
                         heartbeat_at = NULL,
-                        last_error_text = ''
+                        last_error_text = '',
+                        error_type = '',
+                        error_code = '',
+                        dead_letter_reason = '',
+                        last_progress_at = :last_progress_at
                     WHERE outbox_id = :outbox_id
                     """
                 ),
-                {"outbox_id": outbox_id, "sent_at": now, "updated_at": now},
+                {"outbox_id": outbox_id, "sent_at": now, "updated_at": now, "last_progress_at": now},
             )
         return self.load_outbox(outbox_id=outbox_id)
 
@@ -2679,6 +4107,9 @@ class RuntimeStore:
         outbox_id: str,
         error_text: str,
         retry_delay_seconds: float = 30.0,
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
     ) -> NotificationOutboxRecord:
         with self._engine.begin() as connection:
             now = time.time()
@@ -2701,12 +4132,17 @@ class RuntimeStore:
                     """
                     UPDATE notification_outbox
                     SET status = :status,
+                        progress_stage = :progress_stage,
                         retry_count = :retry_count,
                         next_retry_at = :next_retry_at,
                         worker_id = '',
                         lease_until = NULL,
                         heartbeat_at = NULL,
                         last_error_text = :last_error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
+                        last_progress_at = :last_progress_at,
                         updated_at = :updated_at
                     WHERE outbox_id = :outbox_id
                     """
@@ -2714,9 +4150,14 @@ class RuntimeStore:
                 {
                     "outbox_id": outbox_id,
                     "status": status,
+                    "progress_stage": status,
                     "retry_count": retry_count,
                     "next_retry_at": next_retry_at,
                     "last_error_text": error_text,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "dead_letter_reason": dead_letter_reason or ("max_retry_exhausted" if status == "failed" else ""),
+                    "last_progress_at": now,
                     "updated_at": now,
                 },
             )

@@ -6,9 +6,9 @@ import json
 import sys
 from typing import Any
 
-from automation_business_scaffold.business.flows.refresh_current_competitor_table_flow import (
-    dispatch_phase1_outbox_once,
-    run_phase1_outbox_dispatcher,
+from automation_business_scaffold.business.flows.runtime_orchestrator import (
+    dispatch_outbox_once,
+    run_outbox_dispatcher,
 )
 
 
@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     params = _build_params(args)
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            payload = dispatch_phase1_outbox_once(params) if args.once else run_phase1_outbox_dispatcher(params)
+            payload = dispatch_outbox_once(params) if args.once else run_outbox_dispatcher(params)
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1

@@ -234,11 +234,11 @@ def test_build_run_summary_includes_request_id_in_submit_message(tmp_path):
                 "task_name": "refresh_current_competitor_table",
                 "run_id": "run-submit-1",
                 "result": {
-                    "message": "Workflow refresh_current_competitor_table_v1 completed.",
+                    "message": "Workflow refresh_current_competitor_table completed.",
                     "data": {
-                        "workflow_id": "refresh_current_competitor_table_v1",
+                        "workflow_id": "refresh_current_competitor_table",
                         "step_outputs": {
-                            "orchestrate_refresh_current_competitor_table": {
+                            "dispatch_task_request": {
                                 "control_action": "submit",
                                 "request_id": "req-submit-123",
                                 "request_status": "pending",

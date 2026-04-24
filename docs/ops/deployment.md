@@ -2,7 +2,7 @@
 
 > 状态: Ops 文档。本文是当前部署说明，部署和回退材料不再放在 `docs/business`。
 
-更新时间：`2026-04-14`
+更新时间：`2026-04-24`
 
 本文件描述当前可运行版本的真实部署方式。当前正式运行形态已经不是“部署一个 skill 然后手工在终端里跑脚本”，而是：
 
@@ -84,6 +84,15 @@
 
 ## 6. 必备配置
 
+说明：
+
+- 当前 Python 运行时会自动尝试读取：
+  1. `scripts/execution_control/executor.local.env`
+  2. `skills/mujitask-tiktok-feishu-sync/skill.local.env`
+  3. `.env`
+- 自动加载不会覆盖已经显式传入的进程环境变量或 CLI 参数。
+- Runtime DB / MinIO 的正式默认配置应放在 `executor.local.env`，不要只放在 `skill.local.env`。
+
 ### 6.1 skill.local.env
 
 至少需要：
@@ -120,6 +129,7 @@
 
 - 当前推荐使用 `BUSINESS_*` 前缀。
 - 代码也兼容 `EXECUTION_CONTROL_*`，但部署文档统一按 `BUSINESS_*` 说明。
+- 如果在项目仓库内运行 skill、daemon、CLI、pytest 或 Alembic，运行时会自动加载这份文件；不需要每次手工导出。
 
 ## 7. 数据库与对象存储
 
@@ -225,6 +235,16 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 ```
 
 然后填写数据库、MinIO、通知和浏览器相关变量。
+
+推荐把 Runtime 相关变量只维护在这份文件：
+
+- `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
+- `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
+- `BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY`
+- `BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY`
+
+这样 daemon、CLI、Alembic 和 pytest 都会从同一个项目配置入口读取，不需要每次运行前再手工 `export`。
 
 ### 8.4 初始化数据库
 

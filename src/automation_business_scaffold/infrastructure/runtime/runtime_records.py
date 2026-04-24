@@ -12,6 +12,7 @@ class RuntimeTaskRequestRecord:
     status: str
     payload: dict[str, Any] = field(default_factory=dict)
     current_stage: str = ""
+    progress_stage: str = ""
     trigger_mode: str = "manual"
     source_channel_code: str = ""
     source_session_id: str = ""
@@ -22,6 +23,9 @@ class RuntimeTaskRequestRecord:
     result: dict[str, Any] = field(default_factory=dict)
     stage_cursor: dict[str, Any] = field(default_factory=dict)
     error_text: str = ""
+    error_type: str = ""
+    error_code: str = ""
+    dead_letter_reason: str = ""
     child_total_count: int = 0
     child_terminal_count: int = 0
     child_success_count: int = 0
@@ -30,6 +34,8 @@ class RuntimeTaskRequestRecord:
     worker_id: str = ""
     lease_until: float = 0.0
     heartbeat_at: float = 0.0
+    last_progress_at: float = 0.0
+    max_execution_seconds: float = 0.0
     created_at: float = 0.0
     updated_at: float = 0.0
     started_at: float = 0.0
@@ -50,6 +56,7 @@ class RuntimeTaskExecutionRecord:
     resource_code: str
     status: str
     queue_seq: int
+    progress_stage: str = ""
     available_at: float = 0.0
     worker_id: str = ""
     attempt_count: int = 0
@@ -58,12 +65,17 @@ class RuntimeTaskExecutionRecord:
     summary: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
     error_text: str = ""
+    error_type: str = ""
+    error_code: str = ""
+    dead_letter_reason: str = ""
     run_id: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
     started_at: float = 0.0
     finished_at: float = 0.0
     heartbeat_at: float = 0.0
+    last_progress_at: float = 0.0
+    max_execution_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +89,7 @@ class NotificationOutboxRecord:
     ref_type: str
     ref_id: str
     status: str
+    progress_stage: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     reply_target: str = ""
     dedupe_key: str = ""
@@ -87,7 +100,12 @@ class NotificationOutboxRecord:
     lease_until: float = 0.0
     heartbeat_at: float = 0.0
     last_error_text: str = ""
+    error_type: str = ""
+    error_code: str = ""
+    dead_letter_reason: str = ""
     sent_at: float = 0.0
+    last_progress_at: float = 0.0
+    max_execution_seconds: float = 0.0
     created_at: float = 0.0
     updated_at: float = 0.0
 
