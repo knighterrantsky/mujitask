@@ -370,4 +370,3 @@ def test_refresh_runtime_release_request_after_child_completion_requeues_worker_
     updated = store.load_task_request(request_id=request.request_id)
     assert updated.status == "pending"
     assert updated.current_stage == "persist_facts"
-

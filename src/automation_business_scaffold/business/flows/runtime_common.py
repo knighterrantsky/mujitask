@@ -185,4 +185,3 @@ def build_outbox_message_text(*, request_id: str, task_code: str, summary: dict[
         "result_keys": sorted(result.keys()),
     }
     return json.dumps(preview, ensure_ascii=False)
-
