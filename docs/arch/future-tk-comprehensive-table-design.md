@@ -8,7 +8,7 @@
 
 相关文档：
 
-- [10-飞书五表结构与关联分析.md](../business/10-飞书五表结构与关联分析.md)
+- [feishu-five-table-relationship-analysis.md](../business/feishu-five-table-relationship-analysis.md)
 - [../reference/fastmoss-known-interfaces.md](../reference/fastmoss-known-interfaces.md)
 - [../reference/fastmoss-visualization-analysis.md](../reference/fastmoss-visualization-analysis.md)
 

@@ -84,7 +84,7 @@ TK合作爆款视频表
 
 如果某条需求后面确定要做，再把它整理进正式文档：
 
-- 进入明确交付范围后，补到 [01-需求文档.md](./01-需求文档.md)
+- 进入明确交付范围后，补到 [business-requirements.md](./business-requirements.md)
 - 需要设计实现方案后，补到 [../arch/README.md](../arch/README.md) 对应 workflow 或架构文档
 
 这份文档本身只负责先把想法留住，作为后续开发评估的来源。

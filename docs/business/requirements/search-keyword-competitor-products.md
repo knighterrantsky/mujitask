@@ -5,7 +5,7 @@
 - 入口任务：`search_keyword_competitor_products`
 - 触发方式：OpenClaw 对话输入
 - 业务主表：`TK竞品收集`
-- 共用口径：表结构、自动维护字段、非自动维护字段以 [../01-需求文档.md](../01-需求文档.md) 为准。
+- 共用口径：表结构、自动维护字段、非自动维护字段以 [../business-requirements.md](../business-requirements.md) 为准。
 
 ## 1. 流程定位
 
@@ -85,5 +85,5 @@ skills 需要支持用户在 OpenClaw 对话中输入类似下面的指令：
 
 ## 7. 关联文档
 
-- [../01-需求文档.md](../01-需求文档.md)
+- [../business-requirements.md](../business-requirements.md)
 - [../../arch/workflow-competitor-table-design.md](../../arch/workflow-competitor-table-design.md)

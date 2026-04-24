@@ -233,11 +233,11 @@
 
 | 业务流程 | task_code | 触发方式 | 涉及表 | 独立需求文档 | 关联设计文档 |
 | --- | --- | --- | --- | --- | --- |
-| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/01-refresh-current-competitor-table.md](./requirements/01-refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
-| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/02-search-keyword-competitor-products.md](./requirements/02-search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
-| 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/03-sync-tk-influencer-pool.md](./requirements/03-sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
+| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
+| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
+| 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
 
-说明：`tiktok_fastmoss_product_ingest` 已是当前系统入口之一，但原 `01-需求文档.md` 中尚未形成独立正式需求段落；本次不从设计文档反推客户需求，待 `TK选品收集表扩展` 等相关需求确认后，再按同一模板新增独立流程需求文档。
+说明：`tiktok_fastmoss_product_ingest` 已是当前系统入口之一，但原主需求文档中尚未形成独立正式需求段落；本次不从设计文档反推客户需求，待 `TK选品收集表扩展` 等相关需求确认后，再按同一模板新增独立流程需求文档。
 
 ### 4.2 变更隔离规则
 
@@ -282,7 +282,7 @@
 ## 8. 关联文档
 
 - [requirements/README.md](./requirements/README.md)
-- [requirements/01-refresh-current-competitor-table.md](./requirements/01-refresh-current-competitor-table.md)
-- [requirements/02-search-keyword-competitor-products.md](./requirements/02-search-keyword-competitor-products.md)
-- [requirements/03-sync-tk-influencer-pool.md](./requirements/03-sync-tk-influencer-pool.md)
+- [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md)
+- [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md)
+- [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md)
 - [../arch/README.md](../arch/README.md)

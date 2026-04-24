@@ -14,15 +14,15 @@
 
 | 业务流程 | task_code | 触发方式 | 需求文档 |
 | --- | --- | --- | --- |
-| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | [01-refresh-current-competitor-table.md](./01-refresh-current-competitor-table.md) |
-| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [02-search-keyword-competitor-products.md](./02-search-keyword-competitor-products.md) |
-| 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | [03-sync-tk-influencer-pool.md](./03-sync-tk-influencer-pool.md) |
+| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | [refresh-current-competitor-table.md](./refresh-current-competitor-table.md) |
+| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [search-keyword-competitor-products.md](./search-keyword-competitor-products.md) |
+| 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | [sync-tk-influencer-pool.md](./sync-tk-influencer-pool.md) |
 
 说明：`tiktok_fastmoss_product_ingest` 已是当前系统入口之一，但原主需求文档中尚未形成独立正式需求段落；待对应客户需求确认后，再在本目录新增流程需求文档。
 
 ## 维护规则
 
-1. 表结构、自动维护字段、非自动维护字段等共用口径，以 [../01-需求文档.md](../01-需求文档.md) 为准。
+1. 表结构、自动维护字段、非自动维护字段等共用口径，以 [../business-requirements.md](../business-requirements.md) 为准。
 2. 单个流程的业务规则变化，优先只修改对应流程文档。
 3. 只有当变更影响多条流程、飞书表结构、共用字段口径或正式流程索引时，才同步修改主需求文档。
 4. 新流程从待澄清需求转为正式需求后，在本目录新增独立文档，并回填主需求文档索引。
