@@ -1,0 +1,79 @@
+{
+  "workflow_code": "refresh_current_competitor_table",
+  "scenario_id": "competitor_row_refresh_minimal",
+  "baseline": {
+    "source": "achieve_fixture",
+    "input_ref": "baseline/input.json",
+    "output_ref": "baseline/output.json",
+    "trace_ref": "baseline/trace.json"
+  },
+  "candidate": {
+    "source": "runtime_fixture",
+    "request_payload": {
+      "source_table_ref": "feishu://base/tbl_tk_competitor",
+      "source_rows": [
+        {
+          "record_id": "rec_refresh_001",
+          "fields": {
+            "SKU-ID": "SKU-1001",
+            "商品链接": "https://www.tiktok.com/shop/pdp/1001?source=feishu",
+            "商品状态": "待更新"
+          }
+        }
+      ],
+      "refresh_policy": {
+        "only_pending": true
+      },
+      "reply_target": "reply://acceptance/refresh"
+    },
+    "runtime_trace_ref": "candidate/runtime-trace.json",
+    "fact_projection_ref": "candidate/fact-projection.json",
+    "feishu_projection_ref": "candidate/feishu-projection.json",
+    "outbox_ref": "candidate/outbox.json"
+  },
+  "compare_scope": {
+    "entry_payload": true,
+    "runtime_stages": true,
+    "api_jobs": true,
+    "fact_side_effects": true,
+    "feishu_projection": true,
+    "outbox": true
+  },
+  "normalization": {
+    "ignore_fields": [
+      "request_id",
+      "job_id",
+      "run_id",
+      "created_at",
+      "updated_at",
+      "raw_response_ref"
+    ],
+    "date_fields": [
+      "记录日期",
+      "记录时间"
+    ],
+    "numeric_text_fields": [
+      "昨日销量",
+      "近7天销量",
+      "近90天销量",
+      "粉丝数",
+      "关联商品销量"
+    ],
+    "unordered_list_paths": [
+      "*.warnings",
+      "*.fields.关联节日",
+      "*.fields.合作店铺"
+    ]
+  },
+  "allowed_differences": [
+    {
+      "path": "feishu_projection.records[*].fields.记录日期",
+      "reason": "Record date is execution-date dependent."
+    }
+  ],
+  "failure_policy": {
+    "fail_on_missing_required_projection": true,
+    "fail_on_unexpected_feishu_field": true,
+    "allow_partial_success_when_documented": true
+  }
+}

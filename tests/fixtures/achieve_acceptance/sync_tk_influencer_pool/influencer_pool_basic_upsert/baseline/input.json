@@ -1,0 +1,20 @@
+{
+  "source_table_ref": "feishu://base/tbl_tk_competitor",
+  "influencer_pool_table_ref": "feishu://base/tbl_tk_influencer_pool",
+  "source_rows": [
+    {
+      "record_id": "rec_competitor_009",
+      "fields": {
+        "SKU-ID": "SKU-CREATOR-009",
+        "商品链接": "https://www.tiktok.com/shop/pdp/creator-009",
+        "达人查找状态": "待查找"
+      }
+    }
+  ],
+  "creator_filters": {
+    "min_follower_count": 10000,
+    "max_creator_count": 1
+  },
+  "upsert_key": "达人ID",
+  "reply_target": "reply://acceptance/influencer"
+}

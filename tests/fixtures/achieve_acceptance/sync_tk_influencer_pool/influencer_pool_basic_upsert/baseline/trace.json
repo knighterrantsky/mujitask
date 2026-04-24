@@ -1,0 +1,66 @@
+{
+  "runtime_stages": [
+    {
+      "stage_code": "read_competitor_candidates",
+      "status": "success",
+      "job_id": "achieve-read-001",
+      "updated_at": "2026-04-23T08:20:00+08:00"
+    },
+    {
+      "stage_code": "discover_related_creators",
+      "status": "success",
+      "job_id": "achieve-product-001",
+      "updated_at": "2026-04-23T08:21:00+08:00"
+    },
+    {
+      "stage_code": "collect_creator_detail",
+      "status": "success",
+      "job_id": "achieve-creator-001",
+      "updated_at": "2026-04-23T08:22:00+08:00"
+    },
+    {
+      "stage_code": "write_influencer_pool",
+      "status": "success",
+      "job_id": "achieve-pool-001",
+      "updated_at": "2026-04-23T08:23:00+08:00"
+    },
+    {
+      "stage_code": "writeback_competitor_status",
+      "status": "success",
+      "job_id": "achieve-status-001",
+      "updated_at": "2026-04-23T08:24:00+08:00"
+    }
+  ],
+  "api_jobs": [
+    {
+      "job_code": "feishu_table_read",
+      "status": "success",
+      "job_id": "achieve-read-001",
+      "run_id": "achieve-run-read"
+    },
+    {
+      "job_code": "fastmoss_product_fetch",
+      "status": "success",
+      "job_id": "achieve-product-001",
+      "run_id": "achieve-run-product"
+    },
+    {
+      "job_code": "fastmoss_creator_fetch",
+      "status": "success",
+      "job_id": "achieve-creator-001",
+      "run_id": "achieve-run-creator"
+    },
+    {
+      "job_code": "feishu_table_write",
+      "status": "success",
+      "job_id": "achieve-pool-001",
+      "run_id": "achieve-run-pool"
+    },
+    {
+      "job_code": "feishu_table_write",
+      "status": "success",
+      "job_id": "achieve-status-001",
+      "run_id": "achieve-run-status"
+    }
+  ]
+}

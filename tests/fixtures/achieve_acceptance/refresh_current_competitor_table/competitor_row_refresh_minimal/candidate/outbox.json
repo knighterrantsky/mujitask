@@ -1,0 +1,9 @@
+{
+  "event_type": "task_request.completed",
+  "request_id": "runtime-refresh-request",
+  "summary": {
+    "final_status": "success",
+    "updated_count": 1,
+    "failed_count": 0
+  }
+}

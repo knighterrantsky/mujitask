@@ -1,0 +1,16 @@
+{
+  "persisted_entities": [
+    {
+      "entity_type": "product",
+      "entity_id": "SKU-1001"
+    }
+  ],
+  "relations": [],
+  "observations": [
+    {
+      "entity_id": "SKU-1001",
+      "metric": "day7_sold_count",
+      "value": 1200
+    }
+  ]
+}

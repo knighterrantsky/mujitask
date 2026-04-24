@@ -1,0 +1,54 @@
+{
+  "runtime_stages": [
+    {
+      "stage_code": "read_competitor_rows",
+      "status": "success",
+      "job_id": "achieve-read-001",
+      "updated_at": "2026-04-23T08:00:00+08:00"
+    },
+    {
+      "stage_code": "collect_product_data",
+      "status": "success",
+      "job_id": "achieve-product-001",
+      "updated_at": "2026-04-23T08:01:00+08:00"
+    },
+    {
+      "stage_code": "persist_facts",
+      "status": "success",
+      "job_id": "achieve-fact-001",
+      "updated_at": "2026-04-23T08:02:00+08:00"
+    },
+    {
+      "stage_code": "writeback_competitor_rows",
+      "status": "success",
+      "job_id": "achieve-write-001",
+      "updated_at": "2026-04-23T08:03:00+08:00"
+    }
+  ],
+  "api_jobs": [
+    {
+      "job_code": "feishu_table_read",
+      "status": "success",
+      "job_id": "achieve-read-001",
+      "run_id": "achieve-run-read"
+    },
+    {
+      "job_code": "fastmoss_product_fetch",
+      "status": "success",
+      "job_id": "achieve-fastmoss-001",
+      "run_id": "achieve-run-fastmoss"
+    },
+    {
+      "job_code": "fact_bundle_upsert",
+      "status": "success",
+      "job_id": "achieve-fact-001",
+      "run_id": "achieve-run-fact"
+    },
+    {
+      "job_code": "feishu_table_write",
+      "status": "success",
+      "job_id": "achieve-write-001",
+      "run_id": "achieve-run-write"
+    }
+  ]
+}

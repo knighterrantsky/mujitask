@@ -1,0 +1,28 @@
+{
+  "records": [
+    {
+      "target_table_ref": "feishu://base/tbl_tk_influencer_pool",
+      "record_id": "rec_creator_9009",
+      "fields": {
+        "达人ID": "creator_9009",
+        "达人昵称": "Pumpkin Maker",
+        "粉丝数": "15000",
+        "关联商品销量": "268",
+        "合作店铺": [
+          "Fall Finds",
+          "Pumpkin Home"
+        ],
+        "记录日期": "2026-04-24"
+      }
+    },
+    {
+      "target_table_ref": "feishu://base/tbl_tk_competitor",
+      "record_id": "rec_competitor_009",
+      "fields": {
+        "SKU-ID": "SKU-CREATOR-009",
+        "达人查找状态": "已找到",
+        "达人数量": 1
+      }
+    }
+  ]
+}

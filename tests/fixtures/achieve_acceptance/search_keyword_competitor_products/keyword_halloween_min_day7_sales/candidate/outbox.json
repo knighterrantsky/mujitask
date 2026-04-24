@@ -1,0 +1,10 @@
+{
+  "event_type": "task_request.completed",
+  "request_id": "runtime-keyword-request",
+  "summary": {
+    "final_status": "success",
+    "candidate_total_count": 1,
+    "seeded_count": 1,
+    "skipped_duplicate_count": 0
+  }
+}
