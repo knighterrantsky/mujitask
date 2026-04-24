@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from automation_business_scaffold.business.flows import tiktok_fastmoss_product_ingest_flow as ingest_flow
 from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer import (
     DEFAULT_FASTMOSS_VISUALIZATION_CHARTS,
     FastMossVisualizationRenderer,
@@ -130,6 +129,10 @@ def test_fastmoss_visualization_renderer_skips_single_sku_chart(tmp_path: Path) 
 
 
 def test_product_ingest_flow_can_render_fastmoss_visualizations(monkeypatch, tmp_path: Path) -> None:
+    ingest_flow = pytest.importorskip(
+        "automation_business_scaffold.business.flows.achieve.tiktok_fastmoss_product_ingest_flow",
+        reason="Legacy product ingest visualization wrapper is archived under achieve.",
+    )
     captured: dict[str, object] = {}
 
     class FakeRenderer:

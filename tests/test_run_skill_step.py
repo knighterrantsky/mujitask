@@ -47,8 +47,16 @@ def test_append_runtime_params_uses_explicit_openclaw_delivery_context():
     }
 
 
-def test_append_runtime_params_falls_back_to_openclaw_session_store(tmp_path):
+def test_append_runtime_params_falls_back_to_openclaw_session_store(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
+    for key in (
+        "OPENCLAW_DELIVERY_CONTEXT_JSON",
+        "OPENCLAW_DELIVERY_CHANNEL",
+        "OPENCLAW_DELIVERY_TO",
+        "OPENCLAW_DELIVERY_ACCOUNT_ID",
+        "OPENCLAW_DELIVERY_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
     sessions_dir = tmp_path / "agents" / "tiktok-ops" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     (sessions_dir / "sessions.json").write_text(

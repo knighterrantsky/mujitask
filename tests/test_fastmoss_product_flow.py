@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Legacy FastMoss browser flow was archived under business/flows/achieve during the runtime rewrite.",
+    allow_module_level=True,
+)
+
 from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace

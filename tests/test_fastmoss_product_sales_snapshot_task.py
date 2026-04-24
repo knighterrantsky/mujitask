@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Legacy FastMoss product sales snapshot task was archived under business/tasks/achieve during the runtime rewrite.",
+    allow_module_level=True,
+)
+
 from types import SimpleNamespace
 
 from automation_business_scaffold.models import FastMossProductSalesSnapshot

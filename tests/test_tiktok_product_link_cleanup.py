@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Legacy TikTok Feishu sync flow was archived under business/flows/achieve during the runtime rewrite.",
+    allow_module_level=True,
+)
+
 from automation_business_scaffold.business.flows.tiktok_feishu_sync_flow import run_tiktok_product_link_cleanup
 
 

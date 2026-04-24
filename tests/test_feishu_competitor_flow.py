@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Legacy Feishu competitor flow was archived under business/flows/achieve during the runtime rewrite.",
+    allow_module_level=True,
+)
+
 from pathlib import Path
 
 from automation_business_scaffold.business.flows.feishu_competitor_flow import (

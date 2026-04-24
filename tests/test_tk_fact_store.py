@@ -4,7 +4,6 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
-from automation_business_scaffold.business.flows.influencer_pool_support import persist_influencer_fact_bundle
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore, extract_fact_payloads
@@ -247,31 +246,71 @@ def test_tk_fact_store_records_daily_and_distribution_snapshots(runtime_db_url):
 
 def test_persist_influencer_fact_bundle_writes_creator_product_shop_and_media(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
+    service = TKFactIngestionService(runtime_store=store)
     execution = type(
         "Execution",
         (),
         {"request_id": "req-1", "execution_id": "exec-1", "run_id": "run-1"},
     )()
 
-    payload = persist_influencer_fact_bundle(
-        store=store,
-        execution=execution,
-        influencer_state={
-            "influencer_id": "creator-1",
-            "uid": "7094679250578015274",
-            "source_product_ids": ["1729440407432826887"],
-            "source_product_sales_by_id": {"1729440407432826887": 66},
-            "source_product_image_refs_by_id": {
-                "1729440407432826887": [{"file_token": "file-token-main"}]
+    payload = service.ingest_api_response(
+        source_platform="fastmoss",
+        source_endpoint="influencer_pool.fact_bundle",
+        request_params={"source_key": "creator-1"},
+        response_payload={"source_key": "creator-1"},
+        products=[
+            {
+                "product_id": "1729440407432826887",
+                "shop_name": "Holiday Shop",
+            }
+        ],
+        creators=[
+            {
+                "creator_id": "creator-1",
+                "uid": "7094679250578015274",
+                "nickname": "Holiday Creator",
+                "avatar_url": "https://example.com/avatar.png",
+                "follower_count": 10000,
+            }
+        ],
+        shops=[
+            {
+                "shop_name": "Holiday Shop",
+                "source_platform": "fastmoss",
+            }
+        ],
+        media_assets=[
+            {
+                "entity_type": "creator",
+                "entity_external_id": "creator-1",
+                "media_role": "avatar",
+                "source_url": "https://example.com/avatar.png",
+                "source_platform": "fastmoss",
             },
-            "holiday_names": ["Valentine"],
-            "cooperation_shop_names": ["Holiday Shop"],
-            "avatar": "https://example.com/avatar.png",
-            "follower_count": 10000,
+            {
+                "entity_type": "product",
+                "entity_external_id": "1729440407432826887",
+                "media_role": "product_main_image",
+                "file_token": "file-token-main",
+                "source_platform": "feishu",
+            },
+        ],
+        relations={
+            "creator_products": [
+                {
+                    "creator_id": "creator-1",
+                    "product_id": "1729440407432826887",
+                    "sold_count": 66,
+                }
+            ],
+            "shop_creators": [
+                {
+                    "shop_name": "Holiday Shop",
+                    "creator_id": "creator-1",
+                }
+            ],
         },
-        table_url="https://example.feishu.cn/base/appXXX?table=tblXXX",
-        target_record_id="rec-creator",
-        source_key="creator-1",
+        execution=execution,
     )
     fact_store = TKFactStore(runtime_store=store)
 

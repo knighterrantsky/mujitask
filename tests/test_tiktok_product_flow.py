@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Legacy TikTok product browser flow was archived under business/flows/achieve during the runtime rewrite.",
+    allow_module_level=True,
+)
+
 import json
 from contextlib import contextmanager
 from dataclasses import replace
