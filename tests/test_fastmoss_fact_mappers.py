@@ -11,10 +11,24 @@ from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
     map_fastmoss_video_goods,
     map_fastmoss_video_overview,
 )
+from automation_business_scaffold.business.handlers.api.registry import build_bound_api_handler_registry
+from automation_business_scaffold.business.handlers.contract import HandlerContext
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+
+
+def _handler_context(handler_code: str, payload: dict) -> HandlerContext:
+    return HandlerContext(
+        request_id="req-fastmoss-handler",
+        job_id=f"job-{handler_code}",
+        handler_code=handler_code,
+        worker_type="api_worker",
+        runtime_table="api_worker_job",
+        payload=payload,
+        job_code=handler_code,
+    )
 
 
 def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
@@ -43,6 +57,42 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
     assert mapped["relations"]["product_shops"][0]["shop_id"] == "7496166867916327706"
     assert mapped["media_assets"][0]["entity_external_id"] == "1732183068040729370"
     assert mapped["products"][0]["facts"] == {}
+
+
+def test_fastmoss_product_fetch_unwraps_overview_for_metrics_and_observations():
+    result = build_bound_api_handler_registry().dispatch(
+        "fastmoss_product_fetch",
+        _handler_context(
+            "fastmoss_product_fetch",
+            {
+                "product_identity": {"product_id": "1732183068040729370"},
+                "fastmoss_bundle": {
+                    "base": {
+                        "data": {
+                            "product": {
+                                "product_id": "1732183068040729370",
+                                "title": "Valentine Gift",
+                                "real_price": "$12.99",
+                            }
+                        }
+                    },
+                    "overview": {
+                        "data": {
+                            "product_id": "1732183068040729370",
+                            "d_type": 28,
+                            "overview": {"day7_sold_count": 412},
+                            "chart_list": [{"dt": "2026-04-23", "inc_sold_count": 38}],
+                        }
+                    },
+                },
+            },
+        ),
+    )
+
+    assert result.status == "success"
+    assert result.result["metrics_snapshot"]["overview"]["day7_sold_count"] == 412
+    assert result.result["product_fact_bundle"]["product_metric_snapshots"]
+    assert result.result["product_fact_bundle"]["product_daily_metrics"][0]["sold_count"] == 38
 
 
 def test_product_overview_mapper_keeps_metrics_out_of_product_main_facts():

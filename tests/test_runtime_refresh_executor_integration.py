@@ -17,6 +17,7 @@ from automation_business_scaffold.business.handlers import (
 from automation_business_scaffold.business.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
 SOURCE_TABLE_REF = "tbl_competitor_source"
@@ -423,3 +424,215 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["writeback_status"] == "success"
     assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 2
     assert status_payload["result"]["stage_summary"]["writeback_competitor_rows"]["total_count"] == 1
+
+
+def test_refresh_executor_real_business_e2e_with_bound_handlers(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class FakeFeishuClient:
+        rows: list[dict[str, object]] = []
+        updated: list[dict[str, object]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_records(self, app_token, table_id, **kwargs):
+            assert app_token == "app-token"
+            assert table_id == "tbl-token"
+            assert kwargs["view_id"] == "vew-token"
+            return {"data": {"items": list(self.rows), "has_more": False}}
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            for row in self.rows:
+                if row["record_id"] == record_id:
+                    row_fields = row.setdefault("fields", {})
+                    assert isinstance(row_fields, dict)
+                    row_fields.update(fields)
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeFeishuClient.rows = [
+        {
+            "record_id": SOURCE_RECORD_ID,
+            "fields": {
+                "产品链接": {"text": PRODUCT_URL, "link": PRODUCT_URL},
+                "SKU-ID": PRODUCT_ID,
+                "商品状态": "",
+                "图片": "",
+                "标题": "",
+                "卖家": "",
+                "价格": "",
+                "Fastmoss价格": "",
+                "昨日销量": "",
+                "近7天销量": "",
+                "近90天销量": "",
+                "记录日期": "",
+            },
+        }
+    ]
+    FakeFeishuClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        FakeFeishuClient,
+    )
+    monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)
+
+    submitted = _submit_refresh_request(
+        runtime_db_url,
+        table_refs={
+            SOURCE_TABLE_REF: {
+                "app_token": "app-token",
+                "table_id": "tbl-token",
+                "view_id": "vew-token",
+                "access_token": "access-token",
+            }
+        },
+        field_names=[
+            "产品链接",
+            "SKU-ID",
+            "商品状态",
+            "图片",
+            "标题",
+            "卖家",
+            "价格",
+            "Fastmoss价格",
+            "昨日销量",
+            "近7天销量",
+            "近90天销量",
+            "记录日期",
+        ],
+        refresh_filter={
+            "candidate_policy": "missing_auto_maintained_fields",
+            "auto_fields": ["标题", "卖家", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+            "skip_product_status": ["已下架/区域不可售"],
+        },
+        raw_request_result={
+            "product": {
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+                "title": "Graduation Candy Boxes",
+                "shop_name": "Party Supply Co",
+                "main_image_url": "https://cdn.example.com/tiktok-main.jpg",
+                "price_text": "$14.50",
+            },
+            "sku_list": [{"sku_id": "sku-blue", "sku_name": "Blue", "price": "$14.50", "stock": 7}],
+        },
+        fastmoss_bundle={
+            "base": {
+                "data": {
+                    "product": {
+                        "product_id": PRODUCT_ID,
+                        "title": "Graduation Candy Boxes",
+                        "real_price": "$14.50",
+                        "img": "https://cdn.example.com/fastmoss-main.jpg",
+                    },
+                    "shop": {"seller_id": "seller-1", "name": "Party Supply Co", "region": "US"},
+                }
+            },
+            "overview": {
+                "data": {
+                    "product_id": PRODUCT_ID,
+                    "d_type": 28,
+                    "overview": {
+                        "real_price": "$14.50",
+                        "yday_sold_count": 38,
+                        "day7_sold_count": 412,
+                        "day90_sold_count": 2310,
+                    },
+                    "chart_list": [{"dt": "2026-04-23", "inc_sold_count": 38, "inc_sale_amount": 551.0}],
+                }
+            },
+            "skus": {
+                "data": {
+                    "product_id": PRODUCT_ID,
+                    "d_type": 28,
+                    "sku_list": [{"sku_id": "sku-blue", "sku_name": "Blue", "sold_count": 31, "stock": 7}],
+                }
+            },
+        },
+        fact_db_url=runtime_db_url,
+        artifact_root=str(tmp_path),
+        execution_child_runner_mode="inline",
+    )
+    request_id = str(submitted["request_id"])
+
+    first_executor = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert first_executor["current_stage"] == "read_competitor_rows"
+    read_worker = runtime_orchestrator.execute_api_worker_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
+    assert read_worker["api_worker_job"]["status"] == "success"
+    assert read_worker["api_worker_job"]["result"]["handler_result"]["result"]["source_rows"][0]["source_record_id"] == SOURCE_RECORD_ID
+
+    collect_wait = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert {str(job["job_code"]) for job in _stage_jobs(collect_wait, stage_code="collect_product_data")} == {
+        "tiktok_product_request_fetch",
+        "fastmoss_product_fetch",
+    }
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
+
+    persist_wait = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert {str(job["job_code"]) for job in _stage_jobs(persist_wait, stage_code="persist_facts")} == {
+        "media_asset_sync",
+        "fact_bundle_upsert",
+    }
+    persist_workers = [
+        runtime_orchestrator.execute_api_worker_once(
+            _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+        ),
+        runtime_orchestrator.execute_api_worker_once(
+            _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+        ),
+    ]
+    fact_worker = next(
+        item for item in persist_workers if item["api_worker_job"]["job_code"] == "fact_bundle_upsert"
+    )
+    assert fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
+    assert fact_worker["api_worker_job"]["result"]["handler_result"]["result"]["persistence_mode"] == "database"
+    assert TKFactStore(db_url=runtime_db_url).get_product(product_id=PRODUCT_ID)["title"] == "Graduation Candy Boxes"
+
+    writeback_wait = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    writeback_jobs = _stage_jobs(
+        writeback_wait,
+        stage_code="writeback_competitor_rows",
+        job_code="feishu_table_write",
+    )
+    assert len(writeback_jobs) == 1
+    projection_fields = writeback_jobs[0]["payload"]["records"][0]["projection_fields"]
+    assert projection_fields["Fastmoss价格"] == "$14.50"
+    assert projection_fields["近7天销量"] == "412"
+
+    write_worker = runtime_orchestrator.execute_api_worker_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert write_worker["api_worker_job"]["job_code"] == "feishu_table_write"
+    assert write_worker["api_worker_job"]["status"] == "success"
+    assert FakeFeishuClient.updated
+    updated_fields = FakeFeishuClient.updated[0]["fields"]
+    assert updated_fields["标题"] == "Graduation Candy Boxes"
+    assert updated_fields["卖家"] == "Party Supply Co"
+    assert updated_fields["Fastmoss价格"] == "$14.50"
+    assert updated_fields["昨日销量"] == "38"
+    assert updated_fields["近7天销量"] == "412"
+    assert updated_fields["近90天销量"] == "2310"
+    assert "产品链接" not in updated_fields
+    assert "记录日期" in updated_fields
+
+    finalized = runtime_orchestrator.execute_executor_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert finalized["request_id"] == request_id
+    assert finalized["request_status"] == "success"
+    assert finalized["result"]["row_results"][0]["row_status"] == "success"
