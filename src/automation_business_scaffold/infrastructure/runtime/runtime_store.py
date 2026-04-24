@@ -3547,6 +3547,10 @@ class RuntimeStore:
                 )
                 applied = int(result.rowcount or 0) > 0
             updated = self.load_api_worker_job(job_id=target_id)
+            if applied:
+                request_id = str(updated.get("request_id") or "").strip()
+                if request_id:
+                    self.reconcile_request_waiting_children(request_id=request_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
@@ -3637,6 +3641,8 @@ class RuntimeStore:
                     )
                     self._refresh_request_child_counts(connection, request_id=execution.request_id, now=now)
             updated = self.load_task_execution(execution_id=target_id)
+            if applied:
+                self.reconcile_request_waiting_children(request_id=execution.request_id)
             return {
                 "target_table": target_table,
                 "target_id": target_id,
