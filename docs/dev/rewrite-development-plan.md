@@ -936,6 +936,23 @@ flowchart TD
 | P8 对比验收 | 对 refresh / keyword / influencer 分别做新旧 `achieve` 行为对比 | P4、P5、P6、P7 | 三个 workflow 的对比可并行，最终验收串行汇总 | 三份对比报告通过，差异要么消除要么有 contract 解释 |
 | P9 可靠性补强 | 扩展 browser worker / outbox dispatcher child timeout e2e；补真实环境失败重试样例 | G5 已完成主路径 | 可与业务 e2e 并行 | 非 API worker 的 timeout/retry/failed 路径也有 e2e 覆盖 |
 
+P0 契约冻结产物:
+
+| 契约 | 冻结位置 | 后续 worktree 消费方式 |
+| --- | --- | --- |
+| `feishu_table_read` / `feishu_table_write` payload/result | [handler-contract-design.md](../arch/handler-contract-design.md) 5.1、5.3、5.4 | P1 实现 Feishu common 时按 `source_table_ref`、`raw_rows/source_rows`、`records`、行级写入结果兼容实现 |
+| `fastmoss_product_search` payload/result | [handler-contract-design.md](../arch/handler-contract-design.md) 6.3、[workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) 7.3 | P2 实现关键词搜索时输出标准 candidate，seed 行由 `competitor_seed_projection_mapper` 处理 |
+| `fastmoss_creator_fetch` payload/result | [handler-contract-design.md](../arch/handler-contract-design.md) 6.5.1、[workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) 11.3 | P3 实现达人详情时输出 `entities/relations/observations/media_refs/raw_response_refs`，过渡期可保留兼容别名 |
+| Fact projection | [handler-contract-design.md](../arch/handler-contract-design.md) 6.7.1、[workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) 7.2 | P5/P6/P7 只消费 projection context，不让 `fact_bundle_upsert` 直接写飞书 |
+| `achieve` comparator | [rewrite-acceptance-contract.md](../arch/rewrite-acceptance-contract.md) 8 | P4/P8 实现只读 comparator/harness；runtime 主路径禁止 import `achieve` 和 comparator |
+
+P0 明确不交付:
+
+- 不实现生产 handler。
+- 不默认绑定未实现 handler。
+- 不修改 Runtime DB schema 或 runtime 主路径。
+- 不新增业务专用 handler/job 名称。
+
 阶段计划:
 
 | 阶段 | 串行 / 并行 | 目标 | 可开启 worktree |
