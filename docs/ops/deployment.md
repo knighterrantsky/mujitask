@@ -239,6 +239,7 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 推荐把 Runtime 相关变量只维护在这份文件：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `TEST_DATABASE_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY`
@@ -330,6 +331,17 @@ scripts/execution_control/run_local_postgres_tests.sh
 ```
 
 该脚本会读取 `scripts/execution_control/executor.local.env`，pytest fixture 会在当前 Postgres 内为每次测试创建独立 schema，测试结束后自动清理。
+
+本地开发机建议给测试单独建库，并在 `executor.local.env` 中配置：
+
+```bash
+createdb automation_business_scaffold_test
+
+BUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold_test
+```
+
+fixture 优先使用 `TEST_DATABASE_URL`。没有这两个 DB URL 时，数据库相关测试会跳过；直接用 `psql` 连接排障时请使用 `postgresql://...` 格式。
 
 ## 11. 日志与排障路径
 

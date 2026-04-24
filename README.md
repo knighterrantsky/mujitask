@@ -301,6 +301,19 @@ automation-business-scaffold-run run \
 scripts/execution_control/run_local_postgres_tests.sh
 ```
 
+该脚本会读取 `scripts/execution_control/executor.local.env`。本地开发建议同时配置：
+
+- `BUSINESS_EXECUTION_CONTROL_DB_URL`：运行时数据库，例如 `automation_business_scaffold`
+- `TEST_DATABASE_URL`：测试专用数据库，例如 `automation_business_scaffold_test`
+
+pytest fixture 会优先使用 `TEST_DATABASE_URL`，并在该数据库内为每次测试创建临时 schema，避免数据库回归测试因为没有 DB URL 被跳过，也避免测试污染运行库。直接用 `psql` 排障时需要把 SQLAlchemy URL 的 `postgresql+psycopg://` 改成 `postgresql://`。
+
+首次配置时先创建测试库：
+
+```bash
+createdb automation_business_scaffold_test
+```
+
 轻量测试：
 
 ```bash
