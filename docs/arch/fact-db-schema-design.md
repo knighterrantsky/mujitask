@@ -150,6 +150,13 @@ erDiagram
 - `facts_json` 承接尚未结构化的扩展事实。
 - `first_seen_at`, `last_seen_at`, `created_at`, `updated_at`。
 
+商品主表状态规则:
+
+- `tk_products.status` 默认使用 `active` 表示当前可正常识别的商品。
+- 当竞品表中的 `SKU-ID` 对应商品 URL 打开后没有商品信息，并且页面明确显示“已下架/区域不可售”时，只标记商品主表 `tk_products.status = off_shelf_or_region_unavailable`。
+- 竞品表语境里的 `SKU-ID` 等价于 TikTok 商品 ID / `product_id`，不是 `tk_product_skus` 中的规格 SKU；当前设计不新增 `tk_product_skus.status`。
+- 该状态只属于数据库商品主表事实，不在本阶段写回飞书 `商品状态` 字段。
+
 ### 4.2 媒体层
 
 | 表 | 唯一业务键 | 作用 |
@@ -158,6 +165,12 @@ erDiagram
 | `tk_entity_media_assets` | `relation_key` | 媒体资产与商品/达人/视频等主体的绑定 |
 
 媒体内容本身不建议存入数据库。数据库保存 `source_url`、`file_token`、`local_path`、`object_key`、`mime_type` 和元数据。
+
+媒体复用规则:
+
+- 下载或上传媒体前，先按 `asset_key` 查询 `tk_media_assets`。
+- 如果已有记录包含可用的 `object_key`、`local_path` 或 `file_token`，则不重复下载资源图片，只补齐 `tk_entity_media_assets` 绑定。
+- 只有数据库没有可复用资产，或已有定位不可用时，才进入下载/上传路径。
 
 ### 4.3 关系层
 
@@ -178,6 +191,12 @@ erDiagram
 - `sold_count`
 - `source_platform`
 - `metadata_json`
+
+当前关系写入策略:
+
+- 关系层暂不做周期刷新、自动失效扫描或 stale/inactive 标记。
+- 每次拿到关系数据后先查询数据库，按标准化后的关系键和关系字段对比。
+- 只有新增关系或已存在关系的字段发生变化时才写入；完全一致的关系不重复写入。
 
 ### 4.4 原始证据层
 
@@ -227,6 +246,13 @@ erDiagram
 - 不稳定或待扩展字段进入 `facts_json`。
 - 结构化字段优先放列，便于查询和索引。
 
+商品不可售状态:
+
+- `tk_products.status` 承载商品级状态，默认值为 `active`。
+- 商品 URL 正常打开且可以识别商品信息时，状态保持 `active` 或沿用当前有效状态。
+- 商品 URL 打开后无商品信息，并明确显示“已下架/区域不可售”时，upsert 商品主表并设置 `status = off_shelf_or_region_unavailable`。
+- 该标记只落在 `tk_products`，不落在 `tk_product_skus`，也不在当前阶段触发飞书业务投影写回。
+
 ### 5.2 媒体 upsert
 
 | 方法 | 表 | 唯一键 | 幂等规则 |
@@ -239,6 +265,7 @@ erDiagram
 - 同一个图片/文件重复上传或重复发现，不应产生多条资产主档。
 - 同一主体同一角色同一资产，不应重复绑定。
 - 对象内容在 MinIO/local object store，Fact DB 只保存定位和元数据。
+- 数据库已有可用媒体资产时应复用，不重复下载远端图片。
 
 ### 5.3 关系 upsert
 
@@ -255,6 +282,7 @@ erDiagram
 - 支持同一个主体从多个 workflow 反复补全。
 - 避免 repeated job 或 lease 回收导致重复关系。
 - 将关系事实沉淀下来，而不是只藏在 `facts_json`。
+- 当前阶段关系层执行“查库对比，变更才写入”；完全一致的关系不产生额外写入。
 
 ### 5.4 Raw response 与 raw link
 
