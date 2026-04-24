@@ -476,6 +476,10 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
+def _media_asset_has_locator(asset: Mapping[str, Any]) -> bool:
+    return any(_clean_text(asset.get(key)) for key in ("object_key", "file_token", "local_path"))
+
+
 class TKFactStore:
     def __init__(self, *, runtime_store: Any | None = None, db_url: str = ""):
         if runtime_store is not None:
@@ -725,6 +729,46 @@ class TKFactStore:
                 "metadata_json": _json_dumps(metadata),
             },
         )
+
+    def find_media_asset(
+        self,
+        *,
+        source_url: str = "",
+        file_token: str = "",
+        local_path: str = "",
+        object_key: str = "",
+    ) -> dict[str, Any]:
+        candidates: list[dict[str, Any]] = []
+        seen_asset_ids: set[str] = set()
+        asset_key = self.build_asset_key(
+            source_url=source_url,
+            file_token=file_token,
+            local_path=local_path,
+            object_key=object_key,
+        )
+        if asset_key:
+            asset = self._get_by_unique("tk_media_assets", "asset_key", asset_key)
+            if asset:
+                candidates.append(asset)
+                seen_asset_ids.add(str(asset.get("asset_id") or ""))
+        for column_name, value in (
+            ("file_token", file_token),
+            ("object_key", object_key),
+            ("local_path", local_path),
+            ("source_url", source_url),
+        ):
+            cleaned = _clean_text(value)
+            if cleaned:
+                for asset in self._get_media_assets_by_column(column_name, cleaned):
+                    asset_id = str(asset.get("asset_id") or "")
+                    if asset_id and asset_id in seen_asset_ids:
+                        continue
+                    candidates.append(asset)
+                    seen_asset_ids.add(asset_id)
+        for asset in candidates:
+            if _media_asset_has_locator(asset):
+                return asset
+        return candidates[0] if candidates else {}
 
     def link_media_asset(
         self,
@@ -1537,6 +1581,7 @@ class TKFactStore:
             unique_column="relation_key",
             unique_value=relation_key,
             values=data,
+            skip_update_if_unchanged=True,
         )
 
     def _upsert_by_unique(
@@ -1546,6 +1591,7 @@ class TKFactStore:
         unique_column: str,
         unique_value: str,
         values: Mapping[str, Any],
+        skip_update_if_unchanged: bool = False,
     ) -> dict[str, Any]:
         now = time.time()
         with self._engine.begin() as connection:
@@ -1573,6 +1619,8 @@ class TKFactStore:
                 self._insert_row(connection, table_name=table_name, data=data)
             else:
                 update_data = self._merge_update_data(existing, data)
+                if skip_update_if_unchanged and self._update_data_unchanged(existing, update_data):
+                    return {}
                 update_data["updated_at"] = now
                 update_data["last_seen_at"] = now
                 self._update_row(
@@ -1619,6 +1667,28 @@ class TKFactStore:
                 .first()
             )
         return self._row_to_dict(row) if row is not None else {}
+
+    def _get_media_assets_by_column(self, column_name: str, value: str) -> list[dict[str, Any]]:
+        if column_name not in {"asset_key", "source_url", "file_token", "local_path", "object_key"}:
+            return []
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        f"""
+                        SELECT *
+                        FROM tk_media_assets
+                        WHERE {column_name} = :value
+                        ORDER BY updated_at DESC
+                        LIMIT 20
+                        """
+                    ),
+                    {"value": value},
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
 
     def _insert_row(self, connection: Any, *, table_name: str, data: Mapping[str, Any]) -> None:
         columns = list(data.keys())
@@ -1669,6 +1739,30 @@ class TKFactStore:
             elif key in existing:
                 merged[key] = existing[key]
         return merged
+
+    @staticmethod
+    def _update_data_unchanged(existing: Mapping[str, Any], update_data: Mapping[str, Any]) -> bool:
+        ignored_keys = {
+            "id",
+            "asset_id",
+            "link_id",
+            "relation_id",
+            "created_at",
+            "updated_at",
+            "first_seen_at",
+            "last_seen_at",
+        }
+        for key, value in update_data.items():
+            if key in ignored_keys:
+                continue
+            existing_value = existing.get(key)
+            if str(key).endswith("_json"):
+                if _load_json_dict(str(existing_value or "")) != _load_json_dict(str(value or "")):
+                    return False
+                continue
+            if existing_value != value:
+                return False
+        return True
 
     def _row_to_dict(self, row: Mapping[str, Any] | None) -> dict[str, Any]:
         if row is None:

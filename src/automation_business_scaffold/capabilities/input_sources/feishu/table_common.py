@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timezone, timedelta
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -57,7 +58,9 @@ _COMPETITOR_AUTO_FIELDS = (
     "近90天销量",
     "记录日期",
 )
-_COMPETITOR_SYSTEM_OVERWRITE_FIELDS = {"商品状态"}
+_COMPETITOR_WRITEBACK_EXCLUDED_FIELDS = {"商品状态"}
+_FEISHU_ATTACHMENT_FIELD_TYPE = 17
+_FEISHU_DATE_FIELD_TYPE = 5
 
 
 def build_feishu_client(target: FeishuTableTarget) -> FeishuBitableClient:
@@ -240,9 +243,11 @@ def execute_write_records(
     written_count = 0
     skipped_count = 0
     failed_count = 0
+    field_schema = _load_field_schema(client, target)
 
     for record in records:
         command = _normalize_write_record(record, payload)
+        command["fields"] = _prepare_fields_for_write(_mapping(command.get("fields")), field_schema)
         record_key = _write_record_key(command)
         if record_key and record_key in seen_keys:
             skipped_count += 1
@@ -502,14 +507,125 @@ def _looks_like_secret_ref(value: Any) -> bool:
 
 
 def _load_field_names(client: FeishuBitableClient, target: FeishuTableTarget) -> set[str]:
-    fields = client.list_all_fields(target.app_token, target.table_id)
-    names = set()
+    return set(_load_field_schema(client, target))
+
+
+def _load_field_schema(client: FeishuBitableClient, target: FeishuTableTarget) -> dict[str, dict[str, Any]]:
+    try:
+        fields = client.list_all_fields(target.app_token, target.table_id)
+    except AttributeError:
+        return {}
+    schema: dict[str, dict[str, Any]] = {}
     for field in fields:
         if isinstance(field, Mapping):
             name = _text(field.get("field_name") or field.get("name"))
             if name:
-                names.add(name)
-    return names
+                schema[name] = dict(field)
+    return schema
+
+
+def _prepare_fields_for_write(
+    fields: Mapping[str, Any],
+    field_schema: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    prepared: dict[str, Any] = {}
+    for field_name, value in fields.items():
+        name = _text(field_name)
+        if not name:
+            continue
+        if _is_attachment_field(field_schema.get(name)):
+            attachment_refs = _attachment_file_token_ref_items(value)
+            if attachment_refs:
+                prepared[name] = attachment_refs
+            continue
+        if _is_date_field(field_schema.get(name)):
+            prepared_value = _date_value_for_write(value)
+            if prepared_value not in (None, ""):
+                prepared[name] = prepared_value
+            continue
+        prepared[name] = value
+    return prepared
+
+
+def _is_attachment_field(field_schema: Mapping[str, Any] | None) -> bool:
+    if not isinstance(field_schema, Mapping):
+        return False
+    field_type = field_schema.get("type")
+    return field_type == _FEISHU_ATTACHMENT_FIELD_TYPE or _text(field_type).lower() in {
+        str(_FEISHU_ATTACHMENT_FIELD_TYPE),
+        "attachment",
+        "attachments",
+    }
+
+
+def _is_date_field(field_schema: Mapping[str, Any] | None) -> bool:
+    if not isinstance(field_schema, Mapping):
+        return False
+    field_type = field_schema.get("type")
+    return field_type == _FEISHU_DATE_FIELD_TYPE or _text(field_type).lower() in {
+        str(_FEISHU_DATE_FIELD_TYPE),
+        "date",
+        "datetime",
+    }
+
+
+def _date_value_for_write(value: Any) -> int | str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number * 1000 if 0 < number < 10_000_000_000 else number
+    if isinstance(value, datetime):
+        item = value if value.tzinfo is not None else value.replace(tzinfo=_feishu_date_timezone())
+        return int(item.timestamp() * 1000)
+    if isinstance(value, date):
+        return _date_to_feishu_millis(value)
+    text = _text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d+", text):
+        number = int(text)
+        return number * 1000 if 0 < number < 10_000_000_000 else number
+    parsed_date = _parse_date_only(text)
+    if parsed_date is not None:
+        return _date_to_feishu_millis(parsed_date)
+    parsed_datetime = _parse_datetime(text)
+    if parsed_datetime is not None:
+        item = parsed_datetime if parsed_datetime.tzinfo is not None else parsed_datetime.replace(tzinfo=_feishu_date_timezone())
+        return int(item.timestamp() * 1000)
+    return text
+
+
+def _parse_date_only(value: str) -> date | None:
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    normalized = value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _date_to_feishu_millis(value: date) -> int:
+    item = datetime.combine(value, time.min, tzinfo=_feishu_date_timezone())
+    return int(item.timestamp() * 1000)
+
+
+def _feishu_date_timezone() -> timezone:
+    zone_name = os.environ.get("FEISHU_DATE_TIMEZONE", "Asia/Shanghai")
+    try:
+        return ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=8))
 
 
 def _render_filter_expr(filter_spec: Any) -> str:
@@ -849,12 +965,9 @@ def _select_missing_competitor_projection_fields(
 ) -> dict[str, Any]:
     selected: dict[str, Any] = {}
     for field_name, value in projection_fields.items():
-        if field_name == "记录日期":
+        if field_name in {"记录日期", *_COMPETITOR_WRITEBACK_EXCLUDED_FIELDS}:
             continue
         if not _field_has_value(value):
-            continue
-        if field_name in _COMPETITOR_SYSTEM_OVERWRITE_FIELDS:
-            selected[field_name] = value
             continue
         if not _field_has_value(existing_fields.get(field_name)):
             selected[field_name] = value
@@ -1011,6 +1124,15 @@ def _attachment_ref_items(value: Any) -> list[dict[str, str]]:
         text = _text(item)
         if text:
             refs.append({"url": text})
+    return _dedupe_ref_items(refs)
+
+
+def _attachment_file_token_ref_items(value: Any) -> list[dict[str, str]]:
+    refs = []
+    for item in _attachment_ref_items(value):
+        file_token = _first_non_empty(item.get("file_token"))
+        if file_token:
+            refs.append({"file_token": file_token})
     return _dedupe_ref_items(refs)
 
 
@@ -1288,10 +1410,8 @@ def _compact_raw_result(raw_result: Mapping[str, Any]) -> dict[str, Any]:
 
 def _product_identity_from_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     product_url = _field_text(fields, "产品链接", "商品链接", "product_url", "normalized_product_url")
-    product_id = _first_non_empty(
-        _field_text(fields, "SKU-ID", "SKU ID", "商品ID", "product_id", "sku_id"),
-        _extract_product_id(product_url),
-    )
+    sku_id = _field_text(fields, "SKU-ID", "SKU ID", "商品ID", "product_id", "sku_id")
+    product_id = _first_non_empty(_extract_product_id(sku_id), _extract_product_id(product_url))
     normalized_url = _normalize_product_url(product_url or (f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else ""))
     return _compact(
         {

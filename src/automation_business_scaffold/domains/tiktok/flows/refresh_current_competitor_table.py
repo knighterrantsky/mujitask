@@ -32,7 +32,7 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
-OPTIONAL_FINAL_STATUS_CODES = ("tiktok_product_browser_fetch",)
+OPTIONAL_FINAL_STATUS_CODES: tuple[str, ...] = ()
 
 FACT_BUNDLE_LIST_KEYS = (
     "products",
@@ -113,13 +113,37 @@ ARTIFACT_PASSTHROUGH_KEYS = (
     "artifact_root",
     "artifact_store",
     "artifact_store_provider",
+    "db_url",
+    "execution_control_fact_db_url",
+    "fact_db_url",
     "minio_access_key",
     "minio_create_bucket",
     "minio_endpoint",
     "minio_region",
     "minio_secret_key",
     "minio_secure",
+    "persistence",
 )
+
+DEFAULT_COMPETITOR_AUTO_FIELDS = (
+    "产品链接",
+    "SKU-ID",
+    "图片",
+    "标题",
+    "节日",
+    "卖家",
+    "价格",
+    "Fastmoss价格",
+    "昨日销量",
+    "近7天销量",
+    "近90天销量",
+    "记录日期",
+)
+DEFAULT_COMPETITOR_READ_FIELDS = (*DEFAULT_COMPETITOR_AUTO_FIELDS, "商品状态")
+DEFAULT_COMPETITOR_FILTER_SPEC = {
+    "candidate_policy": "missing_auto_maintained_fields",
+    "skip_product_status": ["已下架/区域不可售"],
+}
 
 
 def advance_stage(
@@ -137,14 +161,6 @@ def advance_stage(
         return _advance_dispatch_product_collection(store=store, request=request, workflow=workflow)
     if stage_code == "collect_product_data":
         return _advance_collect_product_data(store=store, request=request, workflow=workflow)
-    if stage_code == "browser_fallback":
-        return _advance_browser_fallback(store=store, request=request, workflow=workflow)
-    if stage_code == "sync_media":
-        return _advance_sync_media(store=store, request=request, workflow=workflow)
-    if stage_code == "persist_facts":
-        return _advance_persist_facts(store=store, request=request, workflow=workflow)
-    if stage_code == "writeback_competitor_rows":
-        return _advance_writeback_competitor_rows(store=store, request=request, workflow=workflow)
     if stage_code == workflow.summary_policy.summary_stage_code:
         return {"action": "advance", "next_stage": workflow.summary_policy.summary_stage_code}
     raise KeyError(f"Unsupported stage_code for refresh runtime: {stage_code}")
@@ -320,17 +336,8 @@ def _resume_stage_from_premature_summary(
     workflow: WorkflowDefinition,
     current_stage: str,
 ) -> str:
-    return recover_browser_fallback_resume_stage(
-        store,
-        request_id=request.request_id,
-        current_stage=current_stage,
-        summary_stage_code=workflow.summary_policy.summary_stage_code,
-        continuation_stage_codes=("sync_media", "persist_facts", "writeback_competitor_rows"),
-        continuation_candidate_ready=bool(
-            _media_sync_candidates(store=store, request_id=request.request_id)
-            or _fact_persist_candidates(store=store, request_id=request.request_id)
-        ),
-    )
+    del store, request, workflow, current_stage
+    return ""
 
 
 def _advance_read_competitor_rows(
@@ -344,13 +351,18 @@ def _advance_read_competitor_rows(
     stage_job = workflow.require_stage(stage_code).job_bindings[0]
     job_def = workflow.require_job(stage_job.job_code)
     if not jobs:
+        field_names = list(request.payload.get("field_names") or ()) or list(DEFAULT_COMPETITOR_READ_FIELDS)
+        filter_spec = dict(request.payload.get("refresh_filter") or request.payload.get("filter_spec") or {})
+        if not filter_spec:
+            filter_spec = dict(DEFAULT_COMPETITOR_FILTER_SPEC)
         payload = {
             **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
             **_payload_subset(request.payload, FEISHU_READ_PASSTHROUGH_KEYS),
             "stage_code": stage_code,
             "source_table_ref": str(request.payload.get("source_table_ref") or ""),
             "view_ref": str(request.payload.get("view_ref") or ""),
-            "filter_spec": dict(request.payload.get("refresh_filter") or request.payload.get("filter_spec") or {}),
+            "field_names": field_names,
+            "filter_spec": filter_spec,
             "adapter_code": stage_job.adapter_code,
             "cursor_context": dict(request.stage_cursor.get(stage_code) or {}),
         }
@@ -518,94 +530,59 @@ def _advance_dispatch_product_collection(
             "details": {"dispatched_row_count": 0},
         }
 
-    tiktok_job_def = workflow.require_job("tiktok_product_request_fetch")
-    fastmoss_job_def = workflow.require_job("fastmoss_product_fetch")
-    tiktok_jobs: list[dict[str, Any]] = []
-    fastmoss_jobs: list[dict[str, Any]] = []
+    row_job_def = workflow.require_job("competitor_row_refresh")
+    row_jobs: list[dict[str, Any]] = []
     for row in row_contexts:
         if not str(row.get("business_key") or ""):
             continue
-        tiktok_payload = {
+        row_payload = {
             **_runtime_child_context(
                 request=request,
                 workflow=workflow,
                 stage_code="collect_product_data",
             ),
-            **_payload_subset(request.payload, TIKTOK_REQUEST_PASSTHROUGH_KEYS),
+            **_payload_subset(
+                request.payload,
+                FEISHU_WRITE_PASSTHROUGH_KEYS
+                + TIKTOK_REQUEST_PASSTHROUGH_KEYS
+                + FASTMOSS_PRODUCT_PASSTHROUGH_KEYS
+                + FACT_PERSISTENCE_PASSTHROUGH_KEYS
+                + ARTIFACT_PASSTHROUGH_KEYS,
+            ),
+            "request_payload": dict(request.payload or {}),
             "stage_code": "collect_product_data",
             "source_record_id": row["source_record_id"],
             "product_identity": dict(row["product_identity"]),
             "normalized_product_url": row.get("normalized_product_url") or "",
+            "source_table_ref": str(request.payload.get("source_table_ref") or ""),
             "source_context": dict(row["source_context"]),
-            "fallback_allowed": True,
+            "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
         }
-        tiktok_keys = render_job_keys(
-            tiktok_job_def,
+        row_keys = render_job_keys(
+            row_job_def,
             request.payload,
             row,
-            tiktok_payload,
+            row_payload,
             request_id=request.request_id,
             task_code=request.task_code,
             workflow_code=workflow.workflow_code,
             stage_code="collect_product_data",
-            job_code=tiktok_job_def.job_code,
+            job_code=row_job_def.job_code,
         )
-        tiktok_jobs.append(
+        row_jobs.append(
             {
-                "business_key": tiktok_keys["business_key"],
-                "dedupe_key": build_stage_local_dedupe_key(tiktok_keys["dedupe_key"], tiktok_job_def.job_code),
-                "payload": tiktok_payload,
-                "max_execution_seconds": _timeout_seconds(workflow, tiktok_job_def.job_code),
+                "business_key": row_keys["business_key"],
+                "dedupe_key": build_stage_local_dedupe_key(row_keys["dedupe_key"], row_job_def.job_code),
+                "payload": row_payload,
+                "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
             }
         )
 
-        fastmoss_payload = {
-            **_runtime_child_context(
-                request=request,
-                workflow=workflow,
-                stage_code="collect_product_data",
-            ),
-            **_payload_subset(request.payload, FASTMOSS_PRODUCT_PASSTHROUGH_KEYS),
-            "stage_code": "collect_product_data",
-            "source_record_id": row["source_record_id"],
-            "product_identity": dict(row["product_identity"]),
-            "source_context": dict(row["source_context"]),
-            "detail_level": "standard",
-        }
-        fastmoss_settings = _fastmoss_settings_from_request_payload(request.payload)
-        if fastmoss_settings:
-            fastmoss_payload["fastmoss"] = fastmoss_settings
-        fastmoss_keys = render_job_keys(
-            fastmoss_job_def,
-            request.payload,
-            row,
-            fastmoss_payload,
-            request_id=request.request_id,
-            task_code=request.task_code,
-            workflow_code=workflow.workflow_code,
-            stage_code="collect_product_data",
-            job_code=fastmoss_job_def.job_code,
-        )
-        fastmoss_jobs.append(
-            {
-                "business_key": fastmoss_keys["business_key"],
-                "dedupe_key": build_stage_local_dedupe_key(fastmoss_keys["dedupe_key"], fastmoss_job_def.job_code),
-                "payload": fastmoss_payload,
-                "max_execution_seconds": _timeout_seconds(workflow, fastmoss_job_def.job_code),
-            }
-        )
-
-    tiktok_dispatch = store.enqueue_api_worker_jobs(
+    row_dispatch = store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code=request.task_code,
-        job_code=tiktok_job_def.job_code,
-        jobs=tiktok_jobs,
-    )
-    fastmoss_dispatch = store.enqueue_api_worker_jobs(
-        request_id=request.request_id,
-        task_code=request.task_code,
-        job_code=fastmoss_job_def.job_code,
-        jobs=fastmoss_jobs,
+        job_code=row_job_def.job_code,
+        jobs=row_jobs,
     )
     _update_request_cursor(
         store=store,
@@ -613,8 +590,7 @@ def _advance_dispatch_product_collection(
         stage_code=stage_code,
         payload={
             "dispatched_row_count": len(row_contexts),
-            "tiktok_dispatch": tiktok_dispatch,
-            "fastmoss_dispatch": fastmoss_dispatch,
+            "row_dispatch": row_dispatch,
         },
     )
     return {
@@ -622,8 +598,7 @@ def _advance_dispatch_product_collection(
         "next_stage": "collect_product_data",
         "details": {
             "dispatched_row_count": len(row_contexts),
-            "tiktok_created_count": int(tiktok_dispatch["created_count"]),
-            "fastmoss_created_count": int(fastmoss_dispatch["created_count"]),
+            "row_refresh_created_count": int(row_dispatch["created_count"]),
         },
     }
 
@@ -637,27 +612,19 @@ def _advance_collect_product_data(
     stage_code = "collect_product_data"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     if not jobs:
-        return {"action": "advance", "next_stage": "sync_media", "details": {"dispatched_row_count": 0}}
+        return {"action": "advance", "next_stage": "ready_for_summary", "details": {"dispatched_row_count": 0}}
     if _any_api_jobs_active(jobs):
-        return _waiting(stage_code=stage_code, message="Waiting for product collection jobs to finish.")
+        return _waiting(stage_code=stage_code, message="Waiting for competitor row refresh jobs to finish.")
 
-    fallback_candidates = _browser_fallback_candidates(store=store, request_id=request.request_id)
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "collect_job_count": len(jobs),
-            "fallback_row_count": len(fallback_candidates),
         },
     )
-    if fallback_candidates:
-        return {
-            "action": "advance",
-            "next_stage": "browser_fallback",
-            "details": {"fallback_row_count": len(fallback_candidates)},
-        }
-    return {"action": "advance", "next_stage": "sync_media", "details": {"collect_job_count": len(jobs)}}
+    return {"action": "advance", "next_stage": "ready_for_summary", "details": {"collect_job_count": len(jobs)}}
 
 
 def _advance_browser_fallback(
@@ -1110,36 +1077,27 @@ def _build_row_result(
 ) -> dict[str, Any]:
     source_record_id = str(row_context.get("source_record_id") or "")
     collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
-    media_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media")
-    persist_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="persist_facts")
-    write_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="writeback_competitor_rows")
-    browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
-
-    tiktok_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="tiktok_product_request_fetch")
-    fastmoss_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="fastmoss_product_fetch")
-    media_job = _latest_row_job(media_jobs, source_record_id=source_record_id, job_code="media_asset_sync")
-    fact_job = _latest_row_job(persist_jobs, source_record_id=source_record_id, job_code="fact_bundle_upsert")
-    write_job = _latest_row_job(write_jobs, source_record_id=source_record_id, job_code="feishu_table_write")
-    browser_execution = _latest_row_execution(browser_execs, source_record_id=source_record_id)
-
-    row_status = _derive_row_status(
-        tiktok_job=tiktok_job,
-        fastmoss_job=fastmoss_job,
-        browser_execution=browser_execution,
-        media_job=media_job,
-        fact_job=fact_job,
-        write_job=write_job,
-    )
+    row_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="competitor_row_refresh")
+    row_payload = extract_effective_result_payload(row_job)
+    step_timeline = row_payload.get("step_timeline") if isinstance(row_payload.get("step_timeline"), list) else []
+    step_statuses = {
+        str(item.get("step") or ""): str(item.get("status") or "")
+        for item in step_timeline
+        if isinstance(item, Mapping)
+    }
+    row_status = str(row_payload.get("row_status") or _record_effective_status(row_job) or "failed")
     return {
         "source_record_id": source_record_id,
         "product_id": str(row_context.get("product_id") or row_context["product_identity"].get("product_id") or ""),
         "row_status": row_status,
-        "tiktok_status": _record_effective_status(tiktok_job),
-        "fastmoss_status": _record_effective_status(fastmoss_job),
-        "browser_status": _record_effective_status(browser_execution),
-        "media_status": _record_effective_status(media_job),
-        "fact_status": _record_effective_status(fact_job),
-        "writeback_status": _record_effective_status(write_job),
+        "competitor_row_refresh_status": _record_effective_status(row_job),
+        "tiktok_status": step_statuses.get("tiktok_request", ""),
+        "browser_status": step_statuses.get("browser_fallback", ""),
+        "media_status": step_statuses.get("media_sync", ""),
+        "fastmoss_status": step_statuses.get("fastmoss_fetch", ""),
+        "fact_status": step_statuses.get("fact_db_upsert", ""),
+        "writeback_status": step_statuses.get("feishu_writeback", ""),
+        "runtime_evidence": dict(row_payload.get("runtime_evidence") or {}) if isinstance(row_payload, Mapping) else {},
     }
 
 

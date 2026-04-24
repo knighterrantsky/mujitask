@@ -102,3 +102,54 @@ def test_media_asset_sync_can_leave_referenced_url_unmaterialized(monkeypatch, t
     assert result.status == "success"
     assert result.result["synced_assets"][0]["sync_state"] == "referenced"
     assert result.result["artifact_refs"] == []
+
+
+def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch, tmp_path) -> None:
+    class FakeFactStore:
+        def __init__(self, *, db_url: str):
+            assert db_url == "postgresql+psycopg://facts"
+
+        def find_media_asset(self, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["source_url"] == "https://cdn.example.com/gallery.webp"
+            return {
+                "asset_id": "asset-cached",
+                "asset_key": "source_url:https://cdn.example.com/gallery.webp",
+                "source_url": "https://cdn.example.com/gallery.webp",
+                "object_key": "runtime/media/gallery.webp",
+                "file_name": "gallery.webp",
+                "mime_type": "image/webp",
+                "source_platform": "tiktok",
+            }
+
+    monkeypatch.setattr(asset_sync_handler, "TKFactStore", FakeFactStore)
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not download")),
+    )
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "fact_db_url": "postgresql+psycopg://facts",
+                "sync_referenced_files": True,
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_gallery_image",
+                        "source_url": "https://cdn.example.com/gallery.webp",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["artifact_refs"] == []
+    asset = result.result["synced_assets"][0]
+    assert asset["sync_state"] == "reused"
+    assert asset["asset_id"] == "asset-cached"
+    assert asset["object_key"] == "runtime/media/gallery.webp"

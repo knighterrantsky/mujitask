@@ -153,6 +153,45 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
     assert result.result["raw_snapshot_ref"].startswith("artifact://feishu/competitor/read/req-read/")
 
 
+def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric() -> None:
+    payload = _table_payload(
+        request_id="req-read-bad-sku",
+        raw_rows=[
+            {
+                "record_id": "rec-bad-sku",
+                "fields": {
+                    "产品链接": {
+                        "text": "https://www.tiktok.com/shop/pdp/1729421577515077639",
+                        "link": "https://www.tiktok.com/shop/pdp/1729421577515077639",
+                    },
+                    "SKU-ID": "复活节",
+                    "图片": "",
+                    "标题": "Demo product",
+                    "节日": "情人节",
+                    "卖家": "Demo shop",
+                    "价格": "24.99",
+                    "商品状态": "",
+                    "Fastmoss价格": "",
+                    "昨日销量": "0",
+                    "近7天销量": "",
+                    "近90天销量": "4895",
+                    "记录日期": "",
+                },
+            }
+        ],
+        filter_spec={"candidate_policy": "missing_auto_maintained_fields"},
+        adapter_code="competitor_table_source_adapter",
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_read", _context("feishu_table_read", payload))
+
+    identity = result.result["source_rows"][0]["product_identity"]
+    assert result.status == "success"
+    assert identity["product_id"] == "1729421577515077639"
+    assert identity["fastmoss_product_url"] == "https://www.fastmoss.com/zh/e-commerce/detail/1729421577515077639"
+    assert result.result["candidate_keys"] == ["product:1729421577515077639"]
+
+
 def test_feishu_table_write_upsert_is_idempotent_on_upsert_key(monkeypatch) -> None:
     class FakeClient:
         created: list[dict[str, Any]] = []
@@ -257,6 +296,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
                     "价格": "$14.50",
                     "Fastmoss价格": "$14.50",
                     "近7天销量": "412",
+                    "商品状态": "已下架/区域不可售",
                 },
                 "source_fields": FakeClient.rows[0]["fields"],
             }
@@ -273,6 +313,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert "记录日期" in fields
     assert "SKU-ID" not in fields
     assert "产品链接" not in fields
+    assert "商品状态" not in fields
     assert fields.get("价格") is None
 
 
@@ -300,6 +341,52 @@ def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
         "text": "https://p16-oec.example.com/image.webp?from=2378011839",
         "link": "https://p16-oec.example.com/image.webp?from=2378011839",
     }
+
+
+def test_feishu_table_write_skips_attachment_url_without_file_token(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [
+                {"field_name": "图片", "type": 17},
+                {"field_name": "记录日期", "type": 5},
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        records=[
+            {
+                "op": "update",
+                "record_id": "rec-1",
+                "fields": {
+                    "图片": {
+                        "text": "https://p16-oec.example.com/image.webp",
+                        "link": "https://p16-oec.example.com/image.webp",
+                    },
+                    "记录日期": "2026-04-24",
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.updated[0]["fields"] == {"记录日期": 1776960000000}
+    assert result.result["records"][0]["fields_written"] == ["记录日期"]
 
 
 def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:

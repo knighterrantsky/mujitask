@@ -4,14 +4,10 @@ from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
-    FACT_BUNDLE_UPSERT_JOB,
-    FASTMOSS_PRODUCT_FETCH_JOB,
+    COMPETITOR_ROW_REFRESH_JOB,
     FEISHU_TABLE_READ_JOB,
     FEISHU_TABLE_WRITE_JOB,
-    MEDIA_ASSET_SYNC_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
-    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
-    TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
@@ -78,85 +74,25 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             ),
             StageDefinition(
                 stage_code="dispatch_product_collection",
-                description="Fan out row-level product collection jobs for TikTok and FastMoss fetch.",
+                description="Fan out one row-level pipeline job for each candidate competitor row.",
                 execution_mode="executor_action",
                 enter_condition="candidate competitor rows are available",
-                exit_condition="per-row product collection jobs have been created or skipped",
+                exit_condition="per-row competitor pipeline jobs have been created or skipped",
                 executor_action_code="fanout_competitor_rows",
                 notes=(
-                    "This stage remains an executor action in phase one because it is lightweight and idempotent.",
+                    "This stage remains an executor action because it is lightweight and idempotent.",
                 ),
             ),
             StageDefinition(
                 stage_code="collect_product_data",
-                description="Run request-first TikTok collection and FastMoss product fetch for each candidate.",
+                description="Run one row-level competitor refresh pipeline job per candidate row.",
                 execution_mode="worker_jobs",
-                enter_condition="row-level product collection jobs have been dispatched",
-                exit_condition="product collection jobs are terminal or request explicit browser fallback",
+                enter_condition="row-level competitor refresh jobs have been dispatched",
+                exit_condition="competitor row pipeline jobs are terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="tiktok_product_request_fetch",
-                        flow_code="tiktok_request_flow",
-                        result_consumer="fact_bundle_upsert or fallback decision",
-                    ),
-                    StageJobBinding(
-                        job_code="fastmoss_product_fetch",
-                        flow_code="fastmoss_product_flow",
-                        result_consumer="fact_bundle_upsert",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="browser_fallback",
-                description="Execute browser fallback only for product rows that require TikTok browser recovery.",
-                execution_mode="worker_jobs",
-                enter_condition="at least one TikTok request job returned fallback_required=true",
-                exit_condition="browser fallback executions are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="tiktok_product_browser_fetch",
-                        flow_code="browser_product_page_flow",
-                        result_consumer="normalized product result",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="sync_media",
-                description="Sync TikTok/browser product media before fact persistence.",
-                execution_mode="worker_jobs",
-                enter_condition="normalized TikTok/browser product results include media assets",
-                exit_condition="media sync jobs are terminal or skipped",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="media_asset_sync",
-                        flow_code="media_object_store_flow",
-                        result_consumer="media facts for fact_bundle_upsert",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="persist_facts",
-                description="Persist normalized product entities, relations, and observations to Fact DB.",
-                execution_mode="worker_jobs",
-                enter_condition="collection results and optional media refs are available",
-                exit_condition="fact upsert jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="fact_bundle_upsert",
-                        result_consumer="competitor writeback projection",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="writeback_competitor_rows",
-                description="Project refreshed facts and status back to TK competitor rows.",
-                execution_mode="worker_jobs",
-                enter_condition="fact upsert has produced competitor-row projection data",
-                exit_condition="competitor row writeback jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="feishu_table_write",
-                        mapper_code="competitor_table_projection_mapper",
+                        job_code="competitor_row_refresh",
+                        flow_code="competitor_row_pipeline",
                         result_consumer="row terminal result",
                     ),
                 ),
@@ -178,12 +114,8 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
         ),
         job_defs=(
             FEISHU_TABLE_READ_JOB,
-            TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
-            FASTMOSS_PRODUCT_FETCH_JOB,
-            TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
-            MEDIA_ASSET_SYNC_JOB,
-            FACT_BUNDLE_UPSERT_JOB,
             FEISHU_TABLE_WRITE_JOB,
+            COMPETITOR_ROW_REFRESH_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
@@ -195,56 +127,29 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             TransitionDefinition(
                 from_stage_code="dispatch_product_collection",
                 to_stage_code="collect_product_data",
-                condition="row fan-out has completed or no rows require product collection",
+                condition="row fan-out has completed or no rows require refresh",
             ),
             TransitionDefinition(
                 from_stage_code="collect_product_data",
-                to_stage_code="browser_fallback",
-                condition="at least one tiktok_product_request_fetch result requires browser fallback",
-                transition_type="conditional",
-            ),
-            TransitionDefinition(
-                from_stage_code="collect_product_data",
-                to_stage_code="sync_media",
-                condition="product collection jobs are terminal and no browser fallback is pending",
-                transition_type="conditional",
-            ),
-            TransitionDefinition(
-                from_stage_code="browser_fallback",
-                to_stage_code="sync_media",
-                condition="browser fallback executions are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="sync_media",
-                to_stage_code="persist_facts",
-                condition="media sync jobs are terminal or no media candidates exist",
-            ),
-            TransitionDefinition(
-                from_stage_code="persist_facts",
-                to_stage_code="writeback_competitor_rows",
-                condition="fact upsert jobs are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="writeback_competitor_rows",
                 to_stage_code="ready_for_summary",
-                condition="competitor writeback jobs are terminal",
+                condition="competitor row pipeline jobs are terminal",
             ),
         ),
         summary_policy=notification_summary_policy(
             SummaryStatusRule(
                 final_status="success",
-                when="all dispatched collection, fact, and writeback jobs completed without failed rows",
+                when="all dispatched competitor row pipeline jobs completed without failed rows",
             ),
             SummaryStatusRule(
                 final_status="partial_success",
-                when="at least one competitor row refreshed successfully but some child jobs failed or were skipped",
+                when="at least one competitor row refreshed successfully but some row pipelines were partial or failed",
             ),
             SummaryStatusRule(
                 final_status="failed",
-                when="no competitor row produced a persisted result or orchestration failed irrecoverably",
+                when="no competitor row pipeline produced a successful writeback result or orchestration failed irrecoverably",
             ),
             notes=(
-                "Summary should preserve per-row success, skipped, and failed counts for operator review.",
+                "Summary should preserve per-row success, partial, and failed counts for operator review.",
             ),
         ),
         idempotency_policy=table_workflow_idempotency_rules(

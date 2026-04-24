@@ -76,12 +76,16 @@ ARTIFACT_PASSTHROUGH_KEYS = (
     "artifact_root",
     "artifact_store",
     "artifact_store_provider",
+    "db_url",
+    "execution_control_fact_db_url",
+    "fact_db_url",
     "minio_access_key",
     "minio_create_bucket",
     "minio_endpoint",
     "minio_region",
     "minio_secret_key",
     "minio_secure",
+    "persistence",
 )
 
 

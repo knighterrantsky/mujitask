@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
@@ -7,10 +9,6 @@ from automation_business_scaffold.control_plane.executor.workflow_registry impor
 from automation_business_scaffold.contracts.handler.api import (
     build_api_handler_registry,
     register_api_handler,
-)
-from automation_business_scaffold.contracts.handler.browser import (
-    build_browser_handler_registry,
-    register_browser_handler,
 )
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -28,6 +26,9 @@ SOURCE_TABLE_REF = "tbl_competitor_source"
 PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 PRODUCT_ID = "123456789"
 SOURCE_RECORD_ID = "row-1"
+row_handler_module = importlib.import_module(
+    "automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler"
+)
 
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -74,22 +75,6 @@ def _stage_jobs(
     if job_code is not None:
         jobs = [job for job in jobs if str(job.get("job_code") or "") == job_code]
     return jobs
-
-
-def _stage_executions(
-    payload: dict[str, object],
-    *,
-    stage_code: str,
-    item_code: str | None = None,
-) -> list[dict[str, object]]:
-    executions = [
-        execution
-        for execution in payload.get("executions", [])
-        if str((execution.get("payload") or {}).get("stage_code") or "") == stage_code
-    ]
-    if item_code is not None:
-        executions = [execution for execution in executions if str(execution.get("item_code") or "") == item_code]
-    return executions
 
 
 def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode: str) -> None:
@@ -199,7 +184,14 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
             result={"written_count": len(records), "target_record_ids": [SOURCE_RECORD_ID]},
         )
 
+    monkeypatch.setattr(row_handler_module, "tiktok_product_request_fetch_handler", fake_tiktok_product_request_fetch)
+    monkeypatch.setattr(row_handler_module, "fastmoss_product_fetch_handler", fake_fastmoss_product_fetch)
+    monkeypatch.setattr(row_handler_module, "media_asset_sync_handler", fake_media_asset_sync)
+    monkeypatch.setattr(row_handler_module, "fact_bundle_upsert_handler", fake_fact_bundle_upsert)
+    monkeypatch.setattr(row_handler_module, "feishu_table_write_handler", fake_feishu_table_write)
+
     register_api_handler(registry, "feishu_table_read", fake_feishu_table_read)
+    register_api_handler(registry, "competitor_row_refresh", row_handler_module.competitor_row_refresh_handler)
     register_api_handler(registry, "tiktok_product_request_fetch", fake_tiktok_product_request_fetch)
     register_api_handler(registry, "fastmoss_product_fetch", fake_fastmoss_product_fetch)
     register_api_handler(registry, "media_asset_sync", fake_media_asset_sync)
@@ -210,8 +202,6 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
 
 
 def _bind_refresh_browser_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    registry = build_browser_handler_registry()
-
     def fake_tiktok_product_browser_fetch(context: HandlerContext) -> HandlerResult:
         _emit_progress(context, "browser_fallback_collected")
         return HandlerResult.success(
@@ -233,9 +223,7 @@ def _bind_refresh_browser_handler(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
 
-    register_browser_handler(registry, "tiktok_product_browser_fetch", fake_tiktok_product_browser_fetch)
-    monkeypatch.setattr(runtime_orchestrator, "build_browser_handler_registry", lambda: registry, raising=False)
-    monkeypatch.setattr(runtime_orchestrator, "BROWSER_HANDLER_REGISTRY", registry, raising=False)
+    monkeypatch.setattr(row_handler_module, "tiktok_product_browser_fetch_handler", fake_tiktok_product_browser_fetch)
 
 
 def _emit_progress(context: HandlerContext, stage_code: str) -> None:
@@ -282,61 +270,22 @@ def test_refresh_executor_integration_request_first_success_path(
         str(job["job_code"])
         for job in _stage_jobs(collect_wait, stage_code="collect_product_data")
     }
-    assert collect_job_codes == {"tiktok_product_request_fetch", "fastmoss_product_fetch"}
+    assert collect_job_codes == {"competitor_row_refresh"}
 
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
+    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["result"]["row_status"] == "success"
     collect_status = _status(runtime_db_url, request_id)
-    tiktok_job = _stage_jobs(
+    row_job = _stage_jobs(
         collect_status,
         stage_code="collect_product_data",
-        job_code="tiktok_product_request_fetch",
+        job_code="competitor_row_refresh",
     )[0]
-    fastmoss_job = _stage_jobs(
-        collect_status,
-        stage_code="collect_product_data",
-        job_code="fastmoss_product_fetch",
-    )[0]
-    assert tiktok_job["status"] == "success"
-    assert tiktok_job["result"]["normalized_product_result"]["product_id"] == PRODUCT_ID
-    assert fastmoss_job["status"] == "success"
-    assert fastmoss_job["result"]["product_fact_bundle"]["product_id"] == PRODUCT_ID
-
-    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert sync_wait["request_status"] == "waiting_children"
-    assert sync_wait["current_stage"] == "sync_media"
-    sync_job_codes = {
-        str(job["job_code"])
-        for job in _stage_jobs(sync_wait, stage_code="sync_media")
-    }
-    assert sync_job_codes == {"media_asset_sync"}
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-
-    persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert persist_wait["request_status"] == "waiting_children"
-    assert persist_wait["current_stage"] == "persist_facts"
-    persist_job_codes = {
-        str(job["job_code"])
-        for job in _stage_jobs(persist_wait, stage_code="persist_facts")
-    }
-    assert persist_job_codes == {"fact_bundle_upsert"}
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-
-    writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert writeback_wait["request_status"] == "waiting_children"
-    assert writeback_wait["current_stage"] == "writeback_competitor_rows"
-    writeback_jobs = _stage_jobs(
-        writeback_wait,
-        stage_code="writeback_competitor_rows",
-        job_code="feishu_table_write",
-    )
-    assert len(writeback_jobs) == 1
-    projection = writeback_jobs[0]["payload"]["records"][0]
-    assert projection["source_record_id"] == SOURCE_RECORD_ID
-    assert projection["refresh_status"] == "success"
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert row_job["status"] == "success"
+    assert row_job["result"]["normalized_product_result"]["product_id"] == PRODUCT_ID
+    assert row_job["result"]["product_fact_bundle"]["product_id"] == PRODUCT_ID
+    assert row_job["result"]["writeback_result"]["written_count"] == 1
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -370,65 +319,16 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert collect_wait["current_stage"] == "collect_product_data"
     assert {
         str(job["job_code"]) for job in _stage_jobs(collect_wait, stage_code="collect_product_data")
-    } == {"tiktok_product_request_fetch", "fastmoss_product_fetch"}
+    } == {"competitor_row_refresh"}
 
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert browser_wait["request_id"] == request_id
-    assert browser_wait["request_status"] == "waiting_children"
-    assert browser_wait["current_stage"] == "browser_fallback"
-    browser_executions = _stage_executions(
-        browser_wait,
-        stage_code="browser_fallback",
-        item_code="tiktok_product_browser_fetch",
-    )
-    assert len(browser_executions) == 1
-    assert browser_executions[0]["payload"]["source_record_id"] == SOURCE_RECORD_ID
+    row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert row_worker["request_id"] == request_id
+    assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
+    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["result"]["row_status"] == "success"
+    assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_fallback_used"] is True
+    assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_supervisor"]["execution_mode"] == "child_process"
 
-    browser_payload = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
-    assert browser_payload["request_id"] == request_id
-    assert browser_payload["execution"]["status"] == "success"
-    assert browser_payload["supervisor"]["worker_type"] == "browser_worker"
-    assert browser_payload["supervisor"]["progress_stage"] == "browser_fallback_collected"
-    assert browser_payload["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
-
-    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert sync_wait["request_id"] == request_id
-    assert sync_wait["request_status"] == "waiting_children"
-    assert sync_wait["current_stage"] == "sync_media"
-    assert {
-        str(job["job_code"]) for job in _stage_jobs(sync_wait, stage_code="sync_media")
-    } == {"media_asset_sync"}
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert persist_wait["request_id"] == request_id
-    assert persist_wait["request_status"] == "waiting_children"
-    assert persist_wait["current_stage"] == "persist_facts"
-    assert {
-        str(job["job_code"]) for job in _stage_jobs(persist_wait, stage_code="persist_facts")
-    } == {"fact_bundle_upsert"}
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert writeback_wait["request_status"] == "waiting_children"
-    assert writeback_wait["current_stage"] == "writeback_competitor_rows"
-    assert len(
-        _stage_jobs(
-            writeback_wait,
-            stage_code="writeback_competitor_rows",
-            job_code="feishu_table_write",
-        )
-    ) == 1
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
     assert finalized["request_status"] == "success"
@@ -443,9 +343,7 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["media_status"] == "success"
     assert row_result["fact_status"] == "success"
     assert row_result["writeback_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["sync_media"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["writeback_competitor_rows"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 1
 
 
 def test_refresh_executor_real_business_e2e_with_bound_handlers(
@@ -595,53 +493,18 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
     assert {str(job["job_code"]) for job in _stage_jobs(collect_wait, stage_code="collect_product_data")} == {
-        "tiktok_product_request_fetch",
-        "fastmoss_product_fetch",
+        "competitor_row_refresh",
     }
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, execution_child_runner_mode="inline"))
-
-    sync_wait = runtime_orchestrator.execute_executor_once(
+    row_worker = runtime_orchestrator.execute_api_worker_once(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
-    assert {str(job["job_code"]) for job in _stage_jobs(sync_wait, stage_code="sync_media")} == {
-        "media_asset_sync",
-    }
-    runtime_orchestrator.execute_api_worker_once(
-        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-    )
-
-    persist_wait = runtime_orchestrator.execute_executor_once(
-        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-    )
-    assert {str(job["job_code"]) for job in _stage_jobs(persist_wait, stage_code="persist_facts")} == {
-        "fact_bundle_upsert",
-    }
-    fact_worker = runtime_orchestrator.execute_api_worker_once(
-        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-    )
-    assert fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
-    assert fact_worker["api_worker_job"]["result"]["handler_result"]["result"]["persistence_mode"] == "database"
+    assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
+    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["result"]["fact_upsert"]["persistence_mode"] == "database"
     assert TKFactStore(db_url=runtime_db_url).get_product(product_id=PRODUCT_ID)["title"] == "Graduation Candy Boxes"
-
-    writeback_wait = runtime_orchestrator.execute_executor_once(
-        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-    )
-    writeback_jobs = _stage_jobs(
-        writeback_wait,
-        stage_code="writeback_competitor_rows",
-        job_code="feishu_table_write",
-    )
-    assert len(writeback_jobs) == 1
-    projection_fields = writeback_jobs[0]["payload"]["records"][0]["projection_fields"]
+    projection_fields = row_worker["api_worker_job"]["result"]["writeback_projection"]["fields"]
     assert projection_fields["Fastmoss价格"] == "14.5"
     assert projection_fields["近7天销量"] == "412"
-
-    write_worker = runtime_orchestrator.execute_api_worker_once(
-        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
-    )
-    assert write_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert write_worker["api_worker_job"]["status"] == "success"
     assert FakeFeishuClient.updated
     updated_fields = FakeFeishuClient.updated[0]["fields"]
     assert updated_fields["标题"] == "Graduation Candy Boxes"

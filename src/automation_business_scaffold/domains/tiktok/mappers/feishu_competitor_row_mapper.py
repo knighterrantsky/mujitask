@@ -165,10 +165,8 @@ def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
 
 def _product_identity_from_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     product_url = _field_text(fields, "产品链接", "商品链接", "product_url", "normalized_product_url")
-    product_id = _first_non_empty(
-        _field_text(fields, "SKU-ID", "SKU ID", "商品ID", "product_id", "sku_id"),
-        _extract_product_id(product_url),
-    )
+    sku_id = _field_text(fields, "SKU-ID", "SKU ID", "商品ID", "product_id", "sku_id")
+    product_id = _first_non_empty(_extract_product_id(sku_id), _extract_product_id(product_url))
     normalized_url = _normalize_product_url(product_url or (f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else ""))
     return _compact(
         {

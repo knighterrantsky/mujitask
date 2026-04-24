@@ -136,6 +136,7 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             holiday=coerce_str(product.get("holiday")),
             seller_name=coerce_str(first_non_empty(product.get("seller_name"), product.get("shop_name"))),
             source_platform=coerce_str(product.get("source_platform")),
+            status=coerce_str(first_non_empty(product.get("status"), _product_status_from_facts(product.get("facts")), "active")),
             facts=coerce_mapping(product.get("facts")),
         )
         if row:
@@ -438,6 +439,14 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
         "observation_refs": observation_refs,
         "persisted_counts": persisted_counts,
     }
+
+
+def _product_status_from_facts(facts: Any) -> str:
+    fact_payload = coerce_mapping(facts)
+    availability_status = coerce_str(fact_payload.get("availability_status")).strip().lower()
+    if availability_status == "unavailable":
+        return "off_shelf_or_region_unavailable"
+    return ""
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "fact_bundle_upsert_handler"]

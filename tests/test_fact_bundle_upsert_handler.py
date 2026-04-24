@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import importlib
+
 from automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler import (
     HANDLER_CODE,
     fact_bundle_upsert_handler,
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+
+fact_bundle_module = importlib.import_module(
+    "automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler"
+)
 
 
 def _context(payload: dict) -> HandlerContext:
@@ -87,3 +93,93 @@ def test_fact_bundle_upsert_ignores_legacy_nested_fact_bundle_inputs() -> None:
     assert result.status == "skipped"
     assert result.summary["entity_count"] == 0
     assert result.result["upserted_entities"] == []
+
+
+def test_fact_bundle_upsert_persists_unavailable_product_status(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeFactStore:
+        def __init__(self, *, db_url: str):
+            assert db_url == "postgresql+psycopg://facts"
+
+        def upsert_product(self, **kwargs):
+            captured.update(kwargs)
+            return {"product_id": kwargs["product_id"], "status": kwargs["status"]}
+
+        def upsert_product_sku(self, **kwargs):
+            return {}
+
+        def upsert_shop(self, **kwargs):
+            return {}
+
+        def upsert_creator(self, **kwargs):
+            return {}
+
+        def upsert_video(self, **kwargs):
+            return {}
+
+        def upsert_media_asset(self, **kwargs):
+            return {}
+
+        def link_media_asset(self, **kwargs):
+            return {}
+
+        def upsert_product_shop_relation(self, **kwargs):
+            return {}
+
+        def upsert_creator_product_relation(self, **kwargs):
+            return {}
+
+        def upsert_creator_video_relation(self, **kwargs):
+            return {}
+
+        def upsert_video_product_relation(self, **kwargs):
+            return {}
+
+        def upsert_shop_creator_relation(self, **kwargs):
+            return {}
+
+        def record_raw_api_response(self, **kwargs):
+            return {}
+
+        def upsert_product_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_window_observation(self, **kwargs):
+            return {}
+
+        def upsert_product_daily_metric(self, **kwargs):
+            return {}
+
+        def upsert_product_distribution_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_distribution_window_observation(self, **kwargs):
+            return {}
+
+        def upsert_product_sku_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_sku_window_observation(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(fact_bundle_module, "TKFactStore", FakeFactStore)
+
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "fact_db_url": "postgresql+psycopg://facts",
+                "fact_bundle": {
+                    "products": [
+                        {
+                            "product_id": "1732308866040173150",
+                            "facts": {"availability_status": "unavailable"},
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert captured["status"] == "off_shelf_or_region_unavailable"

@@ -93,6 +93,56 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(runtime_db
     assert raw_link["raw_response_id"] == raw["raw_response_id"]
 
 
+def test_tk_fact_store_skips_unchanged_relation_writes(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    fact_store = TKFactStore(runtime_store=store)
+
+    first = fact_store.upsert_creator_product_relation(
+        creator_key="creator_id:creator-1",
+        creator_id="creator-1",
+        product_id="1729440407432826887",
+        sold_count=88,
+        metadata={"source_endpoint": "goods.author"},
+    )
+    unchanged = fact_store.upsert_creator_product_relation(
+        creator_key="creator_id:creator-1",
+        creator_id="creator-1",
+        product_id="1729440407432826887",
+        sold_count=88,
+        metadata={"source_endpoint": "goods.author"},
+    )
+    changed = fact_store.upsert_creator_product_relation(
+        creator_key="creator_id:creator-1",
+        creator_id="creator-1",
+        product_id="1729440407432826887",
+        sold_count=90,
+        metadata={"source_endpoint": "goods.author"},
+    )
+
+    assert first["relation_key"] == "creator_id:creator-1:1729440407432826887"
+    assert unchanged == {}
+    assert changed["relation_id"] == first["relation_id"]
+    assert changed["sold_count"] == 90
+
+
+def test_tk_fact_store_prefers_reusable_media_asset_by_source_url(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    fact_store = TKFactStore(runtime_store=store)
+
+    referenced = fact_store.upsert_media_asset(source_url="https://example.com/main.png")
+    uploaded = fact_store.upsert_media_asset(
+        source_url="https://example.com/main.png",
+        object_key="runtime/media/main.png",
+        mime_type="image/png",
+    )
+
+    found = fact_store.find_media_asset(source_url="https://example.com/main.png")
+
+    assert referenced["asset_id"] != uploaded["asset_id"]
+    assert found["asset_id"] == uploaded["asset_id"]
+    assert found["object_key"] == "runtime/media/main.png"
+
+
 def test_tk_fact_store_records_product_window_snapshots(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     fact_store = TKFactStore(runtime_store=store)

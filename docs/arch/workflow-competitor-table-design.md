@@ -9,16 +9,15 @@
 - `refresh_current_competitor_table`: 补全/刷新当前 `TK竞品收集` 中待处理记录。
 - `search_keyword_competitor_products`: 按关键词在 FastMoss 搜索竞品，插入飞书种子行，再补全详情。
 
-这两类都属于 `TK竞品收集` 的运营主表维护流程。重构后它们不再依赖业务专用的单行补全或种子行写入 handler，而是统一使用:
+这两类都属于 `TK竞品收集` 的运营主表维护流程。重构后它们不再依赖业务专用的单行补全或种子行写入 handler，而是统一使用通用表读写能力和行级 pipeline 能力:
 
 - `feishu_table_read`
 - `feishu_table_write`
-- `tiktok_product_request_fetch`
-- `tiktok_product_browser_fetch`
 - `fastmoss_product_search`
-- `fastmoss_product_fetch`
-- `media_asset_sync`
-- `fact_bundle_upsert`
+- `competitor_row_refresh`
+- `tiktok_product_browser_fetch`
+
+其中 `competitor_row_refresh` 是一条竞品记录的行级主 job，内部串行调用 TikTok request、media sync、FastMoss product fetch、Fact DB upsert 和飞书写回能力。`tiktok_product_browser_fetch` 只在行级主 job 确认需要浏览器兜底时作为 child `task_execution` 创建。
 
 ## 2. Task
 
@@ -35,17 +34,18 @@
 flowchart TD
     A["Task: refresh_current_competitor_table"] --> B["submit_refresh_request"]
     B --> C["read_competitor_rows<br/>feishu_table_read"]
-    C --> D["dispatch_product_collection"]
-    D --> E["collect_product_data<br/>tiktok_product_request_fetch"]
-    D --> F["collect_product_data<br/>fastmoss_product_fetch"]
-    E --> G{"TikTok request 是否有效?"}
-    G -->|否| H["browser_fallback<br/>tiktok_product_browser_fetch"]
-    G -->|是| I["sync_media / persist_facts"]
+    C --> D["dispatch_row_refresh_jobs"]
+    D --> E["competitor_row_refresh<br/>one job per Feishu row"]
+    E --> F["TikTok request"]
+    F --> G{"明确需要 browser fallback?"}
+    G -->|是| H["tiktok_product_browser_fetch<br/>child task_execution"]
+    G -->|否| I["media sync"]
     H --> I
-    F --> I
-    I --> J["writeback_competitor_rows<br/>feishu_table_write"]
-    J --> K["ready_for_summary"]
-    K --> L["notification_outbox"]
+    I --> J["FastMoss fetch"]
+    J --> K["Fact DB upsert"]
+    K --> L["Feishu writeback"]
+    L --> M["ready_for_summary"]
+    M --> N["notification_outbox"]
 ```
 
 ### 3.1 Stage 设计
@@ -53,13 +53,9 @@ flowchart TD
 | Stage code | 作用 | Runtime 表 |
 | --- | --- | --- |
 | `submitted` | 创建顶层 `task_request` | `task_request` |
-| `read_competitor_rows` | 读取和过滤 `TK竞品收集` 候选行 | `api_worker_job` |
-| `dispatch_product_collection` | 根据候选行 fan-out 商品采集 job | `task_request` |
-| `collect_product_data` | request-first 采集 TikTok / FastMoss 商品事实 | `api_worker_job` |
-| `browser_fallback` | TikTok request 失效时执行页面采集 | `task_execution` |
-| `sync_media` | 同步图片、封面等媒体资产 | `api_worker_job` |
-| `persist_facts` | 写 Fact DB、MinIO artifact、raw links | `api_worker_job` |
-| `writeback_competitor_rows` | 将事实和指标投影回竞品表 | `api_worker_job` |
+| `read_competitor_rows` | 读取 `TK竞品收集`，只输出 12 个自动维护字段存在空值且未被跳过的候选行 | `api_worker_job` |
+| `dispatch_row_refresh_jobs` | 根据候选行创建行级采集 job；每条飞书记录最多创建一个 `competitor_row_refresh` | `task_request` |
+| `refresh_competitor_rows` | 串行消费行级 pipeline job；job 内部完成 TikTok request、必要 browser fallback、media sync、FastMoss、Fact DB、飞书写回 | `api_worker_job` / `task_execution` |
 | `ready_for_summary` | executor 汇总所有行结果并写通知 outbox | `task_request` / `notification_outbox` |
 
 ### 3.2 Job / Handler / Flow
@@ -67,17 +63,80 @@ flowchart TD
 | Job | item_code / job_code | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
 | 竞品表读取 | `feishu_table_read` | `api_worker` | `feishu_table_read` | `competitor_table_source_adapter` |
-| TikTok 商品 request 采集 | `tiktok_product_request_fetch` | `api_worker` | `tiktok_product_request_fetch` | TikTok request flow |
-| FastMoss 商品采集 | `fastmoss_product_fetch` | `api_worker` | `fastmoss_product_fetch` | FastMoss product flow |
-| TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | browser product page flow |
-| 媒体同步 | `media_asset_sync` | `api_worker` | `media_asset_sync` | object store flow |
-| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | fixed `fact_bundle` upsert |
-| 竞品表写回 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_table_projection_mapper` |
+| 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | TikTok request flow -> media sync -> FastMoss product flow -> fact upsert -> `competitor_table_projection_mapper` |
+| TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由 `competitor_row_refresh` 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
+
+`competitor_row_refresh` 是后续实现的目标行级 job_code。TikTok request、media sync、FastMoss fetch、Fact DB upsert 和飞书写回是该 job 内部步骤，不再作为同一条飞书记录的并行 sibling jobs。browser fallback 仍使用独立 `task_execution`，因为它需要独占 browser profile 资源，但它必须引用当前行级 job 和触发 fallback 的 TikTok request attempt。
+
+TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或商品不可访问/已下架/区域不可售信号时，`competitor_row_refresh` 才能创建 `tiktok_product_browser_fetch` 子执行；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
+
+### 3.2.1 反面教材: 不要按 Handler / API 调用粒度拆 Job
+
+这个 workflow 必须明确一条红线: handler 不是 job 颗粒度，API 调用更不是 job 颗粒度。
+
+错误拆法:
+
+- 因为已经有 `tiktok_product_request_fetch`、`fastmoss_product_fetch`、`media_asset_sync`、`fact_bundle_upsert`、`feishu_table_write` 这些现成 handler，就把它们各自提升成同一行记录的 sibling jobs。
+- 因为希望观察每一次 API 调用结果，就把 TikTok request、FastMoss request、媒体同步、Fact DB 写入、飞书写回分别入队。
+- 最终形成 `候选记录数 x 内部步骤数` 的 fan-out 队列模型。
+
+这个错误在竞品表刷新里已经出现过一次，可以作为反面教材:
+
+- 飞书实际读出 `68` 条候选记录。
+- 旧模型同时派发 `68` 条 `tiktok_product_request_fetch` 和 `68` 条 `fastmoss_product_fetch`。
+- 再加 `1` 条 `feishu_table_read`，子 job 总数达到 `137`；连同父 `task_request`，运行时看到的是 `138` 条记录。
+
+为什么这是错误设计:
+
+- 队列资源占用不再由业务筛选结果控制，而是被内部 API 步骤数放大。
+- 同一行记录的严格执行顺序被拆散，队列只能看到一堆同层级 sibling jobs，很难表达“这一条记录的一次刷新”。
+- browser fallback、media sync、Fact DB、飞书写回都要靠跨 job 拼接上下文，失败恢复和审计都变得脆弱。
+- 同一行的重试、延迟、风控证据和最终结果被切碎，验收时无法直接回答“这条飞书记录到底完整跑到了哪一步”。
+
+因此，本流程的正确约束是:
+
+- 一条候选飞书记录最多创建一个 `competitor_row_refresh` 主 job。
+- TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回都是该主 job 的内部步骤，不得再按 API 调用粒度拆成 sibling jobs。
+- 只有 `tiktok_product_browser_fetch` 这种确实需要独立 browser 资源生命周期的步骤，才允许作为 child `task_execution` 从主 job 内派生。
+
+### 3.2.2 竞品表 Adapter / Common 边界
+
+本流程的飞书来源表业务语义由 `competitor_table_source_adapter` 承担，不能散落到 `common` helper、handler registry 或 skill submit 参数中。
+
+`competitor_table_source_adapter` 必须内聚以下默认业务规则:
+
+- `TK竞品收集` 的 12 个自动维护字段定义。
+- 商品身份提取规则，例如 `SKU-ID` 在本流程中映射为商品 ID / `product_id`。
+- 候选判断规则，即“只有 12 个自动维护字段存在空值的记录才进入刷新候选集”。
+- `商品状态 = 已下架/区域不可售` 的跳过规则。
+- 空行、坏行、重复行的丢弃与去重规则。
+- `source_rows`、`candidate_keys`、`writeback_context`、`adapter_summary` 的构造规则。
+
+`competitor_table_projection_mapper` 必须内聚以下目标表写回规则:
+
+- 12 个自动维护字段的写回映射。
+- 哪些字段允许系统覆盖，哪些字段默认不覆盖人工值。
+- 当前任务不把商品不可售状态写回飞书 `商品状态` 字段；该字段的飞书投影不属于本次 workflow 写回范围。
+
+`feishu_table_read` / `feishu_table_write` 及其 `common` helper 只负责:
+
+- `table_url` / `view_id` 解析。
+- Feishu API 读写、分页、schema 校验和错误分类。
+- 原始记录标准化和通用结果 envelope。
+
+它们不负责:
+
+- 定义竞品表的 12 个自动维护字段。
+- 定义 `已下架/区域不可售` 的业务跳过语义。
+- 决定一行是否属于待刷新候选。
+- 决定竞品表写回时哪些字段属于系统默认覆盖。
+
+因此，`refresh_current_competitor_table` 的外部入口只应提供真正可变的运行输入，例如 `table_url`、认证上下文、显式指定的 `record_ids` 或运营批准的强制重刷选项。像 `candidate_policy = missing_auto_maintained_fields` 这类用于启用默认竞品筛选语义的内部 mode，不应成为 skill / CLI 调用方必须传入的前置条件。若未来允许 override，workflow 文档必须单独列出允许的 override 项、默认值和缺省行为。
 
 ### 3.3 进程间调度时序图
 
-本图只表达竞品表刷新在进程间如何调度，不展开 source adapter、projection mapper 或 handler 内部函数。
+本图只表达竞品表刷新在进程间如何调度，不展开 source adapter、projection mapper 或 handler 内部函数。行内普通 API 调用由 `competitor_row_refresh` 串行执行，不再由 executor 一次性拆出 TikTok / FastMoss / media / fact / writeback sibling jobs。
 
 ```mermaid
 sequenceDiagram
@@ -96,24 +155,23 @@ sequenceDiagram
     Exec->>DB: enqueue api_worker_job(feishu_table_read)
     API->>DB: claim feishu_table_read
     API->>Feishu: read TK competitor rows
+    API->>DB: store rows missing one of 12 auto-maintained fields
     API->>DB: mark read job success
-    Exec->>DB: fan-out product collection jobs
-    Exec->>DB: enqueue tiktok_product_request_fetch / fastmoss_product_fetch
-    API->>DB: claim product fetch jobs
-    API->>DB: write product fetch result / fallback_required
+    Exec->>DB: enqueue one competitor_row_refresh per candidate row
+    API->>DB: claim competitor_row_refresh in FIFO order
+    API->>DB: record TikTok request attempt evidence
     alt browser fallback required
-        Exec->>DB: enqueue task_execution(tiktok_product_browser_fetch)
+        API->>DB: enqueue task_execution(tiktok_product_browser_fetch)
         Browser->>DB: claim task_execution
         Browser->>Obj: store page / network artifacts
         Browser->>DB: mark browser result terminal
+        API->>DB: resume competitor_row_refresh after browser result
     end
-    Exec->>DB: enqueue media_asset_sync / fact_bundle_upsert
-    API->>Obj: sync media assets
+    API->>Obj: sync current row media assets when needed
+    API->>DB: fetch current row FastMoss product data
     API->>Fact: upsert product facts and observations
-    API->>DB: mark persist jobs terminal
-    Exec->>DB: enqueue api_worker_job(feishu_table_write)
-    API->>Feishu: write competitor row projection
-    API->>DB: mark writeback terminal
+    API->>Feishu: write current row projection
+    API->>DB: mark competitor_row_refresh terminal
     Exec->>DB: finalize task_request and insert notification_outbox
     Outbox->>DB: claim notification_outbox
     Outbox->>Entry: send summary
@@ -125,8 +183,8 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> pending
     pending --> running: executor claim
-    running --> waiting_children: dispatch product collection jobs
-    waiting_children --> ready_for_summary: collection/writeback jobs 全部终态
+    running --> waiting_children: dispatch row refresh jobs
+    waiting_children --> ready_for_summary: competitor_row_refresh jobs 全部终态
     ready_for_summary --> success: executor finalize
     success --> [*]
 ```
@@ -141,15 +199,10 @@ flowchart TD
     B --> C["search_product_candidates<br/>fastmoss_product_search"]
     C --> D["process_product_candidates<br/>output conditions"]
     D --> E["insert_seed_rows<br/>feishu_table_write"]
-    E --> F["dispatch_product_collection"]
-    F --> G["collect_product_data<br/>tiktok request + fastmoss fetch"]
-    G --> H{"TikTok request 是否有效?"}
-    H -->|否| I["browser_fallback<br/>tiktok_product_browser_fetch"]
-    H -->|是| J["sync_media / persist_facts"]
-    I --> J
-    J --> K["writeback_competitor_rows<br/>feishu_table_write"]
-    K --> L["ready_for_summary"]
-    L --> M["notification_outbox"]
+    E --> F["dispatch_row_refresh_jobs"]
+    F --> G["competitor_row_refresh<br/>same row-level pipeline"]
+    G --> H["ready_for_summary"]
+    H --> I["notification_outbox"]
 ```
 
 ### 4.1 Stage 设计
@@ -160,12 +213,8 @@ flowchart TD
 | `search_product_candidates` | 使用 FastMoss 商品搜索 API，根据 keyword/filter 获取候选商品 | `api_worker_job` |
 | `process_product_candidates` | 读取 search 结果，按 output condition 去重、过滤、生成竞品种子投影 | `task_request` 编排阶段 |
 | `insert_seed_rows` | 通过 `feishu_table_write` 创建竞品种子行 | `api_worker_job` |
-| `dispatch_product_collection` | 根据成功 seed rows fan-out 商品采集 job | `task_request` |
-| `collect_product_data` | request-first 采集 TikTok / FastMoss 商品事实 | `api_worker_job` |
-| `browser_fallback` | TikTok request 失效时执行页面采集 | `task_execution` |
-| `sync_media` | 同步图片、封面等媒体资产 | `api_worker_job` |
-| `persist_facts` | 写 Fact DB、MinIO artifact、raw links | `api_worker_job` |
-| `writeback_competitor_rows` | 将详情投影回竞品表 | `api_worker_job` |
+| `dispatch_row_refresh_jobs` | 根据成功 seed rows 创建行级采集 job | `task_request` |
+| `refresh_competitor_rows` | 使用与竞品表刷新一致的 `competitor_row_refresh` 行级 pipeline 补齐详情 | `api_worker_job` / `task_execution` |
 | `ready_for_summary` | 汇总搜索、种子写入、商品采集和详情写回结果，并写通知 outbox | `task_request` / `notification_outbox` |
 
 ### 4.2 Job / Handler / Flow
@@ -174,12 +223,8 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | FastMoss 商品搜索 | `fastmoss_product_search` | `api_worker` | `fastmoss_product_search` | FastMoss product search API flow |
 | 飞书种子行写入 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_seed_projection_mapper` |
-| TikTok 商品 request 采集 | `tiktok_product_request_fetch` | `api_worker` | `tiktok_product_request_fetch` | TikTok request flow |
-| FastMoss 商品采集 | `fastmoss_product_fetch` | `api_worker` | `fastmoss_product_fetch` | FastMoss product flow |
-| TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | browser product page flow |
-| 媒体同步 | `media_asset_sync` | `api_worker` | `media_asset_sync` | object store flow |
-| 事实入库 | `fact_bundle_upsert` | `api_worker` | `fact_bundle_upsert` | fixed `fact_bundle` upsert |
-| 竞品表详情写回 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_table_projection_mapper` |
+| 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | 与竞品表刷新相同的行级 pipeline |
+| TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由行级 pipeline 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
 
 ### 4.3 进程间调度时序图
@@ -203,26 +248,25 @@ sequenceDiagram
     Exec->>DB: enqueue api_worker_job(fastmoss_product_search)
     API->>DB: claim fastmoss_product_search
     API->>DB: store normalized candidates and raw_response_ref
-    Exec->>DB: apply output conditions and fan-out seed writes
+    Exec->>DB: apply output conditions and prepare seed writes
     Exec->>DB: enqueue api_worker_job(feishu_table_write)
     API->>Feishu: insert competitor seed rows
     API->>DB: mark seed write jobs terminal
-    Exec->>DB: enqueue tiktok_product_request_fetch / fastmoss_product_fetch
-    API->>DB: claim product fetch jobs
-    API->>DB: write product fetch result / fallback_required
+    Exec->>DB: enqueue one competitor_row_refresh per successful seed row
+    API->>DB: claim competitor_row_refresh in FIFO order
+    API->>DB: record TikTok request attempt evidence
     alt browser fallback required
-        Exec->>DB: enqueue task_execution(tiktok_product_browser_fetch)
+        API->>DB: enqueue task_execution(tiktok_product_browser_fetch)
         Browser->>DB: claim task_execution
         Browser->>Obj: store page / network artifacts
         Browser->>DB: mark browser result terminal
+        API->>DB: resume competitor_row_refresh after browser result
     end
-    Exec->>DB: enqueue media_asset_sync / fact_bundle_upsert
-    API->>Obj: sync media assets
+    API->>Obj: sync current row media assets when needed
+    API->>DB: fetch current row FastMoss product data
     API->>Fact: upsert product facts and observations
-    API->>DB: mark persist jobs terminal
-    Exec->>DB: enqueue api_worker_job(feishu_table_write)
     API->>Feishu: write competitor detail projection
-    API->>DB: mark writeback terminal
+    API->>DB: mark competitor_row_refresh terminal
     Exec->>DB: finalize task_request and insert notification_outbox
     Outbox->>DB: claim notification_outbox
     Outbox->>Entry: send summary
@@ -230,17 +274,22 @@ sequenceDiagram
 
 ## 5. 竞品表流程的 Job 颗粒度
 
-竞品表刷新和关键词入库都不应该把整张表作为一个超大 job 执行。目标颗粒度是:
+竞品表刷新和关键词入库都不应该把整张表作为一个超大 job 执行，也不应该把同一条竞品记录机械拆成多个并行 API job。目标颗粒度是:
 
 - 顶层 task 表示一次用户请求。
-- `search_product_candidates` / `read_competitor_rows` 是阶段性 job 或编排动作。
-- 每条竞品记录的商品采集、事实入库、飞书写回都是可审计的 runtime job。
+- `search_product_candidates` / `read_competitor_rows` 是阶段性 job 或编排动作，只负责产生候选行。
+- 每条待处理竞品记录创建一个 `competitor_row_refresh` 行级主 job。
+- `competitor_row_refresh` 内部按固定顺序串行执行 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert、飞书写回。
+- browser fallback 是当前行级 job 派生并等待的子 `task_execution`，不是与当前行并行推进的 sibling job。
+- `competitor_row_refresh` 绑定串行 queue lane，按 `available_at` / `queue_seq` / `created_at` FIFO claim；同一 lane 同一时刻最多一个 running job。
+- TikTok、FastMoss 和飞书外部请求之间必须记录 request start/end、delay / cooldown 和 fallback reason 等 runtime evidence。
 - 父 task 基于所有子 job 状态汇总。
 
 这样可以做到:
 
 - 单行失败不拖垮整张表。
 - 单行可独立重试。
+- 同一行的 TikTok / FastMoss / 飞书请求顺序可审计，不会因为 worker 并发乱序。
 - 默认走 request/API；浏览器 profile 只在 TikTok product fallback 时使用。
 - 最终 summary 可以保留每行成功/失败/跳过状态。
 
@@ -269,7 +318,7 @@ payload:
   "workflow_code": "refresh_current_competitor_table",
   "stage_code": "read_competitor_rows",
   "source_table_ref": "feishu://mujitask/TK竞品收集",
-  "field_names": ["产品链接", "SKU-ID", "商品状态", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+  "field_names": ["产品链接", "SKU-ID", "图片", "标题", "节日", "卖家", "价格", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期", "商品状态"],
   "filter_spec": {
     "candidate_policy": "missing_auto_maintained_fields",
     "skip_product_status": ["已下架/区域不可售"]
@@ -280,6 +329,11 @@ payload:
   }
 }
 ```
+
+说明:
+
+- 上述 `field_names` 和 `filter_spec` 是 `refresh_current_competitor_table` 在 `read_competitor_rows` stage 传给 `feishu_table_read` 的有效 payload，不代表外部 skill / CLI 必须显式提交这些内部筛选参数。
+- 这些默认值表达的是竞品表 workflow 的固定业务语义，应由 workflow 或 `competitor_table_source_adapter` 在内部保证稳定生效；外部入口缺省时不能静默退化成“读取整表后不过滤”的另一套语义。
 
 result:
 
@@ -313,43 +367,77 @@ result:
 }
 ```
 
-### 7.2 竞品表刷新: Fact projection 到详情写回
+### 7.2 竞品表刷新: `competitor_row_refresh`
 
-`fact_bundle_upsert` 不写飞书，只产出 `competitor_table_projection`；`competitor_table_projection_mapper` 再把它转换为 `feishu_table_write` payload。
+`competitor_row_refresh` 是单条竞品记录的主 job。它内部串行完成 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert 和飞书写回，只对外产出一个行级执行结果。截图可以作为内部 artifact 保存，但 `前台截图`、`Fastmoss截图` 不属于 12 个自动维护字段，也不参与待更新判断。
 
-projection result:
+job result:
 
 ```json
 {
-  "persisted_entities": [
-    "tiktok_product:1731194997356205027",
-    "fastmoss_product:1731194997356205027"
-  ],
-  "persisted_observations": [
-    "obs:fastmoss_product:1731194997356205027:day7_sold_count:2026-04-24"
-  ],
-  "projections": {
-    "competitor_table_projection": {
-      "projection_type": "competitor_detail_writeback",
-      "source_record_id": "recRefresh001",
-      "business_entity_key": "product:1731194997356205027",
-      "fields": {
-        "SKU-ID": "1731194997356205027",
-        "标题": "Graduation party decoration set",
-        "卖家": "Graduation Shop",
-        "价格": "$12.99",
-        "Fastmoss价格": "$12.99",
-        "昨日销量": "38",
-        "近7天销量": "412",
-        "近90天销量": "2310",
-        "记录日期": "2026-04-24"
-      },
-      "asset_refs": {
-        "图片": ["asset://product/1731194997356205027/main-image"],
-        "前台截图": ["asset://product/1731194997356205027/tiktok-screenshot"],
-        "Fastmoss截图": ["asset://product/1731194997356205027/fastmoss-screenshot"]
-      }
+  "source_record_id": "recRefresh001",
+  "job_code": "competitor_row_refresh",
+  "business_entity_key": "product:1731194997356205027",
+  "step_timeline": [
+    {
+      "step": "tiktok_request",
+      "status": "success",
+      "attempted": true,
+      "http_status": 200,
+      "fallback_required": false,
+      "fallback_reason": ""
+    },
+    {
+      "step": "media_sync",
+      "status": "success"
+    },
+    {
+      "step": "fastmoss_fetch",
+      "status": "success"
+    },
+    {
+      "step": "fact_db_upsert",
+      "status": "success"
+    },
+    {
+      "step": "feishu_writeback",
+      "status": "success"
     }
+  ],
+  "fact_upsert": {
+    "persisted_entities": [
+      "tiktok_product:1731194997356205027",
+      "fastmoss_product:1731194997356205027"
+    ],
+    "persisted_observations": [
+      "obs:fastmoss_product:1731194997356205027:day7_sold_count:2026-04-24"
+    ]
+  },
+  "writeback_projection": {
+    "fields": {
+      "产品链接": {
+        "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+        "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
+      },
+      "SKU-ID": "1731194997356205027",
+      "图片": ["asset://product/1731194997356205027/main-image"],
+      "标题": "Graduation party decoration set",
+      "节日": "Graduation",
+      "卖家": "Graduation Shop",
+      "价格": "$12.99",
+      "Fastmoss价格": "$12.99",
+      "昨日销量": "38",
+      "近7天销量": "412",
+      "近90天销量": "2310",
+      "记录日期": "2026-04-24"
+    }
+  },
+  "runtime_evidence": {
+    "created_browser_fallback": false,
+    "browser_child_execution_id": "",
+    "fallback_reason": "",
+    "api_lane": "competitor_row_refresh",
+    "claim_order": 1
   }
 }
 ```
@@ -359,7 +447,7 @@ writeback payload:
 ```json
 {
   "target_table_ref": "feishu://mujitask/TK竞品收集",
-  "write_mode": "batch_upsert",
+  "write_mode": "update_missing_auto_fields",
   "mapper_code": "competitor_table_projection_mapper",
   "records": [
     {
@@ -367,8 +455,14 @@ writeback payload:
       "record_id": "recRefresh001",
       "business_entity_key": "product:1731194997356205027",
       "fields": {
+        "产品链接": {
+          "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+          "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
+        },
         "SKU-ID": "1731194997356205027",
+        "图片": ["asset://product/1731194997356205027/main-image"],
         "标题": "Graduation party decoration set",
+        "节日": "Graduation",
         "卖家": "Graduation Shop",
         "价格": "$12.99",
         "Fastmoss价格": "$12.99",

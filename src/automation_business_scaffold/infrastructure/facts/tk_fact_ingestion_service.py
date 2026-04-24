@@ -53,6 +53,7 @@ class TKFactIngestionService:
             "holiday": _first_non_empty(logical_payload.get("holiday")),
             "seller_name": _first_non_empty(logical_payload.get("shop_name")),
             "source_platform": "tiktok",
+            "status": _product_status_from_spec(logical_payload),
             "facts": {},
             "shop_name": _first_non_empty(logical_payload.get("shop_name")),
             "shop_url": _first_non_empty(logical_payload.get("shop_url")),
@@ -1222,6 +1223,17 @@ def _facts_from_spec(spec: Mapping[str, Any], *, source_endpoint: str = "") -> d
     if source_endpoint:
         payload.setdefault("source_endpoint", source_endpoint)
     return payload
+
+
+def _product_status_from_spec(spec: Mapping[str, Any]) -> str:
+    status = _first_non_empty(spec.get("status"))
+    if status:
+        return status
+    facts = spec.get("facts")
+    fact_payload = facts if isinstance(facts, Mapping) else spec
+    if _first_non_empty(fact_payload.get("availability_status")).lower() == "unavailable":
+        return "off_shelf_or_region_unavailable"
+    return "active"
 
 
 def _metadata_from_relation(spec: Mapping[str, Any]) -> dict[str, Any]:

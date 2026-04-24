@@ -122,4 +122,5 @@ def test_tiktok_product_browser_fetch_returns_unavailable_as_terminal_result(mon
     assert result.status == "success"
     assert result.result["availability_status"] == "unavailable"
     normalized = result.result["normalized_product_result"]
+    assert normalized["product"]["status"] == "off_shelf_or_region_unavailable"
     assert normalized["product"]["facts"]["availability_status"] == "unavailable"

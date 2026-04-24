@@ -12,7 +12,7 @@ _PRODUCT_ID_PATTERNS = (
 )
 
 
-_COMPETITOR_SYSTEM_OVERWRITE_FIELDS = {"商品状态"}
+_COMPETITOR_WRITEBACK_EXCLUDED_FIELDS = {"商品状态"}
 
 
 def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -134,12 +134,9 @@ def _select_missing_competitor_projection_fields(
 ) -> dict[str, Any]:
     selected: dict[str, Any] = {}
     for field_name, value in projection_fields.items():
-        if field_name == "记录日期":
+        if field_name in {"记录日期", *_COMPETITOR_WRITEBACK_EXCLUDED_FIELDS}:
             continue
         if not _field_has_value(value):
-            continue
-        if field_name in _COMPETITOR_SYSTEM_OVERWRITE_FIELDS:
-            selected[field_name] = value
             continue
         if not _field_has_value(existing_fields.get(field_name)):
             selected[field_name] = value

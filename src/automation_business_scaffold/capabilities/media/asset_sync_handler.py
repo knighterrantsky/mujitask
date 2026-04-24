@@ -28,6 +28,7 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     create_store_from_settings,
     sync_artifact_specs,
 )
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 from pathlib import Path
 from typing import Any
 
@@ -61,9 +62,14 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     local_assets_by_path: dict[str, dict[str, Any]] = {}
     synced_assets: list[dict[str, Any]] = []
     warnings: list[str] = []
+    fact_store = _create_fact_store(payload, warnings=warnings)
 
     for index, asset in enumerate(asset_refs):
         normalized_asset = _normalize_media_asset(asset, fallback_product_id=payload.get("product_id"))
+        cached_asset = _find_reusable_media_asset(fact_store, normalized_asset)
+        if cached_asset:
+            synced_assets.append(_reused_media_asset(normalized_asset, cached_asset))
+            continue
         local_path = Path(coerce_str(normalized_asset.get("local_path"))).expanduser()
         if local_path.exists() and local_path.is_file():
             _append_artifact_spec(
@@ -147,6 +153,63 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     if warnings:
         return success_result(context, summary=summary, result=result, warnings=tuple(warnings))
     return success_result(context, summary=summary, result=result)
+
+
+def _create_fact_store(payload: dict[str, Any], *, warnings: list[str]) -> TKFactStore | None:
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    fact_db_url = first_non_empty(
+        payload.get("fact_db_url"),
+        request_payload.get("fact_db_url"),
+        request_payload.get("execution_control_fact_db_url"),
+        coerce_mapping(payload.get("persistence")).get("fact_db_url"),
+        coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
+        payload.get("db_url"),
+        request_payload.get("db_url"),
+    )
+    if not fact_db_url:
+        return None
+    try:
+        return TKFactStore(db_url=fact_db_url)
+    except Exception as exc:  # noqa: BLE001 - media sync can proceed without cache lookup.
+        warnings.append(f"Media asset cache lookup disabled: {exc}")
+        return None
+
+
+def _find_reusable_media_asset(fact_store: TKFactStore | None, asset: dict[str, Any]) -> dict[str, Any]:
+    if fact_store is None:
+        return {}
+    cached = fact_store.find_media_asset(
+        source_url=coerce_str(asset.get("source_url")),
+        file_token=coerce_str(asset.get("file_token")),
+        local_path=coerce_str(asset.get("local_path")),
+        object_key=coerce_str(asset.get("object_key")),
+    )
+    if not cached:
+        return {}
+    if coerce_str(cached.get("object_key")) or coerce_str(cached.get("file_token")):
+        return cached
+    cached_path = Path(coerce_str(cached.get("local_path"))).expanduser()
+    if coerce_str(cached.get("local_path")) and cached_path.exists() and cached_path.is_file():
+        return cached
+    return {}
+
+
+def _reused_media_asset(asset: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:
+    return compact_dict(
+        {
+            **asset,
+            "sync_state": "reused",
+            "asset_id": cached.get("asset_id"),
+            "asset_key": cached.get("asset_key"),
+            "source_url": first_non_empty(asset.get("source_url"), cached.get("source_url")),
+            "file_token": first_non_empty(cached.get("file_token"), asset.get("file_token")),
+            "local_path": first_non_empty(cached.get("local_path"), asset.get("local_path")),
+            "object_key": first_non_empty(cached.get("object_key"), asset.get("object_key")),
+            "file_name": first_non_empty(cached.get("file_name"), asset.get("file_name")),
+            "mime_type": first_non_empty(cached.get("mime_type"), asset.get("mime_type")),
+            "source_platform": first_non_empty(asset.get("source_platform"), cached.get("source_platform")),
+        }
+    )
 
 
 def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:

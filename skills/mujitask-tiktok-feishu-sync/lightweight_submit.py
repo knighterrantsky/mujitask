@@ -17,16 +17,16 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
 
-    from automation_business_scaffold.business.flows import (  # pylint: disable=import-outside-toplevel
-        submit_refresh_current_competitor_table,
-        submit_search_keyword_competitor_products,
-        submit_sync_tk_influencer_pool,
+    from automation_business_scaffold.control_plane.executor.runner import (  # pylint: disable=import-outside-toplevel
+        run_refresh_current_competitor_table_request,
+        run_search_keyword_competitor_products_request,
+        run_sync_tk_influencer_pool_request,
     )
 
     submitters: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-        "refresh_current_competitor_table": submit_refresh_current_competitor_table,
-        "search_keyword_competitor_products": submit_search_keyword_competitor_products,
-        "sync_tk_influencer_pool": submit_sync_tk_influencer_pool,
+        "refresh_current_competitor_table": run_refresh_current_competitor_table_request,
+        "search_keyword_competitor_products": run_search_keyword_competitor_products_request,
+        "sync_tk_influencer_pool": run_sync_tk_influencer_pool_request,
     }
     submitter = submitters.get(task_name)
     if submitter is None:

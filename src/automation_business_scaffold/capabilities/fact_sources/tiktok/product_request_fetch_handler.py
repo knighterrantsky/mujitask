@@ -3,6 +3,13 @@ from __future__ import annotations
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result as _shared_build_tiktok_normalized_product_result,
 )
+from automation_business_scaffold.business.flows.achieve.tiktok_product_flow import (
+    TikTokProductExtractionError,
+    TikTokRateLimitError,
+    TikTokProductUnavailableError,
+    TikTokSecurityCheckError,
+    fetch_tiktok_product_record,
+)
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -57,18 +64,51 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
             identity=identity,
             fallback_reason=first_non_empty(payload.get("fallback_reason"), "forced_by_payload"),
             detail_message="TikTok request-first path requested browser fallback.",
+            request_attempt={"attempted": False, "request_source": "forced_by_payload"},
         )
 
     normalized = coerce_mapping(payload.get("normalized_product_result"))
+    request_attempt: dict[str, Any] = {
+        "attempted": False,
+        "request_source": "normalized_payload" if normalized else "",
+        "fallback_signal": False,
+        "fallback_reason": "",
+    }
     if not normalized:
         raw_request_result = _resolve_inline_tiktok_payload(payload)
-        if not raw_request_result and fallback_allowed:
-            return _browser_fallback_result(
-                context,
-                identity=identity,
-                fallback_reason=first_non_empty(payload.get("fallback_reason"), "request_payload_missing_product_detail"),
-                detail_message="TikTok request-first payload did not include product detail data.",
-            )
+        if raw_request_result:
+            request_attempt = {
+                "attempted": False,
+                "request_source": "inline_payload",
+                "fallback_signal": False,
+                "fallback_reason": "",
+            }
+        else:
+            fetch_result = _fetch_request_payload(payload, identity=identity)
+            request_attempt = dict(fetch_result["request_attempt"])
+            raw_request_result = dict(fetch_result["raw_request_result"])
+            if fetch_result["mode"] == "fallback":
+                return _browser_fallback_result(
+                    context,
+                    identity=identity,
+                    fallback_reason=first_non_empty(fetch_result["fallback_reason"], payload.get("fallback_reason")),
+                    detail_message=str(fetch_result["message"]),
+                    request_attempt=request_attempt,
+                )
+            if fetch_result["mode"] == "failed":
+                error = build_error(
+                    error_type=str(fetch_result["error_type"]),
+                    error_code=str(fetch_result["error_code"]),
+                    message=str(fetch_result["message"]),
+                    retryable=bool(fetch_result["retryable"]),
+                    details={"product_identity": identity, "request_attempt": request_attempt},
+                )
+                return failed_result(
+                    context,
+                    error=error,
+                    summary={"collection_path": "request", "product_business_key": product_business_key(identity)},
+                    result={"request_attempt": request_attempt},
+                )
         normalized = _shared_build_tiktok_normalized_product_result(
             raw_request_result,
             identity=identity,
@@ -110,6 +150,7 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
         "fallback_required": False,
         "fallback_reason": "",
         "fallback_source_job_id": "",
+        "request_attempt": request_attempt,
     }
     summary = {
         "collection_path": "request",
@@ -117,8 +158,143 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
         "product_business_key": product_business_key(identity) or product_url,
         "media_asset_count": len(coerce_mapping_list(normalized.get("media_assets"))),
         "sku_count": len(coerce_mapping_list(normalized.get("product_skus"))),
+        "request_attempted": bool(request_attempt.get("attempted")),
     }
     return success_result(context, summary=summary, result=result)
+
+
+def _fetch_request_payload(
+    payload: dict[str, Any],
+    *,
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    product_url = first_non_empty(
+        payload.get("product_url"),
+        payload.get("source_url"),
+        payload.get("normalized_product_url"),
+        identity.get("normalized_product_url"),
+        identity.get("product_url"),
+    )
+    if not product_url:
+        return {
+            "mode": "failed",
+            "error_type": "invalid_input",
+            "error_code": "tiktok_request_missing_product_url",
+            "message": "TikTok request-first path requires product_url.",
+            "retryable": False,
+            "request_attempt": {"attempted": False, "request_source": "live_request", "fallback_signal": False, "fallback_reason": ""},
+            "raw_request_result": {},
+            "fallback_reason": "",
+        }
+
+    timeout_seconds = _coerce_int(
+        first_non_empty(payload.get("timeout_seconds"), payload.get("tiktok_request_timeout_seconds")),
+        default=30,
+    )
+    try:
+        product = fetch_tiktok_product_record(product_url, timeout=timeout_seconds)
+    except TikTokProductUnavailableError as exc:
+        return _fallback_fetch_outcome(
+            reason="request_signal_product_unavailable",
+            message=str(exc),
+            product_url=product_url,
+        )
+    except (TikTokSecurityCheckError, TikTokRateLimitError) as exc:
+        return _fallback_fetch_outcome(
+            reason=_fallback_reason_from_message(str(exc)),
+            message=str(exc),
+            product_url=product_url,
+        )
+    except TikTokProductExtractionError as exc:
+        fallback_reason = _fallback_reason_from_message(str(exc))
+        if fallback_reason:
+            return _fallback_fetch_outcome(
+                reason=fallback_reason,
+                message=str(exc),
+                product_url=product_url,
+            )
+        return {
+            "mode": "failed",
+            "error_type": "request_failure",
+            "error_code": "tiktok_request_fetch_failed",
+            "message": str(exc),
+            "retryable": True,
+            "request_attempt": {"attempted": True, "request_source": "live_request", "request_url": product_url, "fallback_signal": False, "fallback_reason": ""},
+            "raw_request_result": {},
+            "fallback_reason": "",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "mode": "failed",
+            "error_type": "transport_failure",
+            "error_code": "tiktok_request_transport_failed",
+            "message": str(exc),
+            "retryable": True,
+            "request_attempt": {"attempted": True, "request_source": "live_request", "request_url": product_url, "fallback_signal": False, "fallback_reason": ""},
+            "raw_request_result": {},
+            "fallback_reason": "",
+        }
+
+    product_payload = product.to_dict()
+    return {
+        "mode": "success",
+        "error_type": "",
+        "error_code": "",
+        "message": "",
+        "retryable": False,
+        "request_attempt": {
+            "attempted": True,
+            "request_source": "live_request",
+            "request_url": product_url,
+            "fallback_signal": False,
+            "fallback_reason": "",
+        },
+        "raw_request_result": {
+            **product_payload,
+            "product": product_payload,
+            "sku_list": product_payload.get("skus") or [],
+            "skus": product_payload.get("skus") or [],
+            "gallery_images": product_payload.get("gallery_images") or [],
+            "sku_images": product_payload.get("sku_images") or [],
+        },
+        "fallback_reason": "",
+    }
+
+
+def _fallback_fetch_outcome(*, reason: str, message: str, product_url: str) -> dict[str, Any]:
+    return {
+        "mode": "fallback",
+        "error_type": "",
+        "error_code": "",
+        "message": message,
+        "retryable": False,
+        "request_attempt": {
+            "attempted": True,
+            "request_source": "live_request",
+            "request_url": product_url,
+            "fallback_signal": True,
+            "fallback_reason": reason,
+        },
+        "raw_request_result": {},
+        "fallback_reason": reason,
+    }
+
+
+def _fallback_reason_from_message(message: str) -> str:
+    normalized = coerce_str(message).lower()
+    if not normalized:
+        return ""
+    if any(token in normalized for token in ("captcha", "verify", "security check", "security-check")):
+        return "request_signal_security_check"
+    if any(token in normalized for token in ("login", "sign in", "sign-in")):
+        return "request_signal_login_required"
+    if any(token in normalized for token in ("access denied", "forbidden", "permission")):
+        return "request_signal_access_limited"
+    if any(token in normalized for token in ("rate limit", "too many requests", "429")):
+        return "request_signal_rate_limited"
+    if any(token in normalized for token in ("region", "unavailable", "not available", "not accessible")):
+        return "request_signal_product_unavailable"
+    return ""
 
 
 def _resolve_inline_tiktok_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -364,6 +540,7 @@ def _browser_fallback_result(
     identity: dict[str, Any],
     fallback_reason: str,
     detail_message: str,
+    request_attempt: dict[str, Any] | None = None,
 ) -> HandlerResult:
     error = build_error(
         error_type="fallback_required",
@@ -388,11 +565,13 @@ def _browser_fallback_result(
         "fallback_required": True,
         "fallback_reason": fallback_reason,
         "fallback_source_job_id": context.job_id,
+        "request_attempt": dict(request_attempt or {}),
     }
     summary = {
         "collection_path": "request",
         "product_business_key": product_business_key(identity),
         "fallback_required": True,
+        "request_attempted": bool((request_attempt or {}).get("attempted")),
     }
     return fallback_required_result(
         context,
@@ -401,6 +580,13 @@ def _browser_fallback_result(
         result=result,
         next_action=next_action,
     )
+
+
+def _coerce_int(value: Any, *, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = "") -> dict[str, Any]:

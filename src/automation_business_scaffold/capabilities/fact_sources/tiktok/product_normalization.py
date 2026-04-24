@@ -20,6 +20,9 @@ from automation_business_scaffold.contracts.handler.shared import (
 from typing import Any
 
 
+PRODUCT_STATUS_UNAVAILABLE = "off_shelf_or_region_unavailable"
+
+
 def _build_tiktok_normalized_product_result(
     raw_payload: dict[str, Any],
     *,
@@ -86,6 +89,7 @@ def _build_tiktok_normalized_product_result(
             ),
         }
     )
+    product_status = _product_status_from_availability(product_facts)
     product = compact_dict(
         {
             "product_id": product_id,
@@ -97,6 +101,7 @@ def _build_tiktok_normalized_product_result(
             "shop_name": shop_name,
             "shop_url": shop_url,
             "source_platform": "tiktok",
+            "status": product_status,
             "facts": product_facts or {"collection_path": collection_path},
         }
     )
@@ -187,6 +192,13 @@ def _build_tiktok_normalized_product_result(
             }
         ),
     }
+
+
+def _product_status_from_availability(product_facts: dict[str, Any]) -> str:
+    availability_status = coerce_str(product_facts.get("availability_status")).strip().lower()
+    if availability_status == "unavailable":
+        return PRODUCT_STATUS_UNAVAILABLE
+    return "active"
 
 
 def _normalize_product_skus(raw_payload: dict[str, Any], *, product_id: str) -> list[dict[str, Any]]:

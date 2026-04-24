@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
 )
-from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
@@ -52,7 +52,7 @@ def _latest_stage_job(store: RuntimeStore, *, request_id: str, stage_code: str, 
     return jobs[-1]
 
 
-def test_refresh_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_url: str) -> None:
+def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_db_url: str) -> None:
     runtime = load_workflow_runtime(REFRESH_TASK_CODE)
     assert runtime is not None
     assert runtime.advance_stage is advance_stage
@@ -70,6 +70,8 @@ def test_refresh_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
         job_code="feishu_table_read",
     )
     assert read_job["payload"]["source_table_ref"] == SOURCE_TABLE_REF
+    assert read_job["payload"]["field_names"][-1] == "商品状态"
+    assert read_job["payload"]["filter_spec"]["candidate_policy"] == "missing_auto_maintained_fields"
 
     store.mark_api_worker_job_success(
         job_id=read_job["job_id"],
@@ -94,127 +96,36 @@ def test_refresh_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     dispatch = advance_stage(store=store, request=request, workflow=workflow, stage_code="dispatch_product_collection")
     assert dispatch["action"] == "advance"
     assert dispatch["next_stage"] == "collect_product_data"
-    tiktok_job = _latest_stage_job(
+    row_job = _latest_stage_job(
         store,
         request_id=request.request_id,
         stage_code="collect_product_data",
-        job_code="tiktok_product_request_fetch",
+        job_code="competitor_row_refresh",
     )
-    fastmoss_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="collect_product_data",
-        job_code="fastmoss_product_fetch",
-    )
-    assert tiktok_job["payload"]["source_record_id"] == "row-1"
-    assert fastmoss_job["payload"]["source_record_id"] == "row-1"
+    assert row_job["payload"]["source_record_id"] == "row-1"
+    assert row_job["payload"]["request_payload"]["source_table_ref"] == SOURCE_TABLE_REF
 
     store.mark_api_worker_job_success(
-        job_id=tiktok_job["job_id"],
-        run_id="pytest:tiktok",
-        summary={"transport": "request"},
+        job_id=row_job["job_id"],
+        run_id="pytest:row-refresh",
+        summary={"row_status": "success"},
         result={
-            "normalized_product_result": {
-                "product_id": PRODUCT_ID,
-                "product_url": PRODUCT_URL,
-                "media_assets": [
-                    {
-                        "source_url": "https://cdn.example.com/p1.jpg",
-                        "source_type": "image",
-                        "mime_type": "image/jpeg",
-                    }
-                ],
-            }
-        },
-    )
-    store.mark_api_worker_job_success(
-        job_id=fastmoss_job["job_id"],
-        run_id="pytest:fastmoss",
-        summary={"transport": "fastmoss"},
-        result={
-            "product_fact_bundle": {
-                "product_id": PRODUCT_ID,
-                "gmv_currency": "USD",
-                "gmv_amount": 100,
-            }
+            "row_status": "success",
+            "step_timeline": [
+                {"step": "tiktok_request", "status": "success"},
+                {"step": "browser_fallback", "status": "skipped"},
+                {"step": "media_sync", "status": "success"},
+                {"step": "fastmoss_fetch", "status": "success"},
+                {"step": "fact_db_upsert", "status": "success"},
+                {"step": "feishu_writeback", "status": "success"},
+            ],
+            "runtime_evidence": {"browser_fallback_used": False},
         },
     )
     request = store.load_task_request(request_id=request.request_id)
     collect_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="collect_product_data")
     assert collect_advance["action"] == "advance"
-    assert collect_advance["next_stage"] == "sync_media"
-
-    request = store.load_task_request(request_id=request.request_id)
-    sync_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="sync_media")
-    assert sync_waiting["action"] == "waiting"
-    media_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="sync_media",
-        job_code="media_asset_sync",
-    )
-    assert media_job["payload"]["source_record_id"] == "row-1"
-    store.mark_api_worker_job_success(
-        job_id=media_job["job_id"],
-        run_id="pytest:media",
-        summary={"synced": 1},
-        result={"synced_assets": [{"source_url": "https://cdn.example.com/p1.jpg"}]},
-    )
-    request = store.load_task_request(request_id=request.request_id)
-    sync_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="sync_media")
-    assert sync_advance["action"] == "advance"
-    assert sync_advance["next_stage"] == "persist_facts"
-
-    request = store.load_task_request(request_id=request.request_id)
-    persist_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="persist_facts")
-    assert persist_waiting["action"] == "waiting"
-    fact_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="persist_facts",
-        job_code="fact_bundle_upsert",
-    )
-    assert fact_job["payload"]["fact_bundle"]["product_identity"]["product_id"] == PRODUCT_ID
-
-    store.mark_api_worker_job_success(
-        job_id=fact_job["job_id"],
-        run_id="pytest:fact",
-        summary={"upserted": 1},
-        result={"upserted_entities": [PRODUCT_ID]},
-    )
-    request = store.load_task_request(request_id=request.request_id)
-    persist_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="persist_facts")
-    assert persist_advance["action"] == "advance"
-    assert persist_advance["next_stage"] == "writeback_competitor_rows"
-
-    request = store.load_task_request(request_id=request.request_id)
-    write_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="writeback_competitor_rows")
-    assert write_waiting["action"] == "waiting"
-    write_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="writeback_competitor_rows",
-        job_code="feishu_table_write",
-    )
-    record_payload = write_job["payload"]["records"][0]
-    assert record_payload["source_record_id"] == "row-1"
-    assert record_payload["refresh_status"] == "success"
-
-    store.mark_api_worker_job_success(
-        job_id=write_job["job_id"],
-        run_id="pytest:writeback",
-        summary={"written": 1},
-        result={"written_count": 1, "target_record_ids": ["row-1"]},
-    )
-    request = store.load_task_request(request_id=request.request_id)
-    write_advance = advance_stage(
-        store=store,
-        request=request,
-        workflow=workflow,
-        stage_code="writeback_competitor_rows",
-    )
-    assert write_advance["action"] == "advance"
-    assert write_advance["next_stage"] == "ready_for_summary"
+    assert collect_advance["next_stage"] == "ready_for_summary"
 
     request = store.update_task_request(
         request_id=request.request_id,
@@ -226,107 +137,10 @@ def test_refresh_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     assert finalized["request_status"] == "success"
     assert finalized["summary"]["final_status"] == "success"
     assert finalized["result"]["row_total_count"] == 1
-    assert finalized["outbox"][0]["event_type"] == "task_request.completed"
-    assert finalized["outbox"][0]["payload"]["summary_payload"]["final_status"] == "success"
-
-
-def test_refresh_runtime_browser_fallback_stage_enqueues_execution_and_advances(runtime_db_url: str) -> None:
-    store, request, workflow = _submit_refresh_request(runtime_db_url)
-
-    read_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
-    assert read_waiting["action"] == "waiting"
-    read_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="read_competitor_rows",
-        job_code="feishu_table_read",
-    )
-    store.mark_api_worker_job_success(
-        job_id=read_job["job_id"],
-        run_id="pytest:read",
-        summary={"rows": 1},
-        result={
-            "source_rows": [
-                {
-                    "source_record_id": "row-bf",
-                    "product_id": PRODUCT_ID,
-                    "product_url": PRODUCT_URL,
-                }
-            ]
-        },
-    )
-    request = store.load_task_request(request_id=request.request_id)
-    advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
-    request = store.load_task_request(request_id=request.request_id)
-    advance_stage(store=store, request=request, workflow=workflow, stage_code="dispatch_product_collection")
-
-    tiktok_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="collect_product_data",
-        job_code="tiktok_product_request_fetch",
-    )
-    fastmoss_job = _latest_stage_job(
-        store,
-        request_id=request.request_id,
-        stage_code="collect_product_data",
-        job_code="fastmoss_product_fetch",
-    )
-    store.mark_api_worker_job_success(
-        job_id=tiktok_job["job_id"],
-        run_id="pytest:tiktok-fallback",
-        summary={"transport": "request"},
-        result={
-            "handler_result": {
-                "status": "fallback_required",
-                "handler_code": "tiktok_product_request_fetch",
-                "request_id": request.request_id,
-                "job_id": tiktok_job["job_id"],
-            },
-            "fallback_required": True,
-            "fallback_reason": "request_blocked",
-            "fallback_source_job_id": tiktok_job["job_id"],
-        },
-    )
-    store.mark_api_worker_job_success(
-        job_id=fastmoss_job["job_id"],
-        run_id="pytest:fastmoss",
-        summary={"transport": "fastmoss"},
-        result={"product_fact_bundle": {"product_id": PRODUCT_ID}},
-    )
-
-    request = store.load_task_request(request_id=request.request_id)
-    collect_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="collect_product_data")
-    assert collect_advance["action"] == "advance"
-    assert collect_advance["next_stage"] == "browser_fallback"
-
-    request = store.load_task_request(request_id=request.request_id)
-    browser_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="browser_fallback")
-    assert browser_waiting["action"] == "waiting"
-    executions = [
-        execution
-        for execution in store.list_task_executions(request_id=request.request_id)
-        if execution.item_code == "tiktok_product_browser_fetch"
-    ]
-    assert len(executions) == 1
-    execution = executions[0]
-    assert execution.payload["source_record_id"] == "row-bf"
-
-    store.mark_browser_execution_success(
-        execution_id=execution.execution_id,
-        run_id="pytest:browser",
-        summary={"transport": "browser"},
-        result={
-            "normalized_product_result": {
-                "product_id": PRODUCT_ID,
-                "product_url": PRODUCT_URL,
-            }
-        },
-    )
-    request = store.load_task_request(request_id=request.request_id)
-    browser_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="browser_fallback")
-    assert browser_advance["action"] == "advance"
-    assert browser_advance["next_stage"] == "sync_media"
+    row_result = finalized["result"]["row_results"][0]
+    assert row_result["row_status"] == "success"
+    assert row_result["tiktok_status"] == "success"
+    assert row_result["writeback_status"] == "success"
 
 
 def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_db_url: str) -> None:
@@ -394,52 +208,58 @@ def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_d
     assert read_advance["next_stage"] == "dispatch_product_collection"
 
 
-def test_refresh_runtime_release_request_after_child_completion_requeues_worker_stage(runtime_db_url: str) -> None:
+def test_refresh_runtime_release_request_after_child_completion_requeues_collect_stage(runtime_db_url: str) -> None:
     store, request, workflow = _submit_refresh_request(runtime_db_url)
     request = store.update_task_request(
         request_id=request.request_id,
         status="waiting_children",
-        current_stage="persist_facts",
-        progress_stage="persist_facts",
+        current_stage="collect_product_data",
+        progress_stage="collect_product_data",
     )
     store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code=request.task_code,
-        job_code="fact_bundle_upsert",
+        job_code="competitor_row_refresh",
         jobs=[
             {
                 "business_key": PRODUCT_ID,
-                "dedupe_key": f"{request.request_id}:persist:{PRODUCT_ID}",
+                "dedupe_key": f"{request.request_id}:collect:{PRODUCT_ID}",
                 "payload": {
-                    "stage_code": "persist_facts",
+                    "stage_code": "collect_product_data",
                     "source_record_id": "row-release",
-                    "fact_bundle": {"product_id": PRODUCT_ID},
+                    "product_identity": {"product_id": PRODUCT_ID},
                 },
             }
         ],
     )
-    fact_job = _latest_stage_job(
+    row_job = _latest_stage_job(
         store,
         request_id=request.request_id,
-        stage_code="persist_facts",
-        job_code="fact_bundle_upsert",
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
     )
     store.mark_api_worker_job_success(
-        job_id=fact_job["job_id"],
+        job_id=row_job["job_id"],
         run_id="pytest:release",
-        summary={"upserted": 1},
-        result={"upserted_entities": [PRODUCT_ID]},
+        summary={"row_status": "success"},
+        result={
+            "row_status": "success",
+            "step_timeline": [
+                {"step": "tiktok_request", "status": "success"},
+                {"step": "feishu_writeback", "status": "success"},
+            ],
+        },
     )
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
     assert released == [
         {
             "request_id": request.request_id,
-            "stage_code": "persist_facts",
+            "stage_code": "collect_product_data",
             "released": True,
             "next_executor_status": "pending",
         }
     ]
     updated = store.load_task_request(request_id=request.request_id)
     assert updated.status == "pending"
-    assert updated.current_stage == "persist_facts"
+    assert updated.current_stage == "collect_product_data"
