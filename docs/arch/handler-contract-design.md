@@ -220,15 +220,36 @@ payload 示例:
 
 ```json
 {
-  "app_token": "base-token",
-  "table_id": "table-id",
-  "view_id": "view-id",
-  "field_names": ["商品链接", "状态", "备注"],
-  "filter_expr": {},
-  "page_size": 100,
-  "cursor": "",
+  "source_table_ref": "feishu://mujitask/TK竞品收集",
+  "feishu_table": {
+    "app_token_ref": "secret://feishu/app_token/main",
+    "table_id": "tblpzuTZXHtDq83t",
+    "view_id": "vewT6AtfED"
+  },
+  "field_names": ["产品链接", "SKU-ID", "商品状态", "达人查找状态", "备注"],
+  "filter_spec": {
+    "conjunction": "and",
+    "conditions": [
+      {"field": "商品状态", "op": "not_in", "value": ["已下架/区域不可售"]},
+      {"field": "达人查找状态", "op": "in_or_empty", "value": ["待查找", "失败重试", "处理中"]}
+    ]
+  },
+  "pagination": {
+    "page_size": 100,
+    "cursor": "",
+    "max_pages": 20
+  },
+  "adapter_code": "influencer_pool_source_adapter",
+  "adapter_options": {
+    "drop_empty_rows": true,
+    "dedupe_by": ["product_id", "normalized_product_url"]
+  },
   "snapshot_policy": {
-    "store_raw_rows": true
+    "store_raw_rows": true,
+    "raw_snapshot_namespace": "feishu/competitor/read"
+  },
+  "cursor_context": {
+    "updated_after": null
   }
 }
 ```
@@ -237,20 +258,75 @@ result 示例:
 
 ```json
 {
-  "rows": [
+  "raw_rows": [
     {
-      "record_id": "recxxx",
-      "fields": {},
-      "created_time": 0,
-      "updated_time": 0
+      "record_id": "recKwc9Y7r",
+      "fields": {
+        "产品链接": {
+          "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+          "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
+        },
+        "SKU-ID": "1731194997356205027",
+        "商品状态": "",
+        "达人查找状态": "待查找",
+        "备注": "毕业季Top1"
+      },
+      "created_time": 1713849600000,
+      "updated_time": 1713936000000
     }
   ],
-  "schema": {},
-  "raw_snapshot_ref": "artifact://...",
-  "next_page_token": "",
-  "has_more": false
+  "source_rows": [
+    {
+      "source_record_id": "recKwc9Y7r",
+      "source_table_ref": "feishu://mujitask/TK竞品收集",
+      "product_identity": {
+        "product_id": "1731194997356205027",
+        "product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+        "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027",
+        "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027"
+      },
+      "business_fields": {
+        "holiday": "毕业季",
+        "product_status": "",
+        "influencer_search_status": "待查找"
+      },
+      "writeback_context": {
+        "target_table_ref": "feishu://mujitask/TK竞品收集",
+        "record_id": "recKwc9Y7r"
+      },
+      "source_snapshot_ref": "artifact://feishu/competitor/read/req-001/recKwc9Y7r.json"
+    }
+  ],
+  "schema": {
+    "field_names": ["产品链接", "SKU-ID", "商品状态", "达人查找状态", "备注"]
+  },
+  "pagination": {
+    "next_page_token": "",
+    "has_more": false
+  },
+  "raw_snapshot_ref": "artifact://feishu/competitor/read/req-001/page-1.json",
+  "candidate_keys": ["product:1731194997356205027"],
+  "adapter_summary": {
+    "input_row_count": 1,
+    "source_row_count": 1,
+    "dropped_empty_count": 0,
+    "deduped_count": 0
+  }
 }
 ```
+
+### 5.1.1 P0 冻结样例
+
+P0 冻结以下边界，后续 P1 Feishu common 只能兼容新增字段，不能改变字段语义:
+
+| 字段 | 冻结语义 |
+| --- | --- |
+| `source_table_ref` | 业务稳定表引用，executor、dedupe、summary 使用它，不直接依赖真实 `table_id`。 |
+| `feishu_table` | handler 执行前可由配置解析得到；payload 中可以只给 `source_table_ref`，但真实执行时必须能解析 `app_token_ref/table_id/view_id`。 |
+| `raw_rows` | 飞书传输层原始标准化行；只做 record/time/fields 外壳标准化，不做业务字段解释。 |
+| `source_rows` | 当 `adapter_code` 存在时输出的业务候选行；adapter 只做字段解析、筛选、去重、writeback context 组装，不写外部系统。 |
+| `raw_snapshot_ref` | 一次读取的页级或批次级快照，用于重放和 `achieve` 对比。 |
+| `source_snapshot_ref` | 单行快照，可用于行级排障；允许和 `raw_snapshot_ref` 指向同一 artifact。 |
 
 ### 5.2 Table Source Adapter
 
@@ -322,18 +398,91 @@ payload 示例:
 
 ```json
 {
-  "app_token": "base-token",
-  "table_id": "table-id",
-  "commands": [
+  "target_table_ref": "feishu://mujitask/TK竞品收集",
+  "feishu_table": {
+    "app_token_ref": "secret://feishu/app_token/main",
+    "table_id": "tblpzuTZXHtDq83t"
+  },
+  "write_mode": "batch_upsert",
+  "mapper_code": "competitor_table_projection_mapper",
+  "records": [
     {
       "op": "update",
-      "record_id": "recxxx",
-      "fields": {}
+      "record_id": "recKwc9Y7r",
+      "business_entity_key": "product:1731194997356205027",
+      "fields": {
+        "SKU-ID": "1731194997356205027",
+        "产品链接": {
+          "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+          "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
+        },
+        "标题": "Graduation party decoration set",
+        "Fastmoss价格": "$12.99",
+        "昨日销量": "38",
+        "近7天销量": "412",
+        "近90天销量": "2310",
+        "记录日期": "2026-04-24"
+      },
+      "source_context": {
+        "source_record_id": "recKwc9Y7r",
+        "workflow_code": "refresh_current_competitor_table",
+        "projection_type": "competitor_detail_writeback"
+      }
     }
   ],
-  "dedupe_key": "feishu-write:request-id:recxxx"
+  "idempotency_context": {
+    "dedupe_key": "req-001:feishu_table_write:recKwc9Y7r",
+    "upsert_keys": ["record_id", "business_entity_key"],
+    "on_conflict": "update"
+  },
+  "write_policy": {
+    "batch_size": 50,
+    "partial_success_allowed": true,
+    "validate_schema": true
+  },
+  "raw_capture_policy": {
+    "store_raw_response": true
+  }
 }
 ```
+
+result 示例:
+
+```json
+{
+  "written_count": 1,
+  "skipped_count": 0,
+  "failed_count": 0,
+  "target_record_ids": ["recKwc9Y7r"],
+  "records": [
+    {
+      "business_entity_key": "product:1731194997356205027",
+      "record_id": "recKwc9Y7r",
+      "op": "update",
+      "status": "success",
+      "fields_written": ["SKU-ID", "产品链接", "标题", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+      "raw_result_ref": "artifact://feishu/competitor/write/req-001/recKwc9Y7r.json"
+    }
+  ],
+  "writeback_context": {
+    "target_table_ref": "feishu://mujitask/TK竞品收集",
+    "mapper_code": "competitor_table_projection_mapper"
+  },
+  "raw_response_ref": "artifact://feishu/competitor/write/req-001/batch-1.json"
+}
+```
+
+### 5.3.1 P0 冻结样例
+
+P0 冻结以下边界:
+
+| 字段 | 冻结语义 |
+| --- | --- |
+| `records[].op` | `append`、`update`、`upsert` 三类稳定写命令；真实 Feishu API 的 create/update 细节不外泄给 workflow。 |
+| `records[].fields` | 已由 projection mapper 产出的飞书字段名和值；handler 只负责 schema 校验、附件/日期等传输格式转换和写入。 |
+| `business_entity_key` | 业务幂等键，新增行时用于去重或冲突处理；更新行优先使用 `record_id`。 |
+| `idempotency_context.dedupe_key` | Runtime job 重跑时避免重复副作用的稳定键。 |
+| `records[].status` | 行级结果，允许 `success`、`skipped`、`failed`；父 workflow 根据行级结果汇总 `partial_success`。 |
 
 ### 5.4 Projection Mapper
 
@@ -352,6 +501,106 @@ influencer_pool_projection_mapper
 ```
 
 mapper 通常不单独进 Runtime DB，除非它执行耗时、需要查重、写业务快照或生成可审计 artifact。
+
+### 5.4.1 Projection Mapper 输入 / 输出契约
+
+Projection mapper 是纯函数边界，不直接读写 Feishu、Fact DB 或对象存储。它可以被 executor、handler 或后续验收工具调用，但不能作为 `handler_code` 注册。
+
+输入样例:
+
+```json
+{
+  "mapper_code": "influencer_pool_projection_mapper",
+  "projection_type": "influencer_pool_upsert",
+  "source_context": {
+    "workflow_code": "sync_tk_influencer_pool",
+    "source_record_id": "recKwc9Y7r",
+    "source_table_ref": "feishu://mujitask/TK竞品收集",
+    "target_table_ref": "feishu://mujitask/TK达人池",
+    "product_id": "1731194997356205027",
+    "holiday": "毕业季"
+  },
+  "fact_projection": {
+    "entities": {
+      "creator": {
+        "entity_key": "fastmoss_creator:7228697870020199470",
+        "creator_id": "7228697870020199470",
+        "unique_id": "anonymousbillionaires",
+        "nickname": "Anonymous Billionaires",
+        "avatar_asset_ref": "asset://creator/7228697870020199470/avatar"
+      }
+    },
+    "relations": [
+      {
+        "relation_key": "creator_product:7228697870020199470:1731194997356205027",
+        "relation_type": "creator_promotes_product",
+        "metrics": {
+          "sold_count": 72,
+          "sale_amount": 1299
+        }
+      }
+    ],
+    "observations": [
+      {"metric_name": "follower_count", "metric_value": 128000, "observed_at": "2026-04-24T00:00:00Z"},
+      {"metric_name": "video_sale_amount", "metric_value": 32000, "currency": "USD", "window_days": 28}
+    ]
+  },
+  "workflow_context": {
+    "request_id": "req-001",
+    "record_date": "2026-04-24"
+  }
+}
+```
+
+输出样例:
+
+```json
+{
+  "target_table_ref": "feishu://mujitask/TK达人池",
+  "write_mode": "batch_upsert",
+  "mapper_code": "influencer_pool_projection_mapper",
+  "records": [
+    {
+      "op": "upsert",
+      "business_entity_key": "creator:7228697870020199470",
+      "upsert_key": {
+        "field": "达人ID",
+        "value": "7228697870020199470"
+      },
+      "fields": {
+        "达人ID": "7228697870020199470",
+        "达人头像": [{"asset_ref": "asset://creator/7228697870020199470/avatar"}],
+        "粉丝数": "12.8W",
+        "带货视频 GMV": "$3.2W",
+        "带货直播 GMV": "$0",
+        "带货商品图": [{"asset_ref": "asset://product/1731194997356205027/main-image"}],
+        "关联商品销量": "72",
+        "关联节日": ["毕业季"],
+        "合作店铺": ["Graduation Shop"],
+        "达人联系方式": "",
+        "记录时间": "2026-04-24"
+      },
+      "source_context": {
+        "source_record_id": "recKwc9Y7r",
+        "product_id": "1731194997356205027",
+        "relation_key": "creator_product:7228697870020199470:1731194997356205027"
+      }
+    }
+  ],
+  "idempotency_context": {
+    "dedupe_key": "req-001:influencer_pool_projection_mapper:creator:7228697870020199470"
+  }
+}
+```
+
+已冻结 mapper 输出:
+
+| Mapper | 输出用途 | 必须输出的稳定键 |
+| --- | --- | --- |
+| `competitor_seed_projection_mapper` | 关键词搜索候选写入 `TK竞品收集` 种子行 | `business_entity_key=product:{product_id}`、`fields.SKU-ID`、`fields.产品链接`、`fields.备注` |
+| `competitor_table_projection_mapper` | 商品详情、媒体和指标写回 `TK竞品收集` | `source_record_id` 或 `business_entity_key`、自动维护字段、`projection_type=competitor_detail_writeback` |
+| `influencer_pool_projection_mapper` | 达人事实和商品关系写入 `TK达人池` | `business_entity_key=creator:{creator_id}`、`upsert_key.达人ID` |
+| `competitor_influencer_status_projection_mapper` | 达人同步结束后回写竞品表状态 | `source_record_id`、`fields.达人查找状态` |
 
 ## 6. 通用事实采集 Handler
 
@@ -664,6 +913,173 @@ FastMoss raw 字段映射:
 - 不使用 `fastmoss_author_fetch` 作为目标 handler 名称。
 - 不新增 `influencer_pool_author` 这类业务专用采集 handler；达人池 workflow 通过 `fastmoss_creator_fetch` 获取达人事实。
 
+### 6.5.1 `fastmoss_creator_fetch` P0 冻结样例
+
+`fastmoss_creator_fetch` 负责 FastMoss 达人详情采集和标准化，不负责判断达人是否应该入池，也不负责写 `TK达人池`。
+
+payload 示例:
+
+```json
+{
+  "creator_identity": {
+    "creator_id": "7228697870020199470",
+    "uid": "7228697870020199470",
+    "unique_id": "anonymousbillionaires",
+    "profile_url": "https://www.fastmoss.com/zh/influencer/detail/7228697870020199470"
+  },
+  "region": "US",
+  "detail_level": "profile_metrics_contact_goods",
+  "source_context": {
+    "workflow_code": "sync_tk_influencer_pool",
+    "source_record_id": "recKwc9Y7r",
+    "source_table_ref": "feishu://mujitask/TK竞品收集",
+    "product_id": "1731194997356205027",
+    "holiday": "毕业季",
+    "matched_product_sold_count": 72
+  },
+  "fetch_plan": {
+    "date_type": 28,
+    "endpoints": ["base_info", "author_index", "stat_info", "contact", "cargo_summary", "goods_list"],
+    "goods_list": {
+      "page": 1,
+      "page_size": 20,
+      "max_pages": 5,
+      "order": "sold_count,2"
+    }
+  },
+  "relation_policy": {
+    "include_source_product_relation": true,
+    "min_source_product_sold_count": 50
+  },
+  "session_policy": {
+    "require_login": true,
+    "cookie_namespace": "fastmoss",
+    "degraded_preview_allowed": false
+  },
+  "raw_capture_policy": {
+    "store_raw_response": true,
+    "store_raw_items": false
+  }
+}
+```
+
+result 示例:
+
+```json
+{
+  "entities": {
+    "creators": [
+      {
+        "entity_key": "fastmoss_creator:7228697870020199470",
+        "creator_id": "7228697870020199470",
+        "uid": "7228697870020199470",
+        "unique_id": "anonymousbillionaires",
+        "nickname": "Anonymous Billionaires",
+        "avatar_url": "https://cdn.fastmoss.com/avatar.jpg",
+        "region": "US",
+        "profile_url": "https://www.fastmoss.com/zh/influencer/detail/7228697870020199470",
+        "metrics": {
+          "follower_count": 128000,
+          "aweme_28d_count": 16,
+          "video_sale_amount": 32000,
+          "live_sale_amount": 0,
+          "goods_count": 24,
+          "shop_count": 3
+        },
+        "contact": {
+          "raw": "",
+          "normalized_text": "",
+          "available": false
+        }
+      }
+    ],
+    "products": [
+      {
+        "entity_key": "fastmoss_product:1731194997356205027",
+        "product_id": "1731194997356205027",
+        "title": "Graduation party decoration set",
+        "image_url": "https://cdn.fastmoss.com/product.jpg"
+      }
+    ],
+    "shops": [
+      {
+        "entity_key": "fastmoss_shop:7496166867916327706",
+        "seller_id": "7496166867916327706",
+        "shop_name": "Graduation Shop"
+      }
+    ]
+  },
+  "relations": [
+    {
+      "relation_key": "creator_product:7228697870020199470:1731194997356205027",
+      "relation_type": "creator_promotes_product",
+      "from_entity_key": "fastmoss_creator:7228697870020199470",
+      "to_entity_key": "fastmoss_product:1731194997356205027",
+      "source": "fastmoss",
+      "metrics": {
+        "sold_count": 72,
+        "sale_amount": 1299,
+        "commission_rate": 0.18
+      },
+      "source_context": {
+        "source_record_id": "recKwc9Y7r",
+        "holiday": "毕业季"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "entity_key": "fastmoss_creator:7228697870020199470",
+      "metric_name": "follower_count",
+      "metric_value": 128000,
+      "observed_at": "2026-04-24T00:00:00Z",
+      "source": "fastmoss"
+    },
+    {
+      "entity_key": "fastmoss_creator:7228697870020199470",
+      "metric_name": "video_sale_amount",
+      "metric_value": 32000,
+      "currency": "USD",
+      "window_days": 28,
+      "observed_at": "2026-04-24T00:00:00Z",
+      "source": "fastmoss"
+    }
+  ],
+  "media_refs": [
+    {
+      "entity_key": "fastmoss_creator:7228697870020199470",
+      "media_type": "avatar",
+      "source_url": "https://cdn.fastmoss.com/avatar.jpg"
+    },
+    {
+      "entity_key": "fastmoss_product:1731194997356205027",
+      "media_type": "product_image",
+      "source_url": "https://cdn.fastmoss.com/product.jpg"
+    }
+  ],
+  "raw_response_refs": [
+    "artifact://fastmoss/creator/7228697870020199470/base-info.json",
+    "artifact://fastmoss/creator/7228697870020199470/cargo-summary.json",
+    "artifact://fastmoss/creator/7228697870020199470/goods-list-page-1.json"
+  ],
+  "quality": {
+    "contact_available": false,
+    "degraded_preview": false,
+    "missing_optional_fields": ["contact.normalized_text"]
+  },
+  "creator_fact_bundle": {
+    "entity_key": "fastmoss_creator:7228697870020199470"
+  },
+  "product_relations": [
+    {
+      "relation_key": "creator_product:7228697870020199470:1731194997356205027"
+    }
+  ]
+}
+```
+
+`creator_fact_bundle` 和 `product_relations` 是当前 runtime 过渡期的兼容别名；长期消费方应以 `entities`、`relations`、`observations`、`media_refs` 为准。
+
 ### 6.6 `media_asset_sync`
 
 定位: 同步图片、头像、封面等媒体资产到 MinIO/local object store，并写入媒体事实索引。
@@ -690,6 +1106,120 @@ FastMoss raw 字段映射:
 | output | persisted_entities、persisted_relations、persisted_observations、warnings |
 | idempotency | 主体按业务键 upsert，关系按 relation_key upsert，latest upsert，observations/raw 追加或 digest 去重 |
 | side effects | Fact DB |
+
+### 6.7.1 Fact projection P0 冻结样例
+
+Fact projection 指 “将采集 handler 输出的标准事实 bundle 写入 Fact DB，并产出后续飞书 mapper 可消费的只读投影上下文”。它不是新的 handler 名称；正式 Runtime job 仍是 `fact_bundle_upsert`。
+
+payload 示例:
+
+```json
+{
+  "source_job_ids": ["api-job-tiktok-001", "api-job-fastmoss-001"],
+  "mapper_code": "competitor_fact_relation_mapper",
+  "fact_bundle": {
+    "entities": {
+      "products": [
+        {
+          "entity_key": "tiktok_product:1731194997356205027",
+          "source": "tiktok",
+          "product_id": "1731194997356205027",
+          "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027",
+          "title": "Graduation party decoration set",
+          "shop_name": "Graduation Shop",
+          "price": {"amount": 12.99, "currency": "USD", "display": "$12.99"}
+        }
+      ]
+    },
+    "relations": [
+      {
+        "relation_key": "same_product:tiktok:1731194997356205027:fastmoss:1731194997356205027",
+        "relation_type": "same_product",
+        "from_entity_key": "tiktok_product:1731194997356205027",
+        "to_entity_key": "fastmoss_product:1731194997356205027"
+      }
+    ],
+    "observations": [
+      {
+        "entity_key": "fastmoss_product:1731194997356205027",
+        "metric_name": "day7_sold_count",
+        "metric_value": 412,
+        "window_days": 7,
+        "observed_at": "2026-04-24T00:00:00Z",
+        "source": "fastmoss"
+      }
+    ],
+    "media_refs": [
+      {
+        "entity_key": "tiktok_product:1731194997356205027",
+        "media_type": "product_image",
+        "asset_ref": "asset://product/1731194997356205027/main-image"
+      }
+    ],
+    "raw_refs": [
+      "artifact://tiktok/product/1731194997356205027/request.json",
+      "artifact://fastmoss/product/1731194997356205027/overview.json"
+    ]
+  },
+  "relation_context": {
+    "workflow_code": "refresh_current_competitor_table",
+    "source_record_id": "recKwc9Y7r",
+    "source_table_ref": "feishu://mujitask/TK竞品收集"
+  },
+  "projection_policy": {
+    "emit_competitor_table_projection": true,
+    "emit_influencer_pool_projection": false
+  }
+}
+```
+
+result 示例:
+
+```json
+{
+  "persisted_entities": [
+    "tiktok_product:1731194997356205027",
+    "fastmoss_product:1731194997356205027"
+  ],
+  "persisted_relations": [
+    "same_product:tiktok:1731194997356205027:fastmoss:1731194997356205027"
+  ],
+  "persisted_observations": [
+    "obs:fastmoss_product:1731194997356205027:day7_sold_count:2026-04-24"
+  ],
+  "raw_refs": [
+    "artifact://fastmoss/product/1731194997356205027/overview.json"
+  ],
+  "projections": {
+    "competitor_table_projection": {
+      "projection_type": "competitor_detail_writeback",
+      "source_record_id": "recKwc9Y7r",
+      "business_entity_key": "product:1731194997356205027",
+      "fields": {
+        "SKU-ID": "1731194997356205027",
+        "标题": "Graduation party decoration set",
+        "卖家": "Graduation Shop",
+        "价格": "$12.99",
+        "Fastmoss价格": "$12.99",
+        "近7天销量": "412",
+        "记录日期": "2026-04-24"
+      },
+      "asset_refs": {
+        "图片": ["asset://product/1731194997356205027/main-image"],
+        "前台截图": ["asset://product/1731194997356205027/tiktok-screenshot"],
+        "Fastmoss截图": ["asset://product/1731194997356205027/fastmoss-screenshot"]
+      }
+    }
+  },
+  "warnings": []
+}
+```
+
+约束:
+
+- `fact_bundle_upsert` 可以产出 `projections`，但不直接写 Feishu。
+- Projection mapper 可以消费 `projections.*`，也可以直接消费 `entities/relations/observations`；两者字段语义必须保持一致。
+- `raw_refs` 和 `artifact://` 引用只用于审计、排障和 `achieve` 对比，不作为业务主键。
 
 ## 7. Business Handler
 

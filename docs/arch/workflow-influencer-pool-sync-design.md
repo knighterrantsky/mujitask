@@ -198,3 +198,318 @@ flowchart TD
 - task reconciler 负责整个 task 下 product groups 汇总。
 
 这样一个达人失败只重试这个达人，一个竞品失败只影响这个竞品，父 task 可以继续推进并保留完整审计状态。
+
+## 11. P0 Contract Payload / Result 样例
+
+本节冻结达人同步与 Feishu common、FastMoss common、Fact projection 和 projection mapper 的边界。P0 不实现真实 handler。
+
+### 11.1 竞品候选读取: `feishu_table_read`
+
+stage: `read_competitor_candidates`
+
+payload:
+
+```json
+{
+  "request_id": "req-influencer-001",
+  "task_code": "sync_tk_influencer_pool",
+  "workflow_code": "sync_tk_influencer_pool",
+  "stage_code": "read_competitor_candidates",
+  "source_table_ref": "feishu://mujitask/TK竞品收集",
+  "field_names": ["产品链接", "SKU-ID", "节日", "商品状态", "达人查找状态", "Fastmoss价格"],
+  "filter_spec": {
+    "candidate_status": ["待查找", "失败重试", "处理中", ""],
+    "skip_product_status": ["已下架/区域不可售"]
+  },
+  "adapter_code": "influencer_pool_source_adapter",
+  "snapshot_policy": {
+    "store_raw_rows": true
+  }
+}
+```
+
+result:
+
+```json
+{
+  "source_rows": [
+    {
+      "source_record_id": "recInfluencer001",
+      "source_table_ref": "feishu://mujitask/TK竞品收集",
+      "product_identity": {
+        "product_id": "1731194997356205027",
+        "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027",
+        "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027"
+      },
+      "business_fields": {
+        "holiday": "毕业季",
+        "influencer_search_status": "待查找"
+      },
+      "writeback_context": {
+        "competitor_status_table_ref": "feishu://mujitask/TK竞品收集",
+        "record_id": "recInfluencer001"
+      }
+    }
+  ],
+  "candidate_keys": ["product:1731194997356205027"],
+  "adapter_summary": {
+    "input_row_count": 49,
+    "source_row_count": 1
+  }
+}
+```
+
+### 11.2 商品达人发现: `fastmoss_product_fetch`
+
+stage: `discover_related_creators`
+
+payload:
+
+```json
+{
+  "request_id": "req-influencer-001",
+  "task_code": "sync_tk_influencer_pool",
+  "workflow_code": "sync_tk_influencer_pool",
+  "stage_code": "discover_related_creators",
+  "product_identity": {
+    "product_id": "1731194997356205027",
+    "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027"
+  },
+  "detail_level": "related_creators",
+  "source_context": {
+    "source_record_id": "recInfluencer001",
+    "holiday": "毕业季"
+  },
+  "relation_policy": {
+    "creator_sold_count_min": 50,
+    "creator_follower_count_min": 5000
+  }
+}
+```
+
+result:
+
+```json
+{
+  "product_fact_bundle": {
+    "product_id": "1731194997356205027",
+    "entity_key": "fastmoss_product:1731194997356205027"
+  },
+  "related_creators": [
+    {
+      "creator_id": "7228697870020199470",
+      "creator_identity": {
+        "creator_id": "7228697870020199470",
+        "uid": "7228697870020199470",
+        "profile_url": "https://www.fastmoss.com/zh/influencer/detail/7228697870020199470"
+      },
+      "display_name": "Anonymous Billionaires",
+      "metrics": {
+        "sold_count": 72,
+        "follower_count": 128000
+      },
+      "matched_conditions": {
+        "creator_sold_count_min": true,
+        "creator_follower_count_min": true
+      },
+      "source_context": {
+        "source_record_id": "recInfluencer001",
+        "product_id": "1731194997356205027",
+        "holiday": "毕业季"
+      }
+    }
+  ],
+  "raw_response_refs": [
+    "artifact://fastmoss/product/1731194997356205027/author.json"
+  ]
+}
+```
+
+### 11.3 达人详情采集: `fastmoss_creator_fetch`
+
+stage: `collect_creator_detail`
+
+payload:
+
+```json
+{
+  "request_id": "req-influencer-001",
+  "task_code": "sync_tk_influencer_pool",
+  "workflow_code": "sync_tk_influencer_pool",
+  "stage_code": "collect_creator_detail",
+  "creator_identity": {
+    "creator_id": "7228697870020199470",
+    "uid": "7228697870020199470",
+    "profile_url": "https://www.fastmoss.com/zh/influencer/detail/7228697870020199470"
+  },
+  "region": "US",
+  "detail_level": "profile_metrics_contact_goods",
+  "source_context": {
+    "source_record_id": "recInfluencer001",
+    "product_id": "1731194997356205027",
+    "holiday": "毕业季",
+    "matched_product_sold_count": 72
+  },
+  "fetch_plan": {
+    "date_type": 28,
+    "endpoints": ["base_info", "author_index", "stat_info", "contact", "cargo_summary", "goods_list"]
+  }
+}
+```
+
+result:
+
+```json
+{
+  "entities": {
+    "creators": [
+      {
+        "entity_key": "fastmoss_creator:7228697870020199470",
+        "creator_id": "7228697870020199470",
+        "nickname": "Anonymous Billionaires",
+        "avatar_url": "https://cdn.fastmoss.com/avatar.jpg",
+        "metrics": {
+          "follower_count": 128000,
+          "aweme_28d_count": 16,
+          "video_sale_amount": 32000,
+          "live_sale_amount": 0
+        },
+        "contact": {
+          "normalized_text": "",
+          "available": false
+        }
+      }
+    ]
+  },
+  "relations": [
+    {
+      "relation_key": "creator_product:7228697870020199470:1731194997356205027",
+      "relation_type": "creator_promotes_product",
+      "metrics": {
+        "sold_count": 72,
+        "sale_amount": 1299
+      },
+      "source_context": {
+        "source_record_id": "recInfluencer001",
+        "holiday": "毕业季"
+      }
+    }
+  ],
+  "observations": [
+    {"entity_key": "fastmoss_creator:7228697870020199470", "metric_name": "follower_count", "metric_value": 128000}
+  ],
+  "media_refs": [
+    {"entity_key": "fastmoss_creator:7228697870020199470", "media_type": "avatar", "source_url": "https://cdn.fastmoss.com/avatar.jpg"}
+  ],
+  "raw_response_refs": [
+    "artifact://fastmoss/creator/7228697870020199470/base-info.json"
+  ]
+}
+```
+
+### 11.4 达人池写入: `influencer_pool_projection_mapper` -> `feishu_table_write`
+
+stage: `write_influencer_pool`
+
+payload:
+
+```json
+{
+  "target_table_ref": "feishu://mujitask/TK达人池",
+  "write_mode": "batch_upsert",
+  "mapper_code": "influencer_pool_projection_mapper",
+  "records": [
+    {
+      "op": "upsert",
+      "business_entity_key": "creator:7228697870020199470",
+      "upsert_key": {
+        "field": "达人ID",
+        "value": "7228697870020199470"
+      },
+      "fields": {
+        "达人ID": "7228697870020199470",
+        "达人头像": [{"asset_ref": "asset://creator/7228697870020199470/avatar"}],
+        "粉丝数": "12.8W",
+        "28天视频数": "16",
+        "带货视频 GMV": "$3.2W",
+        "带货直播 GMV": "$0",
+        "带货商品图": [{"asset_ref": "asset://product/1731194997356205027/main-image"}],
+        "关联商品销量": "72",
+        "关联节日": ["毕业季"],
+        "合作店铺": ["Graduation Shop"],
+        "达人联系方式": "",
+        "记录时间": "2026-04-24"
+      },
+      "source_context": {
+        "source_record_id": "recInfluencer001",
+        "product_id": "1731194997356205027",
+        "relation_key": "creator_product:7228697870020199470:1731194997356205027"
+      }
+    }
+  ]
+}
+```
+
+result:
+
+```json
+{
+  "written_count": 1,
+  "skipped_count": 0,
+  "target_record_ids": ["recInfluencerPool001"],
+  "records": [
+    {
+      "business_entity_key": "creator:7228697870020199470",
+      "record_id": "recInfluencerPool001",
+      "op": "upsert",
+      "status": "success"
+    }
+  ]
+}
+```
+
+### 11.5 竞品状态回写: `competitor_influencer_status_projection_mapper`
+
+stage: `writeback_competitor_status`
+
+payload:
+
+```json
+{
+  "target_table_ref": "feishu://mujitask/TK竞品收集",
+  "write_mode": "batch_update",
+  "mapper_code": "competitor_influencer_status_projection_mapper",
+  "records": [
+    {
+      "op": "update",
+      "record_id": "recInfluencer001",
+      "business_entity_key": "product:1731194997356205027",
+      "fields": {
+        "达人查找状态": "已完成"
+      },
+      "source_context": {
+        "matched_creator_count": 1,
+        "written_creator_count": 1,
+        "failed_creator_count": 0
+      }
+    }
+  ]
+}
+```
+
+result:
+
+```json
+{
+  "written_count": 1,
+  "target_record_ids": ["recInfluencer001"],
+  "records": [
+    {
+      "business_entity_key": "product:1731194997356205027",
+      "record_id": "recInfluencer001",
+      "op": "update",
+      "status": "success"
+    }
+  ]
+}
+```

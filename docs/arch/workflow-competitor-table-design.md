@@ -251,3 +251,287 @@ sequenceDiagram
 - 选品分析可以将商品采集结果写回 `TK选品收集`，也可以通过字段映射与竞品表联动。
 - 达人同步以 `TK竞品收集` 作为来源表，从竞品商品出发生成达人发现和达人详情 job。
 - 竞品表刷新维护商品基础数据质量，达人同步维护商品到达人池的关系沉淀。
+
+## 7. P0 Contract Payload / Result 样例
+
+本节只冻结 workflow 与通用 handler/mapper 的边界，不要求 P0 实现真实 handler。
+
+### 7.1 竞品表刷新: `feishu_table_read`
+
+stage: `read_competitor_rows`
+
+payload:
+
+```json
+{
+  "request_id": "req-refresh-001",
+  "task_code": "refresh_current_competitor_table",
+  "workflow_code": "refresh_current_competitor_table",
+  "stage_code": "read_competitor_rows",
+  "source_table_ref": "feishu://mujitask/TK竞品收集",
+  "field_names": ["产品链接", "SKU-ID", "商品状态", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+  "filter_spec": {
+    "candidate_policy": "missing_auto_maintained_fields",
+    "skip_product_status": ["已下架/区域不可售"]
+  },
+  "adapter_code": "competitor_table_source_adapter",
+  "snapshot_policy": {
+    "store_raw_rows": true
+  }
+}
+```
+
+result:
+
+```json
+{
+  "source_rows": [
+    {
+      "source_record_id": "recRefresh001",
+      "source_table_ref": "feishu://mujitask/TK竞品收集",
+      "product_identity": {
+        "product_id": "1731194997356205027",
+        "product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+        "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027",
+        "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027"
+      },
+      "missing_auto_fields": ["Fastmoss价格", "近7天销量", "近90天销量"],
+      "writeback_context": {
+        "target_table_ref": "feishu://mujitask/TK竞品收集",
+        "record_id": "recRefresh001"
+      },
+      "source_snapshot_ref": "artifact://feishu/competitor/read/req-refresh-001/recRefresh001.json"
+    }
+  ],
+  "candidate_keys": ["product:1731194997356205027"],
+  "adapter_summary": {
+    "input_row_count": 49,
+    "source_row_count": 1,
+    "skipped_complete_count": 41,
+    "skipped_unavailable_count": 7
+  }
+}
+```
+
+### 7.2 竞品表刷新: Fact projection 到详情写回
+
+`fact_bundle_upsert` 不写飞书，只产出 `competitor_table_projection`；`competitor_table_projection_mapper` 再把它转换为 `feishu_table_write` payload。
+
+projection result:
+
+```json
+{
+  "persisted_entities": [
+    "tiktok_product:1731194997356205027",
+    "fastmoss_product:1731194997356205027"
+  ],
+  "persisted_observations": [
+    "obs:fastmoss_product:1731194997356205027:day7_sold_count:2026-04-24"
+  ],
+  "projections": {
+    "competitor_table_projection": {
+      "projection_type": "competitor_detail_writeback",
+      "source_record_id": "recRefresh001",
+      "business_entity_key": "product:1731194997356205027",
+      "fields": {
+        "SKU-ID": "1731194997356205027",
+        "标题": "Graduation party decoration set",
+        "卖家": "Graduation Shop",
+        "价格": "$12.99",
+        "Fastmoss价格": "$12.99",
+        "昨日销量": "38",
+        "近7天销量": "412",
+        "近90天销量": "2310",
+        "记录日期": "2026-04-24"
+      },
+      "asset_refs": {
+        "图片": ["asset://product/1731194997356205027/main-image"],
+        "前台截图": ["asset://product/1731194997356205027/tiktok-screenshot"],
+        "Fastmoss截图": ["asset://product/1731194997356205027/fastmoss-screenshot"]
+      }
+    }
+  }
+}
+```
+
+writeback payload:
+
+```json
+{
+  "target_table_ref": "feishu://mujitask/TK竞品收集",
+  "write_mode": "batch_upsert",
+  "mapper_code": "competitor_table_projection_mapper",
+  "records": [
+    {
+      "op": "update",
+      "record_id": "recRefresh001",
+      "business_entity_key": "product:1731194997356205027",
+      "fields": {
+        "SKU-ID": "1731194997356205027",
+        "标题": "Graduation party decoration set",
+        "卖家": "Graduation Shop",
+        "价格": "$12.99",
+        "Fastmoss价格": "$12.99",
+        "昨日销量": "38",
+        "近7天销量": "412",
+        "近90天销量": "2310",
+        "记录日期": "2026-04-24"
+      },
+      "source_context": {
+        "source_record_id": "recRefresh001",
+        "projection_type": "competitor_detail_writeback"
+      }
+    }
+  ]
+}
+```
+
+### 7.3 关键词竞品入库: `fastmoss_product_search`
+
+stage: `search_product_candidates`
+
+payload:
+
+```json
+{
+  "request_id": "req-keyword-001",
+  "task_code": "search_keyword_competitor_products",
+  "workflow_code": "search_keyword_competitor_products",
+  "stage_code": "search_product_candidates",
+  "search_mode": "keyword",
+  "keyword": "Halloween decoration",
+  "region": "US",
+  "filters": {
+    "sales_range": {
+      "window_days": 7,
+      "min": 200,
+      "max": null
+    }
+  },
+  "sort": {
+    "field": "day7_sold_count",
+    "direction": "desc",
+    "source_order": "2,2"
+  },
+  "pagination": {
+    "page": 1,
+    "page_size": 10,
+    "max_pages": 50,
+    "stop_when_no_new_product": true
+  },
+  "output_conditions": {
+    "max_candidates": 20,
+    "dedupe_by": ["product_id", "normalized_product_url"],
+    "business_conditions": {
+      "min_day7_sold_count": 200
+    }
+  }
+}
+```
+
+result:
+
+```json
+{
+  "candidates": [
+    {
+      "source": "fastmoss",
+      "product_id": "1731194997356205027",
+      "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027",
+      "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027",
+      "title": "Halloween decoration",
+      "image_url": "https://cdn.fastmoss.com/product.jpg",
+      "metrics": {
+        "day7_sold_count": 412,
+        "sold_count": 2310,
+        "relate_author_count": 35
+      },
+      "matched_conditions": {
+        "min_day7_sold_count": true
+      },
+      "dedupe_keys": {
+        "product_id": "1731194997356205027",
+        "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027"
+      },
+      "quality_score": 1.0,
+      "raw_item_ref": ""
+    }
+  ],
+  "condition_summary": {
+    "applied": {
+      "min_day7_sold_count": 1
+    },
+    "rejected_count": 0
+  },
+  "pagination": {
+    "page": 1,
+    "has_more": true,
+    "next_page": 2
+  },
+  "raw_response_ref": "artifact://fastmoss/search/req-keyword-001/page-1.json"
+}
+```
+
+### 7.4 关键词竞品入库: 种子行写入
+
+stage: `insert_seed_rows`
+
+payload:
+
+```json
+{
+  "target_table_ref": "feishu://mujitask/TK竞品收集",
+  "write_mode": "batch_upsert",
+  "mapper_code": "competitor_seed_projection_mapper",
+  "records": [
+    {
+      "op": "upsert",
+      "business_entity_key": "product:1731194997356205027",
+      "upsert_key": {
+        "field": "SKU-ID",
+        "value": "1731194997356205027"
+      },
+      "fields": {
+        "SKU-ID": "1731194997356205027",
+        "产品链接": {
+          "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
+          "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
+        },
+        "备注": "通过搜索关键字：Halloween decoration",
+        "达人查找状态": "待查找"
+      },
+      "source_context": {
+        "keyword": "Halloween decoration",
+        "search_candidate_rank": 1,
+        "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027"
+      }
+    }
+  ],
+  "idempotency_context": {
+    "dedupe_key": "req-keyword-001:seed:product:1731194997356205027"
+  }
+}
+```
+
+result:
+
+```json
+{
+  "written_count": 1,
+  "skipped_count": 0,
+  "target_record_ids": ["recSeed001"],
+  "records": [
+    {
+      "business_entity_key": "product:1731194997356205027",
+      "record_id": "recSeed001",
+      "op": "upsert",
+      "status": "success"
+    }
+  ],
+  "writeback_context": {
+    "seed_record_id_by_product_id": {
+      "1731194997356205027": "recSeed001"
+    }
+  }
+}
+```
