@@ -29,6 +29,7 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     sync_artifact_specs,
 )
 from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
+    extract_fastmoss_data,
     map_fastmoss_author_bundle,
     map_fastmoss_author_goods_list,
     map_fastmoss_author_video_list,
@@ -880,6 +881,14 @@ def _build_tiktok_normalized_product_result(
                     product_payload.get("img"),
                     product_payload.get("image_url"),
                     raw.get("main_image_url"),
+                ),
+                "price_text": first_non_empty(
+                    product_payload.get("price_text"),
+                    product_payload.get("real_price"),
+                    product_payload.get("price"),
+                    raw.get("price_text"),
+                    raw.get("real_price"),
+                    raw.get("price"),
                 ),
             }
         ),
@@ -1946,12 +1955,13 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
                 "status_code": 200,
             }
         )
+        overview_data = extract_fastmoss_data(overview)
         fact_bundle["product_metric_snapshots"].extend(
-            _build_fastmoss_product_metric_snapshots(overview, product_id=product_id)
+            _build_fastmoss_product_metric_snapshots(overview_data, product_id=product_id)
         )
-        fact_bundle["product_daily_metrics"].extend(_build_fastmoss_daily_metrics(overview, product_id=product_id))
+        fact_bundle["product_daily_metrics"].extend(_build_fastmoss_daily_metrics(overview_data, product_id=product_id))
         fact_bundle["product_distribution_snapshots"].extend(
-            _build_fastmoss_distribution_snapshots(overview, product_id=product_id)
+            _build_fastmoss_distribution_snapshots(overview_data, product_id=product_id)
         )
     if skus:
         fact_bundle = merge_fact_bundles(fact_bundle, map_fastmoss_goods_product_sku(skus, product_id=product_id))
@@ -1966,7 +1976,11 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
             }
         )
         fact_bundle["product_sku_metric_snapshots"].extend(
-            _build_fastmoss_sku_metric_snapshots(skus, coerce_mapping(raw_bundle.get("sku_distribution")), product_id=product_id)
+            _build_fastmoss_sku_metric_snapshots(
+                extract_fastmoss_data(skus),
+                extract_fastmoss_data(coerce_mapping(raw_bundle.get("sku_distribution"))),
+                product_id=product_id,
+            )
         )
     if related_creators:
         fact_bundle = merge_fact_bundles(fact_bundle, map_fastmoss_goods_author(related_creators, product_id=product_id))
@@ -1999,7 +2013,7 @@ def _extract_related_creators(fact_bundle: dict[str, Any]) -> list[dict[str, Any
 
 
 def _build_fastmoss_metrics_snapshot(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
-    overview = coerce_mapping(raw_bundle.get("overview"))
+    overview = extract_fastmoss_data(coerce_mapping(raw_bundle.get("overview")))
     return compact_dict(
         {
             "product_id": product_id,

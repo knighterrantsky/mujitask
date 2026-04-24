@@ -161,6 +161,71 @@ def test_feishu_table_write_upsert_is_idempotent_on_upsert_key(monkeypatch) -> N
     assert second.result["target_record_ids"] == ["rec-1"]
 
 
+def test_feishu_table_write_maps_competitor_projection_without_overwriting_manual_fields(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = [
+            {
+                "record_id": "rec-1",
+                "fields": {
+                    "产品链接": {"text": "https://www.tiktok.com/shop/pdp/123456789", "link": "https://www.tiktok.com/shop/pdp/123456789"},
+                    "SKU-ID": "123456789",
+                    "价格": "$9.99",
+                    "标题": "",
+                    "Fastmoss价格": "",
+                    "近7天销量": "",
+                    "记录日期": "",
+                },
+            }
+        ]
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.business.feishu_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        write_mode="upsert",
+        mapper_code="competitor_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-1",
+                "product_id": "123456789",
+                "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                "projection_fields": {
+                    "SKU-ID": "123456789",
+                    "产品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "标题": "Graduation Candy Boxes",
+                    "价格": "$14.50",
+                    "Fastmoss价格": "$14.50",
+                    "近7天销量": "412",
+                },
+                "source_fields": FakeClient.rows[0]["fields"],
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    fields = FakeClient.updated[0]["fields"]
+    assert fields["标题"] == "Graduation Candy Boxes"
+    assert fields["Fastmoss价格"] == "$14.50"
+    assert fields["近7天销量"] == "412"
+    assert "记录日期" in fields
+    assert "SKU-ID" not in fields
+    assert "产品链接" not in fields
+    assert fields.get("价格") is None
+
+
 def test_feishu_table_write_classifies_schema_missing_before_write(monkeypatch) -> None:
     class FakeClient:
         def __init__(self, access_token: str) -> None:

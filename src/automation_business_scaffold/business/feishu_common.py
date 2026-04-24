@@ -736,12 +736,26 @@ def _map_competitor_seed_record(record: Mapping[str, Any], payload: Mapping[str,
 def _map_competitor_table_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     product_id = _text(record.get("product_id"))
     product_url = _normalize_product_url(record.get("product_url"))
-    fields = {
-        "SKU-ID": product_id,
-        "产品链接": _link_value(product_url),
-        "记录日期": date.today().isoformat(),
-        "备注": _refresh_note(record),
-    }
+    projection_fields = _mapping(record.get("projection_fields"))
+    if projection_fields:
+        projection_fields = _normalize_competitor_projection_fields(
+            {
+                "SKU-ID": product_id,
+                "产品链接": product_url,
+                **projection_fields,
+            }
+        )
+        fields = _select_missing_competitor_projection_fields(
+            projection_fields,
+            existing_fields=_mapping(record.get("source_fields")),
+        )
+    else:
+        fields = {
+            "SKU-ID": product_id,
+            "产品链接": _link_value(product_url),
+            "记录日期": date.today().isoformat(),
+            "备注": _refresh_note(record),
+        }
     return _normalize_write_record(
         {
             "op": "update" if _text(record.get("source_record_id")) else "upsert",
@@ -753,6 +767,37 @@ def _map_competitor_table_record(record: Mapping[str, Any], payload: Mapping[str
         },
         payload,
     )
+
+
+def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for field_name, value in fields.items():
+        name = _text(field_name)
+        if not name or value in (None, "", [], {}):
+            continue
+        if name in {"产品链接", "图片", "前台截图", "Fastmoss截图"}:
+            normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
+            continue
+        normalized[name] = value
+    return normalized
+
+
+def _select_missing_competitor_projection_fields(
+    projection_fields: Mapping[str, Any],
+    *,
+    existing_fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    for field_name, value in projection_fields.items():
+        if field_name == "记录日期":
+            continue
+        if not _field_has_value(value):
+            continue
+        if not _field_has_value(existing_fields.get(field_name)):
+            selected[field_name] = value
+    if selected:
+        selected["记录日期"] = projection_fields.get("记录日期") or date.today().isoformat()
+    return selected
 
 
 def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -34,6 +34,93 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 
 OPTIONAL_FINAL_STATUS_CODES = ("tiktok_product_browser_fetch",)
 
+FACT_BUNDLE_LIST_KEYS = (
+    "products",
+    "product_skus",
+    "shops",
+    "creators",
+    "videos",
+    "media_assets",
+    "raw_api_responses",
+    "raw_entity_links",
+    "product_metric_snapshots",
+    "product_daily_metrics",
+    "product_distribution_snapshots",
+    "product_sku_metric_snapshots",
+)
+FACT_BUNDLE_RELATION_KEYS = (
+    "product_shops",
+    "creator_products",
+    "creator_videos",
+    "video_products",
+    "shop_creators",
+)
+
+FEISHU_READ_PASSTHROUGH_KEYS = (
+    "access_token",
+    "access_token_env",
+    "feishu_access_token",
+    "feishu_table",
+    "field_names",
+    "pagination",
+    "raw_rows",
+    "read_policy",
+    "records",
+    "snapshot_policy",
+    "source_table_url",
+    "table_refs",
+    "table_url",
+    "validate_schema",
+)
+FEISHU_WRITE_PASSTHROUGH_KEYS = (
+    "access_token",
+    "access_token_env",
+    "feishu_access_token",
+    "feishu_table",
+    "raw_capture_policy",
+    "table_refs",
+    "table_url",
+    "target_table_url",
+    "validate_schema",
+    "write_policy",
+)
+TIKTOK_REQUEST_PASSTHROUGH_KEYS = (
+    "fallback_reason",
+    "force_failure",
+    "force_fallback",
+    "mock_response",
+    "normalized_product_result",
+    "raw_request_result",
+    "request_result",
+    "source_payload",
+    "tiktok_request_result",
+)
+FASTMOSS_PRODUCT_PASSTHROUGH_KEYS = (
+    "fastmoss_bundle",
+    "fastmoss_result",
+    "mock_fastmoss_bundle",
+    "product_fact_bundle",
+    "required",
+)
+FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
+    "db_url",
+    "fact_db_url",
+    "persistence",
+)
+ARTIFACT_PASSTHROUGH_KEYS = (
+    "artifact_bucket",
+    "artifact_object_prefix",
+    "artifact_root",
+    "artifact_store",
+    "artifact_store_provider",
+    "minio_access_key",
+    "minio_create_bucket",
+    "minio_endpoint",
+    "minio_region",
+    "minio_secret_key",
+    "minio_secure",
+)
+
 
 def advance_stage(
     *,
@@ -253,10 +340,12 @@ def _advance_read_competitor_rows(
     job_def = workflow.require_job(stage_job.job_code)
     if not jobs:
         payload = {
+            **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
+            **_payload_subset(request.payload, FEISHU_READ_PASSTHROUGH_KEYS),
             "stage_code": stage_code,
             "source_table_ref": str(request.payload.get("source_table_ref") or ""),
             "view_ref": str(request.payload.get("view_ref") or ""),
-            "filter_spec": dict(request.payload.get("refresh_filter") or {}),
+            "filter_spec": dict(request.payload.get("refresh_filter") or request.payload.get("filter_spec") or {}),
             "adapter_code": stage_job.adapter_code,
             "cursor_context": dict(request.stage_cursor.get(stage_code) or {}),
         }
@@ -346,6 +435,12 @@ def _advance_dispatch_product_collection(
         if not str(row.get("business_key") or ""):
             continue
         tiktok_payload = {
+            **_runtime_child_context(
+                request=request,
+                workflow=workflow,
+                stage_code="collect_product_data",
+            ),
+            **_payload_subset(request.payload, TIKTOK_REQUEST_PASSTHROUGH_KEYS),
             "stage_code": "collect_product_data",
             "source_record_id": row["source_record_id"],
             "product_identity": dict(row["product_identity"]),
@@ -374,12 +469,21 @@ def _advance_dispatch_product_collection(
         )
 
         fastmoss_payload = {
+            **_runtime_child_context(
+                request=request,
+                workflow=workflow,
+                stage_code="collect_product_data",
+            ),
+            **_payload_subset(request.payload, FASTMOSS_PRODUCT_PASSTHROUGH_KEYS),
             "stage_code": "collect_product_data",
             "source_record_id": row["source_record_id"],
             "product_identity": dict(row["product_identity"]),
             "source_context": dict(row["source_context"]),
             "detail_level": "standard",
         }
+        fastmoss_settings = _fastmoss_settings_from_request_payload(request.payload)
+        if fastmoss_settings:
+            fastmoss_payload["fastmoss"] = fastmoss_settings
         fastmoss_keys = render_job_keys(
             fastmoss_job_def,
             request.payload,
@@ -482,12 +586,15 @@ def _advance_browser_fallback(
         items: list[dict[str, Any]] = []
         for candidate in fallback_candidates:
             payload = {
+                **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
+                **_payload_subset(request.payload, ARTIFACT_PASSTHROUGH_KEYS),
                 "stage_code": stage_code,
                 "source_record_id": candidate["source_record_id"],
                 "product_identity": dict(candidate["product_identity"]),
                 "normalized_product_url": candidate.get("normalized_product_url") or "",
                 "fallback_source_job_id": candidate.get("fallback_source_job_id") or "",
             }
+            payload.update(_artifact_settings_from_request_payload(request.payload))
             keys = render_job_keys(
                 job_def,
                 request.payload,
@@ -552,12 +659,15 @@ def _advance_persist_facts(
             asset_refs = list(candidate.get("asset_refs") or [])
             if asset_refs:
                 media_payload = {
+                    **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
+                    **_payload_subset(request.payload, ARTIFACT_PASSTHROUGH_KEYS),
                     "stage_code": stage_code,
                     "source_record_id": candidate["source_record_id"],
                     "asset_refs": asset_refs,
                     "entity_keys": [candidate["business_key"]],
                     "source_context": dict(candidate["source_context"]),
                 }
+                media_payload.update(_artifact_settings_from_request_payload(request.payload))
                 media_keys = render_job_keys(
                     media_job_def,
                     request.payload,
@@ -579,6 +689,8 @@ def _advance_persist_facts(
                 )
 
             fact_payload = {
+                **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
+                **_payload_subset(request.payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS),
                 "stage_code": stage_code,
                 "source_record_id": candidate["source_record_id"],
                 "fact_bundle": dict(candidate["fact_bundle"]),
@@ -671,6 +783,8 @@ def _advance_writeback_competitor_rows(
                 write_mode="upsert",
                 source_record_id=row["source_record_id"],
             )
+            payload.update(_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code))
+            payload.update(_payload_subset(request.payload, FEISHU_WRITE_PASSTHROUGH_KEYS))
             keys = render_job_keys(
                 job_def,
                 request.payload,
@@ -770,18 +884,24 @@ def _persist_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[st
         if not tiktok_result and not fastmoss_result:
             continue
         product_result = dict(tiktok_result.get("normalized_product_result") or {})
-        fact_bundle = {
-            "source_record_id": source_record_id,
-            "product_identity": dict(row["product_identity"]),
-            "tiktok_product": product_result,
-            "fastmoss_product": dict(fastmoss_result.get("product_fact_bundle") or {}),
-            "source_context": dict(row["source_context"]),
-        }
+        fact_bundle = _merge_runtime_fact_bundles(
+            dict(product_result.get("fact_bundle") or {}),
+            dict(fastmoss_result.get("product_fact_bundle") or {}),
+        )
+        fact_bundle["source_record_id"] = source_record_id
+        fact_bundle["product_identity"] = dict(row["product_identity"])
+        fact_bundle["source_context"] = dict(row["source_context"])
+        asset_refs = _dedupe_asset_refs(
+            [
+                *_collect_asset_refs(product_result),
+                *_collect_asset_refs(fact_bundle),
+            ]
+        )
         candidates.append(
             {
                 **row,
                 "fact_bundle": fact_bundle,
-                "asset_refs": _collect_asset_refs(product_result),
+                "asset_refs": asset_refs,
                 "product_id": str(
                     product_result.get("product_id")
                     or row.get("product_id")
@@ -800,6 +920,11 @@ def _build_writeback_projection(
     row_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     row_result = _build_row_result(store=store, request_id=request_id, row_context=row_context)
+    projection_fields = _build_competitor_projection_fields(
+        store=store,
+        request_id=request_id,
+        row_context=row_context,
+    )
     return build_projection_record(
         request_id=request_id,
         source_record_id=str(row_context["source_record_id"]),
@@ -807,6 +932,12 @@ def _build_writeback_projection(
         product_url=str(row_context.get("normalized_product_url") or row_context["product_identity"].get("product_url") or ""),
         refresh_status=str(row_result["row_status"]),
         details=row_result,
+        candidate_key=str(row_context.get("business_key") or ""),
+        extra_fields={
+            "business_entity_key": str(row_context.get("business_key") or ""),
+            "projection_fields": projection_fields,
+            "source_fields": _source_fields_from_row_context(row_context),
+        },
     )
 
 
@@ -847,6 +978,177 @@ def _build_row_result(
         "fact_status": _record_effective_status(fact_job),
         "writeback_status": _record_effective_status(write_job),
     }
+
+
+def _build_competitor_projection_fields(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    row_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_record_id = str(row_context.get("source_record_id") or "")
+    collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
+    browser_execs = _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback")
+    tiktok_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="tiktok_product_request_fetch")
+    fastmoss_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="fastmoss_product_fetch")
+    browser_execution = _latest_row_execution(browser_execs, source_record_id=source_record_id)
+
+    tiktok_result = _effective_tiktok_result(tiktok_job=tiktok_job, browser_execution=browser_execution)
+    fastmoss_result = extract_effective_result_payload(fastmoss_job)
+    product_result = dict(tiktok_result.get("normalized_product_result") or {})
+    tiktok_product = dict(product_result.get("product") or {})
+    logical_fields = dict(product_result.get("logical_fields") or {})
+    fastmoss_bundle = dict(fastmoss_result.get("product_fact_bundle") or {})
+    fastmoss_product = _fact_bundle_product(
+        fastmoss_bundle,
+        product_id=str(row_context.get("product_id") or row_context.get("product_identity", {}).get("product_id") or ""),
+    )
+    metrics_snapshot = dict(fastmoss_result.get("metrics_snapshot") or {})
+    overview_metrics = dict(metrics_snapshot.get("overview") or {})
+
+    product_id = _first_text(
+        tiktok_product.get("product_id"),
+        product_result.get("product_id"),
+        fastmoss_product.get("product_id"),
+        row_context.get("product_id"),
+        row_context.get("product_identity", {}).get("product_id") if isinstance(row_context.get("product_identity"), Mapping) else "",
+    )
+    product_url = _first_text(
+        tiktok_product.get("normalized_url"),
+        tiktok_product.get("product_url"),
+        product_result.get("normalized_product_url"),
+        row_context.get("normalized_product_url"),
+        row_context.get("product_url"),
+        fastmoss_product.get("product_url"),
+    )
+    title = _first_text(
+        logical_fields.get("title"),
+        tiktok_product.get("title"),
+        fastmoss_product.get("title"),
+    )
+    seller_name = _first_text(
+        logical_fields.get("shop_name"),
+        tiktok_product.get("seller_name"),
+        tiktok_product.get("shop_name"),
+        fastmoss_product.get("seller_name"),
+        fastmoss_product.get("shop_name"),
+    )
+    image_url = _first_text(
+        logical_fields.get("main_image_url"),
+        _first_media_asset_url(product_result),
+        _first_media_asset_url(fastmoss_bundle),
+    )
+    price_text = _first_text(
+        logical_fields.get("price_text"),
+        tiktok_product.get("price_text"),
+        tiktok_product.get("price_amount"),
+        overview_metrics.get("front_price"),
+        overview_metrics.get("real_price"),
+        overview_metrics.get("price"),
+    )
+    fastmoss_price = _first_text(
+        overview_metrics.get("fastmoss_price"),
+        overview_metrics.get("real_price"),
+        overview_metrics.get("price"),
+        price_text,
+    )
+
+    fields = {
+        "SKU-ID": product_id,
+        "产品链接": _normalize_tiktok_product_url(product_url),
+        "图片": image_url,
+        "标题": title,
+        "卖家": seller_name,
+        "价格": price_text,
+        "Fastmoss价格": fastmoss_price,
+        "昨日销量": _metric_text(
+            overview_metrics,
+            "yday_sold_count",
+            "yesterday_sold_count",
+            "day1_sold_count",
+            "yday_sales",
+            "yesterday_sales",
+        ),
+        "近7天销量": _metric_text(
+            overview_metrics,
+            "day7_sold_count",
+            "sales_7d",
+            "day7_sales",
+            "sold_count_7d",
+        ),
+        "近90天销量": _metric_text(
+            overview_metrics,
+            "day90_sold_count",
+            "sales_90d",
+            "day90_sales",
+            "sold_count_90d",
+        ),
+    }
+    return {key: value for key, value in fields.items() if value not in ("", None, [], {})}
+
+
+def _fact_bundle_product(fact_bundle: Mapping[str, Any], *, product_id: str) -> dict[str, Any]:
+    products = fact_bundle.get("products") if isinstance(fact_bundle, Mapping) else []
+    fallback: dict[str, Any] = {}
+    for item in products if isinstance(products, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        current = dict(item)
+        if not fallback:
+            fallback = current
+        if product_id and str(current.get("product_id") or "") == product_id:
+            return current
+    return fallback
+
+
+def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
+    assets = payload.get("media_assets") if isinstance(payload, Mapping) else []
+    for asset in assets if isinstance(assets, list) else []:
+        if isinstance(asset, Mapping):
+            source_url = _first_text(asset.get("source_url"), asset.get("remote_uri"), asset.get("local_path"))
+            if source_url:
+                return source_url
+    fact_bundle = payload.get("fact_bundle") if isinstance(payload, Mapping) else None
+    if isinstance(fact_bundle, Mapping):
+        return _first_media_asset_url(fact_bundle)
+    return ""
+
+
+def _source_fields_from_row_context(row_context: Mapping[str, Any]) -> dict[str, Any]:
+    for source in (row_context, row_context.get("source_context")):
+        if not isinstance(source, Mapping):
+            continue
+        fields = source.get("source_fields") or source.get("fields")
+        if isinstance(fields, Mapping):
+            return dict(fields)
+        nested = source.get("source_context")
+        if isinstance(nested, Mapping):
+            fields = nested.get("source_fields") or nested.get("fields")
+            if isinstance(fields, Mapping):
+                return dict(fields)
+    return {}
+
+
+def _metric_text(payload: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key) if isinstance(payload, Mapping) else None
+        text = _first_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            text = value.strip()
+        else:
+            text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def _resolve_final_status_from_rows(
@@ -1088,6 +1390,101 @@ def _normalize_tiktok_product_url(value: str) -> str:
     if not product_id:
         return text
     return f"https://www.tiktok.com/shop/pdp/{product_id}"
+
+
+def _runtime_child_context(
+    *,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+) -> dict[str, Any]:
+    return {
+        "request_id": request.request_id,
+        "task_code": request.task_code,
+        "workflow_code": workflow.workflow_code,
+        "stage_code": stage_code,
+    }
+
+
+def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        key: payload.get(key)
+        for key in keys
+        if payload.get(key) not in (None, "", [], {})
+    }
+
+
+def _fastmoss_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = dict(payload.get("fastmoss") or {}) if isinstance(payload.get("fastmoss"), Mapping) else {}
+    for source_key, target_key in (
+        ("fastmoss_phone", "phone"),
+        ("fastmoss_password", "password"),
+        ("fastmoss_phone_env", "phone_env"),
+        ("fastmoss_password_env", "password_env"),
+        ("fastmoss_base_url", "base_url"),
+        ("region", "region"),
+        ("fastmoss_timeout", "timeout"),
+        ("browser_cookies", "browser_cookies"),
+        ("fastmoss_live_fetch", "live_fetch"),
+        ("ensure_fastmoss_logged_in", "ensure_logged_in"),
+    ):
+        if payload.get(source_key) not in (None, "", [], {}):
+            settings[target_key] = payload.get(source_key)
+    return settings
+
+
+def _artifact_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    for source_key, target_key in (
+        ("execution_control_artifact_root", "artifact_root"),
+        ("execution_control_artifact_bucket", "artifact_bucket"),
+        ("execution_control_artifact_store_provider", "artifact_store_provider"),
+        ("execution_control_artifact_object_prefix", "artifact_object_prefix"),
+        ("execution_control_minio_endpoint", "minio_endpoint"),
+        ("execution_control_minio_access_key", "minio_access_key"),
+        ("execution_control_minio_secret_key", "minio_secret_key"),
+        ("execution_control_minio_region", "minio_region"),
+        ("execution_control_minio_secure", "minio_secure"),
+        ("execution_control_minio_create_bucket", "minio_create_bucket"),
+    ):
+        if payload.get(source_key) not in (None, "", [], {}):
+            settings[target_key] = payload.get(source_key)
+    return settings
+
+
+def _merge_runtime_fact_bundles(*bundles: Mapping[str, Any]) -> dict[str, Any]:
+    merged = {
+        **{key: [] for key in FACT_BUNDLE_LIST_KEYS},
+        "relations": {key: [] for key in FACT_BUNDLE_RELATION_KEYS},
+    }
+    for bundle in bundles:
+        if not isinstance(bundle, Mapping):
+            continue
+        for key in FACT_BUNDLE_LIST_KEYS:
+            value = bundle.get(key)
+            if isinstance(value, list):
+                merged[key].extend(dict(item) for item in value if isinstance(item, Mapping))
+        relations = bundle.get("relations")
+        if isinstance(relations, Mapping):
+            for key in FACT_BUNDLE_RELATION_KEYS:
+                value = relations.get(key)
+                if isinstance(value, list):
+                    merged["relations"][key].extend(dict(item) for item in value if isinstance(item, Mapping))
+    return merged
+
+
+def _dedupe_asset_refs(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for asset in assets:
+        source_url = str(asset.get("source_url") or "")
+        key = source_url or str(asset.get("local_path") or asset.get("object_key") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(asset)
+    return deduped
 
 
 def _collect_warnings(row_results: list[dict[str, Any]]) -> list[str]:
