@@ -28,6 +28,9 @@ FASTMOSS_AUTHOR_SEARCH_REFERER_TEMPLATE = (
     "https://www.fastmoss.com/zh/influencer/search?"
     "shop_window={shop_window}&page={page}&words={words}&words_search_type={words_search_type}"
 )
+FASTMOSS_GOODS_SEARCH_REFERER_TEMPLATE = (
+    "https://www.fastmoss.com/zh/e-commerce/search?region={region}&page={page}&words={words}"
+)
 FASTMOSS_GOODS_DETAIL_REFERER_TEMPLATE = "https://www.fastmoss.com/zh/e-commerce/detail/{product_id}"
 FASTMOSS_AUTHOR_DETAIL_REFERER_TEMPLATE = "https://www.fastmoss.com/zh/influencer/detail/{uid}"
 FASTMOSS_VIDEO_DETAIL_REFERER_TEMPLATE = "https://www.fastmoss.com/zh/media-source/video/{video_id}"
@@ -618,6 +621,49 @@ class FastMossHTTPSession:
             stage="product.base",
         )
         return _extract_data(payload)
+
+    def search_products(
+        self,
+        words: str,
+        *,
+        page: int = 1,
+        pagesize: int = 10,
+        region: str | None = None,
+        order: str = "2,2",
+        extra_params: Mapping[str, Any] | None = None,
+        check_auth: bool = True,
+    ) -> dict[str, Any]:
+        """Search FastMoss products through /api/goods/V2/search.
+
+        The raw FastMoss response envelope is returned so callers can inspect
+        auth/degraded state and normalize pagination themselves.
+        """
+
+        region_value = region or self.default_region
+        path = "/api/goods/V2/search"
+        params: dict[str, Any] = {
+            "page": page,
+            "pagesize": pagesize,
+            "order": order,
+            "region": region_value,
+        }
+        normalized_words = _coerce_str(words).strip()
+        if normalized_words:
+            params["words"] = normalized_words
+        params.update(_clean_params(extra_params))
+        return self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_goods_search_referer(
+                words=normalized_words,
+                page=page,
+                region=region_value,
+            ),
+            region=region_value,
+            stage="product.search",
+            check_auth=check_auth,
+        )
 
     def get_product_overview(
         self,
@@ -1233,6 +1279,19 @@ class FastMossHTTPSession:
 
     def _build_goods_detail_referer(self, product_id: str | int) -> str:
         return FASTMOSS_GOODS_DETAIL_REFERER_TEMPLATE.format(product_id=self._normalize_product_id(product_id))
+
+    def _build_goods_search_referer(
+        self,
+        *,
+        words: str,
+        page: int,
+        region: str,
+    ) -> str:
+        return FASTMOSS_GOODS_SEARCH_REFERER_TEMPLATE.format(
+            region=region,
+            page=page,
+            words=words,
+        )
 
     def _build_author_detail_referer(self, uid: str | int) -> str:
         return FASTMOSS_AUTHOR_DETAIL_REFERER_TEMPLATE.format(uid=self._normalize_uid(uid))
