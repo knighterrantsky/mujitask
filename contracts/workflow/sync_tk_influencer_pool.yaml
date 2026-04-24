@@ -1,0 +1,57 @@
+schema_version: 1
+contract_type: workflow_contract
+workflow_code: sync_tk_influencer_pool
+domain: tk_influencer_pool
+task_code: sync_tk_influencer_pool
+status: migrated_existing
+
+business_requirement: docs/business/requirements/sync-tk-influencer-pool.md
+architecture_design: docs/arch/workflow-influencer-pool-sync-design.md
+implementation_manifest: src/automation_business_scaffold/contracts/workflow/sync_tk_influencer_pool.yaml
+field_contracts:
+  - contracts/fields/feishu-tk-competitor.yaml
+  - contracts/fields/feishu-tk-influencer-pool.yaml
+state_contracts:
+  - contracts/states/tk-competitor-product-status.yaml
+  - contracts/states/tk-competitor-influencer-search-status.yaml
+
+source_adapter: influencer_pool_source_adapter
+projection_mappers:
+  - influencer_pool_projection_mapper
+  - competitor_influencer_status_projection_mapper
+
+stages:
+  - stage_code: read_competitor_candidates
+    handler_code: feishu_table_read
+    source_adapter: influencer_pool_source_adapter
+    purpose: 读取达人查找状态为空、待查找、失败重试或处理中，且商品状态未被跳过的竞品记录
+  - stage_code: discover_related_creators
+    handler_code: fastmoss_product_fetch
+    purpose: 获取商品关联达人并按销量、粉丝阈值筛选
+  - stage_code: collect_creator_detail
+    handler_code: fastmoss_creator_fetch
+    purpose: 拉取达人详情、联系方式和画像指标
+  - stage_code: write_influencer_pool
+    handler_code: feishu_table_write
+    projection_mapper: influencer_pool_projection_mapper
+    purpose: 按达人ID upsert TK达人池
+  - stage_code: writeback_competitor_status
+    handler_code: feishu_table_write
+    projection_mapper: competitor_influencer_status_projection_mapper
+    purpose: 回写 TK竞品收集.达人查找状态
+  - stage_code: ready_for_summary
+    handler_code: outbox_dispatch
+    purpose: 汇总 product/creator 结果并通知
+
+protected_invariants:
+  - TK达人池 保持一人一行，按 达人ID upsert
+  - 达人查找状态 的正式状态值只有 待查找、处理中、已完成、失败重试
+  - 商品状态=已下架/区域不可售 的竞品记录不进入达人查找
+  - 达人同步不新增业务专用 Runtime job 表，目标执行单元统一进入 api_worker_job
+  - 合作商品数 不作为本期更新字段
+  - 粉丝数、带货视频 GMV、带货直播 GMV 在数据库保留原始数字，飞书展示按 W 单位规则格式化
+
+known_architecture_gaps:
+  - code: historical_influencer_job_tables
+    description: influencer_pool_product_job 和 influencer_pool_author_job 只能作为迁移来源或兼容事实，不是目标结构
+    migration_state: docs/arch/migration-state.md

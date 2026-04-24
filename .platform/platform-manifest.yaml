@@ -17,7 +17,7 @@ allowed_framework_imports:
   - "automation_framework.runtime"
 protected_paths:
   - ".platform/**"
-  - "AGENT.MD"
+  - "AGENTS.md"
   - "src/automation_business_scaffold/agent.py"
   - "src/automation_business_scaffold/registry.py"
   - "tests/test_agent.py"
@@ -26,6 +26,9 @@ business_editable_paths:
   - "README.md"
   - "docs/README.md"
   - "docs/arch/**"
+  - "docs/domains/**"
+  - "docs/dev/**"
+  - "contracts/**"
   - "src/automation_business_scaffold/config.py"
   - "src/automation_business_scaffold/tasks/**"
   - "src/automation_business_scaffold/workflows/**"

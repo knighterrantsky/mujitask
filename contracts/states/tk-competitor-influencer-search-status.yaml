@@ -1,0 +1,41 @@
+schema_version: 1
+contract_type: state_contract
+state_code: tk_competitor_influencer_search_status
+display_name: 达人查找状态
+field_contract: contracts/fields/feishu-tk-competitor.yaml
+owner: business
+
+empty_semantics: pending_influencer_search
+participates_in_competitor_refresh_pending: false
+participates_in_influencer_sync_candidate: true
+
+allowed_values:
+  - value: 待查找
+    category: pending
+    candidate_for_sync: true
+  - value: 处理中
+    category: in_progress
+    candidate_for_sync: true
+    recovery_rule: 下一次日任务可重新拾起异常残留记录
+  - value: 已完成
+    category: terminal_success
+    candidate_for_sync: false
+  - value: 失败重试
+    category: retryable_failure
+    candidate_for_sync: true
+
+transitions:
+  - from: ["", 待查找, 失败重试, 处理中]
+    to: 处理中
+    trigger: sync_tk_influencer_pool 开始处理来源竞品记录
+  - from: 处理中
+    to: 已完成
+    trigger: 商品达人列表扫描完成且满足条件达人均已处理
+  - from: 处理中
+    to: 失败重试
+    trigger: 达人池写入部分失败或商品无法解析到可用 FastMoss 商品详情入口
+
+manual_reset:
+  from: 已完成
+  to: 待查找
+  effect: 重新进入达人查找流程

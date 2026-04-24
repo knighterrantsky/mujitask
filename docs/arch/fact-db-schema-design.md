@@ -155,7 +155,7 @@ erDiagram
 - `tk_products.status` 默认使用 `active` 表示当前可正常识别的商品。
 - 当竞品表中的 `SKU-ID` 对应商品 URL 打开后没有商品信息，并且页面明确显示“已下架/区域不可售”时，只标记商品主表 `tk_products.status = off_shelf_or_region_unavailable`。
 - 竞品表语境里的 `SKU-ID` 等价于 TikTok 商品 ID / `product_id`，不是 `tk_product_skus` 中的规格 SKU；当前设计不新增 `tk_product_skus.status`。
-- 该状态只属于数据库商品主表事实，不在本阶段写回飞书 `商品状态` 字段。
+- `tk_products.status` 本身不直接写飞书；竞品 workflow 的 projection mapper 可以基于不可访问/下架/区域不可售证据写回飞书 `商品状态=已下架/区域不可售`，具体字段策略见 `contracts/fields/feishu-tk-competitor.yaml`。
 
 ### 4.2 媒体层
 
