@@ -925,6 +925,54 @@ class FastMossHTTPSession:
         )
         return _extract_data(payload)
 
+    def get_author_stat_info(self, uid: str) -> dict[str, Any]:
+        """Return the `data` object from /api/author/v3/detail/getStatInfo."""
+
+        normalized_uid = self._normalize_uid(uid)
+        path = "/api/author/v3/detail/getStatInfo"
+        params = {"uid": normalized_uid}
+        payload = self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_author_detail_referer(normalized_uid),
+            region=self.default_region,
+            stage="author.stat_info",
+        )
+        return _extract_data(payload)
+
+    def list_author_goods(
+        self,
+        uid: str,
+        *,
+        page: int = 1,
+        page_size: int = 5,
+        region: str | None = None,
+        order: str = "sold_count,2",
+        date_type: int | str = 28,
+    ) -> dict[str, Any]:
+        """Return the `data` object from /api/author/v3/detail/goodsList."""
+
+        region_value = region or self.default_region
+        normalized_uid = self._normalize_uid(uid)
+        path = "/api/author/v3/detail/goodsList"
+        params = {
+            "page": page,
+            "uid": normalized_uid,
+            "date_type": date_type,
+            "order": order,
+            "pagesize": page_size,
+        }
+        payload = self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_author_detail_referer(normalized_uid),
+            region=region_value,
+            stage="author.goods_list",
+        )
+        return _extract_data(payload)
+
     def get_author_shop_list(
         self,
         uid: str,

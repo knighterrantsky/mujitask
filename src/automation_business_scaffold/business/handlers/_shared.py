@@ -396,6 +396,11 @@ def _append_unique(
         if _bundle_item_key(collection, existing) == item_key:
             merged = dict(existing)
             merged.update(normalized)
+            if isinstance(existing.get("facts"), dict) or isinstance(normalized.get("facts"), dict):
+                merged["facts"] = {
+                    **coerce_mapping(existing.get("facts")),
+                    **coerce_mapping(normalized.get("facts")),
+                }
             target[index] = compact_dict(merged)
             return
     target.append(normalized)
@@ -418,7 +423,7 @@ def _bundle_item_key(collection: str, item: dict[str, Any]) -> str:
         )
     if collection == "shops":
         return first_non_empty(record.get("shop_key"), record.get("shop_id"), record.get("shop_name"))
-    if collection in {"creators", "creator_products", "creator_videos"}:
+    if collection == "creators":
         return first_non_empty(
             record.get("creator_key"),
             record.get("creator_id"),
@@ -426,6 +431,28 @@ def _bundle_item_key(collection: str, item: dict[str, Any]) -> str:
             record.get("unique_id"),
             record.get("relation_key"),
         )
+    if collection == "creator_products":
+        creator_key = first_non_empty(
+            record.get("creator_key"),
+            record.get("creator_id"),
+            record.get("uid"),
+            record.get("unique_id"),
+        )
+        product_id = coerce_str(record.get("product_id"))
+        if creator_key or product_id:
+            return f"{creator_key}:{product_id}"
+        return first_non_empty(record.get("relation_key"))
+    if collection == "creator_videos":
+        creator_key = first_non_empty(
+            record.get("creator_key"),
+            record.get("creator_id"),
+            record.get("uid"),
+            record.get("unique_id"),
+        )
+        video_key = first_non_empty(record.get("video_key"), record.get("video_id"))
+        if creator_key or video_key:
+            return f"{creator_key}:{video_key}"
+        return first_non_empty(record.get("relation_key"))
     if collection in {"videos", "video_products"}:
         return first_non_empty(record.get("video_key"), record.get("video_id"), record.get("relation_key"))
     if collection == "shop_creators":
