@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+from automation_business_scaffold.business.workflow_defs.job_catalog import (
+    COMMON_TASK_COMPLETED_NOTIFICATION_JOB as TASK_COMPLETED_NOTIFICATION_JOB,
+    FACT_BUNDLE_UPSERT_JOB,
+    FASTMOSS_CREATOR_FETCH_JOB,
+    FASTMOSS_PRODUCT_FETCH_JOB,
+    FASTMOSS_PRODUCT_SEARCH_JOB,
+    FEISHU_TABLE_READ_JOB,
+    FEISHU_TABLE_WRITE_JOB,
+    MEDIA_ASSET_SYNC_JOB,
+    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
+    TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
+)
+from automation_business_scaffold.business.workflow_defs.models import JobDefinition
+
+
+def list_job_definitions() -> tuple[JobDefinition, ...]:
+    return (
+        FEISHU_TABLE_READ_JOB,
+        FEISHU_TABLE_WRITE_JOB,
+        TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
+        TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
+        FASTMOSS_PRODUCT_SEARCH_JOB,
+        FASTMOSS_PRODUCT_FETCH_JOB,
+        FASTMOSS_CREATOR_FETCH_JOB,
+        MEDIA_ASSET_SYNC_JOB,
+        FACT_BUNDLE_UPSERT_JOB,
+        TASK_COMPLETED_NOTIFICATION_JOB,
+    )
+
+
+__all__ = [
+    "FACT_BUNDLE_UPSERT_JOB",
+    "FASTMOSS_CREATOR_FETCH_JOB",
+    "FASTMOSS_PRODUCT_FETCH_JOB",
+    "FASTMOSS_PRODUCT_SEARCH_JOB",
+    "FEISHU_TABLE_READ_JOB",
+    "FEISHU_TABLE_WRITE_JOB",
+    "JobDefinition",
+    "MEDIA_ASSET_SYNC_JOB",
+    "TASK_COMPLETED_NOTIFICATION_JOB",
+    "TIKTOK_PRODUCT_BROWSER_FETCH_JOB",
+    "TIKTOK_PRODUCT_REQUEST_FETCH_JOB",
+    "list_job_definitions",
+]

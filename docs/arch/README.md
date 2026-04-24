@@ -25,6 +25,9 @@
 
 - [重构验收契约](./rewrite-acceptance-contract.md)
 - [当前整体系统架构设计](./current-system-architecture-design.md)
+- [目标项目架构契约](./target-project-architecture-contract.md)
+- [项目结构与命名契约](./project-structure-contract.md)
+- [Runtime 控制面契约](./runtime-control-plane-contract.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Handler Contract 设计](./handler-contract-design.md)
 - [入口与输出契约设计](./entry-output-contract-design.md)
@@ -57,6 +60,8 @@
 - `Job`: Runtime DB 中 worker 可 claim 的运行时执行单元。
 - `Handler`: 处理某类 Job 的代码入口。
 - `Flow`: Handler 内部复用的业务实现过程。
+- `Runtime Control Plane`: RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 等运行控制入口和恢复机制。
+- `Target Project Architecture`: 后续重构和新增业务的目标目录、模块归属和开发拆分契约。
 
 ## 已删除的历史来源
 

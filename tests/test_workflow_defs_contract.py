@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DEFS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business" / "workflow_defs"
+JOBS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business" / "jobs"
 OFFICIAL_WORKFLOW_CODES = (
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
     "sync_tk_influencer_pool",
     "tiktok_fastmoss_product_ingest",
+)
+OFFICIAL_JOB_CODES = (
+    "feishu_table_read",
+    "feishu_table_write",
+    "tiktok_product_request_fetch",
+    "tiktok_product_browser_fetch",
+    "fastmoss_product_search",
+    "fastmoss_product_fetch",
+    "fastmoss_creator_fetch",
+    "media_asset_sync",
+    "fact_bundle_upsert",
+    "task_completed_notification",
 )
 WORKFLOW_DEF_REQUIRED_TOKENS = (
     "task_code",
@@ -80,4 +94,26 @@ def test_workflow_definition_modules_expose_minimum_contract_fields() -> None:
     assert missing_fields_by_workflow == [], (
         "each workflow definition should spell out the minimum runtime contract fields:\n"
         + "\n".join(missing_fields_by_workflow)
+    )
+
+
+def test_runtime_job_modules_exist_and_point_to_job_definitions() -> None:
+    assert JOBS_ROOT.exists(), "business.jobs must expose runtime job definitions separately from workflows."
+
+    problems: list[str] = []
+    for job_code in OFFICIAL_JOB_CODES:
+        if _module_entry(JOBS_ROOT, job_code) is None:
+            problems.append(f"{job_code}: missing module")
+            continue
+        module = importlib.import_module(f"automation_business_scaffold.business.jobs.{job_code}")
+        job_definition = getattr(module, "JOB_DEFINITION", None)
+        if getattr(job_definition, "job_code", "") != job_code:
+            problems.append(f"{job_code}: JOB_DEFINITION.job_code mismatch")
+        if getattr(module, "JOB_CODE", "") != job_code:
+            problems.append(f"{job_code}: JOB_CODE mismatch")
+        if not getattr(module, "HANDLER_CODE", ""):
+            problems.append(f"{job_code}: HANDLER_CODE missing")
+
+    assert problems == [], (
+        "each runtime job must have a discoverable same-name module:\n" + "\n".join(problems)
     )

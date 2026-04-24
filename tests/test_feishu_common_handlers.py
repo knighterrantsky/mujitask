@@ -4,6 +4,8 @@ from typing import Any
 
 from automation_business_scaffold.business.handlers.api.registry import build_bound_api_handler_registry
 from automation_business_scaffold.business.handlers.contract import HandlerContext
+from automation_business_scaffold.business.feishu.projection_mappers import PROJECTION_MAPPER_CODES
+from automation_business_scaffold.business.feishu.source_adapters import SOURCE_ADAPTER_CODES
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 
@@ -32,6 +34,21 @@ def test_bound_api_registry_includes_feishu_common_handlers() -> None:
 
     assert registry.get("feishu_table_read").is_bound
     assert registry.get("feishu_table_write").is_bound
+
+
+def test_feishu_business_components_have_named_registries() -> None:
+    assert SOURCE_ADAPTER_CODES == {
+        "competitor_table_source_adapter",
+        "influencer_pool_source_adapter",
+        "selection_table_source_adapter",
+    }
+    assert PROJECTION_MAPPER_CODES == {
+        "competitor_seed_projection_mapper",
+        "competitor_table_projection_mapper",
+        "influencer_pool_projection_mapper",
+        "competitor_influencer_status_projection_mapper",
+        "selection_table_projection_mapper",
+    }
 
 
 def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:

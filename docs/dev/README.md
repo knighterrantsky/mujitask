@@ -12,6 +12,9 @@
 
 - 客户需求和业务验收口径见 [../business/README.md](../business/README.md)。
 - 系统架构、workflow、Runtime DB、Fact DB 和 Storage 设计见 [../arch/README.md](../arch/README.md)。
+- 后续重构和新增业务的目标工程组织方式见 [../arch/target-project-architecture-contract.md](../arch/target-project-architecture-contract.md)。
+- 工程结构、文件命名和代码定位契约见 [../arch/project-structure-contract.md](../arch/project-structure-contract.md)。
+- RPC/CLI/daemon/config/watchdog/supervisor/reconciler 的运行控制面契约见 [../arch/runtime-control-plane-contract.md](../arch/runtime-control-plane-contract.md)。
 - 部署、验收、回退和 runbook 见 [../ops/README.md](../ops/README.md)。
 - 外部接口、页面研究和字段样例见 [../reference/README.md](../reference/README.md)。
 

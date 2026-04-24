@@ -1,10 +1,12 @@
-# OpenClaw Skills
+# OpenClaw / Agent Skills
 
 更新时间：`2026-04-24`
 
 状态：开发/集成说明。本文描述 OpenClaw skill 的集成边界、入口脚本和调试口径；客户需求以 `docs/business` 为准，系统架构以 `docs/arch` 为准。
 
-本文件描述当前 OpenClaw skill 的真实职责边界。当前 skill 已不再承担主业务编排，默认边界已经收敛为：
+本文件描述当前 OpenClaw 兼容 skill 的真实职责边界。按项目结构契约，`skills/{skill_code}` 是仓库内的 agent skill bundle 源；部署时会复制到目标 agent workspace/skills 目录，并生成或保留 `skill.local.env`。
+
+当前 skill 已不再承担主业务编排，默认边界已经收敛为：
 
 - skill 负责识别用户意图
 - skill 负责提取少量参数
@@ -16,6 +18,14 @@
 当前正式 skill 名称：
 
 - `mujitask-tiktok-feishu-sync`
+
+它是一个 agent artifact，而不是 runtime worker。后续可以有多个业务 skill bundle，例如:
+
+- `mujitask-tiktok-feishu-sync`
+- `mujitask-tiktok-selection-analysis`
+- `mujitask-creator-discovery`
+
+每个 bundle 都应独立描述触发条件、参数提取、提交入口和首条回执契约；共同复用后台 Runtime DB、executor、worker、outbox 和项目安装配置。
 
 对外暴露两类业务语义：
 
@@ -126,6 +136,10 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 - `lightweight_submit.py`
 - `openclaw_result.py`
 
+这些文件是部署产物源。部署脚本会把它们复制到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync` 或等价 agent skills 目录。
+
+`skill.local.env.example` 是配置模板；`skill.local.env` 是目标 agent workspace 中的本机配置。新增业务 skill 时，不要把生产密钥写进仓库内模板。
+
 ### 6.2 仅用于人工排障的脚本
 
 下面这些脚本仍保留，但仅用于人工排障，不再作为默认业务入口：
@@ -144,6 +158,15 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 4. `outbox_dispatcher` 发送最终通知
 
 所以当前 OpenClaw skill 的职责是“入口层”，不是“编排层”。
+
+Agent workspace 与项目安装目录的边界:
+
+| 位置 | 作用 |
+| --- | --- |
+| 仓库 `skills/{skill_code}` | skill bundle 源代码和模板 |
+| 目标 `MUJITASK_SKILLS_DIR/{skill_code}` | agent 实际读取的 skill bundle |
+| 目标 `skill.local.env` | agent skill 的固定输入和本机上下文 |
+| 项目安装目录 `executor.local.env` | Runtime DB、对象存储、通知、浏览器和第三方账号等后台运行配置 |
 
 ## 8. 当前推荐排障顺序
 

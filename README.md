@@ -27,6 +27,8 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 - `docs/README.md` 是文档总入口。
 - `docs/business` 只放需求和业务规则。
 - `docs/arch` 是当前架构事实来源。
+- 目标工程组织和新增 workflow 拆分方式见 [docs/arch/target-project-architecture-contract.md](./docs/arch/target-project-architecture-contract.md)。
+- Runtime 控制面归属见 [docs/arch/runtime-control-plane-contract.md](./docs/arch/runtime-control-plane-contract.md)，包括 RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox。
 - Runtime DB schema、Fact DB schema、workflow contract、handler contract 是受控契约，不能随普通业务代码自由破坏。
 - framework contract 不再从本仓库文档读取。
 
@@ -223,12 +225,15 @@ automation-business-scaffold-run run \
 | 路径 | 说明 |
 | --- | --- |
 | `src/automation_business_scaffold/business/tasks/` | 顶层 task 和内部 task 入口 |
+| `src/automation_business_scaffold/business/jobs/` | Runtime job 定义门面；按 job_code 命名并指向稳定 JobDefinition |
 | `src/automation_business_scaffold/business/workflows/` | WorkflowSpec 声明 |
 | `src/automation_business_scaffold/business/flows/` | 业务编排和领域流程 |
+| `src/automation_business_scaffold/business/handlers/` | Runtime handler contract、registry，以及按 handler_code 命名的基础 handler 模块 |
+| `src/automation_business_scaffold/business/feishu/` | 飞书表读取 source adapter 和写入 projection mapper 的业务定制组件 |
 | `src/automation_business_scaffold/infrastructure/` | 飞书、FastMoss、Runtime Store、Fact Store、Artifact Store 等基础设施 |
 | `src/automation_business_scaffold/models/` | 运行时和业务模型 |
 | `src/automation_business_scaffold/validators/` | 业务参数校验 |
-| `skills/mujitask-tiktok-feishu-sync/` | 对外安装的 skill bundle |
+| `skills/mujitask-tiktok-feishu-sync/` | 仓库内 agent skill bundle 源；部署时复制到目标 agent workspace/skills 目录并生成配置 |
 | `scripts/deploy/macos/` | macOS 一键部署 |
 | `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
 | `docs/` | 项目文档地图 |
@@ -291,7 +296,7 @@ automation-business-scaffold-run run \
 - 不允许生产任务消费路径自动 `CREATE TABLE`、`ALTER TABLE` 或 `DROP TABLE`。
 - workflow / handler payload/result/error contract 需要保持兼容；破坏性变更要通过 `contract_revision`、adapter、migration 或清理旧 job 处理，不能把 `v1` / `v2` 写进稳定 code 名称。
 
-详细规则见 [docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
+详细规则见 [docs/arch/target-project-architecture-contract.md](./docs/arch/target-project-architecture-contract.md)、[docs/arch/project-structure-contract.md](./docs/arch/project-structure-contract.md)、[docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
 
 ## 9. 验证
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from pathlib import Path
 
@@ -145,5 +146,32 @@ def test_handler_modules_must_stay_within_the_documented_allowlist() -> None:
 
     assert problems == [], (
         "handler registry may only route allowlisted handler codes from docs/arch/handler-contract-design.md:\n"
+        + "\n".join(problems)
+    )
+
+
+def test_each_allowlisted_handler_has_a_named_module_with_contract() -> None:
+    problems: list[str] = []
+
+    for worker, allowlist in ALLOWLIST_BY_WORKER.items():
+        for handler_code in sorted(allowlist):
+            module_name = (
+                "automation_business_scaffold.business.handlers."
+                f"{worker}.{handler_code}"
+            )
+            try:
+                module = importlib.import_module(module_name)
+            except ModuleNotFoundError as exc:
+                problems.append(f"{worker}: missing module {module_name}: {exc}")
+                continue
+
+            contract = getattr(module, "CONTRACT", None)
+            if getattr(contract, "handler_code", "") != handler_code:
+                problems.append(f"{worker}: {module_name}.CONTRACT does not match {handler_code}")
+            if getattr(module, "HANDLER_CODE", "") != handler_code:
+                problems.append(f"{worker}: {module_name}.HANDLER_CODE does not match {handler_code}")
+
+    assert problems == [], (
+        "each admitted handler must have a discoverable same-name module:\n"
         + "\n".join(problems)
     )

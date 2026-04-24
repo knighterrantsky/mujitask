@@ -26,6 +26,9 @@
 | --- | --- | --- |
 | `.platform/**` | 不直接修改 | platform-managed；需要 platform upgrade 口径 |
 | `AGENT.MD` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
+| `docs/arch/target-project-architecture-contract.md` | 受控修改 | 目标工程组织方式、模块归属和 workflow 开发拆分；变更必须同步目标架构测试 |
+| `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
+| `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
 | `docs/arch/current-system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
 | `docs/arch/runtime-db-schema-design.md`、`fact-db-schema-design.md` | 受控修改 | schema 设计事实来源；变更必须有 migration、兼容策略和权限边界 |
 | `docs/arch/handler-contract-design.md`、`entry-output-contract-design.md` | 受控修改 | contract 事实来源；变更必须保持兼容，或显式说明 `contract_revision`、adapter、migration/回滚策略 |
@@ -91,6 +94,9 @@
 | Fact DB schema | `fact-db-schema-design.md` | 必须说明 upsert key、幂等规则、历史数据迁移和查询影响 |
 | Handler contract | `handler-contract-design.md` | 必须说明 payload/result/error 是否兼容；破坏性变更要通过 `contract_revision`、migration、adapter 或新语义 handler 处理 |
 | 入口/输出 contract | `entry-output-contract-design.md` | 必须说明调用方、返回结构、错误结构和兼容窗口 |
+| 目标项目架构 contract | `target-project-architecture-contract.md` | 必须说明目标目录、系统元素归属、workflow 开发拆分和测试护栏 |
+| 项目结构与命名 contract | `project-structure-contract.md` | 必须说明目录职责、文件命名、定位路径和测试护栏 |
+| Runtime 控制面 contract | `runtime-control-plane-contract.md` | 必须说明 RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 的归属、入口命令、配置优先级和测试护栏 |
 
 允许直接同步的情况:
 
@@ -106,6 +112,9 @@
 - 修改状态枚举含义。
 - 修改 upsert key / dedupe key / idempotency key。
 - 修改 handler 必填入参或标准 result/error 外壳。
+- 修改目标目录层级、系统元素归属或 workflow 开发拆分规则。
+- 修改 `business/tasks`、`business/workflow_defs`、`business/jobs`、`business/handlers`、`business/feishu`、`business/flows` 的职责边界。
+- 修改 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Outbox Dispatcher 的归属和入口命令。
 - 在 `task_code`、`workflow_code`、`stage_code`、`job_code`、`handler_code` 或 payload/result 字段名中加入 `v1`、`v2`、`stage1`、`stage2B` 这类版本/顺序后缀。
 - 将 `orchestrate_*`、`run_*_workflow`、`run_sync_*` 这类 workflow 编排入口写入 handler contract、handler registry、job handler 名称或目标 Job / Handler 映射表。
 - 修改生产运行进程是否允许自动建表、改表、删表。

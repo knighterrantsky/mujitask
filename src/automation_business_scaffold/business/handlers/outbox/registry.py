@@ -5,7 +5,7 @@ from types import MappingProxyType
 from ..allowlist import OUTBOX_HANDLER_CONTRACTS
 from ..contract import HandlerCallable
 from ..registry import HandlerRegistry, RegisteredHandler
-from .implementations import outbox_dispatch_handler
+from .outbox_dispatch import outbox_dispatch_handler
 
 BOUND_OUTBOX_HANDLERS = MappingProxyType({"outbox_dispatch": outbox_dispatch_handler})
 OUTBOX_HANDLER_CODES = frozenset(OUTBOX_HANDLER_CONTRACTS)

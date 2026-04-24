@@ -5,7 +5,7 @@ from types import MappingProxyType
 from ..allowlist import BROWSER_HANDLER_CONTRACTS
 from ..contract import HandlerCallable
 from ..registry import HandlerRegistry, RegisteredHandler
-from .implementations import tiktok_product_browser_fetch_handler
+from .tiktok_product_browser_fetch import tiktok_product_browser_fetch_handler
 
 BOUND_BROWSER_HANDLERS = MappingProxyType(
     {"tiktok_product_browser_fetch": tiktok_product_browser_fetch_handler}

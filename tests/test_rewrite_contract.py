@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUSINESS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business"
-RUNTIME_SCOPES = ("flows", "tasks", "workflows", "handlers", "workflow_defs")
+RUNTIME_SCOPES = ("flows", "tasks", "workflows", "jobs", "handlers", "workflow_defs", "feishu")
 
 
 def _business_runtime_files() -> list[Path]:

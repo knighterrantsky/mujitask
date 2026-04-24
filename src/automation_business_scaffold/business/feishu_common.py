@@ -186,53 +186,32 @@ def adapt_source_rows(
                 "source_row_count": 0,
             },
         }
-    if adapter_code == "competitor_table_source_adapter":
-        return _adapt_competitor_rows(raw_rows, payload)
-    if adapter_code == "influencer_pool_source_adapter":
-        return _adapt_influencer_source_rows(raw_rows, payload)
-    if adapter_code == "selection_table_source_adapter":
-        return _adapt_selection_rows(raw_rows, payload)
-    raise FeishuCommonError(
-        error_type="configuration_error",
-        error_code="unsupported_adapter",
-        message=f"Unsupported Feishu source adapter: {adapter_code}",
-        retryable=False,
-        details={"adapter_code": adapter_code},
+    from automation_business_scaffold.business.feishu.source_adapters import (
+        adapt_source_rows as run_source_adapter,
     )
+
+    return run_source_adapter(adapter_code, raw_rows, payload)
 
 
 def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     records = _mapping_list(payload.get("records"))
     if not records:
-        records = _selection_writeback_records(payload)
+        from automation_business_scaffold.business.feishu.projection_mappers import (
+            selection_writeback_records,
+        )
+
+        records = selection_writeback_records(payload)
     mapper_code = _text(payload.get("mapper_code"))
     mapped: list[dict[str, Any]] = []
     for record in records:
         if _mapping(record.get("fields")):
             mapped.append(_normalize_write_record(record, payload))
             continue
-        if mapper_code == "competitor_seed_projection_mapper":
-            mapped.append(_map_competitor_seed_record(record, payload))
-            continue
-        if mapper_code == "competitor_table_projection_mapper":
-            mapped.append(_map_competitor_table_record(record, payload))
-            continue
-        if mapper_code == "influencer_pool_projection_mapper":
-            mapped.append(_map_influencer_pool_record(record, payload))
-            continue
-        if mapper_code == "competitor_influencer_status_projection_mapper":
-            mapped.append(_map_competitor_influencer_status_record(record, payload))
-            continue
-        if mapper_code in {"", "selection_table_projection_mapper"}:
-            mapped.append(_map_selection_table_record(record, payload))
-            continue
-        raise FeishuCommonError(
-            error_type="configuration_error",
-            error_code="unsupported_mapper",
-            message=f"Unsupported Feishu projection mapper: {mapper_code}",
-            retryable=False,
-            details={"mapper_code": mapper_code},
+        from automation_business_scaffold.business.feishu.projection_mappers import (
+            map_projection_record,
         )
+
+        mapped.append(map_projection_record(mapper_code, record, payload))
     return [record for record in mapped if _mapping(record.get("fields"))]
 
 

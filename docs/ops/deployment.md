@@ -48,6 +48,27 @@
 | `Postgres` | 控制面数据库 | 任务、执行、租约、outbox、实体快照索引 |
 | `MinIO` | 对象存储 | 运行产物、截图、引用文件 |
 
+## 3.1 Agent Skill Bundle 边界
+
+Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspace 的入口产物，不是 runtime worker。
+
+当前仓库内源目录:
+
+- `skills/mujitask-tiktok-feishu-sync/`
+
+部署目标:
+
+- `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
+
+部署脚本负责:
+
+1. 复制仓库内 skill bundle 到目标 agent skills 目录。
+2. 生成或保留目标目录下的 `skill.local.env`。
+3. 生成项目安装目录下的 `scripts/execution_control/executor.local.env`。
+4. 安装并启动 executor、api worker、browser runloop、outbox dispatcher。
+
+后续多个业务可以拥有多个 skill bundle；每个 bundle 仍只负责意图识别、参数提取、顶层 task 提交和首条 `request_id` 回执。
+
 ## 4. 项目内关键文件
 
 部署和运行主要依赖这些文件：

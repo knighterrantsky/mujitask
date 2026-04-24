@@ -5,16 +5,14 @@ from types import MappingProxyType
 from ..allowlist import API_HANDLER_CODES as API_HANDLER_CODES, API_HANDLER_CONTRACTS
 from ..contract import HandlerCallable
 from ..registry import HandlerRegistry, RegisteredHandler
-from .implementations import (
-    fact_bundle_upsert_handler,
-    feishu_table_read_handler,
-    feishu_table_write_handler,
-    fastmoss_creator_fetch_handler,
-    fastmoss_product_fetch_handler,
-    fastmoss_product_search_handler,
-    media_asset_sync_handler,
-    tiktok_product_request_fetch_handler,
-)
+from .fact_bundle_upsert import fact_bundle_upsert_handler
+from .fastmoss_creator_fetch import fastmoss_creator_fetch_handler
+from .fastmoss_product_fetch import fastmoss_product_fetch_handler
+from .fastmoss_product_search import fastmoss_product_search_handler
+from .feishu_table_read import feishu_table_read_handler
+from .feishu_table_write import feishu_table_write_handler
+from .media_asset_sync import media_asset_sync_handler
+from .tiktok_product_request_fetch import tiktok_product_request_fetch_handler
 
 BOUND_API_HANDLERS = MappingProxyType(
     {

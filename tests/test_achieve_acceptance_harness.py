@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BUSINESS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business"
 ACCEPTANCE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "acceptance"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "achieve_acceptance"
-RUNTIME_SCOPES = ("flows", "tasks", "workflows", "handlers", "workflow_defs")
+RUNTIME_SCOPES = ("flows", "tasks", "workflows", "jobs", "handlers", "workflow_defs", "feishu")
 
 
 PASSING_FIXTURES = (
