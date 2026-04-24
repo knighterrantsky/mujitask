@@ -1,15 +1,33 @@
 # 需求池
 
-更新时间：`2026-04-10`
+更新时间：`2026-04-25`
+
+状态: 需求候选池，不作为实现事实来源
+
+## 事实来源限制
+
+本文件只保存待确认需求和原始想法。Codex 或开发者不能直接按本文件实现业务逻辑；只有当候选项被整理并提升到 `docs/business/requirements/*.md` 后，才进入正式需求事实来源。
+
+## 候选项索引
+
+| item_id | title | source | affected_tables | decision_status | current_assumption | required_confirmation | promote_to | last_reviewed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| REQ-BACKLOG-001 | TK选品收集表扩展 | 2026-04-14 新增四表需求 | `TK选品收集` | pending_confirmation | 先按商品级候选记录理解，一行对应一个待入池商品 | filter、去重规则、店铺入口、`近7天销量` 是否落表 | `docs/business/requirements/*.md` | 2026-04-25 |
+| REQ-BACKLOG-002 | TK达人池表扩展 | 2026-04-14 新增四表需求 | `TK达人池` | partially_promoted | 一人一行，按 `达人ID` upsert；筛选为商品页达人销量 `>50` 且粉丝数 `>5000` | 后续如要求联系方式必填、自动新增店铺选项，再单独确认 | `docs/business/requirements/sync-tk-influencer-pool.md` | 2026-04-25 |
+| REQ-BACKLOG-003 | TK达人建联表扩展 | 2026-04-14 新增四表需求 | `TK达人建联表` | pending_confirmation | 先按建联事件粒度理解，一行代表一次商品建联达人 | 是否新增 `达人ID`、30 天未履约起算点、监控频率、播放量获取方式 | `docs/business/requirements/*.md` | 2026-04-25 |
+| REQ-BACKLOG-004 | TK合作爆款视频表扩展 | 2026-04-14 新增四表需求 | `TK合作爆款视频` | pending_confirmation | 先按商品详情页维度理解，一行代表一条满足阈值的视频 | `skuid` 真实定义、关联视频筛选范围、回写字段口径 | `docs/business/requirements/*.md` | 2026-04-25 |
+| REQ-BACKLOG-005 | 紫鸟指纹浏览器支持 | 需求池记录 | 浏览器 / profile | pending_evaluation | 可能作为后续浏览器 profile provider | 接入方式、账号隔离和部署形态 | `docs/arch/*.md` | 2026-04-25 |
+| REQ-BACKLOG-006 | 运行时直接下发 profile | 需求池记录 | profile / config | pending_evaluation | 调用方可在执行时传入 profile，不必须提前固化在项目配置里 | 参数边界、权限、安全和兼容策略 | `docs/arch/*.md` | 2026-04-25 |
+| REQ-BACKLOG-007 | profile 和 session 文件合并 | 需求池记录 | profile / session | pending_evaluation | 可减少配置分散 | 文件格式、迁移策略、兼容策略 | `docs/arch/*.md` | 2026-04-25 |
+| REQ-BACKLOG-008 | Agent 连接 server、日志上传和自动更新 | 需求池记录 | agent / server / release | pending_evaluation | agent 需要运行日志版本信息和 update 接口 | server 协议、升级权限、失败回滚、安全边界 | `docs/arch/*.md` | 2026-04-25 |
+| REQ-BACKLOG-009 | OpenClaw 保存执行汇总 JSON | 需求池记录 | OpenClaw / outbox | pending_evaluation | 每次执行后本地保存 summary JSON | 保存路径、生命周期、隐私字段 | `docs/arch/*.md` | 2026-04-25 |
+| REQ-BACKLOG-010 | TikTok 商品变体识别 | 需求池记录 | TikTok 商品采集 | pending_evaluation | 识别 Color、Size 等规格 | 字段映射、Fact DB schema、飞书写回目标 | `docs/business/requirements/*.md` | 2026-04-25 |
 
 ## 说明
 
-这里记录的是平时随手想到、后续再评估的需求点。
+下面的原始记录只保留来源语境，不能越过上面的候选项索引直接成为实现依据。
 
-不要求现在就写成正式需求，也不要求马上拆方案。  
-先用自然语言记下来，带一个优先级就可以。
-
-使用方式尽量简单：
+后续补充方式尽量简单：
 
 - 直接写一句话或一小段话
 - 只标 `P0 / P1 / P2 / P3`

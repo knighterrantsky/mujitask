@@ -1,0 +1,182 @@
+schema_version: 1
+contract_type: feishu_field_contract
+table_code: tk_influencer_pool
+feishu_table_name: TK达人池
+owner: business
+
+source_adapter: influencer_pool_source_adapter
+projection_mapper: influencer_pool_projection_mapper
+
+business_truth:
+  overview: docs/business/business-requirements.md
+  requirements:
+    - docs/business/requirements/sync-tk-influencer-pool.md
+arch_truth:
+  - docs/arch/workflow-influencer-pool-sync-design.md
+
+identity_field: 达人ID
+auto_maintained_fields:
+  - 带货商品图
+  - 关联节日
+  - 关联商品销量
+  - 达人头像
+  - 粉丝数
+  - 28天视频数
+  - 带货视频 GMV
+  - 带货直播 GMV
+  - 合作店铺
+  - 达人联系方式
+  - 记录时间
+
+display_rules:
+  w_unit_fields:
+    - 粉丝数
+    - 带货视频 GMV
+    - 带货直播 GMV
+  w_unit_threshold: 10000
+  w_unit_examples:
+    "10000": 1W
+    "1230000": 123W
+
+fields:
+  - display_name: 达人ID
+    canonical_name: influencer_id
+    role: identity
+    participates_in_upsert_key: true
+    update_policy: required_on_create
+    overwrite_policy: do_not_change_identity
+    source_of_truth: fastmoss.creator_identity.creator_id
+    write_target: feishu.TK达人池.达人ID
+
+  - display_name: 带货商品图
+    canonical_name: promoted_product_images
+    role: auto_maintained_relation
+    update_policy: append_unique_by_source_product
+    overwrite_policy: merge_without_duplicate
+    source_of_truth: TK竞品收集.图片
+    write_target: feishu.TK达人池.带货商品图
+
+  - display_name: 关联节日
+    canonical_name: related_holidays
+    role: auto_maintained_relation
+    update_policy: merge_set
+    overwrite_policy: merge_without_duplicate
+    source_of_truth: TK竞品收集.节日
+    write_target: feishu.TK达人池.关联节日
+
+  - display_name: 关联商品销量
+    canonical_name: related_product_sales
+    role: auto_maintained_relation
+    update_policy: accumulate_by_matched_product
+    overwrite_policy: system_may_update_aggregate
+    source_of_truth: fastmoss.product_related_creator.sold_count
+    write_target: feishu.TK达人池.关联商品销量
+
+  - display_name: 达人头像
+    canonical_name: influencer_avatar
+    role: auto_maintained
+    update_policy: fill_missing_or_refresh_with_stable_asset
+    overwrite_policy: system_may_refresh_asset
+    source_of_truth: fastmoss.creator.avatar_url
+    write_target: feishu.TK达人池.达人头像
+
+  - display_name: 粉丝数
+    canonical_name: follower_count
+    role: auto_maintained_metric
+    update_policy: refresh_on_successful_creator_detail
+    overwrite_policy: system_may_refresh_metric
+    source_of_truth: fastmoss.creator.follower_count
+    display_rule: w_unit_when_gte_10000
+    write_target: feishu.TK达人池.粉丝数
+
+  - display_name: 28天视频数
+    canonical_name: aweme_28d_count
+    role: auto_maintained_metric
+    update_policy: refresh_on_successful_creator_detail
+    overwrite_policy: system_may_refresh_metric
+    source_of_truth: fastmoss.creator.aweme_28d_count
+    write_target: feishu.TK达人池.28天视频数
+
+  - display_name: 带货视频 GMV
+    canonical_name: video_sale_amount
+    role: auto_maintained_metric
+    update_policy: refresh_on_successful_creator_detail
+    overwrite_policy: system_may_refresh_metric
+    source_of_truth: fastmoss.creator.video_sale_amount
+    display_rule: w_unit_when_gte_10000
+    write_target: feishu.TK达人池.带货视频 GMV
+
+  - display_name: 带货直播 GMV
+    canonical_name: live_sale_amount
+    role: auto_maintained_metric
+    update_policy: refresh_on_successful_creator_detail
+    overwrite_policy: system_may_refresh_metric
+    source_of_truth: fastmoss.creator.live_sale_amount
+    display_rule: w_unit_when_gte_10000
+    write_target: feishu.TK达人池.带货直播 GMV
+
+  - display_name: 合作店铺
+    canonical_name: partner_shops
+    role: auto_maintained_relation
+    update_policy: merge_existing_feishu_options_only
+    overwrite_policy: merge_without_duplicate
+    source_of_truth: fastmoss.creator.cooperation_shops
+    write_target: feishu.TK达人池.合作店铺
+
+  - display_name: 达人联系方式
+    canonical_name: influencer_contact
+    role: auto_maintained_optional
+    update_policy: fill_when_stable_contact_available
+    overwrite_policy: do_not_overwrite_with_empty
+    source_of_truth: fastmoss.creator.contact.normalized_text
+    write_target: feishu.TK达人池.达人联系方式
+
+  - display_name: 记录时间
+    canonical_name: recorded_time
+    role: auto_maintained
+    update_policy: write_when_influencer_pool_projection_has_changes
+    overwrite_policy: system_may_refresh_on_successful_writeback
+    source_of_truth: workflow_writeback_date
+    write_target: feishu.TK达人池.记录时间
+
+  - display_name: 合作商品数
+    canonical_name: cooperation_product_count
+    role: non_auto_currently_disabled
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.合作商品数
+
+  - display_name: 检查达人名称是否重复
+    canonical_name: duplicate_name_check
+    role: feishu_formula
+    update_policy: never_write
+    write_target: feishu.TK达人池.检查达人名称是否重复
+
+  - display_name: 跟我们合作过的节日
+    canonical_name: collaborated_holidays
+    role: customer_maintained
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.跟我们合作过的节日
+
+  - display_name: 出爆款视频（>20w）or 成交件数>50 的产品
+    canonical_name: hit_video_or_sales_products
+    role: customer_maintained
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.出爆款视频（>20w）or 成交件数>50 的产品
+
+  - display_name: 毕业季建联
+    canonical_name: graduation_season_outreach
+    role: customer_maintained
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.毕业季建联
+
+  - display_name: 达人地址
+    canonical_name: influencer_address
+    role: customer_maintained
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.达人地址
+
+  - display_name: 达人电话
+    canonical_name: influencer_phone
+    role: customer_maintained
+    update_policy: do_not_write_currently
+    write_target: feishu.TK达人池.达人电话

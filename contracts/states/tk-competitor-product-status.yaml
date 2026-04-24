@@ -1,0 +1,27 @@
+schema_version: 1
+contract_type: state_contract
+state_code: tk_competitor_product_status
+display_name: 商品状态
+field_contract: contracts/fields/feishu-tk-competitor.yaml
+owner: business
+
+empty_semantics: active_or_not_yet_classified
+participates_in_pending: false
+
+allowed_values:
+  - value: 已下架/区域不可售
+    category: terminal_skip
+    written_by_system: true
+    meaning: 商品明确不可访问、已下架、不存在或区域不可售
+    next_default_action: skip_refresh_and_influencer_sync
+
+write_rules:
+  - condition: product_unavailable_or_region_blocked
+    writer: competitor_table_projection_mapper
+    value: 已下架/区域不可售
+    overwrite_policy: system_may_write_status
+
+reset_rules:
+  - trigger: 人工修改 产品链接 或 SKU-ID
+    action: 人工清空 商品状态
+    effect: 允许该行重新进入抓取候选判断

@@ -33,12 +33,14 @@
 - [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
+- [Handler Contract 摘要](./handler-contract-summary.md)
 - [Handler Contract 设计](./handler-contract-design.md)
 - [入口与输出契约设计](./entry-output-contract-design.md)
 - [数据库架构设计](./database-architecture-design.md)
 - [Storage 架构设计](./storage-architecture-design.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
 - [Fact DB Schema 设计](./fact-db-schema-design.md)
+- [迁移状态](./migration-state.md)
 
 ## 业务流程设计
 

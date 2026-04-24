@@ -1,0 +1,44 @@
+schema_version: 1
+contract_type: workflow_contract
+workflow_code: refresh_current_competitor_table
+domain: tk_competitor
+task_code: refresh_current_competitor_table
+status: migrated_existing
+
+business_requirement: docs/business/requirements/refresh-current-competitor-table.md
+architecture_design: docs/arch/workflow-competitor-table-design.md
+implementation_manifest: src/automation_business_scaffold/contracts/workflow/refresh_current_competitor_table.yaml
+field_contracts:
+  - contracts/fields/feishu-tk-competitor.yaml
+state_contracts:
+  - contracts/states/tk-competitor-product-status.yaml
+
+source_adapter: competitor_table_source_adapter
+projection_mappers:
+  - competitor_table_projection_mapper
+
+stages:
+  - stage_code: read_competitor_rows
+    handler_code: feishu_table_read
+    source_adapter: competitor_table_source_adapter
+    purpose: 读取 TK竞品收集 中缺少 12 个自动维护字段且未被状态跳过的候选行
+  - stage_code: dispatch_row_refresh_jobs
+    handler_code: executor_daemon
+    purpose: 每条候选飞书记录最多创建一个 competitor_row_refresh 主 job
+  - stage_code: refresh_competitor_rows
+    job_code: competitor_row_refresh
+    handler_code: competitor_row_refresh
+    projection_mapper: competitor_table_projection_mapper
+    purpose: 串行完成 TikTok request、必要 browser fallback、media sync、FastMoss、Fact DB、飞书写回
+  - stage_code: ready_for_summary
+    handler_code: outbox_dispatch
+    purpose: 汇总行级结果并写通知 outbox
+
+protected_invariants:
+  - 一条候选飞书记录最多创建一个 competitor_row_refresh 主 job
+  - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于该主 job 内部步骤
+  - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch child task_execution
+  - 商品状态不是 12 个自动维护字段，不参与 pending 判断
+  - 商品不可访问、已下架或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售
+
+known_architecture_gaps: []

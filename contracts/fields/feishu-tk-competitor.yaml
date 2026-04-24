@@ -1,0 +1,249 @@
+schema_version: 1
+contract_type: feishu_field_contract
+table_code: tk_competitor
+feishu_table_name: TK竞品收集
+owner: business
+
+source_adapter: competitor_table_source_adapter
+projection_mappers:
+  - competitor_seed_projection_mapper
+  - competitor_table_projection_mapper
+  - competitor_influencer_status_projection_mapper
+
+business_truth:
+  overview: docs/business/business-requirements.md
+  requirements:
+    - docs/business/requirements/refresh-current-competitor-table.md
+    - docs/business/requirements/search-keyword-competitor-products.md
+    - docs/business/requirements/sync-tk-influencer-pool.md
+arch_truth:
+  - docs/arch/workflow-competitor-table-design.md
+  - docs/arch/workflow-influencer-pool-sync-design.md
+
+auto_maintained_fields:
+  - 产品链接
+  - SKU-ID
+  - 图片
+  - 标题
+  - 节日
+  - 卖家
+  - 价格
+  - Fastmoss价格
+  - 昨日销量
+  - 近7天销量
+  - 近90天销量
+  - 记录日期
+
+pending_policy:
+  candidate_when_any_auto_maintained_field_empty: true
+  skip_when_product_status:
+    - 已下架/区域不可售
+  non_pending_fields:
+    - 商品状态
+    - 达人查找状态
+    - 备注
+    - 前台截图
+    - Fastmoss截图
+    - 关键词
+    - 开售时间
+    - 第一波高峰期
+    - 第二波高峰期
+    - 价格趋势
+
+fields:
+  - display_name: 产品链接
+    canonical_name: product_url
+    role: identity
+    participates_in_pending: true
+    participates_in_dedupe: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_product_identity
+    write_target: feishu.TK竞品收集.产品链接
+    empty_semantics: missing_identity_or_needs_sku_fallback
+
+  - display_name: SKU-ID
+    canonical_name: sku_id
+    role: identity
+    participates_in_pending: true
+    participates_in_dedupe: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_product_identity.product_id
+    write_target: feishu.TK竞品收集.SKU-ID
+
+  - display_name: 图片
+    canonical_name: product_image
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_product.media_or_synced_asset
+    write_target: feishu.TK竞品收集.图片
+
+  - display_name: 标题
+    canonical_name: title
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_product.title
+    write_target: feishu.TK竞品收集.标题
+
+  - display_name: 节日
+    canonical_name: holiday
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: product_context_or_user_seed
+    write_target: feishu.TK竞品收集.节日
+
+  - display_name: 卖家
+    canonical_name: seller
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_or_fastmoss_seller
+    write_target: feishu.TK竞品收集.卖家
+
+  - display_name: 价格
+    canonical_name: tiktok_price
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_product.price
+    write_target: feishu.TK竞品收集.价格
+
+  - display_name: Fastmoss价格
+    canonical_name: fastmoss_price
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.product_detail.price
+    db_projection: fact_db.product_metric_latest.fastmoss_price
+    write_target: feishu.TK竞品收集.Fastmoss价格
+    raw_display_rule: raw_number_string_without_currency
+
+  - display_name: 昨日销量
+    canonical_name: sales_yesterday
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.product_detail.sales_yesterday
+    write_target: feishu.TK竞品收集.昨日销量
+
+  - display_name: 近7天销量
+    canonical_name: sales_7d
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.product_detail.sales_7d
+    write_target: feishu.TK竞品收集.近7天销量
+
+  - display_name: 近90天销量
+    canonical_name: sales_90d
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.product_detail.sales_90d
+    write_target: feishu.TK竞品收集.近90天销量
+
+  - display_name: 记录日期
+    canonical_name: recorded_date
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: write_when_projection_has_changes
+    overwrite_policy: system_may_refresh_on_successful_writeback
+    source_of_truth: workflow_writeback_date
+    write_target: feishu.TK竞品收集.记录日期
+
+  - display_name: 商品状态
+    canonical_name: product_status
+    role: system_status
+    participates_in_pending: false
+    state_contract: contracts/states/tk-competitor-product-status.yaml
+    allowed_values:
+      - 已下架/区域不可售
+    update_policy: system_overwrite_on_unavailable
+    overwrite_policy: system_may_write_status
+    write_target: feishu.TK竞品收集.商品状态
+    reset_rule: 人工修改 产品链接 或 SKU-ID 后，需要人工清空本字段才重新抓取
+
+  - display_name: 达人查找状态
+    canonical_name: influencer_search_status
+    role: workflow_status
+    participates_in_pending: false
+    state_contract: contracts/states/tk-competitor-influencer-search-status.yaml
+    allowed_values:
+      - 待查找
+      - 处理中
+      - 已完成
+      - 失败重试
+    update_policy: sync_tk_influencer_pool_status_writeback
+    overwrite_policy: system_may_update_workflow_status
+    write_target: feishu.TK竞品收集.达人查找状态
+
+  - display_name: 关键词
+    canonical_name: keyword
+    role: seed_context
+    participates_in_pending: false
+    update_policy: preserve_existing
+    overwrite_policy: do_not_overwrite_non_empty
+    write_target: feishu.TK竞品收集.关键词
+
+  - display_name: 备注
+    canonical_name: remark
+    role: customer_maintained_or_seed_context
+    participates_in_pending: false
+    update_policy: write_seed_source_only_when_creating_keyword_row
+    overwrite_policy: do_not_overwrite_existing_rows
+    write_target: feishu.TK竞品收集.备注
+
+  - display_name: 开售时间
+    canonical_name: sale_start_time
+    role: customer_maintained
+    participates_in_pending: false
+    update_policy: do_not_write_currently
+    write_target: feishu.TK竞品收集.开售时间
+
+  - display_name: 第一波高峰期
+    canonical_name: first_peak_period
+    role: customer_maintained
+    participates_in_pending: false
+    update_policy: do_not_write_currently
+    write_target: feishu.TK竞品收集.第一波高峰期
+
+  - display_name: 第二波高峰期
+    canonical_name: second_peak_period
+    role: customer_maintained
+    participates_in_pending: false
+    update_policy: do_not_write_currently
+    write_target: feishu.TK竞品收集.第二波高峰期
+
+  - display_name: 价格趋势
+    canonical_name: price_trend
+    role: customer_maintained
+    participates_in_pending: false
+    update_policy: do_not_write_currently
+    write_target: feishu.TK竞品收集.价格趋势
+
+  - display_name: 前台截图
+    canonical_name: tiktok_frontend_screenshot
+    role: non_auto_currently_disabled
+    participates_in_pending: false
+    update_policy: do_not_collect_currently
+    write_target: feishu.TK竞品收集.前台截图
+
+  - display_name: Fastmoss截图
+    canonical_name: fastmoss_screenshot
+    role: non_auto_currently_disabled
+    participates_in_pending: false
+    update_policy: do_not_collect_currently
+    write_target: feishu.TK竞品收集.Fastmoss截图

@@ -241,7 +241,7 @@ automation-business-scaffold-run run \
 治理边界：
 
 - `.platform/` 是平台管理规则，普通业务开发不直接修改。
-- `AGENT.MD` 是仓库级协作规则，只有明确的仓库治理变更才修改。
+- `AGENTS.md` 是仓库级协作规则，只有明确的仓库治理变更才修改。
 - framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
 ## 8. 配置边界

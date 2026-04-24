@@ -12,20 +12,21 @@
 
 相关入口:
 
-- [../../AGENT.MD](../../AGENT.MD)
+- [../../AGENTS.md](../../AGENTS.md)
 - [../README.md](../README.md)
 - [../business/README.md](../business/README.md)
 - [../arch/README.md](../arch/README.md)
 - [../ops/README.md](../ops/README.md)
 - [../ops/release-flow.md](../ops/release-flow.md)
 - [../reference/README.md](../reference/README.md)
+- [../../contracts/README.md](../../contracts/README.md)
 
 ## 2. 快速决策表
 
 | 文档/路径 | 默认规则 | 说明 |
 | --- | --- | --- |
 | `.platform/**` | 不直接修改 | platform-managed；需要 platform upgrade 口径 |
-| `AGENT.MD` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
+| `AGENTS.md` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
 | `docs/arch/target-project-architecture-contract.md` | 受控修改 | 目标工程组织方式、模块归属和 workflow 开发拆分；变更必须同步目标架构测试 |
 | `docs/arch/real-migration-checklist.md` | 受控修改 | 真实迁移验收 checklist；变更必须同步 migration 静态检查 |
 | `docs/arch/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
@@ -39,6 +40,7 @@
 | `docs/ops/**` | 可随部署/运维实现同步修改 | 部署、发布、回退、巡检、runbook |
 | `docs/reference/**` | 可补充参考资料 | 外部接口研究、页面分析、字段样例；不作为当前设计事实来源 |
 | `docs/business/**` | 视内容决定，通常先确认 | 客户需求、业务规则、飞书字段口径、验收口径 |
+| `contracts/**` | 受控修改 | 字段、状态、workflow 机器契约；变更必须同步对应 business/arch 文档 |
 | `README.md` | 可小改，慎重改入口口径 | 项目入口，不承载详细设计 |
 | `docs/README.md` | 可小改索引 | 文档地图，不承载正文设计 |
 | framework contract 文档 | 不在本仓库维护 | 直接读取 `automation-framework` 包或 framework 仓库 |
@@ -48,12 +50,12 @@
 普通业务开发不要修改:
 
 - `.platform/**`
-- `AGENT.MD`
+- `AGENTS.md`
 - framework contract 的本地复制文档
 
 原因:
 
-- `.platform/**` 和 `AGENT.MD` 定义仓库角色、模型工作规则和受保护路径；`AGENT.MD` 只保留发布摘要，详细发布流程归口到 `docs/ops/release-flow.md`。
+- `.platform/**` 和 `AGENTS.md` 定义仓库角色、模型工作规则和受保护路径；`AGENTS.md` 只保留发布摘要，详细发布流程归口到 `docs/ops/release-flow.md`。
 - framework public API、contract 和迁移说明不属于本仓库事实来源。
 - 修改这些内容会改变协作规则，而不是单个业务功能。
 
@@ -262,7 +264,7 @@ framework 相关 contract 不在本仓库维护。
    - 是: 同步 `docs/ops`。
 6. 是否只是外部接口研究或字段样例?
    - 是: 放 `docs/reference`。
-7. 是否需要修改 `.platform/**` 或 `AGENT.MD`?
+7. 是否需要修改 `.platform/**` 或 `AGENTS.md`?
    - 是: 停止，先确认是否进入 platform upgrade。
 
 提交建议:
