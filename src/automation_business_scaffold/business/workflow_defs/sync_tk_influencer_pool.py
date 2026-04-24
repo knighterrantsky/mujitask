@@ -3,6 +3,7 @@ from __future__ import annotations
 from .job_catalog import (
     COMMON_TASK_COMPLETED_NOTIFICATION_JOB,
     DEFAULT_CONTRACT_REVISION,
+    FACT_BUNDLE_UPSERT_JOB,
     FASTMOSS_CREATOR_FETCH_JOB,
     FASTMOSS_PRODUCT_FETCH_JOB,
     FEISHU_TABLE_READ_JOB,
@@ -108,6 +109,20 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
+                stage_code="persist_creator_facts",
+                description="Persist product and creator fact bundles before Feishu influencer projection.",
+                execution_mode="worker_jobs",
+                enter_condition="product or creator fact bundles are available from FastMoss handlers",
+                exit_condition="fact upsert jobs are terminal or no facts need persistence",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="fact_bundle_upsert",
+                        mapper_code="creator_fact_mapper",
+                        result_consumer="fact projection checkpoint before influencer pool write",
+                    ),
+                ),
+            ),
+            StageDefinition(
                 stage_code="write_influencer_pool",
                 description="Project creator detail into TK influencer pool rows.",
                 execution_mode="worker_jobs",
@@ -165,6 +180,7 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
             FEISHU_TABLE_READ_JOB,
             FASTMOSS_PRODUCT_FETCH_JOB,
             FASTMOSS_CREATOR_FETCH_JOB,
+            FACT_BUNDLE_UPSERT_JOB,
             FEISHU_TABLE_WRITE_JOB,
             COMMON_TASK_COMPLETED_NOTIFICATION_JOB,
         ),
@@ -186,8 +202,13 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="collect_creator_detail",
+                to_stage_code="persist_creator_facts",
+                condition="creator detail jobs are terminal and fact bundles are ready to upsert",
+            ),
+            TransitionDefinition(
+                from_stage_code="persist_creator_facts",
                 to_stage_code="write_influencer_pool",
-                condition="creator detail jobs are terminal for the current projection window",
+                condition="fact upsert jobs are terminal or no fact bundles were produced",
             ),
             TransitionDefinition(
                 from_stage_code="write_influencer_pool",

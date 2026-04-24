@@ -337,13 +337,14 @@ def _resolve_table_target(payload: Mapping[str, Any], *, table_ref_key: str) -> 
     request_payload = _mapping(payload.get("request_payload"))
     table_ref = _text(payload.get(table_ref_key))
     table_payload = _resolve_table_payload(payload, request_payload, table_ref=table_ref)
+    table_ref_url = table_ref if table_ref.startswith(("http://", "https://")) else ""
     table_url = _first_non_empty(
         table_payload.get("table_url"),
+        table_ref_url,
         payload.get("source_table_url" if table_ref_key == "source_table_ref" else "target_table_url"),
         request_payload.get("source_table_url" if table_ref_key == "source_table_ref" else "target_table_url"),
         payload.get("table_url"),
         request_payload.get("table_url"),
-        table_ref if table_ref.startswith(("http://", "https://")) else "",
     )
 
     parsed: dict[str, Any] = {}
@@ -804,12 +805,24 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
     creator_id = _first_non_empty(record.get("creator_id"), _mapping(record.get("creator_fact_bundle")).get("creator_id"))
     creator_name = _first_non_empty(record.get("creator_name"), _mapping(record.get("creator_fact_bundle")).get("display_name"), _mapping(record.get("creator_fact_bundle")).get("nickname"))
     product_id = _text(record.get("product_id"))
-    fields = {
-        "达人ID": creator_id,
-        "达人昵称": creator_name,
-        "关联商品ID": product_id,
-        "记录时间": date.today().isoformat(),
-    }
+    fields = _compact(
+        {
+            "达人ID": creator_id,
+            "达人昵称": creator_name,
+            "关联商品ID": product_id,
+            "带货商品图": _influencer_product_image_refs(record, product_id=product_id),
+            "关联节日": _list_text(_first_non_empty(record.get("holiday"))),
+            "关联商品销量": _stringify_scalar(_first_non_empty(record.get("matched_product_sold_count"), _relation_metric(record, "sold_count"))),
+            "达人头像": _influencer_avatar_refs(record),
+            "粉丝数": _format_w_unit_display(_creator_metric(record, "follower_count", "fans_count")),
+            "28天视频数": _stringify_scalar(_creator_metric(record, "aweme_28d_count", "aweme_28_count", "video_count")),
+            "带货视频 GMV": _format_w_unit_display(_creator_metric(record, "video_sale_amount", "video_gmv")),
+            "带货直播 GMV": _format_w_unit_display(_creator_metric(record, "live_sale_amount", "live_gmv")),
+            "合作店铺": _influencer_shop_names(record),
+            "达人联系方式": _creator_contact_text(record),
+            "记录时间": date.today().isoformat(),
+        }
+    )
     return _normalize_write_record(
         {
             "op": "upsert",
@@ -820,6 +833,198 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
         },
         payload,
     )
+
+
+def _creator_metric(record: Mapping[str, Any], *names: str) -> Any:
+    creator_fact = _mapping(record.get("creator_fact_bundle"))
+    metrics = _mapping(creator_fact.get("metrics"))
+    for name in names:
+        if metrics.get(name) not in (None, ""):
+            return metrics.get(name)
+    facts = _mapping(creator_fact.get("facts"))
+    for section_name in ("base_info", "author_index", "stat_info", "cargo_summary", "raw"):
+        section = _mapping(facts.get(section_name))
+        for name in names:
+            if section.get(name) not in (None, ""):
+                return section.get(name)
+    for observation in _mapping_list(record.get("observations")):
+        metric_name = _text(observation.get("metric_name"))
+        if metric_name in names and observation.get("metric_value") not in (None, ""):
+            return observation.get("metric_value")
+    return ""
+
+
+def _relation_metric(record: Mapping[str, Any], *names: str) -> Any:
+    for relation in _mapping_list(record.get("product_relations")) + _mapping_list(record.get("relations")):
+        if _text(relation.get("relation_type")) and _text(relation.get("relation_type")) != "creator_promotes_product":
+            continue
+        metrics = _mapping(relation.get("metrics"))
+        for name in names:
+            if metrics.get(name) not in (None, ""):
+                return metrics.get(name)
+        raw = _mapping(_mapping(relation.get("metadata")).get("raw"))
+        for name in names:
+            if raw.get(name) not in (None, ""):
+                return raw.get(name)
+        for name in names:
+            if relation.get(name) not in (None, ""):
+                return relation.get(name)
+    fact_relations = _mapping(_mapping(record.get("fact_bundle")).get("relations"))
+    for relation in _mapping_list(fact_relations.get("creator_products")):
+        for name in names:
+            if relation.get(name) not in (None, ""):
+                return relation.get(name)
+    return ""
+
+
+def _creator_contact_text(record: Mapping[str, Any]) -> str:
+    creator_fact = _mapping(record.get("creator_fact_bundle"))
+    contact = _mapping(creator_fact.get("contact"))
+    return _first_non_empty(
+        contact.get("normalized_text"),
+        contact.get("raw"),
+        _mapping(_mapping(creator_fact.get("facts")).get("author_contact")).get("email"),
+        _mapping(_mapping(creator_fact.get("facts")).get("author_contact")).get("contact"),
+    )
+
+
+def _influencer_avatar_refs(record: Mapping[str, Any]) -> list[dict[str, str]]:
+    creator_fact = _mapping(record.get("creator_fact_bundle"))
+    avatar_url = _first_non_empty(creator_fact.get("avatar_url"))
+    refs = _media_refs_for(record, entity_type="creator", media_roles={"creator_avatar", "avatar"})
+    if avatar_url:
+        refs.insert(0, {"url": avatar_url})
+    return _dedupe_ref_items(refs)
+
+
+def _influencer_product_image_refs(record: Mapping[str, Any], *, product_id: str) -> list[dict[str, str]]:
+    refs = _attachment_ref_items(record.get("source_product_images"))
+    if refs:
+        return refs
+    refs = _media_refs_for(record, entity_type="product", media_roles={"product_image", "source_product_image"})
+    if refs:
+        return refs
+    fact_bundle = _mapping(record.get("fact_bundle"))
+    for asset in _mapping_list(fact_bundle.get("media_assets")):
+        if _text(asset.get("entity_type")) != "product":
+            continue
+        if product_id and _text(asset.get("entity_external_id")) != product_id:
+            continue
+        refs.extend(_attachment_ref_items([asset]))
+    return _dedupe_ref_items(refs)
+
+
+def _media_refs_for(record: Mapping[str, Any], *, entity_type: str, media_roles: set[str]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for media_ref in _mapping_list(record.get("media_refs")):
+        entity_key = _text(media_ref.get("entity_key"))
+        role = _text(media_ref.get("media_type") or media_ref.get("media_role"))
+        if entity_type and f"_{entity_type}:" not in entity_key and not entity_key.startswith(f"{entity_type}:"):
+            continue
+        if role and role not in media_roles:
+            continue
+        refs.extend(_attachment_ref_items([media_ref]))
+    return refs
+
+
+def _attachment_ref_items(value: Any) -> list[dict[str, str]]:
+    values = value if isinstance(value, list) else [value]
+    refs: list[dict[str, str]] = []
+    for item in values:
+        if isinstance(item, Mapping):
+            file_token = _first_non_empty(item.get("file_token"))
+            if file_token:
+                refs.append({"file_token": file_token})
+                continue
+            url = _first_non_empty(
+                item.get("url"),
+                item.get("source_url"),
+                item.get("tmp_url"),
+                item.get("download_url"),
+                item.get("link"),
+            )
+            if url:
+                refs.append({"url": url})
+            continue
+        text = _text(item)
+        if text:
+            refs.append({"url": text})
+    return _dedupe_ref_items(refs)
+
+
+def _dedupe_ref_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        key = (_text(item.get("file_token")), _text(item.get("url")))
+        if not any(key) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _influencer_shop_names(record: Mapping[str, Any]) -> list[str]:
+    names: list[str] = []
+    for value in _list_text(record.get("cooperation_shop_names")):
+        if value and value not in names:
+            names.append(value)
+    entities = _mapping(record.get("entities"))
+    for shop in _mapping_list(entities.get("shops")):
+        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+        if name and name not in names:
+            names.append(name)
+    fact_bundle = _mapping(record.get("fact_bundle"))
+    for shop in _mapping_list(fact_bundle.get("shops")):
+        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _format_w_unit_display(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    number = _number_value(value)
+    if number is None:
+        return _text(value)
+    if abs(number) >= 10_000:
+        return f"{_format_trimmed_decimal(number / 10_000)}W"
+    return _format_trimmed_decimal(number)
+
+
+def _stringify_scalar(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    number = _number_value(value)
+    if number is not None:
+        return _format_trimmed_decimal(number)
+    return _text(value)
+
+
+def _number_value(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = _text(value).replace(",", "").replace("$", "").replace(" ", "")
+    multiplier = 1.0
+    lower = text.lower()
+    for suffix, value_multiplier in (("亿", 100_000_000.0), ("万", 10_000.0), ("w", 10_000.0), ("m", 1_000_000.0), ("k", 1_000.0)):
+        if lower.endswith(suffix):
+            multiplier = value_multiplier
+            text = text[: -len(suffix)]
+            break
+    try:
+        return float(text) * multiplier
+    except ValueError:
+        return None
+
+
+def _format_trimmed_decimal(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _map_competitor_influencer_status_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

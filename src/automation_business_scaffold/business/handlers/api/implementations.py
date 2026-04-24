@@ -390,7 +390,7 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
             metrics_snapshot = coerce_mapping(payload.get("metrics_snapshot"))
             related_creators = coerce_mapping_list(payload.get("related_creators"))
         else:
-            raw_bundle = _resolve_fastmoss_bundle(payload, product_id=product_id)
+            raw_bundle = _resolve_fastmoss_bundle(payload, product_id=product_id, detail_level=detail_level)
             if not raw_bundle:
                 if required:
                     error = build_error(
@@ -412,7 +412,11 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
                     warnings=("FastMoss payload or live session configuration was not provided.",),
                 )
             fact_bundle = _build_fastmoss_fact_bundle(raw_bundle, product_id=product_id)
-            related_creators = _extract_related_creators(fact_bundle)
+            related_creators = _extract_related_creators(
+                fact_bundle,
+                source_context=coerce_mapping(payload.get("source_context")),
+                relation_policy=coerce_mapping(payload.get("relation_policy")),
+            )
             metrics_snapshot = _build_fastmoss_metrics_snapshot(raw_bundle, product_id=product_id)
     except FastMossAuthError as exc:
         error = build_error(
@@ -1889,7 +1893,7 @@ def _fastmoss_product_detail_url(product_id: str) -> str:
     return FASTMOSS_PRODUCT_DETAIL_URL_TEMPLATE.format(product_id=product_id) if product_id else ""
 
 
-def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str) -> dict[str, Any]:
+def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail_level: str = "") -> dict[str, Any]:
     for key in ("fastmoss_bundle", "fastmoss_result", "mock_fastmoss_bundle"):
         candidate = coerce_mapping(payload.get(key))
         if candidate:
@@ -1914,13 +1918,30 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str) -> dic
         if coerce_bool(fastmoss_settings.get("ensure_logged_in"), default=bool(cookies or fastmoss_settings.get("phone"))):
             session.ensure_logged_in()
         d_type = int(fastmoss_settings.get("window_days", 28) or 28)
-        return {
+        bundle = {
             "base": session.get_product_base(product_id),
             "overview": session.get_product_overview(product_id, d_type=d_type),
             "skus": session.get_product_skus(product_id, d_type=d_type),
             "sku_distribution": session.get_product_sku_distribution(product_id, d_type=d_type),
             "session_snapshot": session.cookie_snapshot(),
         }
+        if _product_fetch_includes_related_creators(payload, detail_level=detail_level):
+            author_plan = coerce_mapping(payload.get("author_list_plan")) or coerce_mapping(
+                fastmoss_settings.get("author_list")
+            )
+            bundle["related_creators"] = session.list_product_authors(
+                product_id,
+                page=_coerce_positive_int(author_plan.get("page"), default=1),
+                pagesize=_coerce_positive_int(author_plan.get("page_size") or author_plan.get("pagesize"), default=10),
+                order=first_non_empty(author_plan.get("order"), "2,2"),
+                ecommerce_type=first_non_empty(author_plan.get("ecommerce_type"), "all"),
+            )
+        return bundle
+
+
+def _product_fetch_includes_related_creators(payload: Mapping[str, Any], *, detail_level: str) -> bool:
+    normalized = first_non_empty(detail_level, payload.get("detail_level")).lower()
+    return any(token in normalized for token in ("related_creator", "author", "creator"))
 
 
 def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
@@ -1990,26 +2011,103 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
     return merge_fact_bundles(fact_bundle)
 
 
-def _extract_related_creators(fact_bundle: dict[str, Any]) -> list[dict[str, Any]]:
+def _extract_related_creators(
+    fact_bundle: dict[str, Any],
+    *,
+    source_context: Mapping[str, Any] | None = None,
+    relation_policy: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    source_context_payload = coerce_mapping(source_context)
+    relation_policy_payload = coerce_mapping(relation_policy)
+    relation_by_creator = _creator_product_relation_index(fact_bundle)
     creators = []
     for creator in coerce_mapping_list(fact_bundle.get("creators")):
+        creator_key = first_non_empty(
+            creator.get("creator_key"),
+            creator.get("creator_id"),
+            creator.get("uid"),
+            creator.get("unique_id"),
+        )
+        relation = relation_by_creator.get(creator_key, {})
+        raw = coerce_mapping(coerce_mapping(relation.get("metadata")).get("raw"))
+        facts = coerce_mapping(creator.get("facts"))
+        metrics = _metric_fields(
+            raw,
+            coerce_mapping(facts.get("raw")),
+            coerce_mapping(facts.get("base_info")),
+            coerce_mapping(facts.get("author_index")),
+        )
+        matched_conditions = _creator_candidate_matched_conditions(
+            metrics,
+            relation_policy=relation_policy_payload,
+        )
+        if matched_conditions and not all(matched_conditions.values()):
+            continue
+        uid = first_non_empty(creator.get("uid"), raw.get("uid"), raw.get("author_uid"))
+        unique_id = first_non_empty(creator.get("unique_id"), raw.get("unique_id"), raw.get("author_unique_id"))
+        creator_id = first_non_empty(creator.get("creator_id"), unique_id, uid)
         creators.append(
             compact_dict(
                 {
-                    "creator_key": first_non_empty(
-                        creator.get("creator_key"),
-                        creator.get("creator_id"),
-                        creator.get("uid"),
-                        creator.get("unique_id"),
+                    "creator_key": creator_key,
+                    "creator_id": creator_id,
+                    "creator_identity": compact_dict(
+                        {
+                            "creator_id": creator_id,
+                            "uid": uid,
+                            "unique_id": unique_id,
+                            "profile_url": _fastmoss_creator_profile_url(uid, unique_id),
+                        }
                     ),
-                    "creator_id": creator.get("creator_id"),
-                    "uid": creator.get("uid"),
-                    "unique_id": creator.get("unique_id"),
+                    "uid": uid,
+                    "unique_id": unique_id,
                     "nickname": creator.get("nickname"),
+                    "display_name": creator.get("nickname"),
+                    "metrics": metrics,
+                    "matched_conditions": matched_conditions,
+                    "source_context": {
+                        **source_context_payload,
+                        "matched_product_sold_count": first_non_empty(metrics.get("sold_count")),
+                    },
                 }
             )
         )
     return creators
+
+
+def _creator_product_relation_index(fact_bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    relations = coerce_mapping(fact_bundle.get("relations"))
+    for relation in coerce_mapping_list(relations.get("creator_products")):
+        creator_key = first_non_empty(
+            relation.get("creator_key"),
+            relation.get("creator_id"),
+            relation.get("uid"),
+            relation.get("unique_id"),
+        )
+        if creator_key and creator_key not in index:
+            index[creator_key] = relation
+    return index
+
+
+def _creator_candidate_matched_conditions(
+    metrics: Mapping[str, Any],
+    *,
+    relation_policy: Mapping[str, Any],
+) -> dict[str, bool]:
+    conditions: dict[str, bool] = {}
+    sold_threshold = relation_policy.get("creator_sold_count_min")
+    follower_threshold = relation_policy.get("creator_follower_count_min")
+    if sold_threshold not in (None, ""):
+        conditions["creator_sold_count_min"] = _number_at_least(metrics.get("sold_count"), sold_threshold)
+    if follower_threshold not in (None, ""):
+        conditions["creator_follower_count_min"] = _number_at_least(metrics.get("follower_count"), follower_threshold)
+    return conditions
+
+
+def _fastmoss_creator_profile_url(uid: Any, unique_id: Any = "") -> str:
+    ref = first_non_empty(uid, unique_id)
+    return f"https://www.fastmoss.com/zh/influencer/detail/{ref}" if ref else ""
 
 
 def _build_fastmoss_metrics_snapshot(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
@@ -2335,6 +2433,11 @@ def _build_fastmoss_creator_fact_bundle(
                 facts["stat_info"] = stat_info
                 creator["facts"] = facts
 
+    _enrich_creator_source_product_relation(
+        fact_bundle,
+        source_context=source_context,
+        source_product_id=source_product_id,
+    )
     _append_fastmoss_creator_raw_responses(
         fact_bundle,
         raw_bundle,
@@ -2342,6 +2445,43 @@ def _build_fastmoss_creator_fact_bundle(
         unique_id=unique_id,
     )
     return merge_fact_bundles(fact_bundle)
+
+
+def _enrich_creator_source_product_relation(
+    fact_bundle: dict[str, Any],
+    *,
+    source_context: Mapping[str, Any],
+    source_product_id: str,
+) -> None:
+    if not source_product_id:
+        return
+    relations = coerce_mapping(fact_bundle.get("relations"))
+    creator_products = relations.get("creator_products")
+    if not isinstance(creator_products, list):
+        return
+    matched_sold_count = _metric_number(source_context.get("matched_product_sold_count"))
+    for relation in creator_products:
+        if not isinstance(relation, dict):
+            continue
+        if first_non_empty(relation.get("product_id")) != source_product_id:
+            continue
+        relation["source_record_id"] = first_non_empty(relation.get("source_record_id"), source_context.get("source_record_id"))
+        relation["holiday_name"] = first_non_empty(relation.get("holiday_name"), source_context.get("holiday"))
+        if matched_sold_count is not None and _metric_number(relation.get("sold_count")) in (None, 0):
+            relation["sold_count"] = matched_sold_count
+        metadata = coerce_mapping(relation.get("metadata"))
+        raw = coerce_mapping(metadata.get("raw"))
+        raw.update(
+            compact_dict(
+                {
+                    "source_record_id": source_context.get("source_record_id"),
+                    "holiday": source_context.get("holiday"),
+                    "matched_product_sold_count": source_context.get("matched_product_sold_count"),
+                }
+            )
+        )
+        metadata["raw"] = raw
+        relation["metadata"] = metadata
 
 
 def _source_product_id_for_creator_relation(
