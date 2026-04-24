@@ -25,6 +25,7 @@
 | [openclaw-skills.md](./openclaw-skills.md) | OpenClaw skill 的开发集成边界、入口脚本和调试口径 |
 | [project-configuration.md](./project-configuration.md) | 项目级 `.env` / `executor.local.env` / `skill.local.env` 的自动加载规则和优先级 |
 | [rewrite-development-plan.md](./rewrite-development-plan.md) | 本轮重构的依赖关系、开发顺序、subagent 并行拆分和 worktree 计划 |
+| [worktree-parallel-development-handoff.md](./worktree-parallel-development-handoff.md) | 当前 checkpoint 之后的 worktree 并行开发分工、边界、建议测试和开工提示词 |
 
 ## 维护规则
 
