@@ -1,0 +1,17 @@
+{
+  "source_table_ref": "feishu://base/tbl_tk_competitor",
+  "source_rows": [
+    {
+      "record_id": "rec_refresh_001",
+      "fields": {
+        "SKU-ID": "SKU-1001",
+        "商品链接": "https://www.tiktok.com/shop/pdp/1001?source=feishu",
+        "商品状态": "待更新"
+      }
+    }
+  ],
+  "refresh_policy": {
+    "only_pending": true
+  },
+  "reply_target": "reply://acceptance/refresh"
+}

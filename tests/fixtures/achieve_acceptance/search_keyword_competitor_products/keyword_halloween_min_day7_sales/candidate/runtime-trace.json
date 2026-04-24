@@ -1,0 +1,66 @@
+{
+  "runtime_stages": [
+    {
+      "stage_code": "search_product_candidates",
+      "status": "success",
+      "job_id": "runtime-search-9001",
+      "updated_at": "2026-04-24T09:10:00+08:00"
+    },
+    {
+      "stage_code": "insert_seed_rows",
+      "status": "success",
+      "job_id": "runtime-seed-9001",
+      "updated_at": "2026-04-24T09:11:00+08:00"
+    },
+    {
+      "stage_code": "collect_product_data",
+      "status": "success",
+      "job_id": "runtime-product-9001",
+      "updated_at": "2026-04-24T09:12:00+08:00"
+    },
+    {
+      "stage_code": "persist_facts",
+      "status": "success",
+      "job_id": "runtime-fact-9001",
+      "updated_at": "2026-04-24T09:13:00+08:00"
+    },
+    {
+      "stage_code": "writeback_competitor_rows",
+      "status": "success",
+      "job_id": "runtime-write-9001",
+      "updated_at": "2026-04-24T09:14:00+08:00"
+    }
+  ],
+  "api_jobs": [
+    {
+      "job_code": "fastmoss_product_search",
+      "status": "success",
+      "job_id": "runtime-search-9001",
+      "run_id": "runtime-run-search"
+    },
+    {
+      "job_code": "feishu_table_write",
+      "status": "success",
+      "job_id": "runtime-seed-9001",
+      "run_id": "runtime-run-seed"
+    },
+    {
+      "job_code": "fastmoss_product_fetch",
+      "status": "success",
+      "job_id": "runtime-product-9001",
+      "run_id": "runtime-run-product"
+    },
+    {
+      "job_code": "fact_bundle_upsert",
+      "status": "success",
+      "job_id": "runtime-fact-9001",
+      "run_id": "runtime-run-fact"
+    },
+    {
+      "job_code": "feishu_table_write",
+      "status": "success",
+      "job_id": "runtime-write-9001",
+      "run_id": "runtime-run-write"
+    }
+  ]
+}
