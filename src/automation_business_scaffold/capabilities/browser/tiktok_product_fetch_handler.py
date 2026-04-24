@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from automation_business_scaffold.capabilities.fact_sources.tiktok.product_request_fetch_handler import (
+from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result,
 )
 from automation_business_scaffold.contracts.handler.allowlist import BROWSER_HANDLER_CONTRACTS

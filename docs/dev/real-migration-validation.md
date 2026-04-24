@@ -16,8 +16,16 @@ The check fails on:
 
 - `sys.modules[__name__]` aliases anywhere under `src/`.
 - Wildcard imports and `noqa: F401,F403` re-export shims anywhere under `src/`.
+- Thin non-`__init__.py` modules that only import symbols and publish them via
+  `__all__`.
+- Empty migration-note modules in the runtime main path.
 - A present `src/automation_business_scaffold/capabilities/_implementations`
   directory.
+- Legacy domain aggregate modules such as
+  `domains/competitor_intelligence/mappers/feishu_source_adapters.py` and
+  `domains/competitor_intelligence/projections/feishu_projection_mappers.py`.
+  Specific mapper/projection modules must own the implementation; `registry.py`
+  is only for lookup by stable code.
 - Imports from `automation_business_scaffold.business.*` in the runtime main
   path: `apps`, `control_plane`, `domains`, `capabilities`, and `contracts`.
 - Console scripts that still target legacy root process modules instead of

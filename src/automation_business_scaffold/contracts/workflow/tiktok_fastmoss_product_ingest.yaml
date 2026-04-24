@@ -20,7 +20,7 @@ workflow:
 custom_logic:
   mappers:
     - code: selection_table_source_adapter
-      module: automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_source_adapters
+      module: automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_selection_row_mapper
       export: selection_table_source_adapter
   policies:
     - code: ingest_workflow_policies
@@ -32,7 +32,7 @@ custom_logic:
         - notification_summary_policy
   projections:
     - code: selection_table_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers
+      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_selection_projection
       export: selection_table_projection_mapper
 outbox:
   job_code: task_completed_notification

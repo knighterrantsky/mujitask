@@ -11,7 +11,9 @@ from automation_business_scaffold.business.flows import (
     normalize_cleanup_records,
     write_back_cleanup_records,
 )
-from automation_business_scaffold.business.workflows.achieve import build_tiktok_product_link_cleanup_workflow
+from automation_business_scaffold.business.workflows.achieve.tiktok_product_link_cleanup_v1 import (
+    build_tiktok_product_link_cleanup_workflow,
+)
 
 
 class TikTokProductLinkCleanupTask(BaseWorkflowTask):

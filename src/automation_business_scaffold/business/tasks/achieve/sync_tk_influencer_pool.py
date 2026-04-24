@@ -6,7 +6,9 @@ from automation_framework.core import BaseWorkflowTask, FrameworkResult
 
 import automation_business_scaffold.business.flows.refresh_current_competitor_table_flow as runtime_flow
 from automation_business_scaffold.business.tasks.workflow_step_helpers import ok_result
-from automation_business_scaffold.business.workflows.achieve import build_sync_tk_influencer_pool_workflow
+from automation_business_scaffold.business.workflows.achieve.sync_tk_influencer_pool_v1 import (
+    build_sync_tk_influencer_pool_workflow,
+)
 
 
 class SyncTKInfluencerPoolTask(BaseWorkflowTask):

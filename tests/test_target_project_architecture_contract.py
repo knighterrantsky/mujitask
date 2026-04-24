@@ -125,13 +125,14 @@ def test_control_plane_boundary() -> None:
     assert missing == [], "control plane boundary contract is missing tokens:\n" + "\n".join(missing)
 
     app_entrypoints = (
-        "src/automation_business_scaffold/agent.py",
-        "src/automation_business_scaffold/cli.py",
-        "src/automation_business_scaffold/executor_daemon.py",
-        "src/automation_business_scaffold/api_worker_daemon.py",
-        "src/automation_business_scaffold/browser_runloop.py",
-        "src/automation_business_scaffold/outbox_dispatcher.py",
-        "src/automation_business_scaffold/watchdog_scanner.py",
+        "src/automation_business_scaffold/apps/rpc_agent/server.py",
+        "src/automation_business_scaffold/apps/cli/main.py",
+        "src/automation_business_scaffold/apps/daemons/executor/main.py",
+        "src/automation_business_scaffold/apps/daemons/api_worker/main.py",
+        "src/automation_business_scaffold/apps/daemons/browser_worker/main.py",
+        "src/automation_business_scaffold/apps/daemons/outbox/main.py",
+        "src/automation_business_scaffold/apps/daemons/watchdog/main.py",
+        "src/automation_business_scaffold/apps/daemons/reconciler/main.py",
     )
     banned_import_fragments = (
         ".mappers",
@@ -219,7 +220,6 @@ def test_target_capability_real_implementation_files_exist() -> None:
         "capabilities/fact_sources/fastmoss/shop_fetch_handler.py",
         "capabilities/fact_sources/fastmoss/video_fetch_handler.py",
         "capabilities/persistence/database/fact_bundle_upsert_handler.py",
-        "capabilities/persistence/object_storage/media_asset_sync_handler.py",
         "capabilities/channels/feishu/table_write_handler.py",
         "capabilities/channels/outbox/message_dispatch_handler.py",
         "capabilities/browser/tiktok_product_fetch_handler.py",

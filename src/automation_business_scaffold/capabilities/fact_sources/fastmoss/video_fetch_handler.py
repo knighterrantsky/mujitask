@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.contract_mapping import (
     _coerce_positive_int,
     _contract_entities_from_fact_bundle,
     _contract_entity_key,

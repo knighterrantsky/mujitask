@@ -29,6 +29,7 @@
 - [真实迁移 Checklist](./real-migration-checklist.md)
 - [Workflow 实现模式规范](./workflow-implementation-patterns.md)
 - [项目结构与命名契约](./project-structure-contract.md)
+- [模块实现所有权契约](./module-ownership-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Handler Contract 设计](./handler-contract-design.md)
@@ -66,6 +67,7 @@
 - `Target Project Architecture`: 后续重构和新增业务的目标目录、模块归属和开发拆分契约。
 - `Real Migration`: 将旧实现所有权迁移到目标目录，禁止 facade/shim/re-export 的迁移模式。
 - `Implementation Pattern`: 新 workflow 开发时每类文件的固定职责、依赖方向和测试模式。
+- `Module Ownership`: mapper/projection、capability handler、registry、common、`__init__.py` 和 legacy 路径的实现归属边界。
 
 ## 已删除的历史来源
 

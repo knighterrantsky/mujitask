@@ -12,7 +12,9 @@ from automation_business_scaffold.business.tasks.workflow_step_helpers import (
     run_browser_loop_if_waiting,
     run_executor_or_load_status,
 )
-from automation_business_scaffold.business.workflows.achieve import build_search_keyword_competitor_products_workflow
+from automation_business_scaffold.business.workflows.achieve.search_keyword_competitor_products_v1 import (
+    build_search_keyword_competitor_products_workflow,
+)
 
 
 class SearchKeywordCompetitorProductsTask(BaseWorkflowTask):

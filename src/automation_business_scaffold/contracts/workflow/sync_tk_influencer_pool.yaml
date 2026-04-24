@@ -20,7 +20,7 @@ workflow:
 custom_logic:
   mappers:
     - code: influencer_pool_source_adapter
-      module: automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_source_adapters
+      module: automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_influencer_source_mapper
       export: influencer_pool_source_adapter
   policies:
     - code: influencer_workflow_policies
@@ -32,10 +32,10 @@ custom_logic:
         - notification_summary_policy
   projections:
     - code: influencer_pool_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers
+      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_influencer_projection
       export: influencer_pool_projection_mapper
     - code: competitor_influencer_status_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers
+      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_competitor_projection
       export: competitor_influencer_status_projection_mapper
 outbox:
   job_code: task_completed_notification

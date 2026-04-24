@@ -24,6 +24,12 @@ LEGACY_ROOT_ENTRYPOINT_MODULES = frozenset(
         f"{PROJECT_PACKAGE}.watchdog_scanner",
     }
 )
+LEGACY_DOMAIN_AGGREGATE_FILES = frozenset(
+    {
+        Path("domains/competitor_intelligence/mappers/feishu_source_adapters.py"),
+        Path("domains/competitor_intelligence/projections/feishu_projection_mappers.py"),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[Finding] = []
     findings.extend(_check_no_sys_modules_alias(src_root))
     findings.extend(_check_no_wildcard_reexports(src_root))
+    findings.extend(_check_no_thin_reexport_modules(src_root))
+    findings.extend(_check_no_empty_non_init_main_modules(src_root))
     findings.extend(_check_no_capabilities_implementations(src_root))
+    findings.extend(_check_no_legacy_domain_aggregates(src_root))
     findings.extend(_check_main_path_does_not_import_business_runtime(src_root))
     findings.extend(_check_legacy_root_entrypoints(repo_root, pyproject_path))
 
@@ -173,6 +182,87 @@ def _check_no_wildcard_reexports(src_root: Path) -> list[Finding]:
     return findings
 
 
+def _check_no_thin_reexport_modules(src_root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for path in _iter_main_path_files(src_root):
+        if path.name == "__init__.py":
+            continue
+        tree = _parse_python(path)
+        if tree is None:
+            continue
+        imports: list[ast.AST] = []
+        all_assigns: list[ast.AST] = []
+        substantive: list[ast.AST] = []
+        for node in tree.body:
+            if _is_docstring_expr(node):
+                continue
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                continue
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                imports.append(node)
+                continue
+            if _is_all_assignment(node):
+                all_assigns.append(node)
+                continue
+            substantive.append(node)
+        if imports and all_assigns and not substantive:
+            findings.append(
+                Finding(
+                    check="no_thin_reexport_modules",
+                    path=path,
+                    line=getattr(imports[0], "lineno", None),
+                    message=(
+                        "thin import + __all__ re-export modules are forbidden; "
+                        "move the real implementation into this module or delete it."
+                    ),
+                )
+            )
+    return findings
+
+
+def _check_no_empty_non_init_main_modules(src_root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for path in _iter_main_path_files(src_root):
+        if path.name == "__init__.py":
+            continue
+        tree = _parse_python(path)
+        if tree is None:
+            continue
+        substantive = [
+            node
+            for node in tree.body
+            if not _is_docstring_expr(node)
+            and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+            and not _is_all_assignment(node)
+        ]
+        if not substantive:
+            findings.append(
+                Finding(
+                    check="no_empty_non_init_main_modules",
+                    path=path,
+                    message=(
+                        "empty migration-note modules are forbidden in main paths; "
+                        "delete the file or move a real implementation into it."
+                    ),
+                )
+            )
+    return findings
+
+
+def _is_docstring_expr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _is_all_assignment(node: ast.AST) -> bool:
+    if isinstance(node, ast.Assign):
+        return any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    return isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "__all__"
+
+
 def _check_no_capabilities_implementations(src_root: Path) -> list[Finding]:
     implementations_dir = src_root / "capabilities" / "_implementations"
     if not implementations_dir.exists():
@@ -190,6 +280,24 @@ def _check_no_capabilities_implementations(src_root: Path) -> list[Finding]:
             ),
         )
     ]
+
+
+def _check_no_legacy_domain_aggregates(src_root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for relative_path in LEGACY_DOMAIN_AGGREGATE_FILES:
+        path = src_root / relative_path
+        if path.exists():
+            findings.append(
+                Finding(
+                    check="no_legacy_domain_aggregates",
+                    path=path,
+                    message=(
+                        "legacy domain aggregate modules must not exist after real_migration; "
+                        "use specific mapper/projection modules plus registry.py."
+                    ),
+                )
+            )
+    return findings
 
 
 def _check_main_path_does_not_import_business_runtime(src_root: Path) -> list[Finding]:

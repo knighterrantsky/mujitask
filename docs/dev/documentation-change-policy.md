@@ -30,6 +30,7 @@
 | `docs/arch/real-migration-checklist.md` | 受控修改 | 真实迁移验收 checklist；变更必须同步 migration 静态检查 |
 | `docs/arch/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
 | `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
+| `docs/arch/module-ownership-contract.md` | 受控修改 | mapper/projection、capability handler、`__init__.py`、legacy、registry/common 的实现所有权边界；变更必须同步所有权静态检查 |
 | `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
 | `docs/arch/current-system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
 | `docs/arch/runtime-db-schema-design.md`、`fact-db-schema-design.md` | 受控修改 | schema 设计事实来源；变更必须有 migration、兼容策略和权限边界 |
@@ -100,6 +101,7 @@
 | 真实迁移 checklist | `real-migration-checklist.md` | 必须说明迁移模式、分层迁移完成标准、禁止模式、静态验收和行为验收 |
 | Workflow 实现模式 contract | `workflow-implementation-patterns.md` | 必须说明 task/workflow/job/mapper/policy/projection/capability/outbox 的实现模式和依赖方向 |
 | 项目结构与命名 contract | `project-structure-contract.md` | 必须说明目录职责、文件命名、定位路径和测试护栏 |
+| 模块实现所有权 contract | `module-ownership-contract.md` | 必须说明 domain mapper/projection、capability handler、`__init__.py`、legacy business 路径、registry/common 的真实实现归属和禁止模式 |
 | Runtime 控制面 contract | `runtime-control-plane-contract.md` | 必须说明 RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 的归属、入口命令、配置优先级和测试护栏 |
 
 允许直接同步的情况:
@@ -119,7 +121,9 @@
 - 修改目标目录层级、系统元素归属或 workflow 开发拆分规则。
 - 修改真实迁移完成标准或 scaffold / real_migration 判定。
 - 修改新 workflow 的文件模式、依赖方向或测试模式。
-- 修改 `business/tasks`、`business/workflow_defs`、`business/jobs`、`business/handlers`、`business/feishu`、`business/flows` 的职责边界。
+- 修改 `domains/**`、`capabilities/**`、`contracts/**`、`control_plane/**` 或 `business/**/achieve` 的职责边界。
+- 修改 domain mapper/projection、capability handler、`__init__.py`、legacy business 路径、registry 或 common 模块的实现所有权边界。
+- 放宽或取消 thin wrapper、显式 re-export、handler-to-handler 实现复用、一文件多 handler 或 `_implementations` 聚合实现作为 runtime 主路径的禁止规则。
 - 修改 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Outbox Dispatcher 的归属和入口命令。
 - 在 `task_code`、`workflow_code`、`stage_code`、`job_code`、`handler_code` 或 payload/result 字段名中加入 `v1`、`v2`、`stage1`、`stage2B` 这类版本/顺序后缀。
 - 将 `orchestrate_*`、`run_*_workflow`、`run_sync_*` 这类 workflow 编排入口写入 handler contract、handler registry、job handler 名称或目标 Job / Handler 映射表。

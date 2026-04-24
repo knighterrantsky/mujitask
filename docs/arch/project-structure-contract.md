@@ -31,20 +31,21 @@
 skills/{skill_code}/SKILL.md
   -> skills/{skill_code}/run_*_step.sh
   -> skills/{skill_code}/run_skill_step.py 或 lightweight_submit.py
-  -> business/tasks/{task_code}.py
-  -> business/workflow_defs/{workflow_code}.py
+  -> src/automation_business_scaffold/apps/rpc_agent/server.py 或 apps/cli/main.py
+  -> domains/{domain}/tasks/{task_code}.py
+  -> domains/{domain}/workflows/{workflow_code}.py
 ```
 
 从一个正式业务入口定位代码时，按下面路径查:
 
 ```text
 task_code
-  -> business/tasks/{task_code}.py
-  -> business/workflow_defs/{workflow_code}.py
-  -> business/jobs/{job_code}.py
-  -> business/handlers/{worker_lane}/{handler_code}.py
-  -> business/feishu/source_adapters.py 或 projection_mappers.py
-  -> business/flows/** 业务实现细节
+  -> domains/{domain}/tasks/{task_code}.py
+  -> domains/{domain}/workflows/{workflow_code}.py
+  -> domains/{domain}/jobs/{job_code}.py
+  -> capabilities/{capability_role}/{system}/{handler_code}_handler.py
+  -> domains/{domain}/mappers/{mapper_module}.py 或 projections/{projection_module}.py
+  -> domains/{domain}/flows/** 业务实现细节
   -> infrastructure/** 外部系统客户端和存储实现
 ```
 
@@ -52,11 +53,11 @@ task_code
 
 ```text
 api_worker_job.job_code / task_execution.item_code / notification_outbox.event_type
-  -> business/jobs/{job_code}.py
+  -> domains/{domain}/jobs/{job_code}.py
   -> JOB_DEFINITION.handler_code
-  -> business/handlers/{worker_lane}/{handler_code}.py
+  -> capabilities/{capability_role}/{system}/{handler_code}_handler.py
   -> HandlerResult.summary / HandlerResult.result
-  -> workflow_defs 中消费该 result 的 stage/reconciler
+  -> domains/{domain}/workflows/{workflow_code}.py 中消费该 result 的 stage/reconciler
 ```
 
 排查 RPC / daemon / watchdog / supervisor / reconciler / 项目配置时，按下面路径查:
@@ -78,13 +79,13 @@ console script 或 agent/CLI 请求
 
 ```text
 feishu_table_read
-  -> business/handlers/api/feishu_table_read.py
-  -> business/feishu/source_adapters.py
+  -> capabilities/input_sources/feishu/table_read_handler.py
+  -> domains/{domain}/mappers/{table_mapper}.py
   -> adapter_code
 
 feishu_table_write
-  -> business/handlers/api/feishu_table_write.py
-  -> business/feishu/projection_mappers.py
+  -> capabilities/channels/feishu/table_write_handler.py
+  -> domains/{domain}/projections/{table_projection}.py
   -> mapper_code
 ```
 
@@ -130,17 +131,21 @@ skills/{skill_code}/
 | `src/automation_business_scaffold/project_env.py`、`config.py` | 项目配置加载和 typed defaults | handler 业务规则、部署脚本动作 |
 | `scripts/execution_control/` | 运行控制配置示例、launchd 安装脚本和 daemon 启动包装 | 业务字段映射、Runtime schema 迁移 |
 | `config/deployment/launchd/` | macOS launchd plist 模板 | Python 业务实现 |
-| `business/tasks/` | 顶层 task 和兼容内部 task 入口，负责 submit/status/cancel 等入口参数适配 | worker 具体执行逻辑、外部 API 细节 |
-| `business/workflow_defs/` | `WorkflowDefinition`、stage、job binding、summary/idempotency/timeout/watchdog policy | handler 实现、飞书字段映射函数 |
-| `business/workflows/` | 旧 WorkflowSpec 或兼容声明层；新增主路径优先使用 `workflow_defs` | runtime worker handler 实现 |
-| `business/jobs/` | Runtime job 定义门面；按 `job_code` 命名并暴露 `JOB_DEFINITION` | 直接调用外部 API、写业务字段映射 |
-| `business/handlers/` | handler contract、registry，以及按 `handler_code` 命名的 worker 入口模块 | workflow 编排、table-specific mapper/policy |
-| `business/handlers/api/` | API/HTTP/IO/FastMoss/Feishu/Fact/Object Store 类 handler 入口 | browser profile 操作、outbox 消息分发 |
-| `business/handlers/browser/` | Browser/CDP/Profile 类 handler 入口 | API worker 逻辑、Feishu 写入 |
-| `business/handlers/outbox/` | notification outbox 分发 handler 入口 | workflow summary 生成逻辑 |
-| `business/feishu/` | 飞书 source adapter、projection mapper、表级读写业务差异 | handler registry key、Runtime job 编排 |
+| `domains/{domain}/tasks/` | 顶层 task 入口，负责 submit/status/cancel 等入口参数适配 | worker 具体执行逻辑、外部 API 细节 |
+| `domains/{domain}/workflows/` | `WorkflowDefinition`、stage、job binding、summary/idempotency/timeout/watchdog policy | handler 实现、飞书字段映射函数 |
+| `domains/{domain}/jobs/` | Runtime job 定义；按 `job_code` 命名并暴露 `JOB_DEFINITION` | 直接调用外部 API、写业务字段映射 |
+| `domains/{domain}/mappers/` | 输入源业务语义转换，例如飞书表 source adapter | handler registry key、外部 transport |
+| `domains/{domain}/projections/` | 输出字段投影，例如飞书写回 projection mapper | handler registry key、外部 transport |
+| `domains/{domain}/policies/` | workflow policy、幂等、timeout、summary 策略 | 外部 transport、worker loop |
+| `domains/{domain}/flows/` | workflow stage 推进和业务编排实现细节 | 稳定 handler/job contract 事实来源、部署配置源 |
+| `contracts/handler/` | handler contract、allowlist、registry primitives 和 handler lookup registry | 具体业务字段映射、外部系统 client |
+| `contracts/workflow/` | Workflow/Job contract model、runtime task shell、manifest | 业务流程大段实现 |
+| `capabilities/input_sources/` | Feishu/Dingding 等输入源 handler | 表级业务筛选策略 |
+| `capabilities/fact_sources/` | TikTok/FastMoss 等事实源 handler | workflow 编排、飞书字段投影 |
+| `capabilities/channels/` | Feishu/outbox/Discord/Dingding 等输出通道 handler | workflow summary 生成逻辑 |
+| `capabilities/persistence/` | Fact DB/Object Store 等持久化 handler | 业务字段语义 |
 | `control_plane/` | task request 生命周期、executor/worker claim、Execution Supervisor、Reconciler、Watchdog、outbox、runtime config | 飞书字段映射、TikTok/FastMoss 业务策略、业务专用 daemon |
-| `business/flows/` | 旧业务实现细节或 domain 迁移前参考；新增主路径优先使用 `domains/**` 和 `control_plane/**` | 稳定 handler/job contract 事实来源、部署配置源、运行控制面主实现 |
+| `business/**/achieve/` | 旧业务实现参考和行为对照素材，不允许作为 runtime 主路径 | 新实现、shim、re-export、daemon/worker 主入口 |
 | `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | task/workflow/handler 业务语义 |
 | `models/` | 跨层使用的数据模型 | 外部 API 调用流程 |
 | `validators/` | 输入和业务数据校验 | runtime 编排 |
@@ -153,12 +158,12 @@ skills/{skill_code}/
 | code | 文件位置 | 必须导出 |
 | --- | --- | --- |
 | `skill_code` | `skills/{skill_code}/` | `SKILL.md`、入口脚本、`skill.local.env.example` |
-| `task_code` | `business/tasks/{task_code}.py` | task class 或 task entry |
-| `workflow_code` | `business/workflow_defs/{workflow_code}.py` | build definition 函数 |
-| `job_code` | `business/jobs/{job_code}.py` | `JOB_CODE`、`HANDLER_CODE`、`JOB_DEFINITION` |
-| `handler_code` | `business/handlers/{worker_lane}/{handler_code}.py` | `HANDLER_CODE`、`CONTRACT`、handler callable 或占位 contract |
-| `adapter_code` | `business/feishu/source_adapters.py` | adapter registry 中的同名函数或明确映射 |
-| `mapper_code` | `business/feishu/projection_mappers.py` | mapper registry 中的同名函数或明确映射 |
+| `task_code` | `domains/{domain}/tasks/{task_code}.py` | task class 或 task entry |
+| `workflow_code` | `domains/{domain}/workflows/{workflow_code}.py` | build definition 函数 |
+| `job_code` | `domains/{domain}/jobs/{job_code}.py` | `JOB_CODE`、`HANDLER_CODE`、`JOB_DEFINITION` |
+| `handler_code` | `capabilities/{capability_role}/{system}/{handler_code}_handler.py` | `HANDLER_CODE`、`CONTRACT`、handler callable |
+| `adapter_code` | `domains/{domain}/mappers/{semantic_mapper}.py` | adapter callable；`registry.py` 只负责 code lookup |
+| `mapper_code` | `domains/{domain}/projections/{semantic_projection}.py` | projection callable；`registry.py` 只负责 code lookup |
 | `daemon_code` | `apps/daemons/{daemon_code}/main.py` | console script、`main()`、`--once` 或 daemon loop 参数 |
 | `control_plane_code` | `control_plane/{executor,supervisor,reconciler,watchdog,outbox,runtime_config}/**` | runtime control function，不作为 handler registry key |
 
@@ -177,24 +182,24 @@ skills/{skill_code}/
 2. `SKILL.md` 只描述 agent 触发条件、参数提取、提交入口和首条回执契约。
 3. 入口脚本只提交顶层 task，不串联 runtime 内部 leaf steps。
 4. 如果需要部署安装，更新 `scripts/deploy/**` 或部署文档中的复制目标和配置生成规则。
-5. 如果新增业务入口，同步新增或复用 `business/tasks/{task_code}.py` 和 `business/workflow_defs/{workflow_code}.py`。
+5. 如果新增业务入口，同步新增或复用 `domains/{domain}/tasks/{task_code}.py` 和 `domains/{domain}/workflows/{workflow_code}.py`。
 
 新增正式 workflow:
 
-1. 在 `business/tasks/{task_code}.py` 增加或确认入口。
-2. 在 `business/workflow_defs/{workflow_code}.py` 定义 stage、job binding、summary policy。
-3. 复用 `business/jobs/{job_code}.py` 中已有 job；没有则先新增 job contract。
-4. 复用 `business/handlers/{worker_lane}/{handler_code}.py` 中已有 handler；没有则先更新 `handler-contract-design.md` 准入清单。
-5. 如果是飞书表差异，优先新增/扩展 `business/feishu/source_adapters.py` 或 `business/feishu/projection_mappers.py`。
-6. 复杂业务实现放入 `business/flows/**`，但 flow 不能成为 runtime registry key。
+1. 在 `domains/{domain}/tasks/{task_code}.py` 增加或确认入口。
+2. 在 `domains/{domain}/workflows/{workflow_code}.py` 定义 stage、job binding、summary policy。
+3. 复用 `domains/{domain}/jobs/{job_code}.py` 中已有 job；没有则先新增 job contract。
+4. 复用 `capabilities/**/{handler_code}_handler.py` 中已有 handler；没有则先更新 `handler-contract-design.md` 准入清单。
+5. 如果是飞书表差异，优先新增/扩展 `domains/{domain}/mappers/{semantic_mapper}.py` 或 `domains/{domain}/projections/{semantic_projection}.py`。
+6. 复杂业务实现放入 `domains/{domain}/flows/**`，但 flow 不能成为 runtime registry key。
 7. 同步测试: workflow contract、handler registry、job module、Feishu adapter/mapper registry。
 
 新增 handler:
 
 1. 先更新 [handler-contract-design.md](./handler-contract-design.md) 的准入清单和 payload/result/error/retry/timeout/idempotency/side effects。
-2. 更新 `business/handlers/allowlist.py`。
-3. 新增 `business/handlers/{worker_lane}/{handler_code}.py`。
-4. 如需正式 runtime job，新增 `business/jobs/{job_code}.py`。
+2. 更新 `contracts/handler/allowlist.py`。
+3. 新增 `capabilities/{capability_role}/{system}/{handler_code}_handler.py`。
+4. 如需正式 runtime job，新增 `domains/{domain}/jobs/{job_code}.py`。
 5. 更新 registry 绑定和契约测试。
 
 新增飞书表级逻辑:

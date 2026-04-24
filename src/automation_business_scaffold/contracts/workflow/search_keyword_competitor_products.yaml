@@ -29,10 +29,10 @@ custom_logic:
         - notification_summary_policy
   projections:
     - code: competitor_seed_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers
+      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_competitor_projection
       export: competitor_seed_projection_mapper
     - code: competitor_table_projection_mapper
-      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers
+      module: automation_business_scaffold.domains.competitor_intelligence.projections.feishu_competitor_projection
       export: competitor_table_projection_mapper
 outbox:
   job_code: task_completed_notification
