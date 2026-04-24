@@ -50,6 +50,7 @@ _COMPETITOR_AUTO_FIELDS = (
     "近90天销量",
     "记录日期",
 )
+_COMPETITOR_SYSTEM_OVERWRITE_FIELDS = {"商品状态"}
 
 
 def build_feishu_client(target: FeishuTableTarget) -> FeishuBitableClient:
@@ -186,7 +187,7 @@ def adapt_source_rows(
                 "source_row_count": 0,
             },
         }
-    from automation_business_scaffold.business.feishu.source_adapters import (
+    from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_source_adapters import (
         adapt_source_rows as run_source_adapter,
     )
 
@@ -196,7 +197,7 @@ def adapt_source_rows(
 def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     records = _mapping_list(payload.get("records"))
     if not records:
-        from automation_business_scaffold.business.feishu.projection_mappers import (
+        from automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers import (
             selection_writeback_records,
         )
 
@@ -207,7 +208,7 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         if _mapping(record.get("fields")):
             mapped.append(_normalize_write_record(record, payload))
             continue
-        from automation_business_scaffold.business.feishu.projection_mappers import (
+        from automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers import (
             map_projection_record,
         )
 
@@ -803,6 +804,9 @@ def _select_missing_competitor_projection_fields(
             continue
         if not _field_has_value(value):
             continue
+        if field_name in _COMPETITOR_SYSTEM_OVERWRITE_FIELDS:
+            selected[field_name] = value
+            continue
         if not _field_has_value(existing_fields.get(field_name)):
             selected[field_name] = value
     if selected:
@@ -1046,6 +1050,16 @@ def _map_competitor_influencer_status_record(record: Mapping[str, Any], payload:
     }.get(status, status or "已完成")
     fields = {
         "达人查找状态": status_text,
+        "达人数量": _coerce_int(
+            _first_non_empty(
+                record.get("influencer_write_success_count"),
+                record.get("creator_detail_success_count"),
+                record.get("creator_candidate_count"),
+            ),
+            default=0,
+            minimum=0,
+            maximum=1_000_000,
+        ),
         "备注": _status_note(record),
     }
     return _normalize_write_record(

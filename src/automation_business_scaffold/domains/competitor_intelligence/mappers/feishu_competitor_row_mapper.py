@@ -1,0 +1,3 @@
+from automation_business_scaffold.domains.competitor_intelligence.mappers.feishu_source_adapters import competitor_table_source_adapter
+
+__all__ = ["competitor_table_source_adapter"]

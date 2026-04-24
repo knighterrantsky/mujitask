@@ -1,0 +1,3 @@
+from automation_business_scaffold.domains.competitor_intelligence.projections.feishu_projection_mappers import influencer_pool_projection_mapper
+
+__all__ = ["influencer_pool_projection_mapper"]

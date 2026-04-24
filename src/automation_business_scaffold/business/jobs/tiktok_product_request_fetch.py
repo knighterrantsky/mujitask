@@ -1,8 +1,3 @@
 from __future__ import annotations
 
-from .catalog import TIKTOK_PRODUCT_REQUEST_FETCH_JOB as JOB_DEFINITION
-
-JOB_CODE = JOB_DEFINITION.job_code
-HANDLER_CODE = JOB_DEFINITION.handler_code
-
-__all__ = ["HANDLER_CODE", "JOB_CODE", "JOB_DEFINITION"]
+from automation_business_scaffold.domains.competitor_intelligence.jobs.tiktok_product_request_fetch import *  # noqa: F401,F403

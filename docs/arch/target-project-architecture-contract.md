@@ -255,7 +255,34 @@ src/{project}/capabilities/channels/discord/
 - 禁止在 infrastructure client / store 中引用 task_code、workflow_code、job_code。
 - 禁止把 secret 真值提交进 `configs/**` 或 `agent_artifacts/**`。
 
-## 9. 测试护栏
+## 9. 真实迁移验收口径
+
+迁移目标结构时，必须先声明迁移模式。
+
+| 模式 | 允许行为 | 禁止行为 | 完成标准 |
+| --- | --- | --- | --- |
+| `scaffold` | 建目录、建空模块、写文档、写迁移计划 | 宣称完成真实迁移 | 只证明目标落位已预留 |
+| `real_migration` | 把实现所有权移到目标目录，用旧实现作阅读参考和功能对照 | facade、shim、re-export、`sys.modules` alias、旧路径继续承载主实现 | runtime import 主路径只从目标目录加载真实实现 |
+
+当用户要求“真实代码迁移”“不要兼容旧逻辑”“旧逻辑只作为参考”时，必须按 `real_migration` 执行。
+
+`real_migration` 的硬规则:
+
+- `capabilities/**/{capability}_handler.py` 必须拥有该 capability 的 handler 实现，文件内应出现主要 `def` / `class` / helper 逻辑；不能只 `from .implementations import xxx_handler`。
+- 禁止新增或保留 `capabilities/_implementations/*.py` 作为大杂烩实现归属；大文件只能作为迁移前参考，不允许成为 runtime import 主路径。
+- `business/handlers/**` 旧路径不能继续导入 `.implementations` 或目标 capability 作为主路径；完成迁移后应删除旧路径，或仅保留不被 runtime registry 引用的迁移说明。
+- `domains/{domain}/**` 必须拥有业务 task、workflow、job、mapper、projection、policy 的实现；不能只 re-export `business/**`。
+- 根包 daemon alias 只能作为单次提交内的临时过渡；完成 `real_migration` 时 console script 和根包入口应直接指向 `apps/**`。
+- Monkeypatch、旧 import、旧测试不作为保留兼容层的理由；旧测试应迁移到目标 import，旧代码只作为功能验证参考。
+- “跑通旧测试”不是 `real_migration` 完成标准；完成标准是静态归属、runtime import 主路径和行为对照同时满足。
+
+真实迁移期间的验证策略:
+
+- 可以先不跑全量测试，避免为了旧测试继续保留兼容层。
+- 优先使用静态结构检查、import ownership 检查和新旧行为对照 fixture。
+- 如果需要测试，测试必须改成目标路径导入；不得为了测试 monkeypatch 旧路径而保留 alias。
+
+## 10. 测试护栏
 
 目标架构契约由以下测试守住:
 
@@ -265,13 +292,14 @@ src/{project}/capabilities/channels/discord/
 | `test_workflow_development_contract` | 新 workflow 开发必须拆到 task、workflow、job、mapper、projection、policy、capability、outbox、runtime control |
 | `test_control_plane_boundary` | RPC/CLI/daemon/control_plane 只管 request lifecycle、supervisor、reconciler、watchdog、outbox，不承载业务 mapper/projection |
 | `test_capability_boundary` | Feishu / Dingding / TikTok / FastMoss / AWS / database / object storage / channel 等能力按角色分类 |
+| `test_real_migration_contract` | 真实迁移禁止 facade、shim、re-export、`sys.modules` alias 和 `_implementations` 大杂烩 |
 | `test_agent_artifact_boundary` | skill/script 是部署给 OpenClaw / Hermes / 用户 agent workspace 的入口产物，只提交 task request |
 
-## 10. 默认假设
+## 11. 默认假设
 
 - 一个业务域可以有多个 workflow 和多个 agent skill。
 - handler 按能力命名，不按具体业务命名。
 - mapper、projection、policy 按业务域命名。
 - Reconciler 是 control plane 的稳定组件；未来可以独立 daemon 化，但不能业务专用 fork。
 - Agent script / skills 是部署产物源，部署时复制到用户 agent workspace 并生成配置文件。
-- 当前仓库迁移到目标结构应分阶段进行；迁移过程中必须保持 Runtime DB、handler、workflow、outbox contract 兼容。
+- 当前仓库迁移到目标结构可以分阶段进行，但每个阶段必须明确是 `scaffold` 还是 `real_migration`。只有 `real_migration` 才能被描述为“迁移完成”。

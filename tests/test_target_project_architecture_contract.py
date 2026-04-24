@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "target-project-architecture-contract.md"
+PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
+DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "competitor_intelligence"
 
 
 def _read(path: Path) -> str:
@@ -185,6 +188,100 @@ def test_capability_boundary() -> None:
     assert missing == [], "capability boundary contract is missing tokens:\n" + "\n".join(missing)
 
 
+def test_real_migration_contract() -> None:
+    doc = _read(TARGET_ARCH_DOC)
+
+    required_tokens = (
+        "## 9. 真实迁移验收口径",
+        "`scaffold`",
+        "`real_migration`",
+        "facade、shim、re-export、`sys.modules` alias",
+        "capabilities/_implementations/*.py",
+        "不能只 `from .implementations import xxx_handler`",
+        "domains/{domain}/**",
+        "不能只 re-export `business/**`",
+        "旧代码只作为功能验证参考",
+        "跑通旧测试",
+        "不是 `real_migration` 完成标准",
+    )
+
+    missing = [token for token in required_tokens if token not in doc]
+    assert missing == [], "real migration contract is missing tokens:\n" + "\n".join(missing)
+
+
+def test_target_capability_real_implementation_files_exist() -> None:
+    required_files = (
+        "capabilities/input_sources/feishu/table_read_handler.py",
+        "capabilities/fact_sources/tiktok/product_request_fetch_handler.py",
+        "capabilities/fact_sources/fastmoss/product_search_handler.py",
+        "capabilities/fact_sources/fastmoss/product_fetch_handler.py",
+        "capabilities/fact_sources/fastmoss/creator_fetch_handler.py",
+        "capabilities/fact_sources/fastmoss/shop_fetch_handler.py",
+        "capabilities/fact_sources/fastmoss/video_fetch_handler.py",
+        "capabilities/persistence/database/fact_bundle_upsert_handler.py",
+        "capabilities/persistence/object_storage/media_asset_sync_handler.py",
+        "capabilities/channels/feishu/table_write_handler.py",
+        "capabilities/channels/outbox/message_dispatch_handler.py",
+        "capabilities/browser/tiktok_product_fetch_handler.py",
+        "capabilities/media/asset_sync_handler.py",
+    )
+
+    missing = [path for path in required_files if not (PACKAGE_ROOT / path).is_file()]
+    assert missing == [], "target capability implementation files are missing:\n" + "\n".join(missing)
+
+
+def test_target_capability_files_must_own_real_implementations() -> None:
+    capability_files = (
+        PACKAGE_ROOT / "capabilities/input_sources/feishu/table_read_handler.py",
+        PACKAGE_ROOT / "capabilities/fact_sources/tiktok/product_request_fetch_handler.py",
+        PACKAGE_ROOT / "capabilities/fact_sources/fastmoss/product_search_handler.py",
+        PACKAGE_ROOT / "capabilities/fact_sources/fastmoss/product_fetch_handler.py",
+        PACKAGE_ROOT / "capabilities/fact_sources/fastmoss/creator_fetch_handler.py",
+        PACKAGE_ROOT / "capabilities/persistence/database/fact_bundle_upsert_handler.py",
+        PACKAGE_ROOT / "capabilities/channels/feishu/table_write_handler.py",
+        PACKAGE_ROOT / "capabilities/channels/outbox/message_dispatch_handler.py",
+        PACKAGE_ROOT / "capabilities/browser/tiktok_product_fetch_handler.py",
+        PACKAGE_ROOT / "capabilities/media/asset_sync_handler.py",
+    )
+    forbidden_fragments = (
+        "facade",
+        "from .implementations import",
+        "from ..implementations import",
+        "from automation_business_scaffold.capabilities._implementations",
+        "from automation_business_scaffold.business.handlers",
+        "sys.modules[__name__]",
+    )
+
+    violations: list[str] = []
+    for path in capability_files:
+        source = _read(path)
+        found = [fragment for fragment in forbidden_fragments if fragment in source]
+        if found:
+            violations.append(f"{path.relative_to(REPO_ROOT)}: forbidden {', '.join(found)}")
+        if "def " not in source and "class " not in source:
+            violations.append(f"{path.relative_to(REPO_ROOT)}: no real implementation function/class")
+
+    implementation_aggregator = PACKAGE_ROOT / "capabilities" / "_implementations"
+    if implementation_aggregator.exists():
+        violations.append("src/automation_business_scaffold/capabilities/_implementations must not exist after real_migration")
+
+    assert violations == [], "target capability files must own real implementations:\n" + "\n".join(violations)
+
+
+def test_target_contract_modules_exist() -> None:
+    required_modules = (
+        "automation_business_scaffold.contracts.runtime",
+        "automation_business_scaffold.contracts.workflow",
+        "automation_business_scaffold.contracts.handler",
+        "automation_business_scaffold.contracts.config",
+        "automation_business_scaffold.contracts.outbox",
+    )
+
+    for module_name in required_modules:
+        module = importlib.import_module(module_name)
+        assert module.__all__
+
+
 def test_agent_artifact_boundary() -> None:
     doc = _read(TARGET_ARCH_DOC)
 
@@ -200,3 +297,68 @@ def test_agent_artifact_boundary() -> None:
 
     missing = [token for token in required_tokens if token not in doc]
     assert missing == [], "agent artifact boundary contract is missing tokens:\n" + "\n".join(missing)
+
+
+def test_competitor_intelligence_domain_structure() -> None:
+    required_dirs = (
+        "tasks",
+        "workflows",
+        "jobs",
+        "flows",
+        "mappers",
+        "projections",
+        "policies",
+    )
+    missing_dirs = [path for path in required_dirs if not (DOMAIN_ROOT / path).is_dir()]
+    assert missing_dirs == [], "competitor_intelligence domain dirs are missing:\n" + "\n".join(missing_dirs)
+
+    required_files = (
+        "tasks/refresh_current_competitor_table.py",
+        "tasks/search_keyword_competitor_products.py",
+        "tasks/sync_tk_influencer_pool.py",
+        "tasks/tiktok_fastmoss_product_ingest.py",
+        "workflows/refresh_current_competitor_table.py",
+        "workflows/search_keyword_competitor_products.py",
+        "workflows/sync_tk_influencer_pool.py",
+        "workflows/tiktok_fastmoss_product_ingest.py",
+        "jobs/feishu_table_read.py",
+        "jobs/feishu_table_write.py",
+        "jobs/tiktok_product_request_fetch.py",
+        "jobs/fastmoss_product_fetch.py",
+        "mappers/feishu_competitor_row_mapper.py",
+        "projections/feishu_competitor_projection.py",
+        "policies/workflow_policies.py",
+    )
+    missing_files = [path for path in required_files if not (DOMAIN_ROOT / path).is_file()]
+    assert missing_files == [], "competitor_intelligence domain files are missing:\n" + "\n".join(
+        missing_files
+    )
+
+
+def test_competitor_intelligence_domain_files_must_not_reexport_business_modules() -> None:
+    domain_files = [
+        path
+        for path in DOMAIN_ROOT.rglob("*.py")
+        if path.name != "__init__.py"
+    ]
+    forbidden_fragments = (
+        "from automation_business_scaffold.business import",
+        "from automation_business_scaffold.business.",
+        "import automation_business_scaffold.business.",
+        "facade",
+        "re-export",
+        "reexport",
+    )
+
+    violations: list[str] = []
+    for path in domain_files:
+        source = _read(path)
+        found = [fragment for fragment in forbidden_fragments if fragment in source]
+        if found:
+            violations.append(f"{path.relative_to(REPO_ROOT)}: forbidden {', '.join(found)}")
+        if "def " not in source and "class " not in source and "JOB_DEFINITION" not in source:
+            violations.append(f"{path.relative_to(REPO_ROOT)}: no domain implementation content")
+
+    assert violations == [], "domain files must own real business implementation:\n" + "\n".join(
+        violations
+    )

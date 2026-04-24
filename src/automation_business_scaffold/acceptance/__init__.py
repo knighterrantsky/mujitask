@@ -10,10 +10,24 @@ from .comparator import (
     JsonRefResolver,
     compare_achieve_payload,
 )
+from .runtime_projection import (
+    RuntimeAcceptanceArtifacts,
+    build_fact_projection_from_store,
+    build_feishu_projection,
+    build_outbox_projection_from_store,
+    build_runtime_acceptance_artifacts,
+    build_runtime_trace_projection,
+)
 
 __all__ = [
     "AcceptanceArtifactWriter",
     "AchieveComparator",
     "JsonRefResolver",
+    "RuntimeAcceptanceArtifacts",
+    "build_fact_projection_from_store",
+    "build_feishu_projection",
+    "build_outbox_projection_from_store",
+    "build_runtime_acceptance_artifacts",
+    "build_runtime_trace_projection",
     "compare_achieve_payload",
 ]
