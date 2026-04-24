@@ -856,6 +856,116 @@ flowchart LR
 - 新旧行为对比测试通过
 - `achieve` 仅作为基准，不参与 runtime import
 
+### 12.1 当前完成状态
+
+更新时间: 2026-04-24
+
+| Gate | 当前状态 | 说明 |
+| --- | --- | --- |
+| G1 基础框架 | 完成 | `DEFAULT_TASKS`、workflow entrypoints、workflow definitions、handler registry、runtime orchestrator 主入口已恢复。 |
+| G2 第一条样板 workflow | 基本完成 | `tiktok_fastmoss_product_ingest` 已覆盖 direct ingest、request-first、browser fallback、fact upsert、outbox 和 child timeout 收敛；仍需跟随真实 handler 完整度继续补强。 |
+| G3 Runtime 生命周期与收敛规则 | 完成 | Runtime 表已具备 `progress_stage`、`last_progress_at`、`max_execution_seconds`、`error_type`、`error_code`、`dead_letter_reason` 等生命周期字段；parent/child 收敛和 outbox retry/reclaim 已有测试覆盖。 |
+| G4 Supervisor / Watchdog | 完成 | `api_worker`、`browser_worker`、`outbox_dispatcher` 已统一接入 Execution Supervisor；Watchdog 已覆盖 lease expired、stale progress、execution timeout、waiting_children repair、outbox sending timeout。 |
+| G5 Child Process / Hard Timeout | 完成 | worker handler 主路径默认 child process；hard timeout 优先读取 Runtime DB `max_execution_seconds`，并已有 `child timeout -> retry_wait -> failed -> parent waiting_children 释放 -> executor 收敛 -> completion outbox` e2e 覆盖。 |
+| G6 公共层稳定 | 部分完成 | handler contract / allowlist 已稳定；`tiktok_product_request_fetch`、`tiktok_product_browser_fetch`、`fastmoss_product_fetch`、`media_asset_sync`、`fact_bundle_upsert` 已绑定实现；`feishu_table_read`、`feishu_table_write`、`fastmoss_product_search`、`fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 仍需补真实实现和默认绑定。 |
+| G7 全量验收 | 未完成 | 四个 workflow 已有 runtime integration 基础覆盖，但还没有全部完成新旧 `achieve` 行为对比验收。 |
+
+当前结论:
+
+- 架构平台能力已经基本完成，可以支撑继续业务重构。
+- 业务开发尚未全量完成，下一阶段重点是补齐通用 handler、补 workflow e2e 和完成新旧行为对比。
+
+当前 backlog:
+
+1. 补齐通用 handler 的真实实现和默认绑定，优先级为 `feishu_table_read`、`feishu_table_write`、`fastmoss_product_search`、`fastmoss_creator_fetch`。
+2. 按 workflow 补完整 e2e: `refresh_current_competitor_table`、`search_keyword_competitor_products`、`sync_tk_influencer_pool`。
+3. 建立新旧 `achieve` 行为对比验收，覆盖关键输入、Runtime 中间状态、Fact/Storage 副作用和最终 outbox/飞书投影输出。
+4. 扩展 browser worker 与 outbox dispatcher 的 child timeout e2e，覆盖更多 worker 类型。
+
+### 12.2 真实业务可用开发依赖与并行计划
+
+本节描述三个主业务 workflow 达到真实生产可用所需的剩余开发依赖。这里的“可用”不是仅指 runtime integration test 通过，而是指真实外部系统、Fact DB、MinIO、飞书投影和 `achieve` 对比验收都能闭环。
+
+三个主业务 workflow:
+
+- `refresh_current_competitor_table`
+- `search_keyword_competitor_products`
+- `sync_tk_influencer_pool`
+
+依赖关系总览:
+
+```mermaid
+flowchart TD
+    A["接口与 mapper 契约冻结"] --> B["Feishu common<br/>feishu_table_read / feishu_table_write"]
+    A --> C["FastMoss product search<br/>fastmoss_product_search"]
+    A --> D["Influencer common<br/>fastmoss_creator_fetch / shop / video"]
+    A --> E["验收工具<br/>achieve comparator / fixtures"]
+
+    B --> F["竞品表刷新 e2e<br/>refresh_current_competitor_table"]
+    B --> G["达人同步 e2e<br/>sync_tk_influencer_pool"]
+    D --> G
+
+    C --> H["关键词竞品入库 e2e<br/>search_keyword_competitor_products"]
+    B --> H
+    F --> H
+
+    F --> I["refresh achieve 对比"]
+    H --> J["keyword achieve 对比"]
+    G --> K["influencer achieve 对比"]
+    E --> I
+    E --> J
+    E --> K
+
+    I --> L["三 workflow 真实验收"]
+    J --> L
+    K --> L
+```
+
+工作包拆分:
+
+| 工作包 | 内容 | 依赖 | 可并行性 | 完成信号 |
+| --- | --- | --- | --- | --- |
+| P0 契约冻结 | 固定 Feishu adapter、FastMoss search、creator fetch、Fact projection、achieve comparator 的 payload/result 样例 | 无 | 串行优先，避免后续 worktree 反复改 contract | `docs/arch/handler-contract-design.md` 与 workflow payload 示例不再频繁变动 |
+| P1 Feishu common | 实现并默认绑定 `feishu_table_read` / `feishu_table_write`；支持表级 adapter / projection mapper、批量读写、幂等、错误分类 | P0 | 可与 P2 / P3 / P4 并行，但 read/write 内部建议同一 worktree 完成 | refresh / keyword / influencer 都能用同一 handler 读写飞书测试表 |
+| P2 FastMoss search | 实现并默认绑定 `fastmoss_product_search`；支持 keyword、filter、condition、分页、候选商品标准输出 | P0 | 可与 P1 / P3 / P4 并行 | keyword workflow 能拿到候选商品并生成 seed row payload |
+| P3 Influencer common | 实现并默认绑定 `fastmoss_creator_fetch`；按实际需要补 `fastmoss_shop_fetch` / `fastmoss_video_fetch`；补达人事实、关系、观测映射 | P0 | 可与 P1 / P2 / P4 并行 | 达人详情能写入 Fact DB，并生成达人池飞书写入 payload |
+| P4 验收工具 | 建立 `achieve` 对比 harness、固定 fixture、输出差异报告；禁止 runtime import `achieve` | P0 | 可与 P1 / P2 / P3 并行 | 能对单个 workflow 跑新旧输入、状态、输出对比 |
+| P5 Refresh workflow | 补真实竞品表刷新 e2e: 飞书读取 -> 商品采集 -> media/fact -> 飞书写回 | P1，既有 product/media/fact handler | 可与 P7 并行；P6 依赖 P5 的竞品详情链路 | 飞书测试表能完成真实读写，Fact/MinIO/outbox 可核验 |
+| P6 Keyword workflow | 补真实关键词竞品入库 e2e: FastMoss 搜索 -> 飞书 seed row -> 复用竞品详情采集 -> 写回 | P1、P2、P5 的详情采集链路 | P2 完成后可先做搜索与 seed；完整验收需等待 P5 | 关键词输入能产生竞品表 seed，并完成详情补全 |
+| P7 Influencer workflow | 补真实达人同步 e2e: 飞书源表 -> 商品/达人采集 -> Fact DB -> 达人池写入 -> 源表状态写回 | P1、P3 | 可与 P5 并行 | 达人池飞书表和源表状态都能真实写回 |
+| P8 对比验收 | 对 refresh / keyword / influencer 分别做新旧 `achieve` 行为对比 | P4、P5、P6、P7 | 三个 workflow 的对比可并行，最终验收串行汇总 | 三份对比报告通过，差异要么消除要么有 contract 解释 |
+| P9 可靠性补强 | 扩展 browser worker / outbox dispatcher child timeout e2e；补真实环境失败重试样例 | G5 已完成主路径 | 可与业务 e2e 并行 | 非 API worker 的 timeout/retry/failed 路径也有 e2e 覆盖 |
+
+阶段计划:
+
+| 阶段 | 串行 / 并行 | 目标 | 可开启 worktree |
+| --- | --- | --- | --- |
+| S0 契约冻结 | 串行 | 先冻结 P0，明确 payload/result/mapper/comparator 边界，减少后续冲突 | 1 个文档/contract worktree |
+| S1 通用能力并行开发 | 并行 | P1、P2、P3、P4 同时推进；P1 是三条 workflow 的共同关键依赖 | 4 个 worktree: `feishu-common`、`fastmoss-search`、`influencer-common`、`acceptance-harness` |
+| S2 workflow e2e 第一轮 | 部分并行 | P5 refresh 和 P7 influencer 可并行；P6 keyword 可先做 search/seed，完整详情复用需等待 P5 稳定 | 3 个 worktree: `workflow-refresh-e2e`、`workflow-influencer-e2e`、`workflow-keyword-seed` |
+| S3 workflow e2e 收敛 | 串行 + 并行 | 先合并 P5 的详情链路，再让 P6 完整复用；P7 可继续独立收敛 | 2 个 worktree: `workflow-keyword-e2e`、`workflow-influencer-polish` |
+| S4 新旧行为对比 | 并行 | P8 按三个 workflow 并行生成对比报告和测试；最终由主窗口汇总差异 | 3 个 worktree: `compare-refresh`、`compare-keyword`、`compare-influencer` |
+| S5 真实验收收口 | 串行 | 汇总三条 workflow 的真实环境冒烟、对比报告、失败重试样例，更新 G6/G7 状态 | 主窗口收口 |
+
+并行开发边界:
+
+- P1 Feishu common 修改 `handlers/api`、Feishu infrastructure、Feishu adapter/mapper 测试；不要修改具体 workflow stage 规则。
+- P2 FastMoss search 修改 FastMoss search handler、接口 reference、search payload/result 测试；不要修改 Feishu 写入 mapper。
+- P3 Influencer common 修改 creator/shop/video handler 和 Fact 映射；不要修改 refresh / keyword workflow。
+- P4 验收工具只读 `achieve`，输出 comparator/harness；禁止把 `achieve` 导入 runtime 主路径。
+- P5/P6/P7 workflow worktree 可以修改各自 `runtime_*`、workflow_defs 和对应 tests，但不要改 handler contract，除非先回到 P0 更新契约。
+
+推荐合并顺序:
+
+1. P0 契约冻结。
+2. P1 Feishu common，因为三条 workflow 都依赖它。
+3. P2 FastMoss search 与 P3 Influencer common，可按完成度并入。
+4. P4 验收工具，可在不影响 runtime 的情况下提前并入。
+5. P5 Refresh workflow，作为 keyword 后续详情补全的基础链路。
+6. P7 Influencer workflow，可与 P5 相近时间并入。
+7. P6 Keyword workflow 完整链路。
+8. P8 对比验收与 P9 可靠性补强。
+
 ## 13. 一句话建议
 
 你的判断是对的，但现在需要把“基础框架并行”升级成“基础框架 + 可靠性平台 + 业务 workflow 三线并行”。
