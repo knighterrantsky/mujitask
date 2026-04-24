@@ -1,6 +1,6 @@
 # 当前整体系统架构设计
 
-日期: 2026-04-23
+日期: 2026-04-24
 
 ## 1. 结论
 
@@ -13,7 +13,7 @@
 - `handler` 是某类 job 的代码入口。
 - `flow` 是 handler 内部复用的业务实现过程。
 - `job` 是 Runtime DB 中可被 worker claim、retry、timeout 和审计的运行时执行单元。
-- `Execution Supervisor` 是当前 `lease + heartbeat + retry + try/except` 执行保护机制的架构抽象，并作为后续 hard timeout、子进程隔离、progress monitor 的演进位置。
+- `Execution Supervisor` 是当前 `lease + heartbeat + retry + try/except + child process hard timeout` 的统一执行保护机制；`api_worker`、`browser_worker`、`outbox_dispatcher` 的主路径 handler 已接入子进程隔离。
 - `Watchdog Scanner` 是当前架构需要补齐的应用层兜底能力，用于基于 Runtime DB 状态处理卡死、超时、无进展、孤儿 running 任务。
 - `outbox_dispatcher` 只负责 `notification_outbox` 的消息分发。
 
@@ -631,7 +631,7 @@ task reconciler 汇总整个 task。
 
 ## 11. Execution Supervisor
 
-当前系统已有 `lease + heartbeat + retry + try/except` 的轻量保护，但这只是 Execution Supervisor 的雏形。
+当前系统已有 `lease + heartbeat + retry + try/except + child process hard timeout` 的主路径保护。Execution Supervisor 是所有 worker handler 的统一生命周期管理层。
 
 目标 Supervisor 应该统一包裹所有 job handler 执行:
 
@@ -814,9 +814,28 @@ Creator detail job:
 
 ### 15.4 第四阶段: 子进程隔离与 hard timeout
 
-- handler 在 child process 中执行。
-- supervisor 父进程负责 kill 超时 child。
-- 解决业务函数不返回、HTTP 卡死、浏览器动作 hang 住的问题。
+状态: 主路径已接入。
+
+当前实现:
+
+- `api_worker`、`browser_worker`、`outbox_dispatcher` 执行 handler 时默认通过 Execution Supervisor 进入 child process。
+- supervisor 父进程负责 wall-clock hard timeout；超时后终止 child process，并把结果归类为 retry / failed。
+- hard timeout 优先使用 Runtime DB 记录中的 `max_execution_seconds`。
+- 当 Runtime 记录没有声明 timeout 时，使用应用层默认值: API `300s`、Browser `900s`、Outbox `60s`。
+- 运行参数仍保留显式降级开关: `execution_child_runner_mode=inline`，用于本地调试或少数需要父进程 side effect 观测的测试。
+
+已覆盖问题:
+
+- 业务函数不返回。
+- HTTP 请求卡死或第三方 SDK 不返回。
+- 浏览器动作 hang 住。
+- handler 抛异常后的标准化错误分类。
+- 真实 Runtime e2e 已覆盖 `child timeout -> retry_wait -> failed -> parent waiting_children 释放 -> executor 收敛 -> completion outbox`。
+
+剩余增强:
+
+- 将 child process pid / run id 暴露给 Watchdog 的本机 process registry，用于跨扫描周期的主动 kill。
+- 扩展浏览器 worker 与 outbox dispatcher 的 child timeout e2e，覆盖更多 worker 类型。
 
 ### 15.5 远期可选阶段: 并发安全 claim 与多 worker 扩容
 
