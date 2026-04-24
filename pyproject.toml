@@ -31,6 +31,17 @@ dev = [
   "ruff>=0.12.0",
 ]
 
+[dependency-groups]
+# Keep this in sync with [project.optional-dependencies].dev. uv includes the
+# default dev group for `uv run`, which keeps bare `uv run pytest` inside .venv
+# instead of falling through to a global pytest on PATH.
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.3.0",
+  "PyYAML>=6.0",
+  "ruff>=0.12.0",
+]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"

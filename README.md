@@ -307,6 +307,8 @@ scripts/execution_control/run_local_postgres_tests.sh
 uv run --extra dev pytest
 ```
 
+不要裸跑 `uv run pytest`。如果当前 `.venv` 没有安装 dev 依赖，`uv` 可能会从 `PATH` 找到 Homebrew 等全局 `pytest`，导致测试进程没有项目 dev extra，进而出现看起来像业务模块导入失败的错误。`pyproject.toml` 同时声明了默认 `dev` dependency group 用作兜底，但仓库文档和脚本仍统一使用 `uv run --extra dev pytest`。
+
 部署后建议至少验证：
 
 - `automation-business-scaffold-run list-tasks` 能列出正式 task。

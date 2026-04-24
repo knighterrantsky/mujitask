@@ -35,8 +35,10 @@
 
 ```bash
 git status --short --branch
-uv run pytest -q tests/test_registry.py tests/test_workflow_defs_contract.py tests/test_handler_registry_contract.py
+uv run --extra dev pytest -q tests/test_registry.py tests/test_workflow_defs_contract.py tests/test_handler_registry_contract.py
 ```
+
+不要裸跑 `uv run pytest`：如果当前 `.venv` 还没有安装 dev extra，`uv` 可能会从 `PATH` 找到 Homebrew 等全局 `pytest`，导致测试进程缺少项目测试依赖。
 
 如果窗口任务涉及 runtime / worker / outbox / watchdog，再追加对应专项测试，而不是一上来全量跑全仓库。
 
@@ -173,7 +175,7 @@ risks / follow-ups:
 ### 5.6 建议验证
 
 ```bash
-uv run pytest -q \
+uv run --extra dev pytest -q \
   tests/test_runtime_refresh_current_competitor_table.py \
   tests/test_runtime_search_keyword_competitor_products.py \
   tests/test_runtime_refresh_executor_integration.py \
@@ -183,7 +185,7 @@ uv run pytest -q \
 收口前建议再补跑:
 
 ```bash
-uv run pytest -q \
+uv run --extra dev pytest -q \
   tests/test_runtime_workflow_registry.py \
   tests/test_runtime_refresh_current_competitor_table.py \
   tests/test_runtime_search_keyword_competitor_products.py \
@@ -259,7 +261,7 @@ uv run pytest -q \
 ### 6.6 建议验证
 
 ```bash
-uv run pytest -q \
+uv run --extra dev pytest -q \
   tests/test_execution_supervisor_runtime.py \
   tests/test_runtime_lifecycle.py \
   tests/test_runtime_store.py \
@@ -331,7 +333,7 @@ uv run pytest -q \
 ### 7.6 建议验证
 
 ```bash
-uv run pytest -q \
+uv run --extra dev pytest -q \
   tests/test_watchdog_scanner.py \
   tests/test_runtime_lifecycle.py \
   tests/test_runtime_store.py
