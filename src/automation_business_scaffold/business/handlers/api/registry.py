@@ -7,6 +7,8 @@ from ..contract import HandlerCallable
 from ..registry import HandlerRegistry, RegisteredHandler
 from .implementations import (
     fact_bundle_upsert_handler,
+    feishu_table_read_handler,
+    feishu_table_write_handler,
     fastmoss_product_fetch_handler,
     media_asset_sync_handler,
     tiktok_product_request_fetch_handler,
@@ -14,6 +16,8 @@ from .implementations import (
 
 BOUND_API_HANDLERS = MappingProxyType(
     {
+        "feishu_table_read": feishu_table_read_handler,
+        "feishu_table_write": feishu_table_write_handler,
         "tiktok_product_request_fetch": tiktok_product_request_fetch_handler,
         "fastmoss_product_fetch": fastmoss_product_fetch_handler,
         "media_asset_sync": media_asset_sync_handler,
