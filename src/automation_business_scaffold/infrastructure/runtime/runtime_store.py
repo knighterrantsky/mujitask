@@ -3973,6 +3973,7 @@ class RuntimeStore:
                            OR (status = 'retry_wait' AND COALESCE(next_retry_at, 0) <= :now)
                         ORDER BY created_at ASC
                         LIMIT 1
+                        FOR UPDATE SKIP LOCKED
                         """
                     ),
                     {"now": now},
@@ -4107,6 +4108,7 @@ class RuntimeStore:
         outbox_id: str,
         error_text: str,
         retry_delay_seconds: float = 30.0,
+        retryable: bool = True,
         error_type: str = "",
         error_code: str = "",
         dead_letter_reason: str = "",
@@ -4125,8 +4127,11 @@ class RuntimeStore:
                 raise ValueError("Outbox record not found.")
             retry_count = int(row["retry_count"] or 0) + 1
             max_retry_count = int(row["max_retry_count"] or 0)
-            status = "retry_wait" if retry_count < max_retry_count else "failed"
+            status = "retry_wait" if retryable and retry_count < max_retry_count else "failed"
             next_retry_at = now + max(retry_delay_seconds, 0.1) if status == "retry_wait" else None
+            resolved_dead_letter_reason = dead_letter_reason
+            if status == "failed" and not resolved_dead_letter_reason:
+                resolved_dead_letter_reason = "max_retry_exhausted" if retryable else "terminal_dispatch_failure"
             connection.execute(
                 self._text(
                     """
@@ -4156,7 +4161,7 @@ class RuntimeStore:
                     "last_error_text": error_text,
                     "error_type": error_type,
                     "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_retry_exhausted" if status == "failed" else ""),
+                    "dead_letter_reason": resolved_dead_letter_reason,
                     "last_progress_at": now,
                     "updated_at": now,
                 },

@@ -11,7 +11,6 @@ from automation_business_scaffold.business.flows.runtime_common import (
     PRODUCT_INGEST_TASK_CODE,
     REFRESH_TASK_CODE,
     build_idle_payload,
-    build_not_ready_payload,
     build_outbox_message_text,
     build_request_payload,
     build_runtime_settings,
@@ -509,23 +508,6 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
             message="No outbox message is ready to dispatch.",
         )
 
-    if str(outbox.channel_code or "noop").strip() in {"", "noop", "disabled", "console", "stdout"}:
-        sent = store.mark_outbox_sent(outbox_id=outbox.outbox_id)
-        return {
-            "control_action": "outbox_once",
-            "dispatcher_status": "processed",
-            "processed_count": 1,
-            "success_count": 1,
-            "failed_count": 0,
-            "message": "Outbox dispatcher marked one outbox message as sent.",
-            "summary": {"total": 1, "counts": {"sent": 1}},
-            "item": sent.to_dict(),
-            "items": [sent.to_dict()],
-            "request_id": sent.ref_id,
-            "outbox_id": sent.outbox_id,
-            "channel_code": sent.channel_code,
-        }
-
     registry = _build_bound_outbox_handler_registry()
     context = HandlerContext(
         request_id=outbox.ref_id,
@@ -559,10 +541,12 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
         child_runner_config=_build_child_runner_config(params),
     )
     if outcome.should_mark_failed:
+        retryable = outcome.error.retryable if outcome.error is not None else True
         failed = store.mark_outbox_retry_or_failed(
             outbox_id=outbox.outbox_id,
             error_text=outcome.error_text,
             retry_delay_seconds=settings.retry_delay_seconds,
+            retryable=retryable,
             error_type=outcome.error.error_type if outcome.error is not None else "",
             error_code=outcome.error.error_code if outcome.error is not None else "",
             dead_letter_reason="supervisor_failed" if outcome.error is not None and outcome.error.terminal else "",
@@ -580,6 +564,8 @@ def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
             "request_id": failed.ref_id,
             "outbox_id": failed.outbox_id,
             "channel_code": failed.channel_code,
+            "retry_count": failed.retry_count,
+            "retry_scheduled_count": 1 if failed.status == "retry_wait" else 0,
             "worker_result": outcome.worker_result.to_dict(),
             "supervisor": outcome.to_dict(),
             "error": failed.last_error_text,
