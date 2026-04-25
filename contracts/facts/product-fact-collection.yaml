@@ -1,0 +1,48 @@
+schema_version: 1
+contract_type: product_fact_collection
+status: active_contract
+
+principles:
+  - product facts are independent from Feishu business writeback
+  - all product media facts must be materialized to object storage before being persisted as fact media
+  - business flows decide what products to collect and which projection mapper to use
+  - fact collection does not decide Feishu fields
+  - Feishu projection does not decide fact persistence
+
+required_pipeline_roles:
+  - fact_source_handler
+  - media_asset_sync
+  - mapper
+  - fact_bundle_upsert
+
+media_rules:
+  product_main_image:
+    must_materialize: true
+    storage: MinIO or configured artifact/object store
+  product_gallery_image:
+    must_materialize: true
+    storage: MinIO or configured artifact/object store
+  product_sku_image:
+    must_materialize: true
+    storage: MinIO or configured artifact/object store
+
+forbidden_patterns:
+  - flow_specific_media_fact_persistence
+  - feishu_projection_drives_fact_persistence
+  - product_fact_collection_helper_without_contract
+  - raw_cdn_url_persisted_as_fact_media_without_object_key_or_remote_uri
+
+allowed_implementation_owners:
+  - src/automation_business_scaffold/capabilities/fact_sources/**
+  - src/automation_business_scaffold/capabilities/media/**
+  - src/automation_business_scaffold/domains/**/mappers/**
+  - src/automation_business_scaffold/domains/**/projections/**
+  - src/automation_business_scaffold/capabilities/**/fact*
+  - src/automation_business_scaffold/control_plane/**
+
+forbidden_new_modules_by_default:
+  - src/automation_business_scaffold/domains/**/facts/*collection*.py
+  - src/automation_business_scaffold/domains/**/*helper*.py
+  - src/automation_business_scaffold/domains/**/*service*.py
+  - src/automation_business_scaffold/domains/**/*manager*.py
+  - src/automation_business_scaffold/domains/**/*coordinator*.py

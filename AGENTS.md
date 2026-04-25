@@ -82,6 +82,31 @@ python scripts/harness/claim_done.py <feature_code>
 
 如果 `done_gate` 不存在、未运行或失败，只能声明 `not complete` 或 `blocked`。禁止使用“已完成 / 实现完成 / 符合设计”这类结论，除非 gate 明确通过。
 
+## Architecture Drift Gate
+
+架构边界、统一能力和事实沉淀相关需求必须先收敛到设计事实来源，避免用局部 helper 把系统继续扩张。
+
+Design-first rule:
+
+- 当用户需求涉及“统一能力 / 所有流程 / 事实数据 / Fact DB / MinIO / mapper / projection / 架构边界 / 保持简单 / 不要新增 helper”时，默认先更新 docs / contracts / tests。
+- 除非用户明确要求实现代码，否则不要先改业务代码。
+- 若缺少对应 contract，不允许声明 `complete`。
+
+No Helper Sprawl rule:
+
+- 默认禁止为了解决局部问题新增 `helper` / `service` / `manager` / `coordinator` / `collection` / `collector` / `orchestrator` 等抽象模块。
+- 如果确实需要新增抽象，必须先在 `contracts/harness/architecture-ownership.yaml` 或相关 contract 中声明 owner、职责边界、允许调用方、禁止调用方、为什么现有 owner 不能承接。
+- 没有 contract 的新抽象不能通过 completion gate。
+
+Existing owner first rule:
+
+- 优先修改现有 handler / mapper / projection / ingestion / media sync / fact bundle upsert。
+- 不允许通过新增旁路 helper 绕开现有架构 owner。
+
+Stop rule:
+
+- 如果用户明确指出“先文档约束，不要实现”，Codex 必须停止在 docs / contracts / tests 层，不得继续实现业务代码。
+
 ## Schema And Contract Rules
 
 Runtime DB schema、Fact DB schema、workflow contract、handler contract、入口/输出 contract 是受控契约。字段、状态和 workflow 的可检查事实优先落在 `contracts/**`，Markdown 负责解释背景和边界。

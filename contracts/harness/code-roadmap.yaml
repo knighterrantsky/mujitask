@@ -58,6 +58,43 @@ features:
       - AGENTS.md must contain Completion Claim Gate and Stop Protocol.
       - Roadmap paths and done gates must be statically checkable.
 
+  - feature_code: architecture_drift_gate
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - contracts/harness/code-roadmap.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - scripts/harness/validate_architecture_delta.py
+      - scripts/harness/claim_done.py
+    source_contracts:
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - AGENTS.md
+      - contracts/harness/**
+      - contracts/facts/**
+      - scripts/harness/**
+      - tests/test_architecture_delta_gate.py
+      - tests/test_completion_claim_gate.py
+    forbidden_paths:
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_architecture_delta_gate.py
+        - tests/test_completion_claim_gate.py
+      commands:
+        - uv run --extra dev pytest tests/test_architecture_delta_gate.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - New helper-like abstraction must fail unless explicitly allowed by contract.
+      - Product fact collection must be governed by contract before implementation.
+
   - feature_code: runtime_watchdog_supervisor
     status: in_progress
     feature_area: runtime_control_plane

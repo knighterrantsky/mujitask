@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ROADMAP = REPO_ROOT / "contracts" / "harness" / "code-roadmap.yaml"
+DEFAULT_ARCHITECTURE_DELTA_GATE = REPO_ROOT / "scripts" / "harness" / "validate_architecture_delta.py"
 
 
 def _result(
@@ -80,10 +82,90 @@ def _command_exists(command: str) -> bool:
     return executable_exists and all(_path_exists(part) for part in referenced_paths)
 
 
+def _tail(text: str, limit: int = 2000) -> str:
+    cleaned = text.strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[-limit:]
+
+
 def _contains_any_runtime_signal(feature_code: str, feature: dict[str, Any]) -> bool:
     area = str(feature.get("feature_area", ""))
     text = " ".join([feature_code, area]).lower()
     return any(token in text for token in ("runtime", "watchdog", "supervisor"))
+
+
+def _requires_architecture_delta_gate(feature: dict[str, Any]) -> bool:
+    if bool(feature.get("requires_architecture_delta_gate")):
+        return True
+    change_type = str(feature.get("change_type") or feature.get("feature_type") or "").lower()
+    if any(token in change_type for token in ("implementation", "refactor")):
+        return True
+    implementation_prefixes = (
+        "src/automation_business_scaffold/domains/",
+        "src/automation_business_scaffold/capabilities/",
+        "src/automation_business_scaffold/control_plane/",
+        "src/automation_business_scaffold/business/",
+    )
+    allowed_paths = _as_list(feature.get("allowed_paths"))
+    return any(path.startswith(implementation_prefixes) for path in allowed_paths)
+
+
+def _run_architecture_delta_gate(
+    passed: list[dict[str, str]],
+    failed: list[dict[str, str]],
+) -> None:
+    command = [sys.executable, str(DEFAULT_ARCHITECTURE_DELTA_GATE)]
+    architecture_repo_root = os.environ.get("HARNESS_ARCHITECTURE_DELTA_REPO_ROOT")
+    if architecture_repo_root:
+        command.extend(["--repo-root", architecture_repo_root])
+
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    detail = _tail(result.stdout or result.stderr)
+    if result.returncode == 0:
+        _record(passed, "architecture_delta_gate", detail or "passed")
+        return
+    _record(failed, "architecture_delta_gate", detail or f"exit {result.returncode}")
+
+
+def _run_done_gate_commands(
+    commands: list[str],
+    passed: list[dict[str, str]],
+    failed: list[dict[str, str]],
+) -> None:
+    if not commands:
+        _record(failed, "done_gate_commands_present_for_run", "done_gate.commands is required")
+        return
+
+    for command in commands:
+        try:
+            result = subprocess.run(
+                shlex.split(command),
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            _record(failed, "done_gate_command_failed", f"{command}: {exc}")
+            continue
+
+        if result.returncode == 0:
+            _record(passed, "done_gate_command_passed", command)
+            continue
+
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        _record(
+            failed,
+            "done_gate_command_failed",
+            f"{command}: exit {result.returncode}\n{_tail(output)}",
+        )
 
 
 def _validate_feature(
@@ -91,6 +173,8 @@ def _validate_feature(
     feature: dict[str, Any],
     passed: list[dict[str, str]],
     failed: list[dict[str, str]],
+    *,
+    run_gates: bool,
 ) -> str:
     default_context = _as_list(feature.get("default_context"))
     missing_context = [path for path in default_context if not _path_exists(path)]
@@ -155,13 +239,36 @@ def _validate_feature(
         if failed:
             _record(failed, "complete_requires_gate_pass", "feature is marked complete but checks failed")
             return "not_complete"
+        if not run_gates:
+            _record(
+                failed,
+                "done_gate_run_required",
+                "complete claim requires --run-gates so done_gate commands actually run",
+            )
+            return "not_complete"
+        if _requires_architecture_delta_gate(feature):
+            _run_architecture_delta_gate(passed, failed)
+        else:
+            _record(
+                passed,
+                "architecture_delta_gate_not_required",
+                "feature does not touch implementation/refactor owner paths",
+            )
+        _run_done_gate_commands(commands, passed, failed)
+        if failed:
+            _record(
+                failed,
+                "complete_requires_gate_pass",
+                "feature is marked complete but gate execution failed",
+            )
+            return "not_complete"
         _record(passed, "complete_requires_gate_pass", "all checks passed")
         return "complete"
 
     return "not_complete"
 
 
-def check_claim(feature_code: str, roadmap_path: Path) -> tuple[dict[str, Any], int]:
+def check_claim(feature_code: str, roadmap_path: Path, *, run_gates: bool = False) -> tuple[dict[str, Any], int]:
     passed: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
 
@@ -222,7 +329,7 @@ def check_claim(feature_code: str, roadmap_path: Path) -> tuple[dict[str, Any], 
         ), 1
     _record(passed, "feature_code_exists", feature_code)
 
-    claim = _validate_feature(feature_code, feature, passed, failed)
+    claim = _validate_feature(feature_code, feature, passed, failed, run_gates=run_gates)
     exit_code = 0 if not failed else 1
     return _result(
         feature_code=feature_code,
@@ -240,9 +347,14 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("HARNESS_CODE_ROADMAP_PATH", str(DEFAULT_ROADMAP)),
         help="Path to code-roadmap.yaml. Defaults to contracts/harness/code-roadmap.yaml.",
     )
+    parser.add_argument(
+        "--run-gates",
+        action="store_true",
+        help="Actually run architecture and done_gate commands before allowing complete.",
+    )
     args = parser.parse_args(argv)
 
-    result, exit_code = check_claim(args.feature_code, Path(args.roadmap))
+    result, exit_code = check_claim(args.feature_code, Path(args.roadmap), run_gates=args.run_gates)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return exit_code
 

@@ -1,0 +1,72 @@
+schema_version: 1
+current_phase: domains_runtime_rewrite
+
+owners:
+  business_flow:
+    paths:
+      - src/automation_business_scaffold/domains/**/flows/**
+    responsibilities:
+      - decide what business targets to collect
+      - decide business filtering and continuation strategy
+      - decide which projection mapper to use
+    forbidden:
+      - own durable fact persistence
+      - own MinIO upload implementation
+      - own Feishu low-level writing
+      - create generic fact collection helper without contract
+
+  fact_source_handler:
+    paths:
+      - src/automation_business_scaffold/capabilities/fact_sources/**
+    responsibilities:
+      - collect raw facts from TikTok/FastMoss or other external sources
+      - return normalized raw result envelope
+    forbidden:
+      - decide Feishu business field projection
+      - own workflow-level business filtering
+
+  media_asset_sync:
+    paths:
+      - src/automation_business_scaffold/capabilities/media/**
+    responsibilities:
+      - download referenced media
+      - upload/materialize media into object storage
+      - return object_key/remote_uri metadata
+    forbidden:
+      - decide whether a product is business-worthy
+      - decide Feishu writeback fields
+
+  mapper:
+    paths:
+      - src/automation_business_scaffold/domains/**/mappers/**
+      - src/automation_business_scaffold/capabilities/**/mappers/**
+    responsibilities:
+      - map accepted raw payload into fact payload
+    forbidden:
+      - perform network fetch
+      - perform MinIO upload
+      - perform Feishu writeback
+
+  fact_ingestion:
+    paths:
+      - src/automation_business_scaffold/capabilities/**/fact*
+      - src/automation_business_scaffold/control_plane/**
+    responsibilities:
+      - upsert fact entities, snapshots, relations, media assets, raw audit
+    forbidden:
+      - decide business selection criteria
+      - decide Feishu field projection
+
+  projection_mapper:
+    paths:
+      - src/automation_business_scaffold/domains/**/projections/**
+    responsibilities:
+      - map fact/business result to Feishu fields
+    forbidden:
+      - collect external facts
+      - upload media
+      - upsert Fact DB
+
+legacy_reference_only:
+  - src/automation_business_scaffold/business/**
+  - docs/business/**
