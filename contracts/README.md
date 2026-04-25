@@ -10,6 +10,7 @@
 | --- | --- |
 | [codex](./codex) | Codex app 根目录短 Prompt 的任务路由和最小上下文选择 |
 | [fields](./fields) | 飞书业务表字段角色、更新策略、来源和写回目标 |
+| [harness](./harness) | code roadmap、completion claim gate 和任务完成声明契约 |
 | [states](./states) | 业务状态字段的枚举、终态和重置规则 |
 | [workflow](./workflow) | workflow 的业务入口、字段契约、阶段和不变量索引 |
 
@@ -25,4 +26,5 @@
 - 改字段含义、pending 判断、状态枚举或系统覆盖策略时，必须同步更新 `contracts/fields/**` 或 `contracts/states/**`。
 - 改 workflow stage、job、handler、adapter、projection 或关键不变量时，必须同步更新 `contracts/workflow/**`。
 - 改 Codex 根目录任务分类、默认上下文或禁止读取范围时，必须同步更新 `contracts/codex/**` 和对应测试。
+- 改 feature 完成判定、done gate 或 root prompt roadmap 时，必须同步更新 `contracts/harness/**`、`scripts/harness/**` 和对应测试。
 - `docs/reference/**` 和 `docs/business/requirements-backlog.md` 不能被 workflow contract 标为正式需求来源。

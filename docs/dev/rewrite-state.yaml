@@ -9,30 +9,32 @@ canonical_runtime_owners:
   implementation_contracts: "src/automation_business_scaffold/contracts/**"
   machine_contracts: "contracts/**"
 
-legacy_reference:
-  paths:
-    - "src/automation_business_scaffold/business/**"
-    - "docs/business/**"
-  rule: "Read-only reference unless explicitly asked to migrate, delete legacy material, or change customer requirements."
+legacy_reference_only:
+  - path: "src/automation_business_scaffold/business/**"
+    rule: "Legacy/reference implementation only; current new business implementation belongs in domains/** and this path can be deleted after rewrite."
+  - path: "docs/business/**"
+    rule: "Business requirements and acceptance reference only; not a default implementation owner."
 
 allowed_broken:
-  - "some function imports during rewrite"
+  - "full import during rewrite"
   - "full end-to-end execution"
-  - "legacy business path completeness"
+  - "some legacy references while migration is incomplete"
 
 must_remain_green:
   - "architecture ownership checks"
-  - "project structure contract checks"
   - "contract yaml parse checks"
   - "no runtime import from achieve"
-  - "no new business runtime owner files"
-  - "codex root task routing checks"
+  - "completion claim gate"
 
-bounded_task_defaults:
-  require_minimal_context: true
-  avoid_next_step_suggestions: true
-  prefer_current_owner_paths:
-    - "src/automation_business_scaffold/domains/**"
-    - "src/automation_business_scaffold/capabilities/**"
-    - "src/automation_business_scaffold/control_plane/**"
-    - "contracts/**"
+completion_policy:
+  default_claim: not_complete
+  require_feature_code: true
+  roadmap: "contracts/harness/code-roadmap.yaml"
+  claim_gate: "scripts/harness/claim_done.py"
+  require_done_gate_before_complete: true
+  forbid_complete_without_gate_pass: true
+  final_response_fields:
+    - status
+    - files_changed
+    - checks_run
+    - failed_gates_or_blockers
