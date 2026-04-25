@@ -1,0 +1,126 @@
+schema_version: 1
+contract_type: codex_root_task_routing
+default_mode: bounded_task
+
+default_context:
+  - docs/dev/rewrite-state.yaml
+  - contracts/codex/task-routing.yaml
+  - docs/arch/project-structure-contract.md
+
+stop_protocol:
+  completion_response:
+    - status
+    - modified_files
+    - checks_run
+    - in_scope_blockers
+  forbidden_unless_requested:
+    - next_step_suggestions
+    - unrelated_roadmap
+    - scope_expansion
+
+routing:
+  - route_id: tk_influencer_pool_runtime
+    match:
+      keywords:
+        - "达人池"
+        - "达人查找"
+        - "creator"
+        - "influencer"
+    mode: domain_runtime_change
+    domain: tiktok
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/tk-influencer-pool/README.md
+      - docs/arch/project-structure-contract.md
+      - contracts/workflow/sync_tk_influencer_pool.yaml
+      - contracts/fields/feishu-tk-influencer-pool.yaml
+      - contracts/states/tk-competitor-influencer-search-status.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - tests/
+    avoid_by_default:
+      - src/automation_business_scaffold/business/
+      - docs/business/
+      - docs/arch/workflow-influencer-pool-sync-design.md
+    allowed_when:
+      docs/business/: "Only read or edit when changing customer requirements, acceptance criteria, or field business meaning."
+      docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
+      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
+
+  - route_id: tk_competitor_runtime
+    match:
+      keywords:
+        - "竞品"
+        - "关键词"
+        - "商品状态"
+        - "TK竞品收集"
+        - "competitor"
+    mode: domain_runtime_change
+    domain: tiktok
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/tk-competitor/README.md
+      - docs/arch/project-structure-contract.md
+      - contracts/fields/feishu-tk-competitor.yaml
+      - contracts/states/tk-competitor-product-status.yaml
+      - contracts/workflow/refresh_current_competitor_table.yaml
+      - contracts/workflow/search_keyword_competitor_products.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - tests/
+    avoid_by_default:
+      - src/automation_business_scaffold/business/
+      - docs/business/
+      - docs/arch/workflow-competitor-table-design.md
+    allowed_when:
+      docs/business/: "Only read or edit when changing customer requirements, acceptance criteria, or field business meaning."
+      docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
+      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
+
+  - route_id: product_fact_ingest_runtime
+    match:
+      keywords:
+        - "选品"
+        - "product ingest"
+        - "tiktok_fastmoss_product_ingest"
+        - "FastMoss"
+        - "媒体同步"
+        - "Fact DB"
+    mode: domain_runtime_change
+    domain: tiktok
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/product-fact-ingest/README.md
+      - docs/arch/project-structure-contract.md
+      - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - src/automation_business_scaffold/capabilities/
+      - tests/
+    avoid_by_default:
+      - src/automation_business_scaffold/business/
+      - docs/business/
+      - docs/arch/workflow-selection-analysis-design.md
+    allowed_when:
+      docs/business/: "Only read or edit when formal customer requirements are being added or changed."
+      docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
+      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
+
+  - route_id: architecture_governance
+    match:
+      keywords:
+        - "架构"
+        - "contract"
+        - "契约"
+        - "路由"
+        - "治理"
+        - "AGENTS"
+    mode: governance_change
+    default_context:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - contracts/codex/task-routing.yaml
+      - docs/arch/project-structure-contract.md
+      - docs/dev/documentation-change-policy.md
+      - tests/
+    avoid_by_default:
+      - src/automation_business_scaffold/business/
+    allowed_when:
+      src/automation_business_scaffold/business/: "Read-only reference unless explicitly cleaning legacy ownership."

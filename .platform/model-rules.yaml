@@ -13,7 +13,7 @@ environment_assumptions:
     description: "A sibling ../automation-framework checkout is optional and only for platform-maintainer validation."
 change_modes:
   business_feature:
-    description: "Default mode for normal business workflow development."
+    description: "Default mode for normal bounded business development during rewrite."
     may_edit:
       - "README.md"
       - "docs/README.md"
@@ -21,25 +21,30 @@ change_modes:
       - "docs/domains/**"
       - "docs/dev/**"
       - "contracts/**"
+      - "tests/**"
       - "src/automation_business_scaffold/config.py"
-      - "src/automation_business_scaffold/tasks/**"
-      - "src/automation_business_scaffold/workflows/**"
-      - "src/automation_business_scaffold/flows/**"
+      - "src/automation_business_scaffold/domains/**"
+      - "src/automation_business_scaffold/capabilities/**"
+      - "src/automation_business_scaffold/control_plane/**"
+      - "src/automation_business_scaffold/contracts/**"
       - "src/automation_business_scaffold/models/**"
-      - "src/automation_business_scaffold/mappers/**"
       - "src/automation_business_scaffold/validators/**"
-      - "docs/business/**"
       - "docs/ops/**"
       - "docs/reference/**"
-      - "tests/test_registry.py"
-      - "tests/test_workflow_demo.py"
     must_not_edit:
       - ".platform/**"
       - "AGENTS.md"
+      - "src/automation_business_scaffold/business/**"
       - "src/automation_business_scaffold/agent.py"
       - "src/automation_business_scaffold/registry.py"
       - "tests/test_agent.py"
       - "tests/test_framework_dependency.py"
+  legacy_reference:
+    description: "Read-only reference mode for old business implementation and original business requirements."
+    readable:
+      - "src/automation_business_scaffold/business/**"
+      - "docs/business/**"
+    rule: "Read-only reference unless the user explicitly asks for legacy cleanup or customer requirement changes."
   platform_upgrade:
     description: "Only use when updating framework dependency metadata or platform-managed shell files."
 framework_rules:

@@ -6,7 +6,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUSINESS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business"
+DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains"
 RUNTIME_SCOPES = ("flows", "tasks", "workflows", "jobs", "handlers", "workflow_defs", "feishu")
+DOMAIN_RUNTIME_SCOPES = ("flows", "tasks", "workflows", "jobs", "mappers", "policies", "projections")
 
 
 def _business_runtime_files() -> list[Path]:
@@ -17,6 +19,32 @@ def _business_runtime_files() -> list[Path]:
             continue
         for path in scope_root.rglob("*.py"):
             if "achieve" in path.parts:
+                continue
+            targets.append(path)
+    return sorted(targets)
+
+
+def _domain_runtime_files() -> list[Path]:
+    targets: list[Path] = []
+    for domain_root in sorted(path for path in DOMAIN_ROOT.iterdir() if path.is_dir()):
+        for scope in DOMAIN_RUNTIME_SCOPES:
+            scope_root = domain_root / scope
+            if not scope_root.exists():
+                continue
+            targets.extend(sorted(scope_root.rglob("*.py")))
+    return sorted(targets)
+
+
+def _business_non_reference_runtime_files() -> list[Path]:
+    targets: list[Path] = []
+    for scope in RUNTIME_SCOPES:
+        scope_root = BUSINESS_ROOT / scope
+        if not scope_root.exists():
+            continue
+        for path in scope_root.rglob("*.py"):
+            if "achieve" in path.parts:
+                continue
+            if path.name == "__init__.py":
                 continue
             targets.append(path)
     return sorted(targets)
@@ -107,3 +135,16 @@ def test_business_runtime_code_must_not_import_achieve() -> None:
     assert violating == [], "runtime business code must not import achieve:\n" + "\n".join(
         str(path.relative_to(REPO_ROOT)) for path in violating
     )
+
+
+def test_domain_runtime_code_must_not_import_achieve() -> None:
+    violating = [path for path in _domain_runtime_files() if _imports_achieve(path)]
+    assert violating == [], "domain runtime code must not import achieve:\n" + "\n".join(
+        str(path.relative_to(REPO_ROOT)) for path in violating
+    )
+
+
+def test_no_new_business_runtime_owner_files() -> None:
+    violating = _business_non_reference_runtime_files()
+    message = "business/** is legacy reference; new runtime owner files belong in domains/**:\n"
+    assert violating == [], message + "\n".join(str(path.relative_to(REPO_ROOT)) for path in violating)

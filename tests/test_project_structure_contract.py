@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUSINESS_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "business"
+DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "tiktok"
 SKILLS_ROOT = REPO_ROOT / "skills"
 PROJECT_STRUCTURE_DOC = REPO_ROOT / "docs" / "arch" / "project-structure-contract.md"
 
@@ -46,22 +46,34 @@ def test_project_structure_contract_freezes_core_boundaries() -> None:
         "## 6. 新增代码流程",
         "## 7. 测试护栏",
         "Runtime 控制面契约",
-        "business/flows/runtime_orchestrator.py",
-        "business/flows/execution_supervisor.py",
-        "business/flows/runtime_views.py",
-        "business/flows/watchdog_scanner.py",
+        "domains/{domain}/tasks/{task_code}.py",
+        "domains/{domain}/workflows/{workflow_code}.py",
+        "domains/{domain}/jobs/{job_code}.py",
+        "domains/{domain}/mappers/{mapper_module}.py",
+        "domains/{domain}/flows/** 业务实现细节",
+        "capabilities/{capability_role}/{system}/{handler_code}_handler.py",
+        "control_plane/executor/runner.py",
+        "control_plane/supervisor/execution_supervisor.py",
+        "control_plane/reconciler/views.py",
+        "control_plane/watchdog/scanner.py",
         "src/automation_business_scaffold/project_env.py",
         "src/automation_business_scaffold/config.py",
         "skills/{skill_code}/SKILL.md",
         "MUJITASK_SKILLS_DIR/{skill_code}",
         "skill.local.env",
         "executor.local.env",
-        "business/tasks/{task_code}.py",
-        "business/workflow_defs/{workflow_code}.py",
-        "business/jobs/{job_code}.py",
-        "business/handlers/{worker_lane}/{handler_code}.py",
-        "business/feishu/source_adapters.py",
-        "business/feishu/projection_mappers.py",
+        "domains/{domain}/tasks/",
+        "domains/{domain}/workflows/",
+        "domains/{domain}/jobs/",
+        "domains/{domain}/mappers/",
+        "domains/{domain}/projections/",
+        "domains/{domain}/policies/",
+        "domains/{domain}/flows/",
+        "capabilities/input_sources/",
+        "capabilities/fact_sources/",
+        "capabilities/channels/",
+        "control_plane/",
+        "business/**/achieve/",
         "`SKILL.md`、入口脚本、`skill.local.env.example`",
         "`JOB_CODE`、`HANDLER_CODE`、`JOB_DEFINITION`",
         "`HANDLER_CODE`、`CONTRACT`",
@@ -78,22 +90,19 @@ def test_project_structure_contract_freezes_core_boundaries() -> None:
     assert missing == [], "project structure contract is missing required tokens:\n" + "\n".join(missing)
 
 
-def test_business_core_structure_directories_exist() -> None:
+def test_current_domain_core_structure_directories_exist() -> None:
     required_dirs = (
         "tasks",
-        "workflow_defs",
         "workflows",
         "jobs",
-        "handlers",
-        "handlers/api",
-        "handlers/browser",
-        "handlers/outbox",
-        "feishu",
+        "mappers",
+        "projections",
+        "policies",
         "flows",
     )
 
-    missing = [path for path in required_dirs if not (BUSINESS_ROOT / path).is_dir()]
-    assert missing == [], "business core structure directories are missing:\n" + "\n".join(missing)
+    missing = [path for path in required_dirs if not (DOMAIN_ROOT / path).is_dir()]
+    assert missing == [], "domain core structure directories are missing:\n" + "\n".join(missing)
 
 
 def test_agent_skill_bundle_source_exists() -> None:
@@ -112,19 +121,22 @@ def test_agent_skill_bundle_source_exists() -> None:
     assert missing == [], f"{skill_code} skill bundle is missing files:\n" + "\n".join(missing)
 
 
-def test_business_structure_entrypoint_files_exist() -> None:
+def test_domain_structure_entrypoint_files_exist() -> None:
     required_files = (
-        "workflow_defs/registry.py",
-        "jobs/catalog.py",
-        "handlers/allowlist.py",
-        "handlers/registry.py",
-        "handlers/contract.py",
-        "handlers/api/registry.py",
-        "handlers/browser/registry.py",
-        "handlers/outbox/registry.py",
-        "feishu/source_adapters.py",
-        "feishu/projection_mappers.py",
+        "tasks/refresh_current_competitor_table.py",
+        "tasks/search_keyword_competitor_products.py",
+        "tasks/sync_tk_influencer_pool.py",
+        "tasks/tiktok_fastmoss_product_ingest.py",
+        "workflows/refresh_current_competitor_table.py",
+        "workflows/search_keyword_competitor_products.py",
+        "workflows/sync_tk_influencer_pool.py",
+        "workflows/tiktok_fastmoss_product_ingest.py",
+        "jobs/competitor_row_refresh.py",
+        "jobs/feishu_table_read.py",
+        "jobs/feishu_table_write.py",
+        "mappers/registry.py",
+        "projections/registry.py",
     )
 
-    missing = [path for path in required_files if not (BUSINESS_ROOT / path).is_file()]
-    assert missing == [], "business structure entrypoint files are missing:\n" + "\n".join(missing)
+    missing = [path for path in required_files if not (DOMAIN_ROOT / path).is_file()]
+    assert missing == [], "domain structure entrypoint files are missing:\n" + "\n".join(missing)
