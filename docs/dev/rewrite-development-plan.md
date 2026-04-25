@@ -13,47 +13,49 @@
 - 旧实现已冻结到 `achieve/`，只作为黄金基准和逻辑参考。
 - 运行时代码禁止依赖 `achieve/`。
 - 重构期间项目不要求持续可运行。
-- 新实现必须按目标架构重建:
-  - `business/handlers/`
-  - `business/workflow_defs/`
-  - 新的 `business/flows/`
-  - 新的 `business/tasks/`
-  - 新的 `business/workflows/`
+- 当前重构方向以 [rewrite-state.yaml](./rewrite-state.yaml) 为准:
+  - `src/automation_business_scaffold/domains/**` 是新业务实现 owner。
+  - `src/automation_business_scaffold/capabilities/**` 是通用 handler 能力 owner。
+  - `src/automation_business_scaffold/control_plane/**` 是 runtime 控制面 owner。
+  - `contracts/**` 和 `src/automation_business_scaffold/contracts/**` 是机器契约 owner。
+  - `src/automation_business_scaffold/business/**` 只作为 legacy / achieve reference，重构完成后删除或归档。
 
 相关文档:
 
 - [重构验收契约](../arch/rewrite-acceptance-contract.md)
+- [当前重构状态](./rewrite-state.yaml)
 - [当前整体系统架构设计](../arch/current-system-architecture-design.md)
 - [四个 Workflow 重设计评审](../arch/workflow-redesign-review.md)
 - [Handler Contract 设计](../arch/handler-contract-design.md)
 
 ## 2. 当前依赖事实
 
-当前仓库里，真正卡住重构顺序的不是业务逻辑，而是入口层对旧 `business` 目录的硬依赖。
+当前仓库里，真正卡住重构顺序的不是业务逻辑，而是入口层对旧 `business` 目录的历史硬依赖。新实现 owner 已经切到 `domains/**`、`capabilities/**` 和 `control_plane/**`；旧 `business/**` 只作为迁移参考。
 
 ### 2.1 基础入口依赖
 
 当前入口链路:
 
 ```text
-agent.py / cli.py
-  -> registry.py
-  -> business.tasks.DEFAULT_TASKS
+apps/rpc_agent/server.py / apps/cli/main.py
+  -> control_plane/task_requests
+  -> domains/{domain}/tasks/{task_code}.py
+  -> domains/{domain}/workflows/{workflow_code}.py
 
-executor_daemon.py / api_worker_daemon.py / browser_runloop.py / outbox_dispatcher.py
-  -> business.flows.refresh_current_competitor_table_flow
-  -> execute_* / run_* daemon entrypoints
+apps/daemons/{executor,api_worker,browser_worker,outbox}/main.py
+  -> control_plane/{executor,supervisor,reconciler,outbox,watchdog}
+  -> domains/{domain}/jobs/{job_code}.py
+  -> capabilities/**/{handler_code}_handler.py
 ```
 
 当前直接依赖点:
 
-- [src/automation_business_scaffold/agent.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/agent.py)
-- [src/automation_business_scaffold/cli.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/cli.py)
-- [src/automation_business_scaffold/registry.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/registry.py)
-- [src/automation_business_scaffold/executor_daemon.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/executor_daemon.py)
-- [src/automation_business_scaffold/api_worker_daemon.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/api_worker_daemon.py)
-- [src/automation_business_scaffold/browser_runloop.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/browser_runloop.py)
-- [src/automation_business_scaffold/outbox_dispatcher.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/outbox_dispatcher.py)
+- [src/automation_business_scaffold/apps/rpc_agent/server.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/rpc_agent/server.py)
+- [src/automation_business_scaffold/apps/cli/main.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/cli/main.py)
+- [src/automation_business_scaffold/apps/daemons/executor/main.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/daemons/executor/main.py)
+- [src/automation_business_scaffold/apps/daemons/api_worker/main.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/daemons/api_worker/main.py)
+- [src/automation_business_scaffold/apps/daemons/browser_worker/main.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/daemons/browser_worker/main.py)
+- [src/automation_business_scaffold/apps/daemons/outbox/main.py](/Users/happyzhao/Work/mujitask/src/automation_business_scaffold/apps/daemons/outbox/main.py)
 
 结论:
 
@@ -114,11 +116,13 @@ executor_daemon.py / api_worker_daemon.py / browser_runloop.py / outbox_dispatch
 
 完成标准:
 
-- `business/workflow_defs/` 有稳定模型和 registry。
-- `business/handlers/` 有稳定 contract 和 registry。
-- `business/tasks/` 恢复 `DEFAULT_TASKS`。
-- `business/workflows/` 恢复 framework `WorkflowSpec` 入口。
-- `business/flows/` 恢复 daemon 可调用的新 runtime orchestrator entrypoints。
+- `src/automation_business_scaffold/contracts/workflow/` 有稳定模型、实现侧 manifest 和 registry 入口。
+- `src/automation_business_scaffold/contracts/handler/` 有稳定 contract、allowlist 和 handler lookup registry。
+- `src/automation_business_scaffold/domains/{domain}/tasks/` 承接正式 task 入口。
+- `src/automation_business_scaffold/domains/{domain}/workflows/` 承接 workflow definition。
+- `src/automation_business_scaffold/domains/{domain}/jobs/` 承接 job contract。
+- `src/automation_business_scaffold/capabilities/**` 承接通用 handler 能力。
+- `src/automation_business_scaffold/control_plane/**` 承接 daemon 可调用的 runtime orchestration、supervisor、reconciler、watchdog 和 outbox。
 - `agent.py` / `cli.py` / 四个 daemon 可以重新 import。
 
 说明:
@@ -292,7 +296,9 @@ flowchart LR
 
 所有权:
 
-- `src/automation_business_scaffold/business/workflow_defs/**`
+- `src/automation_business_scaffold/contracts/workflow/**`
+- `src/automation_business_scaffold/domains/{domain}/workflows/**`
+- `contracts/workflow/**`
 
 内容:
 
@@ -314,7 +320,8 @@ flowchart LR
 
 所有权:
 
-- `src/automation_business_scaffold/business/handlers/**`
+- `src/automation_business_scaffold/contracts/handler/**`
+- `src/automation_business_scaffold/capabilities/**`
 
 内容:
 
@@ -335,8 +342,8 @@ flowchart LR
 
 所有权:
 
-- `src/automation_business_scaffold/business/tasks/**`
-- `src/automation_business_scaffold/business/workflows/**`
+- `src/automation_business_scaffold/domains/{domain}/tasks/**`
+- `src/automation_business_scaffold/domains/{domain}/workflows/**`
 - `src/automation_business_scaffold/registry.py`
 
 内容:
@@ -354,11 +361,10 @@ flowchart LR
 
 所有权:
 
-- `src/automation_business_scaffold/business/flows/**`
-- `src/automation_business_scaffold/executor_daemon.py`
-- `src/automation_business_scaffold/api_worker_daemon.py`
-- `src/automation_business_scaffold/browser_runloop.py`
-- `src/automation_business_scaffold/outbox_dispatcher.py`
+- `src/automation_business_scaffold/control_plane/**`
+- `src/automation_business_scaffold/apps/daemons/**`
+- `src/automation_business_scaffold/apps/cli/**`
+- `src/automation_business_scaffold/apps/rpc_agent/**`
 
 内容:
 
@@ -382,6 +388,8 @@ flowchart LR
 所有权:
 
 - `tests/test_rewrite_contract.py`
+- `tests/test_project_structure_contract.py`
+- `tests/test_codex_root_task_routing.py`
 - 新的 comparator / integration tests
 
 内容:
@@ -403,7 +411,8 @@ flowchart LR
 所有权:
 
 - `src/automation_business_scaffold/infrastructure/runtime/**`
-- `src/automation_business_scaffold/business/flows/runtime_*`
+- `src/automation_business_scaffold/control_plane/reconciler/**`
+- `src/automation_business_scaffold/control_plane/outbox/**`
 - Runtime lifecycle 相关 tests / migration
 
 内容:
@@ -431,10 +440,10 @@ flowchart LR
 所有权:
 
 - worker 执行包装层
-- `src/automation_business_scaffold/business/flows/**`
-- `src/automation_business_scaffold/api_worker_daemon.py`
-- `src/automation_business_scaffold/browser_runloop.py`
-- `src/automation_business_scaffold/outbox_dispatcher.py`
+- `src/automation_business_scaffold/control_plane/supervisor/**`
+- `src/automation_business_scaffold/apps/daemons/api_worker/**`
+- `src/automation_business_scaffold/apps/daemons/browser_worker/**`
+- `src/automation_business_scaffold/apps/daemons/outbox/**`
 
 内容:
 
@@ -517,10 +526,10 @@ flowchart LR
 
 | Subagent | 负责范围 | 写入范围 |
 | --- | --- | --- |
-| A | `workflow_defs` | `business/workflow_defs/**` |
-| B | `handlers` contract / registry | `business/handlers/**` |
-| C | `tasks` / `workflows` / `registry.py` | `business/tasks/**`、`business/workflows/**`、`registry.py` |
-| D | runtime orchestrator | `business/flows/**`、4 个 daemon |
+| A | workflow contracts / definitions | `src/automation_business_scaffold/contracts/workflow/**`、`domains/**/workflows/**`、`contracts/workflow/**` |
+| B | handler contract / capabilities | `src/automation_business_scaffold/contracts/handler/**`、`src/automation_business_scaffold/capabilities/**` |
+| C | tasks / workflows / registry | `domains/**/tasks/**`、`domains/**/workflows/**`、`registry.py` |
+| D | runtime control plane | `control_plane/**`、`apps/daemons/**` |
 
 主线程负责:
 
@@ -535,8 +544,8 @@ flowchart LR
 
 | Subagent | 负责范围 | 写入范围 |
 | --- | --- | --- |
-| E | runtime lifecycle / reconciler | `infrastructure/runtime/**`、`business/flows/runtime_*`、相关 tests |
-| F | execution supervisor | worker 包装层、`business/flows/**`、`api_worker_daemon.py`、`browser_runloop.py`、`outbox_dispatcher.py` |
+| E | runtime lifecycle / reconciler | `infrastructure/runtime/**`、`control_plane/reconciler/**`、`control_plane/outbox/**`、相关 tests |
+| F | execution supervisor | worker 包装层、`control_plane/supervisor/**`、`apps/daemons/**` |
 | G | watchdog scanner | watchdog 模块、runtime scan query、watchdog tests |
 | H | child runner / hard timeout | child runner 模块、supervisor 集成、kill/cleanup tests |
 
@@ -584,8 +593,10 @@ flowchart LR
 
 建议所有权:
 
-- `business/handlers/api/feishu_*`
-- `business/handlers/common/adapter_*`
+- `src/automation_business_scaffold/capabilities/input_sources/feishu/**`
+- `src/automation_business_scaffold/capabilities/channels/feishu/**`
+- `src/automation_business_scaffold/domains/tiktok/mappers/**`
+- `src/automation_business_scaffold/domains/tiktok/projections/**`
 - 与 Feishu 相关的公共 tests
 
 #### WT-S2: Product Collection Common
@@ -600,11 +611,11 @@ flowchart LR
 
 建议所有权:
 
-- `business/handlers/api/tiktok_*`
-- `business/handlers/browser/tiktok_*`
-- `business/handlers/api/fastmoss_product_*`
-- `business/handlers/api/media_asset_sync.py`
-- `business/handlers/api/fact_bundle_upsert.py`
+- `src/automation_business_scaffold/capabilities/fact_sources/tiktok/**`
+- `src/automation_business_scaffold/capabilities/browser/**`
+- `src/automation_business_scaffold/capabilities/fact_sources/fastmoss/**`
+- `src/automation_business_scaffold/capabilities/media/**`
+- `src/automation_business_scaffold/capabilities/persistence/database/**`
 
 #### WT-S3: Influencer Common
 
@@ -616,9 +627,9 @@ flowchart LR
 
 建议所有权:
 
-- `business/handlers/api/fastmoss_creator_*`
-- `business/handlers/api/fastmoss_shop_*`
-- `business/handlers/api/fastmoss_video_*`
+- `src/automation_business_scaffold/capabilities/fact_sources/fastmoss/**`
+- `src/automation_business_scaffold/domains/tiktok/mappers/**`
+- `src/automation_business_scaffold/domains/tiktok/projections/**`
 
 #### WT-S4: Competitor Search Common
 

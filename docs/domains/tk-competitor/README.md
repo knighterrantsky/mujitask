@@ -7,16 +7,25 @@
 - `TK竞品收集` 表字段语义
 - 竞品行刷新、关键词新增、商品状态、记录日期
 
-## 修改本域前先读
+## 默认上下文
 
-1. [../../business/business-requirements.md](../../business/business-requirements.md)
-2. [../../business/requirements/refresh-current-competitor-table.md](../../business/requirements/refresh-current-competitor-table.md)
-3. [../../business/requirements/search-keyword-competitor-products.md](../../business/requirements/search-keyword-competitor-products.md)
-4. [../../arch/workflow-competitor-table-design.md](../../arch/workflow-competitor-table-design.md)
-5. [../../../contracts/fields/feishu-tk-competitor.yaml](../../../contracts/fields/feishu-tk-competitor.yaml)
-6. [../../../contracts/states/tk-competitor-product-status.yaml](../../../contracts/states/tk-competitor-product-status.yaml)
-7. [../../../contracts/workflow/refresh_current_competitor_table.yaml](../../../contracts/workflow/refresh_current_competitor_table.yaml)
-8. [../../../contracts/workflow/search_keyword_competitor_products.yaml](../../../contracts/workflow/search_keyword_competitor_products.yaml)
+普通实现 / 修复默认只读:
+
+1. [../../dev/rewrite-state.yaml](../../dev/rewrite-state.yaml)
+2. [../../arch/project-structure-contract.md](../../arch/project-structure-contract.md)
+3. [../../../contracts/codex/task-routing.yaml](../../../contracts/codex/task-routing.yaml)
+4. [../../../contracts/fields/feishu-tk-competitor.yaml](../../../contracts/fields/feishu-tk-competitor.yaml)
+5. [../../../contracts/states/tk-competitor-product-status.yaml](../../../contracts/states/tk-competitor-product-status.yaml)
+6. [../../../contracts/workflow/refresh_current_competitor_table.yaml](../../../contracts/workflow/refresh_current_competitor_table.yaml)
+7. [../../../contracts/workflow/search_keyword_competitor_products.yaml](../../../contracts/workflow/search_keyword_competitor_products.yaml)
+8. 当前相关源码和测试。
+
+## 条件展开
+
+- 修改客户需求、验收口径或字段业务含义时，才读 `docs/business/**`。
+- 修改架构边界、Runtime contract 或目录归属时，才读 `docs/arch/**` 长文档。
+- 修改字段语义、pending 判断或状态枚举时，必须同步读写 `contracts/fields/**` 或 `contracts/states/**`。
+- 排查旧行为时，可以读取 `src/automation_business_scaffold/business/**`，但不能把它作为新实现 owner。
 
 ## 本域不可破坏的不变量
 
@@ -25,3 +34,5 @@
 - `前台截图` / `Fastmoss截图` 当前不采集、不写回、不参与 pending 判断。
 - 一条候选飞书记录最多创建一个 `competitor_row_refresh` 主 job。
 - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于行级主 job 内部步骤，不能按 API 调用粒度拆成 sibling jobs。
+- 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`，`business/**` 只是 legacy reference。
+- 完成本任务后遵守 `AGENTS.md` 的 Stop Protocol，不输出无关下一步建议。

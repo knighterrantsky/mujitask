@@ -1,0 +1,38 @@
+schema_version: 1
+status: active_rewrite
+current_phase: domains_runtime_rewrite
+
+canonical_runtime_owners:
+  domain_business_logic: "src/automation_business_scaffold/domains/**"
+  reusable_capabilities: "src/automation_business_scaffold/capabilities/**"
+  runtime_control_plane: "src/automation_business_scaffold/control_plane/**"
+  implementation_contracts: "src/automation_business_scaffold/contracts/**"
+  machine_contracts: "contracts/**"
+
+legacy_reference:
+  paths:
+    - "src/automation_business_scaffold/business/**"
+    - "docs/business/**"
+  rule: "Read-only reference unless explicitly asked to migrate, delete legacy material, or change customer requirements."
+
+allowed_broken:
+  - "some function imports during rewrite"
+  - "full end-to-end execution"
+  - "legacy business path completeness"
+
+must_remain_green:
+  - "architecture ownership checks"
+  - "project structure contract checks"
+  - "contract yaml parse checks"
+  - "no runtime import from achieve"
+  - "no new business runtime owner files"
+  - "codex root task routing checks"
+
+bounded_task_defaults:
+  require_minimal_context: true
+  avoid_next_step_suggestions: true
+  prefer_current_owner_paths:
+    - "src/automation_business_scaffold/domains/**"
+    - "src/automation_business_scaffold/capabilities/**"
+    - "src/automation_business_scaffold/control_plane/**"
+    - "contracts/**"

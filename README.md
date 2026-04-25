@@ -224,15 +224,15 @@ automation-business-scaffold-run run \
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/automation_business_scaffold/business/tasks/` | 顶层 task 和内部 task 入口 |
-| `src/automation_business_scaffold/business/jobs/` | Runtime job 定义门面；按 job_code 命名并指向稳定 JobDefinition |
-| `src/automation_business_scaffold/business/workflows/` | WorkflowSpec 声明 |
-| `src/automation_business_scaffold/business/flows/` | 业务编排和领域流程 |
-| `src/automation_business_scaffold/business/handlers/` | Runtime handler contract、registry，以及按 handler_code 命名的基础 handler 模块 |
-| `src/automation_business_scaffold/business/feishu/` | 飞书表读取 source adapter 和写入 projection mapper 的业务定制组件 |
+| `src/automation_business_scaffold/domains/tiktok/` | 当前 TikTok 业务域实现 owner；包含 task、workflow、job、mapper、projection、policy、flow |
+| `src/automation_business_scaffold/capabilities/` | 通用 handler 能力；承载 Feishu、TikTok、FastMoss、media、Fact DB、outbox 等外部能力入口 |
+| `src/automation_business_scaffold/control_plane/` | Runtime 控制面；承载 executor、supervisor、reconciler、watchdog、outbox 和 runtime config |
+| `src/automation_business_scaffold/contracts/` | 代码包内 handler/runtime/workflow contract model 与实现侧 manifest |
+| `src/automation_business_scaffold/business/` | legacy / achieve reference；允许读取理解旧行为，普通新实现不得落回该目录 |
 | `src/automation_business_scaffold/infrastructure/` | 飞书、FastMoss、Runtime Store、Fact Store、Artifact Store 等基础设施 |
 | `src/automation_business_scaffold/models/` | 运行时和业务模型 |
 | `src/automation_business_scaffold/validators/` | 业务参数校验 |
+| `contracts/` | 根级字段、状态、workflow、Codex task routing 机器契约 |
 | `skills/mujitask-tiktok-feishu-sync/` | 仓库内 agent skill bundle 源；部署时复制到目标 agent workspace/skills 目录并生成配置 |
 | `scripts/deploy/macos/` | macOS 一键部署 |
 | `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
@@ -242,6 +242,7 @@ automation-business-scaffold-run run \
 
 - `.platform/` 是平台管理规则，普通业务开发不直接修改。
 - `AGENTS.md` 是仓库级协作规则，只有明确的仓库治理变更才修改。
+- `docs/dev/rewrite-state.yaml` 定义当前重构阶段和 canonical owner；根目录短 Prompt 的上下文路由见 `contracts/codex/task-routing.yaml`。
 - framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
 ## 8. 配置边界
