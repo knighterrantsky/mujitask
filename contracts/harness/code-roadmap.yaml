@@ -1,0 +1,198 @@
+schema_version: 1
+current_phase: domains_runtime_rewrite
+
+source_of_truth:
+  rewrite_state: docs/dev/rewrite-state.yaml
+  project_structure: docs/arch/project-structure-contract.md
+  completion_gate: scripts/harness/claim_done.py
+
+canonical_runtime_owners:
+  - src/automation_business_scaffold/domains/**
+  - src/automation_business_scaffold/capabilities/**
+  - src/automation_business_scaffold/control_plane/**
+  - src/automation_business_scaffold/contracts/**
+  - contracts/**
+
+legacy_reference_only:
+  - src/automation_business_scaffold/business/**
+  - docs/business/**
+
+features:
+  - feature_code: harness_completion_claim_gate
+    status: complete
+    default_context:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - contracts/README.md
+      - contracts/harness/code-roadmap.yaml
+      - scripts/harness/claim_done.py
+      - tests/test_harness_code_roadmap.py
+      - tests/test_completion_claim_gate.py
+    source_contracts:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - contracts/harness/code-roadmap.yaml
+    allowed_paths:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - contracts/README.md
+      - contracts/harness/**
+      - scripts/harness/**
+      - tests/test_harness_code_roadmap.py
+      - tests/test_completion_claim_gate.py
+      - tests/test_project_structure_contract.py
+      - tests/test_rewrite_contract.py
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_harness_code_roadmap.py
+        - tests/test_completion_claim_gate.py
+      commands:
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - claim_done.py must return claim=complete with no failed_checks.
+      - AGENTS.md must contain Completion Claim Gate and Stop Protocol.
+      - Roadmap paths and done gates must be statically checkable.
+
+  - feature_code: runtime_watchdog_supervisor
+    status: in_progress
+    feature_area: runtime_control_plane
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/arch/runtime-control-plane-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/project-structure-contract.md
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/control_plane/
+      - tests/test_runtime_control_plane_contract.py
+      - tests/test_watchdog_scanner.py
+      - tests/test_execution_supervisor.py
+    source_contracts:
+      - docs/arch/runtime-control-plane-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/dev/rewrite-state.yaml
+    allowed_paths:
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/apps/daemons/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+      - tests/**
+      - contracts/harness/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+      - docs/business/**
+    done_gate:
+      tests:
+        - tests/test_runtime_control_plane_contract.py
+        - tests/test_watchdog_scanner.py
+        - tests/test_execution_supervisor.py
+      commands:
+        - uv run --extra dev pytest tests/test_runtime_control_plane_contract.py tests/test_watchdog_scanner.py tests/test_execution_supervisor.py
+    completion_rules:
+      - Runtime contract and watchdog/supervisor tests must be referenced.
+      - Full e2e may remain broken during active rewrite.
+      - Do not claim complete until claim_done.py returns no failed_checks.
+
+  - feature_code: tk_competitor_refresh
+    status: in_progress
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/tk-competitor/README.md
+      - contracts/fields/feishu-tk-competitor.yaml
+      - contracts/states/tk-competitor-product-status.yaml
+      - contracts/workflow/refresh_current_competitor_table.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - tests/test_runtime_refresh_current_competitor_table.py
+      - tests/test_competitor_row_refresh_handler.py
+    source_contracts:
+      - contracts/fields/feishu-tk-competitor.yaml
+      - contracts/states/tk-competitor-product-status.yaml
+      - contracts/workflow/refresh_current_competitor_table.yaml
+    allowed_paths:
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - contracts/**
+      - tests/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_runtime_refresh_current_competitor_table.py
+        - tests/test_runtime_refresh_executor_integration.py
+        - tests/test_competitor_row_refresh_handler.py
+      commands:
+        - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_runtime_refresh_executor_integration.py tests/test_competitor_row_refresh_handler.py
+    completion_rules:
+      - Must preserve field/status/workflow contracts.
+      - Must not use business/** as new implementation owner.
+      - Do not claim complete until claim_done.py returns no failed_checks.
+
+  - feature_code: tk_influencer_pool_sync
+    status: in_progress
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/tk-influencer-pool/README.md
+      - contracts/fields/feishu-tk-influencer-pool.yaml
+      - contracts/states/tk-competitor-influencer-search-status.yaml
+      - contracts/workflow/sync_tk_influencer_pool.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - tests/test_runtime_sync_tk_influencer_pool.py
+    source_contracts:
+      - contracts/fields/feishu-tk-influencer-pool.yaml
+      - contracts/states/tk-competitor-influencer-search-status.yaml
+      - contracts/workflow/sync_tk_influencer_pool.yaml
+    allowed_paths:
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - contracts/**
+      - tests/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_runtime_sync_tk_influencer_pool.py
+        - tests/test_runtime_influencer_executor_integration.py
+        - tests/test_runtime_influencer_business_e2e.py
+      commands:
+        - uv run --extra dev pytest tests/test_runtime_sync_tk_influencer_pool.py tests/test_runtime_influencer_executor_integration.py tests/test_runtime_influencer_business_e2e.py
+    completion_rules:
+      - Must preserve influencer field/state/workflow contracts.
+      - Must not add dedicated business runtime tables or business/** owners.
+      - Do not claim complete until claim_done.py returns no failed_checks.
+
+  - feature_code: tiktok_fastmoss_product_ingest
+    status: in_progress
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/domains/product-fact-ingest/README.md
+      - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - src/automation_business_scaffold/capabilities/
+      - tests/test_tiktok_fastmoss_product_ingest.py
+    source_contracts:
+      - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/storage-architecture-design.md
+    allowed_paths:
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - contracts/**
+      - tests/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_tiktok_fastmoss_product_ingest.py
+        - tests/test_runtime_phase2_ingest.py
+        - tests/test_runtime_product_ingest_module.py
+      commands:
+        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_phase2_ingest.py tests/test_runtime_product_ingest_module.py
+    completion_rules:
+      - Must preserve request-first/browser-fallback workflow contract.
+      - Full e2e may remain blocked by active rewrite, but complete claim requires gate pass.
