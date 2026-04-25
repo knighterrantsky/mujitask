@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
@@ -219,6 +221,113 @@ def _bind_keyword_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
             result={"upserted_entities": [PRODUCT_ID]},
         )
 
+    def fake_keyword_seed_import(context: HandlerContext) -> HandlerResult:
+        _emit_progress(context, "keyword_seed_import")
+        return HandlerResult.success(
+            context,
+            summary={"candidate_count": 1, "written_count": 1, "skipped_count": 0, "failed_count": 0},
+            result={
+                "search_parameters": {
+                    "search_query": SEARCH_QUERY,
+                    "filters": {"country_code": "US"},
+                    "output_conditions": {"require_product_url": True},
+                    "condition_context": {"business_conditions": {}},
+                    "sort": {"field": "day7_sold_count", "direction": "desc", "source_order": "2,2"},
+                    "pagination": {"page": 1, "page_size": 10, "max_pages": 50, "stop_when_no_new_product": True},
+                },
+                "normalized_candidates": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "search_query": SEARCH_QUERY,
+                        "search_rank": 1,
+                        "source_context": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
+                    }
+                ],
+                "seed_contexts": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "search_query": SEARCH_QUERY,
+                        "search_rank": 1,
+                        "source_context": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
+                        "source_record_id": SEED_RECORD_ID,
+                        "seed_status": "success",
+                        "feishu_row": {
+                            "record_id": SEED_RECORD_ID,
+                            "status": "success",
+                            "op": "append",
+                            "fields": {
+                                "SKU-ID": PRODUCT_ID,
+                                "产品链接": {"text": PRODUCT_URL, "link": PRODUCT_URL},
+                                "备注": f"通过搜索关键字：{SEARCH_QUERY}",
+                            },
+                        },
+                        "target_record_ids": [SEED_RECORD_ID],
+                    }
+                ],
+                "seed_write_results": [
+                    {
+                        "product_id": PRODUCT_ID,
+                        "source_record_id": SEED_RECORD_ID,
+                        "status": "success",
+                        "feishu_row": {
+                            "record_id": SEED_RECORD_ID,
+                            "status": "success",
+                            "op": "append",
+                            "fields": {
+                                "SKU-ID": PRODUCT_ID,
+                                "产品链接": {"text": PRODUCT_URL, "link": PRODUCT_URL},
+                                "备注": f"通过搜索关键字：{SEARCH_QUERY}",
+                            },
+                        },
+                    }
+                ],
+                "written_count": 1,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "target_record_ids": [SEED_RECORD_ID],
+            },
+        )
+
+    def fake_competitor_row_refresh(context: HandlerContext) -> HandlerResult:
+        _emit_progress(context, "competitor_row_refresh")
+        browser_status = "success" if request_mode == "fallback" else "skipped"
+        tiktok_status = "fallback_required" if request_mode == "fallback" else "success"
+        return HandlerResult.success(
+            context,
+            summary={"row_status": "success"},
+            result={
+                "row_status": "success",
+                "step_timeline": [
+                    {"step": "tiktok_request", "status": tiktok_status},
+                    {"step": "browser_fallback", "status": browser_status},
+                    {"step": "media_sync", "status": "success"},
+                    {"step": "fastmoss_fetch", "status": "success"},
+                    {"step": "fact_db_upsert", "status": "success"},
+                    {"step": "feishu_writeback", "status": "success"},
+                ],
+            },
+        )
+
+    register_api_handler(registry, "keyword_seed_import", fake_keyword_seed_import)
+    register_api_handler(registry, "competitor_row_refresh", fake_competitor_row_refresh)
     register_api_handler(registry, "fastmoss_product_search", fake_fastmoss_product_search)
     register_api_handler(registry, "feishu_table_write", fake_feishu_table_write)
     register_api_handler(registry, "tiktok_product_request_fetch", fake_tiktok_product_request_fetch)
@@ -268,114 +377,53 @@ def test_keyword_executor_integration_happy_path(
     submitted = _submit_keyword_request(runtime_db_url)
     request_id = str(submitted["request_id"])
 
-    first_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert first_executor["request_id"] == request_id
-    assert first_executor["request_status"] == "waiting_children"
-    assert first_executor["current_stage"] == "search_product_candidates"
-    search_jobs = _stage_jobs(first_executor, stage_code="search_product_candidates", job_code="fastmoss_product_search")
-    assert len(search_jobs) == 1
-    assert search_jobs[0]["payload"]["search_query"] == SEARCH_QUERY
+    seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert seed_wait["request_id"] == request_id
+    assert seed_wait["request_status"] == "waiting_children"
+    assert seed_wait["current_stage"] == "keyword_seed_import"
+    seed_import_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
+    assert len(seed_import_jobs) == 1
+    assert seed_import_jobs[0]["payload"]["search_request"]["search_query"] == SEARCH_QUERY
+    assert seed_import_jobs[0]["payload"]["seed_write"]["mapper_code"] == "competitor_seed_projection_mapper"
 
-    search_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert search_worker["request_id"] == request_id
-    assert search_worker["api_worker_job"]["job_code"] == "fastmoss_product_search"
-    assert search_worker["api_worker_job"]["status"] == "success"
-    assert search_worker["parent_updates"] == [
+    seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert seed_worker["request_id"] == request_id
+    assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
+    assert seed_worker["api_worker_job"]["status"] == "success"
+    assert seed_worker["parent_updates"] == [
         {
             "request_id": request_id,
-            "stage_code": "search_product_candidates",
+            "stage_code": "keyword_seed_import",
             "released": True,
             "next_executor_status": "pending",
         }
     ]
 
-    insert_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert insert_wait["request_status"] == "waiting_children"
-    assert insert_wait["current_stage"] == "insert_seed_rows"
-    seed_jobs = _stage_jobs(insert_wait, stage_code="insert_seed_rows", job_code="feishu_table_write")
-    assert len(seed_jobs) == 1
-    seed_record = seed_jobs[0]["payload"]["records"][0]
-    assert seed_record["product_id"] == PRODUCT_ID
-    assert seed_record["search_query"] == SEARCH_QUERY
+    refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert refresh_wait["request_status"] == "waiting_children"
+    assert refresh_wait["current_stage"] == "refresh_competitor_rows"
+    row_jobs = _stage_jobs(refresh_wait, stage_code="refresh_competitor_rows", job_code="competitor_row_refresh")
+    assert len(row_jobs) == 1
+    assert row_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
+    assert row_jobs[0]["payload"]["product_identity"]["product_id"] == PRODUCT_ID
 
-    seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert seed_worker["request_id"] == request_id
-    assert seed_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert seed_worker["api_worker_job"]["payload"]["stage_code"] == "insert_seed_rows"
-
-    collect_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert collect_wait["request_status"] == "waiting_children"
-    assert collect_wait["current_stage"] == "collect_product_data"
-    collect_job_codes = {str(job["job_code"]) for job in _stage_jobs(collect_wait, stage_code="collect_product_data")}
-    assert collect_job_codes == {"tiktok_product_request_fetch", "fastmoss_product_fetch"}
-    collect_jobs = _stage_jobs(collect_wait, stage_code="collect_product_data")
-    assert {str(job["payload"]["source_record_id"]) for job in collect_jobs} == {SEED_RECORD_ID}
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    collect_status = _status(runtime_db_url, request_id)
-    tiktok_job = _stage_jobs(
-        collect_status,
-        stage_code="collect_product_data",
-        job_code="tiktok_product_request_fetch",
-    )[0]
-    fastmoss_job = _stage_jobs(
-        collect_status,
-        stage_code="collect_product_data",
-        job_code="fastmoss_product_fetch",
-    )[0]
-    assert tiktok_job["status"] == "success"
-    assert tiktok_job["result"]["normalized_product_result"]["product_id"] == PRODUCT_ID
-    assert fastmoss_job["status"] == "success"
-    assert fastmoss_job["result"]["product_fact_bundle"]["product_id"] == PRODUCT_ID
-
-    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert sync_wait["request_status"] == "waiting_children"
-    assert sync_wait["current_stage"] == "sync_media"
-    media_jobs = _stage_jobs(sync_wait, stage_code="sync_media", job_code="media_asset_sync")
-    assert len(media_jobs) == 1
-    assert media_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
-
-    media_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert media_worker["api_worker_job"]["job_code"] == "media_asset_sync"
-    assert media_worker["api_worker_job"]["status"] == "success"
-
-    persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert persist_wait["request_status"] == "waiting_children"
-    assert persist_wait["current_stage"] == "persist_facts"
-    fact_jobs = _stage_jobs(persist_wait, stage_code="persist_facts", job_code="fact_bundle_upsert")
-    assert len(fact_jobs) == 1
-    assert fact_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
-
-    fact_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
-    assert fact_worker["api_worker_job"]["status"] == "success"
-
-    writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert writeback_wait["request_status"] == "waiting_children"
-    assert writeback_wait["current_stage"] == "writeback_competitor_rows"
-    writeback_jobs = _stage_jobs(
-        writeback_wait,
-        stage_code="writeback_competitor_rows",
-        job_code="feishu_table_write",
-    )
-    assert len(writeback_jobs) == 1
-    projection = writeback_jobs[0]["payload"]["records"][0]
-    assert projection["source_record_id"] == SEED_RECORD_ID
-    assert projection["refresh_status"] == "success"
-
-    writeback_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert writeback_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert writeback_worker["api_worker_job"]["payload"]["stage_code"] == "writeback_competitor_rows"
-    assert writeback_worker["api_worker_job"]["status"] == "success"
+    row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert row_worker["request_id"] == request_id
+    assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
+    assert row_worker["api_worker_job"]["status"] == "success"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
     assert finalized["request_status"] == "success"
     assert finalized["current_stage"] == "ready_for_summary"
     assert finalized["summary"]["final_status"] == "success"
+    assert finalized["summary"]["search_filter_info"]["filters"] == {"country_code": "US"}
     assert finalized["result"]["candidate_total_count"] == 1
+    assert finalized["result"]["search_parameters"]["search_query"] == SEARCH_QUERY
+    assert finalized["result"]["seed_write_results"][0]["feishu_row"]["record_id"] == SEED_RECORD_ID
+    assert finalized["result"]["seed_write_results"][0]["feishu_row"]["fields"]["SKU-ID"] == PRODUCT_ID
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
+    assert finalized["result"]["row_results"][0]["feishu_row"]["record_id"] == SEED_RECORD_ID
     assert finalized["outbox"][0]["event_type"] == "task_request.completed"
 
     status_payload = _status(runtime_db_url, request_id)
@@ -383,8 +431,9 @@ def test_keyword_executor_integration_happy_path(
     assert status_payload["current_stage"] == "ready_for_summary"
     assert status_payload["summary"]["final_status"] == "success"
     assert status_payload["result"]["row_results"][0]["writeback_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["sync_media"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 1
+    assert status_payload["result"]["row_results"][0]["feishu_row"]["fields"]["备注"] == f"通过搜索关键字：{SEARCH_QUERY}"
+    assert status_payload["result"]["stage_summary"]["keyword_seed_import"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["refresh_competitor_rows"]["total_count"] == 1
 
 
 def test_keyword_search_seed_e2e_writes_competitor_seed_row(
@@ -438,6 +487,10 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
         )
 
     register_api_handler(registry, "fastmoss_product_search", fake_fastmoss_product_search, replace=True)
+    keyword_seed_import_module = importlib.import_module(
+        "automation_business_scaffold.capabilities.fact_sources.fastmoss.keyword_seed_import_handler"
+    )
+    monkeypatch.setattr(keyword_seed_import_module, "fastmoss_product_search_handler", fake_fastmoss_product_search)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
     submitted = _submit_keyword_request(
@@ -455,32 +508,32 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
     request_id = str(submitted["request_id"])
     worker_params = _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
 
-    search_wait = runtime_orchestrator.execute_executor_once(worker_params)
-    assert search_wait["request_status"] == "waiting_children"
-    assert search_wait["current_stage"] == "search_product_candidates"
-
-    search_worker = runtime_orchestrator.execute_api_worker_once(worker_params)
-    assert search_worker["api_worker_job"]["job_code"] == "fastmoss_product_search"
-    assert search_worker["api_worker_job"]["status"] == "success"
-
     seed_wait = runtime_orchestrator.execute_executor_once(worker_params)
     assert seed_wait["request_status"] == "waiting_children"
-    assert seed_wait["current_stage"] == "insert_seed_rows"
-    seed_jobs = _stage_jobs(seed_wait, stage_code="insert_seed_rows", job_code="feishu_table_write")
+    assert seed_wait["current_stage"] == "keyword_seed_import"
+    seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
     assert len(seed_jobs) == 1
-    assert seed_jobs[0]["payload"]["mapper_code"] == "competitor_seed_projection_mapper"
-    assert seed_jobs[0]["payload"]["write_mode"] == "insert_if_absent"
-    assert seed_jobs[0]["payload"]["request_payload"]["table_refs"][SEED_TABLE_REF]["table_id"] == "tbl-token"
+    assert seed_jobs[0]["payload"]["seed_write"]["mapper_code"] == "competitor_seed_projection_mapper"
+    assert seed_jobs[0]["payload"]["seed_write"]["write_mode"] == "insert_if_absent"
 
     seed_worker = runtime_orchestrator.execute_api_worker_once(worker_params)
     assert seed_worker["request_id"] == request_id
-    assert seed_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert seed_worker["api_worker_job"]["payload"]["stage_code"] == "insert_seed_rows"
+    assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
+    assert seed_worker["api_worker_job"]["payload"]["stage_code"] == "keyword_seed_import"
     assert seed_worker["api_worker_job"]["summary"]["written_count"] == 1
+    assert seed_worker["api_worker_job"]["result"]["seed_write_results"][0]["feishu_row"]["record_id"] == "rec-seed-1"
+    assert seed_worker["api_worker_job"]["result"]["seed_write_results"][0]["feishu_row"]["fields"] == {
+        "SKU-ID": PRODUCT_ID,
+        "产品链接": {
+            "text": PRODUCT_URL,
+            "link": PRODUCT_URL,
+        },
+        "备注": f"通过搜索关键字：{SEARCH_QUERY}",
+    }
     assert seed_worker["parent_updates"] == [
         {
             "request_id": request_id,
-            "stage_code": "insert_seed_rows",
+            "stage_code": "keyword_seed_import",
             "released": True,
             "next_executor_status": "pending",
         }
@@ -491,9 +544,7 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
             "text": PRODUCT_URL,
             "link": PRODUCT_URL,
         },
-        "关键词": SEARCH_QUERY,
         "备注": f"通过搜索关键字：{SEARCH_QUERY}",
-        "达人查找状态": "待查找",
     }
 
 
@@ -502,80 +553,17 @@ def test_keyword_executor_integration_browser_fallback_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_keyword_api_handlers(monkeypatch, request_mode="fallback")
-    _bind_keyword_browser_handler(monkeypatch)
 
     submitted = _submit_keyword_request(runtime_db_url, reply_target="reply://keyword-browser")
     request_id = str(submitted["request_id"])
 
     runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-
-    collect_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert collect_wait["request_status"] == "waiting_children"
-    assert collect_wait["current_stage"] == "collect_product_data"
-    assert {str(job["job_code"]) for job in _stage_jobs(collect_wait, stage_code="collect_product_data")} == {
-        "tiktok_product_request_fetch",
-        "fastmoss_product_fetch",
-    }
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-
-    browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert browser_wait["request_id"] == request_id
-    assert browser_wait["request_status"] == "waiting_children"
-    assert browser_wait["current_stage"] == "browser_fallback"
-    browser_executions = _stage_executions(
-        browser_wait,
-        stage_code="browser_fallback",
-        item_code="tiktok_product_browser_fetch",
-    )
-    assert len(browser_executions) == 1
-    assert browser_executions[0]["payload"]["source_record_id"] == SEED_RECORD_ID
-
-    browser_payload = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
-    assert browser_payload["request_id"] == request_id
-    assert browser_payload["execution"]["status"] == "success"
-    assert browser_payload["supervisor"]["worker_type"] == "browser_worker"
-    assert browser_payload["supervisor"]["progress_stage"] == "browser_fallback_collected"
-    assert browser_payload["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
-
-    sync_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert sync_wait["request_status"] == "waiting_children"
-    assert sync_wait["current_stage"] == "sync_media"
-    media_jobs = _stage_jobs(sync_wait, stage_code="sync_media", job_code="media_asset_sync")
-    assert len(media_jobs) == 1
-    assert media_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    persist_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert persist_wait["request_status"] == "waiting_children"
-    assert persist_wait["current_stage"] == "persist_facts"
-    fact_jobs = _stage_jobs(persist_wait, stage_code="persist_facts", job_code="fact_bundle_upsert")
-    assert len(fact_jobs) == 1
-    assert fact_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
-
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    writeback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert writeback_wait["request_status"] == "waiting_children"
-    assert writeback_wait["current_stage"] == "writeback_competitor_rows"
-    writeback_jobs = _stage_jobs(
-        writeback_wait,
-        stage_code="writeback_competitor_rows",
-        job_code="feishu_table_write",
-    )
-    assert len(writeback_jobs) == 1
-    assert writeback_jobs[0]["payload"]["records"][0]["refresh_status"] == "success"
-
+    refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert refresh_wait["request_status"] == "waiting_children"
+    assert refresh_wait["current_stage"] == "refresh_competitor_rows"
+    row_jobs = _stage_jobs(refresh_wait, stage_code="refresh_competitor_rows", job_code="competitor_row_refresh")
+    assert len(row_jobs) == 1
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
 
@@ -589,9 +577,7 @@ def test_keyword_executor_integration_browser_fallback_path(
     assert row_result["row_status"] == "success"
     assert row_result["tiktok_status"] == "fallback_required"
     assert row_result["browser_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["browser_fallback"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["sync_media"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["persist_facts"]["total_count"] == 1
-    assert status_payload["result"]["stage_summary"]["writeback_competitor_rows"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["keyword_seed_import"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["refresh_competitor_rows"]["total_count"] == 1
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"

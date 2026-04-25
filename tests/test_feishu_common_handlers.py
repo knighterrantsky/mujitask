@@ -565,9 +565,7 @@ def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch)
             "text": "https://www.tiktok.com/shop/pdp/123456789",
             "link": "https://www.tiktok.com/shop/pdp/123456789",
         },
-        "关键词": "water bottle",
         "备注": "通过搜索关键字：water bottle",
-        "达人查找状态": "待查找",
     }
     assert result.result["records"][0]["op"] == "append"
 

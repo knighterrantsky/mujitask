@@ -3,7 +3,13 @@ contract_type: workflow_contract
 workflow_code: search_keyword_competitor_products
 domain: tk_competitor
 task_code: search_keyword_competitor_products
-status: migrated_existing
+status: complete
+completed_at: "2026-04-25"
+completion_evidence:
+  feature_code: tk_keyword_competitor_search
+  claim_gate: scripts/harness/claim_done.py tk_keyword_competitor_search --run-gates
+  real_request_id: 622126e54fee41d9bdc37d80de7dbafc
+  real_outbox_id: 619253a4b8114a92a89b440f313b1adb
 
 business_requirement: docs/business/requirements/search-keyword-competitor-products.md
 architecture_design: docs/arch/workflow-competitor-table-design.md
@@ -16,15 +22,20 @@ state_contracts:
 projection_mappers:
   - competitor_seed_projection_mapper
   - competitor_table_projection_mapper
+parameter_mappers:
+  - keyword_search_parameter_mapper
 
 stages:
-  - stage_code: search_competitor_products
-    handler_code: fastmoss_product_search
-    purpose: 按关键词和销量阈值搜索 FastMoss 商品候选
-  - stage_code: write_competitor_seed_rows
-    handler_code: feishu_table_write
+  - stage_code: keyword_seed_import
+    job_code: keyword_seed_import
+    handler_code: keyword_seed_import
+    parameter_mapper: keyword_search_parameter_mapper
     projection_mapper: competitor_seed_projection_mapper
-    purpose: 新商品先写 SKU-ID、产品链接和来源备注
+    purpose: 按关键词和 filter 搜索 FastMoss normalized candidates，并按顺序写入竞品种子行
+    internal_steps:
+      - keyword_search_parameter_mapper
+      - fastmoss_product_search
+      - feishu_table_write
   - stage_code: refresh_competitor_rows
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
@@ -39,7 +50,3 @@ protected_invariants:
   - 新商品先写 SKU-ID、产品链接和 备注=通过搜索关键字：{关键词}
   - 新商品详情抓取判定不可访问时，保留种子字段并写 商品状态=已下架/区域不可售
   - 详情补齐必须遵守竞品行刷新字段契约
-
-known_architecture_gaps:
-  - code: row_refresh_job_alignment
-    description: 当前实现 manifest 仍列出部分 leaf handler；目标契约要求详情补齐收敛到 competitor_row_refresh 行级主 job

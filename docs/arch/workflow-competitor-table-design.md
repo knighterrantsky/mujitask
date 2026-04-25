@@ -19,7 +19,7 @@
 
 其中 `competitor_row_refresh` 是一条竞品记录的行级主 job，内部串行调用 TikTok request、media sync、FastMoss product fetch、Fact DB upsert 和飞书写回能力。`tiktok_product_browser_fetch` 只在行级主 job 确认需要浏览器兜底时作为 child `task_execution` 创建。
 
-本 workflow 只决定竞品表来源行如何筛选、每行采集什么商品、以及最终写回 `TK竞品收集` 的哪些字段。商品、店铺、媒体、FastMoss 指标、关系和 raw response 的事实入库必须遵守 [fact-db-schema-design.md](./fact-db-schema-design.md) 与 [workflow-design-guidelines.md](./workflow-design-guidelines.md) 的统一事实采集 contract，不能在竞品表流程里另写一套私有事实写入逻辑。
+本 workflow 只决定竞品表来源行如何筛选、每行采集什么商品、以及最终写回 `TK竞品收集` 的哪些字段。商品、店铺、媒体、FastMoss 指标、关系和 raw response 的事实入库必须遵守 [fact-db-schema-design.md](./fact-db-schema-design.md) 与 [workflow-design-guidelines.md](./workflow-design-guidelines.md) 的统一事实采集 contract，不能在竞品表流程里另写一套私有事实写入逻辑；商品媒体物化边界同时受 `contracts/facts/product-fact-collection.yaml` 约束。
 
 ## 2. Task
 
@@ -202,13 +202,11 @@ stateDiagram-v2
 ```mermaid
 flowchart TD
     A["Task: search_keyword_competitor_products"] --> B["submit_keyword_request"]
-    B --> C["search_product_candidates<br/>fastmoss_product_search"]
-    C --> D["process_product_candidates<br/>output conditions"]
-    D --> E["insert_seed_rows<br/>feishu_table_write"]
-    E --> F["dispatch_row_refresh_jobs"]
-    F --> G["competitor_row_refresh<br/>same row-level pipeline"]
-    G --> H["ready_for_summary"]
-    H --> I["notification_outbox"]
+    B --> C["keyword_seed_import<br/>FastMoss search + seed write"]
+    C --> D["dispatch_row_refresh_jobs"]
+    D --> E["competitor_row_refresh<br/>same row-level pipeline"]
+    E --> F["ready_for_summary"]
+    F --> G["notification_outbox"]
 ```
 
 ### 4.1 Stage 设计
@@ -216,9 +214,7 @@ flowchart TD
 | Stage code | 作用 | Runtime 表 |
 | --- | --- | --- |
 | `submitted` | 创建顶层 `task_request` | `task_request` |
-| `search_product_candidates` | 使用 FastMoss 商品搜索 API，根据 keyword/filter 获取候选商品 | `api_worker_job` |
-| `process_product_candidates` | 读取 search 结果，按 output condition 去重、过滤、生成竞品种子投影 | `task_request` 编排阶段 |
-| `insert_seed_rows` | 通过 `feishu_table_write` 创建竞品种子行 | `api_worker_job` |
+| `keyword_seed_import` | 根据结构化关键词/filter 生成 FastMoss 搜索参数，调用通用搜索能力，按返回的 normalized candidates 顺序写入竞品种子行 | `api_worker_job` |
 | `dispatch_row_refresh_jobs` | 根据成功 seed rows 创建行级采集 job | `task_request` |
 | `refresh_competitor_rows` | 使用与竞品表刷新一致的 `competitor_row_refresh` 行级 pipeline 补齐详情 | `api_worker_job` / `task_execution` |
 | `ready_for_summary` | 汇总搜索、种子写入、商品采集和详情写回结果，并写通知 outbox | `task_request` / `notification_outbox` |
@@ -227,11 +223,21 @@ flowchart TD
 
 | Job | item_code / job_code | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
-| FastMoss 商品搜索 | `fastmoss_product_search` | `api_worker` | `fastmoss_product_search` | FastMoss product search API flow |
-| 飞书种子行写入 | `feishu_table_write` | `api_worker` | `feishu_table_write` | `competitor_seed_projection_mapper` |
+| 关键词种子入库 | `keyword_seed_import` | `api_worker` | `keyword_seed_import` | `keyword_search_parameter_mapper` -> `fastmoss_product_search` -> candidate iteration -> `feishu_table_write` + `competitor_seed_projection_mapper` |
 | 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | 与竞品表刷新相同的行级 pipeline |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由行级 pipeline 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
+
+`keyword_seed_import` 是关键词入库前半段的业务 job。它不是新的 FastMoss 专用搜索能力，也不是新的飞书表格写入能力；它只负责把一次业务搜索请求串行编排为:
+
+1. 使用 `keyword_search_parameter_mapper` 把结构化业务条件映射为 `fastmoss_product_search` payload。
+2. 调用通用 `fastmoss_product_search`，取得 normalized candidates。
+3. 按 candidates 顺序逐条调用 `feishu_table_write`，并指定 `competitor_seed_projection_mapper`、`write_mode=insert_if_absent`；候选写入之间默认间隔 1 秒。
+4. 记录每条 candidate 的 seed write 结果，包括 `success`、`skip_existing`、`failed` 和失败原因。
+
+`fastmoss_product_search` 的原始响应只作为排障证据保存，不直接进入竞品表 mapper。search 结果已经是 normalized candidates，因此本 workflow 不再单独定义 search result mapper；业务 job 只按返回顺序逐条调用种子写入。种子写入的已存在判断沿用 `competitor_seed_projection_mapper` 输出的 `upsert_key`: 优先使用 `SKU-ID` / `product_id`，缺少 product_id 时才按标准化 `产品链接` 兜底。
+
+`fastmoss_product_search` 真实翻页请求之间默认间隔 1 秒，避免连续请求触发 FastMoss 风控。
 
 ### 4.3 进程间调度时序图
 
@@ -251,13 +257,15 @@ sequenceDiagram
 
     Entry->>DB: insert task_request(search_keyword_competitor_products)
     Exec->>DB: claim task_request
-    Exec->>DB: enqueue api_worker_job(fastmoss_product_search)
-    API->>DB: claim fastmoss_product_search
-    API->>DB: store normalized candidates and raw_response_ref
-    Exec->>DB: apply output conditions and prepare seed writes
-    Exec->>DB: enqueue api_worker_job(feishu_table_write)
-    API->>Feishu: insert competitor seed rows
-    API->>DB: mark seed write jobs terminal
+    Exec->>DB: enqueue api_worker_job(keyword_seed_import)
+    API->>DB: claim keyword_seed_import
+    API->>DB: map structured filters to FastMoss search parameters
+    API->>DB: call fastmoss_product_search and store normalized candidates
+    loop each normalized candidate in order
+        API->>Feishu: feishu_table_write with competitor_seed_projection_mapper
+        API->>DB: record seed write result
+    end
+    API->>DB: mark keyword_seed_import terminal
     Exec->>DB: enqueue one competitor_row_refresh per successful seed row
     API->>DB: claim competitor_row_refresh in FIFO order
     API->>DB: record TikTok request attempt evidence
@@ -283,7 +291,7 @@ sequenceDiagram
 竞品表刷新和关键词入库都不应该把整张表作为一个超大 job 执行，也不应该把同一条竞品记录机械拆成多个并行 API job。目标颗粒度是:
 
 - 顶层 task 表示一次用户请求。
-- `search_product_candidates` / `read_competitor_rows` 是阶段性 job 或编排动作，只负责产生候选行。
+- `keyword_seed_import` / `read_competitor_rows` 是阶段性 job 或编排动作，只负责产生候选行和可继续处理的飞书行。
 - 每条待处理竞品记录创建一个 `competitor_row_refresh` 行级主 job。
 - `competitor_row_refresh` 内部按固定顺序串行执行 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert、飞书写回。
 - browser fallback 是当前行级 job 派生并等待的子 `task_execution`，不是与当前行并行推进的 sibling job。
@@ -486,9 +494,11 @@ writeback payload:
 }
 ```
 
-### 7.3 关键词竞品入库: `fastmoss_product_search`
+### 7.3 关键词竞品入库: `keyword_seed_import`
 
-stage: `search_product_candidates`
+stage: `keyword_seed_import`
+
+`keyword_seed_import` 是关键词入库前半段的业务 job。它接收结构化业务搜索条件，内部先通过 `keyword_search_parameter_mapper` 生成通用 `fastmoss_product_search` 参数，再按搜索返回的 normalized candidates 顺序调用 `feishu_table_write` 写入种子行。飞书表写入不复用 search mapper，而是通过 `competitor_seed_projection_mapper` 把单条 normalized candidate 映射成 seed write record。
 
 payload:
 
@@ -497,34 +507,46 @@ payload:
   "request_id": "req-keyword-001",
   "task_code": "search_keyword_competitor_products",
   "workflow_code": "search_keyword_competitor_products",
-  "stage_code": "search_product_candidates",
-  "search_mode": "keyword",
-  "keyword": "Halloween decoration",
-  "region": "US",
-  "filters": {
-    "sales_range": {
-      "window_days": 7,
-      "min": 200,
-      "max": null
+  "stage_code": "keyword_seed_import",
+  "source_table_ref": "feishu://mujitask/TK竞品收集",
+  "search_request": {
+    "search_mode": "keyword",
+    "keyword": "Halloween decoration",
+    "region": "US",
+    "filters": {
+      "sales_range": {
+        "window_days": 7,
+        "min": 200,
+        "max": null
+      }
+    },
+    "sort": {
+      "field": "day7_sold_count",
+      "direction": "desc",
+      "source_order": "2,2"
+    },
+    "pagination": {
+      "page": 1,
+      "page_size": 10,
+      "max_pages": 50,
+      "stop_when_no_new_product": true
+    },
+    "output_conditions": {
+      "max_candidates": 20,
+      "dedupe_by": ["product_id", "normalized_product_url"],
+      "business_conditions": {
+        "min_day7_sold_count": 200
+      }
     }
   },
-  "sort": {
-    "field": "day7_sold_count",
-    "direction": "desc",
-    "source_order": "2,2"
+  "seed_write": {
+    "target_table_ref": "feishu://mujitask/TK竞品收集",
+    "write_mode": "insert_if_absent",
+    "mapper_code": "competitor_seed_projection_mapper"
   },
-  "pagination": {
-    "page": 1,
-    "page_size": 10,
-    "max_pages": 50,
-    "stop_when_no_new_product": true
-  },
-  "output_conditions": {
-    "max_candidates": 20,
-    "dedupe_by": ["product_id", "normalized_product_url"],
-    "business_conditions": {
-      "min_day7_sold_count": 200
-    }
+  "mapper_refs": {
+    "search_parameter_mapper": "keyword_search_parameter_mapper",
+    "seed_write_mapper": "competitor_seed_projection_mapper"
   }
 }
 ```
@@ -533,11 +555,22 @@ result:
 
 ```json
 {
-  "candidates": [
+  "search_parameters": {
+    "handler_code": "fastmoss_product_search",
+    "search_mode": "keyword",
+    "keyword": "Halloween decoration",
+    "region": "US",
+    "sort": {
+      "field": "day7_sold_count",
+      "direction": "desc",
+      "source_order": "2,2"
+    }
+  },
+  "normalized_candidates": [
     {
       "source": "fastmoss",
       "product_id": "1731194997356205027",
-      "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027",
+      "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027",
       "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027",
       "title": "Halloween decoration",
       "image_url": "https://cdn.fastmoss.com/product.jpg",
@@ -551,13 +584,14 @@ result:
       },
       "dedupe_keys": {
         "product_id": "1731194997356205027",
-        "normalized_product_url": "https://www.tiktok.com/view/product/1731194997356205027"
+        "normalized_product_url": "https://www.tiktok.com/shop/pdp/1731194997356205027"
       },
       "quality_score": 1.0,
       "raw_item_ref": ""
     }
   ],
-  "condition_summary": {
+  "search_summary": {
+    "candidate_count": 1,
     "applied": {
       "min_day7_sold_count": 1
     },
@@ -568,24 +602,10 @@ result:
     "has_more": true,
     "next_page": 2
   },
-  "raw_response_ref": "artifact://fastmoss/search/req-keyword-001/page-1.json"
-}
-```
-
-### 7.4 关键词竞品入库: 种子行写入
-
-stage: `insert_seed_rows`
-
-payload:
-
-```json
-{
-  "target_table_ref": "feishu://mujitask/TK竞品收集",
-  "write_mode": "batch_upsert",
-  "mapper_code": "competitor_seed_projection_mapper",
-  "records": [
+  "raw_response_ref": "artifact://fastmoss/search/req-keyword-001/page-1.json",
+  "seed_write_records": [
     {
-      "op": "upsert",
+      "op": "insert_if_absent",
       "business_entity_key": "product:1731194997356205027",
       "upsert_key": {
         "field": "SKU-ID",
@@ -597,8 +617,7 @@ payload:
           "text": "https://www.tiktok.com/shop/pdp/1731194997356205027",
           "link": "https://www.tiktok.com/shop/pdp/1731194997356205027"
         },
-        "备注": "通过搜索关键字：Halloween decoration",
-        "达人查找状态": "待查找"
+        "备注": "通过搜索关键字：Halloween decoration"
       },
       "source_context": {
         "keyword": "Halloween decoration",
@@ -607,27 +626,19 @@ payload:
       }
     }
   ],
-  "idempotency_context": {
-    "dedupe_key": "req-keyword-001:seed:product:1731194997356205027"
-  }
-}
-```
-
-result:
-
-```json
-{
-  "written_count": 1,
-  "skipped_count": 0,
-  "target_record_ids": ["recSeed001"],
-  "records": [
+  "seed_write_results": [
     {
       "business_entity_key": "product:1731194997356205027",
+      "product_id": "1731194997356205027",
       "record_id": "recSeed001",
-      "op": "upsert",
+      "op": "append",
       "status": "success"
     }
   ],
+  "written_count": 1,
+  "skipped_count": 0,
+  "failed_count": 0,
+  "target_record_ids": ["recSeed001"],
   "writeback_context": {
     "seed_record_id_by_product_id": {
       "1731194997356205027": "recSeed001"
@@ -635,3 +646,20 @@ result:
   }
 }
 ```
+
+### 7.4 关键词竞品入库: 种子写入 mapper
+
+search 参数映射和飞书写表映射是两个边界:
+
+- `keyword_search_parameter_mapper`: 业务 filter / 关键词 -> `fastmoss_product_search` parameters。
+- `competitor_seed_projection_mapper`: 单条 normalized candidate + 关键词上下文 -> `feishu_table_write` 单次写入 record。
+
+`keyword_seed_import` 内部调用 `feishu_table_write` 时必须指定 `competitor_seed_projection_mapper`。该 mapper 的输入是一条 normalized candidate 加上关键词来源上下文，输出是一条可写入 `TK竞品收集` 的 seed write record。
+
+mapper 输出必须满足:
+
+- `op=insert_if_absent`
+- `fields.SKU-ID={product_id}`
+- `fields.产品链接` 为标准化 TikTok 商品链接
+- `fields.备注=通过搜索关键字：{关键词}`
+- `upsert_key` 优先使用 `SKU-ID`；缺少 product_id 时才使用标准化 `产品链接`

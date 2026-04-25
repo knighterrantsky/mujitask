@@ -202,6 +202,45 @@ features:
       - Must not add dedicated business runtime tables or business/** owners.
       - Do not claim complete until claim_done.py returns no failed_checks.
 
+  - feature_code: tk_keyword_competitor_search
+    status: complete
+    default_context:
+      - docs/dev/rewrite-state.yaml
+      - docs/business/requirements/search-keyword-competitor-products.md
+      - docs/arch/workflow-competitor-table-design.md
+      - contracts/fields/feishu-tk-competitor.yaml
+      - contracts/workflow/search_keyword_competitor_products.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - src/automation_business_scaffold/capabilities/
+      - tests/test_runtime_search_keyword_competitor_products.py
+      - tests/test_runtime_keyword_executor_integration.py
+    source_contracts:
+      - docs/business/requirements/search-keyword-competitor-products.md
+      - docs/arch/workflow-competitor-table-design.md
+      - contracts/workflow/search_keyword_competitor_products.yaml
+    allowed_paths:
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/contracts/**
+      - contracts/**
+      - docs/arch/**
+      - tests/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_runtime_search_keyword_competitor_products.py
+        - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+      commands:
+        - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+    completion_rules:
+      - Keyword seed import must run as one business job that reuses FastMoss search and Feishu table write.
+      - Seed write mapper must preserve SKU-ID, normalized product link, keyword source remark, and insert_if_absent semantics.
+      - Detail completion must dispatch competitor_row_refresh row jobs instead of leaf sibling jobs.
+      - Do not claim complete until claim_done.py returns no failed_checks.
+
   - feature_code: tiktok_fastmoss_product_ingest
     status: in_progress
     default_context:

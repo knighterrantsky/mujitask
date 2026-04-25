@@ -703,6 +703,7 @@ payload schema:
     "max_pages": 50,
     "stop_when_no_new_product": true
   },
+  "page_request_delay_seconds": 1,
   "output_conditions": {
     "max_candidates": 20,
     "required_fields": ["product_id", "normalized_product_url", "title"],
@@ -1289,6 +1290,7 @@ fastmoss_echarts_renderer
 | --- | --- | --- | --- | --- | --- | --- |
 | API | `feishu_table_read` | `api_worker` | `api_worker_job` | Capability | 通用飞书表读取，表级语义由 source adapter 处理 | 5.1 |
 | API | `feishu_table_write` | `api_worker` | `api_worker_job` | Capability | 通用飞书表新增/更新/批量写入，字段映射由 projection mapper 处理 | 5.3 |
+| API | `keyword_seed_import` | `api_worker` | `api_worker_job` | Business | 关键词竞品入库前半段，串行复用 FastMoss search 与飞书 seed 写入 | workflow-competitor-table-design 7.3 |
 | API | `tiktok_product_request_fetch` | `api_worker` | `api_worker_job` | Capability | TikTok 商品 request-first 采集 | 6.1 |
 | Browser | `tiktok_product_browser_fetch` | `browser_worker` | `task_execution` | Capability | TikTok 商品 request 失败后的浏览器兜底采集 | 6.2 |
 | API | `fastmoss_product_search` | `api_worker` | `api_worker_job` | Capability | FastMoss 商品搜索，支持 keyword/filter/condition | 6.3 |

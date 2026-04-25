@@ -160,6 +160,14 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/handler-contract-design.md#68-competitor_row_refresh",
             side_effects=("tiktok.request", "fastmoss.request", "artifact.write", "fact_db.write", "feishu.write"),
         ),
+        "keyword_seed_import": _contract(
+            handler_code="keyword_seed_import",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Search FastMoss products and write keyword competitor seed rows as one business job.",
+            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词竞品入库-keyword_seed_import",
+            side_effects=("fastmoss.request", "feishu.write"),
+        ),
         "tiktok_product_request_fetch": _contract(
             handler_code="tiktok_product_request_fetch",
             worker_type="api_worker",

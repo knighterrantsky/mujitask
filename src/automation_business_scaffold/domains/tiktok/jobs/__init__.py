@@ -8,6 +8,7 @@ from automation_business_scaffold.domains.tiktok.jobs.fastmoss_product_fetch imp
 from automation_business_scaffold.domains.tiktok.jobs.fastmoss_product_search import FASTMOSS_PRODUCT_SEARCH_JOB
 from automation_business_scaffold.domains.tiktok.jobs.feishu_table_read import FEISHU_TABLE_READ_JOB
 from automation_business_scaffold.domains.tiktok.jobs.feishu_table_write import FEISHU_TABLE_WRITE_JOB
+from automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import import KEYWORD_SEED_IMPORT_JOB
 from automation_business_scaffold.domains.tiktok.jobs.media_asset_sync import MEDIA_ASSET_SYNC_JOB
 from automation_business_scaffold.domains.tiktok.jobs.task_completed_notification import TASK_COMPLETED_NOTIFICATION_JOB
 from automation_business_scaffold.domains.tiktok.jobs.tiktok_product_browser_fetch import TIKTOK_PRODUCT_BROWSER_FETCH_JOB
@@ -18,6 +19,7 @@ def list_job_definitions() -> tuple[JobDefinition, ...]:
     return (
         FEISHU_TABLE_READ_JOB,
         FEISHU_TABLE_WRITE_JOB,
+        KEYWORD_SEED_IMPORT_JOB,
         COMPETITOR_ROW_REFRESH_JOB,
         TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
         TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
@@ -38,6 +40,7 @@ __all__ = [
     "FASTMOSS_PRODUCT_SEARCH_JOB",
     "FEISHU_TABLE_READ_JOB",
     "FEISHU_TABLE_WRITE_JOB",
+    "KEYWORD_SEED_IMPORT_JOB",
     "MEDIA_ASSET_SYNC_JOB",
     "TASK_COMPLETED_NOTIFICATION_JOB",
     "TIKTOK_PRODUCT_BROWSER_FETCH_JOB",

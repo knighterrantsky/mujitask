@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -208,6 +209,7 @@ def _resolve_fastmoss_product_search_query(payload: dict[str, Any]) -> dict[str,
             default=True,
         ),
         "max_candidates": max_candidates,
+        "page_request_delay_seconds": _non_negative_float(payload.get("page_request_delay_seconds"), 1.0),
         "output_conditions": output_conditions,
         "session_policy": session_policy,
         "raw_capture_policy": raw_capture_policy,
@@ -303,7 +305,10 @@ def _fetch_fastmoss_search_pages(
     seen_product_keys: set[str] = set()
     page = int(query["page"])
     stop_reason = "max_pages"
+    page_request_delay_seconds = _non_negative_float(query.get("page_request_delay_seconds"), 1.0)
     for _ in range(max(int(query["max_pages"]), 1)):
+        if raw_pages and page_request_delay_seconds > 0:
+            time.sleep(page_request_delay_seconds)
         raw = session.search_products(
             query["keyword"],
             page=page,
@@ -984,6 +989,14 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return integer if integer > 0 else default
+
+
+def _non_negative_float(value: Any, default: float) -> float:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return number if number >= 0 else default
 
 
 def _env_value(env_name: str) -> str:

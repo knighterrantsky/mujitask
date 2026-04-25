@@ -229,6 +229,7 @@ def test_fastmoss_product_search_fetches_live_pages_with_one_session(monkeypatch
                 "keyword": "desk lamp",
                 "fastmoss": {"phone": "phone", "password": "password", "live_fetch": True},
                 "pagination": {"page": 1, "page_size": 2, "max_pages": 3, "stop_when_no_new_product": True},
+                "page_request_delay_seconds": 0,
                 "raw_capture_policy": {"store_raw_response": False},
             }
         )

@@ -35,6 +35,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import (
+    keyword_search_parameter_mapper,
+)
 
 OPTIONAL_FINAL_STATUS_CODES = ("tiktok_product_browser_fetch",)
 FASTMOSS_SEARCH_PASSTHROUGH_KEYS = (
@@ -98,16 +101,12 @@ def advance_stage(
 ) -> dict[str, Any]:
     if request.task_code != KEYWORD_TASK_CODE:
         raise ValueError(f"Unsupported task_code for keyword runtime: {request.task_code}")
-    if stage_code == "search_product_candidates":
-        return _advance_search_product_candidates(store=store, request=request, workflow=workflow)
-    if stage_code == "process_product_candidates":
-        return _advance_process_product_candidates(store=store, request=request, workflow=workflow)
-    if stage_code == "insert_seed_rows":
-        return _advance_insert_seed_rows(store=store, request=request, workflow=workflow)
-    if stage_code == "dispatch_product_collection":
-        return _advance_dispatch_product_collection(store=store, request=request, workflow=workflow)
-    if stage_code == "collect_product_data":
-        return _advance_collect_product_data(store=store, request=request, workflow=workflow)
+    if stage_code == "keyword_seed_import":
+        return _advance_keyword_seed_import(store=store, request=request, workflow=workflow)
+    if stage_code == "dispatch_row_refresh_jobs":
+        return _advance_dispatch_row_refresh_jobs(store=store, request=request, workflow=workflow)
+    if stage_code == "refresh_competitor_rows":
+        return _advance_refresh_competitor_rows(store=store, request=request, workflow=workflow)
     if stage_code == "browser_fallback":
         return _advance_browser_fallback(store=store, request=request, workflow=workflow)
     if stage_code == "sync_media":
@@ -139,11 +138,26 @@ def finalize_request(
         explicit_status=str((force_result or {}).get("final_status") or ""),
     )
     final_status = _derive_final_status(row_results=row_results, fallback_status=computed_status)
+    if not row_results and int(child_outcome["failed_count"]) == 0:
+        final_status = "success"
     warnings = list(dict.fromkeys(_collect_warnings(row_results)))
+    search_query = _first_text(request.payload.get("search_query"), request.payload.get("search_keyword"), request.payload.get("keyword"))
+    seed_import_payload = _keyword_seed_import_payload(store=store, request_id=request.request_id)
+    search_parameters = dict(seed_import_payload.get("search_parameters") or {})
+    search_filter_info = {
+        "search_query": search_query,
+        "filters": dict(search_parameters.get("filters") or request.payload.get("filters") or {}),
+        "output_conditions": dict(search_parameters.get("output_conditions") or request.payload.get("output_conditions") or {}),
+        "condition_context": dict(search_parameters.get("condition_context") or {}),
+        "sort": dict(search_parameters.get("sort") or {}),
+        "pagination": dict(search_parameters.get("pagination") or {}),
+    }
+    seed_write_results = [dict(item) for item in seed_import_payload.get("seed_write_results", []) if isinstance(item, Mapping)]
 
     summary = {
         "final_status": final_status,
-        "search_query": str(request.payload.get("search_query") or ""),
+        "search_query": search_query,
+        "search_filter_info": search_filter_info,
         "candidate_total_count": len(candidate_contexts),
         "child_total_count": int(child_outcome["total_count"]),
         "child_success_count": int(child_outcome["success_count"]),
@@ -156,9 +170,12 @@ def finalize_request(
     }
     result = {
         "workflow_code": workflow.workflow_code,
-        "search_query": str(request.payload.get("search_query") or ""),
+        "search_query": search_query,
+        "search_filter_info": search_filter_info,
+        "search_parameters": search_parameters,
         "candidate_total_count": len(candidate_contexts),
         "seed_total_count": len(_seed_contexts(store=store, request_id=request.request_id)),
+        "seed_write_results": seed_write_results,
         "row_results": row_results,
         "stage_summary": {
             stage.stage_code: summarize_stage_children(
@@ -291,6 +308,202 @@ def _recover_stage_after_browser_summary_promotion(
         continuation_stage_codes=("sync_media", "persist_facts", "writeback_competitor_rows"),
         continuation_candidate_ready=True,
     )
+
+
+def _advance_keyword_seed_import(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+) -> dict[str, Any]:
+    stage_code = "keyword_seed_import"
+    jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
+    job_def = workflow.require_job("keyword_seed_import")
+    if not jobs:
+        search_request = keyword_search_parameter_mapper(request.payload)
+        search_query = str(search_request.get("search_query") or "")
+        fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
+        if fastmoss_settings:
+            search_request["fastmoss"] = fastmoss_settings
+
+        seed_table_ref = str(request.payload.get("seed_table_ref") or request.payload.get("target_table_ref") or request.payload.get("table_url") or "")
+        payload = {
+            "stage_code": stage_code,
+            "search_query": search_query,
+            "search_digest": search_request["search_digest"],
+            "search_request": search_request,
+            "seed_write": {
+                "target_table_ref": seed_table_ref,
+                "write_mode": "insert_if_absent",
+                "mapper_code": "competitor_seed_projection_mapper",
+            },
+            **_payload_subset(request.payload, ("table_refs", "access_token", "access_token_env", "validate_schema")),
+        }
+        keys = render_job_keys(
+            job_def,
+            request.payload,
+            payload,
+            request_id=request.request_id,
+            task_code=request.task_code,
+            workflow_code=workflow.workflow_code,
+            stage_code=stage_code,
+            job_code=job_def.job_code,
+        )
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=job_def.job_code,
+            jobs=[
+                {
+                    "business_key": keys["business_key"],
+                    "dedupe_key": keys["dedupe_key"],
+                    "payload": payload,
+                    "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
+                }
+            ],
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Enqueued keyword seed import.",
+            details={"dispatch_payload": {"keyword_seed_import": dispatch}},
+        )
+    if _any_api_jobs_active(jobs):
+        return _waiting(stage_code=stage_code, message="Waiting for keyword seed import to finish.")
+
+    import_job = _latest_job(jobs, job_code="keyword_seed_import")
+    payload = extract_effective_result_payload(import_job)
+    candidates = [dict(item) for item in payload.get("normalized_candidates", []) if isinstance(item, Mapping)]
+    seeds = [dict(item) for item in payload.get("seed_contexts", []) if isinstance(item, Mapping)]
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={
+            "candidate_contexts": candidates,
+            "candidate_total_count": len(candidates),
+            "seed_contexts": seeds,
+            "seed_total_count": len(seeds),
+            "successful_seed_count": sum(1 for item in seeds if item.get("seed_status") == "success"),
+            "search_parameters": dict(payload.get("search_parameters") or {}),
+            "search_filter_info": {
+                "filters": dict((payload.get("search_parameters") or {}).get("filters") or {}),
+                "output_conditions": dict((payload.get("search_parameters") or {}).get("output_conditions") or {}),
+                "condition_context": dict((payload.get("search_parameters") or {}).get("condition_context") or {}),
+                "sort": dict((payload.get("search_parameters") or {}).get("sort") or {}),
+                "pagination": dict((payload.get("search_parameters") or {}).get("pagination") or {}),
+            },
+            "seed_write_results": [dict(item) for item in payload.get("seed_write_results", []) if isinstance(item, Mapping)],
+        },
+    )
+    return {
+        "action": "advance",
+        "next_stage": "dispatch_row_refresh_jobs",
+        "details": {
+            "candidate_total_count": len(candidates),
+            "seed_total_count": len(seeds),
+        },
+    }
+
+
+def _advance_dispatch_row_refresh_jobs(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+) -> dict[str, Any]:
+    stage_code = "dispatch_row_refresh_jobs"
+    seed_contexts = [item for item in _seed_contexts(store=store, request_id=request.request_id) if item.get("seed_status") == "success"]
+    if not seed_contexts:
+        _update_request_cursor(store=store, request=request, stage_code=stage_code, payload={"dispatched_row_count": 0})
+        return {"action": "advance", "next_stage": "refresh_competitor_rows", "details": {"dispatched_row_count": 0}}
+
+    row_job_def = workflow.require_job("competitor_row_refresh")
+    source_table_ref = str(request.payload.get("seed_table_ref") or request.payload.get("target_table_ref") or request.payload.get("table_url") or "")
+    row_jobs: list[dict[str, Any]] = []
+    for seed in seed_contexts:
+        product_identity = dict(seed.get("product_identity") or {})
+        row_payload = {
+            **_payload_subset(
+                request.payload,
+                TIKTOK_REQUEST_PASSTHROUGH_KEYS
+                + FASTMOSS_PRODUCT_PASSTHROUGH_KEYS
+                + FACT_PERSISTENCE_PASSTHROUGH_KEYS
+                + ARTIFACT_PASSTHROUGH_KEYS
+                + ("table_refs", "access_token", "access_token_env", "validate_schema"),
+            ),
+            "request_payload": dict(request.payload or {}),
+            "stage_code": "refresh_competitor_rows",
+            "source_record_id": seed["source_record_id"],
+            "source_record_id_or_product_id": _first_text(seed.get("source_record_id"), seed.get("product_id")),
+            "business_key": seed.get("business_entity_key") or seed.get("candidate_key") or "",
+            "product_identity": product_identity,
+            "normalized_product_url": seed.get("normalized_product_url") or product_identity.get("normalized_product_url") or "",
+            "source_table_ref": source_table_ref,
+            "source_context": dict(seed.get("source_context") or {}),
+            "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
+        }
+        row_keys = render_job_keys(
+            row_job_def,
+            request.payload,
+            seed,
+            row_payload,
+            request_id=request.request_id,
+            task_code=request.task_code,
+            workflow_code=workflow.workflow_code,
+            stage_code="refresh_competitor_rows",
+            job_code=row_job_def.job_code,
+        )
+        row_jobs.append(
+            {
+                "business_key": row_keys["business_key"],
+                "dedupe_key": build_stage_local_dedupe_key(row_keys["dedupe_key"], row_job_def.job_code),
+                "payload": row_payload,
+                "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
+            }
+        )
+
+    row_dispatch = store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code=request.task_code,
+        job_code=row_job_def.job_code,
+        jobs=row_jobs,
+    )
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={"dispatched_row_count": len(seed_contexts), "row_dispatch": row_dispatch},
+    )
+    return {
+        "action": "advance",
+        "next_stage": "refresh_competitor_rows",
+        "details": {
+            "dispatched_row_count": len(seed_contexts),
+            "row_refresh_created_count": int(row_dispatch["created_count"]),
+        },
+    }
+
+
+def _advance_refresh_competitor_rows(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+) -> dict[str, Any]:
+    del workflow
+    stage_code = "refresh_competitor_rows"
+    jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
+    if not jobs:
+        return {"action": "advance", "next_stage": "ready_for_summary", "details": {"dispatched_row_count": 0}}
+    if _any_api_jobs_active(jobs):
+        return _waiting(stage_code=stage_code, message="Waiting for competitor row refresh jobs to finish.")
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={"collect_job_count": len(jobs)},
+    )
+    return {"action": "advance", "next_stage": "ready_for_summary", "details": {"collect_job_count": len(jobs)}}
 
 
 def _advance_search_product_candidates(
@@ -1020,10 +1233,21 @@ def _advance_writeback_competitor_rows(
 def _candidate_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     request = store.load_task_request(request_id=request_id)
     stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
-    processed = dict(stage_results.get("process_product_candidates") or {})
-    candidates = processed.get("candidate_contexts")
+    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
+    import_candidates = keyword_import.get("candidate_contexts")
+    if isinstance(import_candidates, list):
+        return [dict(item) for item in import_candidates if isinstance(item, Mapping)]
+
+    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
+    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
+    candidates = import_payload.get("normalized_candidates")
     if isinstance(candidates, list):
         return [dict(item) for item in candidates if isinstance(item, Mapping)]
+
+    processed = dict(stage_results.get("process_product_candidates") or {})
+    legacy_candidates = processed.get("candidate_contexts")
+    if isinstance(legacy_candidates, list):
+        return [dict(item) for item in legacy_candidates if isinstance(item, Mapping)]
 
     search_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="search_product_candidates")
     search_job = select_latest_successful_api_job(search_jobs, "fastmoss_product_search")
@@ -1036,9 +1260,29 @@ def _candidate_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[st
     )
 
 
+def _keyword_seed_import_payload(store: RuntimeStore, *, request_id: str) -> dict[str, Any]:
+    request = store.load_task_request(request_id=request_id)
+    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
+    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
+    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
+    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
+    return {**import_payload, **keyword_import}
+
+
 def _seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     request = store.load_task_request(request_id=request_id)
     stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
+    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
+    import_seeds = keyword_import.get("seed_contexts")
+    if isinstance(import_seeds, list):
+        return [dict(item) for item in import_seeds if isinstance(item, Mapping)]
+
+    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
+    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
+    seeds = import_payload.get("seed_contexts")
+    if isinstance(seeds, list):
+        return [dict(item) for item in seeds if isinstance(item, Mapping)]
+
     inserted = dict(stage_results.get("insert_seed_rows") or {})
     seeds = inserted.get("seed_contexts")
     if isinstance(seeds, list):
@@ -1250,6 +1494,56 @@ def _build_row_result(
 ) -> dict[str, Any]:
     candidate_key = str(candidate_context.get("candidate_key") or "")
     seed_context = _seed_context_by_candidate_key(store=store, request_id=request_id).get(candidate_key, {})
+    row_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_competitor_rows")
+    row_job = _latest_row_job(
+        row_jobs,
+        source_record_id=str(seed_context.get("source_record_id") or ""),
+        job_code="competitor_row_refresh",
+    )
+    if row_job:
+        row_payload = extract_effective_result_payload(row_job)
+        step_timeline = row_payload.get("step_timeline") if isinstance(row_payload.get("step_timeline"), list) else []
+        step_statuses = {
+            str(item.get("step") or ""): str(item.get("status") or "")
+            for item in step_timeline
+            if isinstance(item, Mapping)
+        }
+        row_status = str(row_payload.get("row_status") or _record_effective_status(row_job) or "failed")
+        return {
+            "candidate_key": candidate_key,
+            "product_id": str(candidate_context.get("product_id") or ""),
+            "source_record_id": str(seed_context.get("source_record_id") or ""),
+            "feishu_row": dict(seed_context.get("feishu_row") or {}),
+            "row_status": row_status,
+            "seed_status": str(seed_context.get("seed_status") or ""),
+            "failure_reason": _row_failure_reason(row_job=row_job, row_payload=row_payload, row_status=row_status),
+            "competitor_row_refresh_status": _record_effective_status(row_job),
+            "tiktok_status": step_statuses.get("tiktok_request", ""),
+            "browser_status": step_statuses.get("browser_fallback", ""),
+            "media_status": step_statuses.get("media_sync", ""),
+            "fastmoss_status": step_statuses.get("fastmoss_fetch", ""),
+            "fact_status": step_statuses.get("fact_db_upsert", ""),
+            "writeback_status": step_statuses.get("feishu_writeback", ""),
+        }
+    if seed_context and str(seed_context.get("seed_status") or "") == "skipped":
+        return {
+            "candidate_key": candidate_key,
+            "product_id": str(candidate_context.get("product_id") or ""),
+            "source_record_id": str(seed_context.get("source_record_id") or ""),
+            "feishu_row": dict(seed_context.get("feishu_row") or {}),
+            "row_status": "skipped",
+            "seed_status": "skipped",
+            "failure_reason": str((seed_context.get("seed_result") or {}).get("message") or "existing_record")
+            if isinstance(seed_context.get("seed_result"), Mapping)
+            else "existing_record",
+            "competitor_row_refresh_status": "",
+            "tiktok_status": "",
+            "browser_status": "",
+            "media_status": "",
+            "fastmoss_status": "",
+            "fact_status": "",
+            "writeback_status": "",
+        }
     collect_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data")
     media_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="sync_media")
     fact_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="persist_facts")
@@ -1276,6 +1570,7 @@ def _build_row_result(
         "candidate_key": candidate_key,
         "product_id": str(candidate_context.get("product_id") or ""),
         "source_record_id": str(seed_context.get("source_record_id") or ""),
+        "feishu_row": dict(seed_context.get("feishu_row") or {}),
         "row_status": row_status,
         "seed_status": str(seed_context.get("seed_status") or ""),
         "tiktok_status": _record_effective_status(tiktok_job),
@@ -1469,7 +1764,7 @@ def _derive_row_status(
 
 def _derive_final_status(*, row_results: list[dict[str, Any]], fallback_status: str) -> str:
     if not row_results:
-        return "failed"
+        return fallback_status if fallback_status in {"success", "partial_success", "failed"} else "success"
     statuses = {str(item.get("row_status") or "") for item in row_results}
     if statuses <= {"success"}:
         return "success"
@@ -1492,6 +1787,32 @@ def _latest_candidate_job(
             continue
         payload = dict(job.get("payload") or {})
         if str(payload.get("candidate_key") or "") != candidate_key:
+            continue
+        selected = job
+    return selected
+
+
+def _latest_job(jobs: list[dict[str, Any]], *, job_code: str) -> dict[str, Any] | None:
+    selected: dict[str, Any] | None = None
+    for job in jobs:
+        if str(job.get("job_code") or "") != job_code:
+            continue
+        selected = job
+    return selected
+
+
+def _latest_row_job(
+    jobs: list[dict[str, Any]],
+    *,
+    source_record_id: str,
+    job_code: str,
+) -> dict[str, Any] | None:
+    selected: dict[str, Any] | None = None
+    for job in jobs:
+        if str(job.get("job_code") or "") != job_code:
+            continue
+        payload = dict(job.get("payload") or {})
+        if str(payload.get("source_record_id") or "") != source_record_id:
             continue
         selected = job
     return selected
@@ -1575,6 +1896,27 @@ def _record_effective_status(record: Any) -> str:
     status = str(getattr(record, "status", "") or "")
     handler_status = extract_handler_result_status(record)
     return handler_status or status
+
+
+def _row_failure_reason(
+    *,
+    row_job: Mapping[str, Any],
+    row_payload: Mapping[str, Any],
+    row_status: str,
+) -> str:
+    if row_status == "success":
+        return ""
+    for source in (row_payload, row_job):
+        for key in ("failure_reason", "error_text", "error_message", "error_code"):
+            value = _first_text(source.get(key) if isinstance(source, Mapping) else "")
+            if value:
+                return value
+    result = row_job.get("result") if isinstance(row_job, Mapping) else {}
+    handler_result = result.get("handler_result") if isinstance(result, Mapping) else {}
+    error = handler_result.get("error") if isinstance(handler_result, Mapping) else {}
+    if isinstance(error, Mapping):
+        return _first_text(error.get("message"), error.get("error_code"))
+    return ""
 
 
 def _collect_warnings(row_results: list[dict[str, Any]]) -> list[str]:

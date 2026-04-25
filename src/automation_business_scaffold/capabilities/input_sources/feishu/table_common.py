@@ -897,9 +897,7 @@ def _map_competitor_seed_record(record: Mapping[str, Any], payload: Mapping[str,
     fields = {
         "SKU-ID": product_id,
         "产品链接": _link_value(product_url),
-        "关键词": search_query,
         "备注": f"通过搜索关键字：{search_query}" if search_query else "",
-        "达人查找状态": "待查找",
     }
     upsert_key = (
         {"field": "SKU-ID", "value": product_id}

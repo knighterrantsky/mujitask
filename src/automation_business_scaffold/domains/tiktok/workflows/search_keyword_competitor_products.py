@@ -4,14 +4,10 @@ from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
-    FACT_BUNDLE_UPSERT_JOB,
-    FASTMOSS_PRODUCT_FETCH_JOB,
-    FASTMOSS_PRODUCT_SEARCH_JOB,
-    FEISHU_TABLE_WRITE_JOB,
-    MEDIA_ASSET_SYNC_JOB,
+    COMPETITOR_ROW_REFRESH_JOB,
+    KEYWORD_SEED_IMPORT_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
     TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
-    TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
@@ -40,7 +36,7 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
         workflow_code="search_keyword_competitor_products",
         contract_revision=DEFAULT_CONTRACT_REVISION,
         trigger_modes=("manual", "cli"),
-        entry_stage_code="search_product_candidates",
+        entry_stage_code="keyword_seed_import",
         payload_contract=contract(
             "search_keyword_competitor_products_payload",
             required_field("search_query", "Keyword or normalized search query.", type_hint="str"),
@@ -52,120 +48,39 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
         ),
         stages=(
             StageDefinition(
-                stage_code="search_product_candidates",
-                description="Search FastMoss for normalized product candidates.",
+                stage_code="keyword_seed_import",
+                description="Search FastMoss candidates and write TK competitor seed rows as one business job.",
                 execution_mode="worker_jobs",
                 enter_condition="task_request has valid keyword or filter input",
-                exit_condition="candidate search job is terminal",
+                exit_condition="keyword seed import job is terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="fastmoss_product_search",
-                        flow_code="fastmoss_product_search_api_flow",
-                        result_consumer="candidate normalizer and output conditions",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="process_product_candidates",
-                description="Normalize, dedupe, and filter search candidates before seed creation.",
-                execution_mode="executor_action",
-                enter_condition="FastMoss candidate search has completed successfully",
-                exit_condition="seed row payloads have been produced or all candidates were skipped",
-                executor_action_code="normalize_product_candidates",
-            ),
-            StageDefinition(
-                stage_code="insert_seed_rows",
-                description="Insert or upsert competitor seed rows into TK competitor table.",
-                execution_mode="worker_jobs",
-                enter_condition="seed payloads are available for Feishu insertion",
-                exit_condition="seed row write jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="feishu_table_write",
+                        job_code="keyword_seed_import",
+                        flow_code="keyword_seed_import_flow",
                         mapper_code="competitor_seed_projection_mapper",
-                        result_consumer="created Feishu record ids",
+                        result_consumer="seed contexts and per-SKU import results",
                     ),
                 ),
             ),
             StageDefinition(
-                stage_code="dispatch_product_collection",
-                description="Fan out request-first product collection jobs from successful seed rows.",
+                stage_code="dispatch_row_refresh_jobs",
+                description="Fan out one row refresh job for each newly inserted seed row.",
                 execution_mode="executor_action",
                 enter_condition="successful seed rows exist",
-                exit_condition="product collection jobs have been created or skipped",
-                executor_action_code="fanout_seed_rows",
+                exit_condition="competitor row refresh jobs have been created or skipped",
+                executor_action_code="dispatch_row_refresh_jobs",
             ),
             StageDefinition(
-                stage_code="collect_product_data",
-                description="Collect TikTok and FastMoss product data for seeded competitor rows.",
+                stage_code="refresh_competitor_rows",
+                description="Refresh each newly inserted competitor seed row through the row-level pipeline.",
                 execution_mode="worker_jobs",
-                enter_condition="product collection jobs have been dispatched",
-                exit_condition="collection jobs are terminal or request browser fallback",
+                enter_condition="row refresh jobs have been dispatched",
+                exit_condition="competitor row refresh jobs are terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="tiktok_product_request_fetch",
-                        flow_code="tiktok_request_flow",
-                        result_consumer="fact_bundle_upsert or fallback decision",
-                    ),
-                    StageJobBinding(
-                        job_code="fastmoss_product_fetch",
-                        flow_code="fastmoss_product_flow",
-                        result_consumer="fact_bundle_upsert",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="browser_fallback",
-                description="Execute browser fallback for seeded rows that require TikTok browser recovery.",
-                execution_mode="worker_jobs",
-                enter_condition="at least one TikTok request result returned fallback_required=true",
-                exit_condition="browser fallback jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="tiktok_product_browser_fetch",
-                        flow_code="browser_product_page_flow",
-                        result_consumer="normalized product result",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="sync_media",
-                description="Sync product media and derived assets before fact persistence.",
-                execution_mode="worker_jobs",
-                enter_condition="normalized product results include media assets",
-                exit_condition="media sync jobs are terminal or skipped",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="media_asset_sync",
-                        flow_code="media_object_store_flow",
-                        result_consumer="media facts and writeback projection",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="persist_facts",
-                description="Persist normalized product entities, relations, and observations to Fact DB.",
-                execution_mode="worker_jobs",
-                enter_condition="collection results and optional media refs are available",
-                exit_condition="fact upsert jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="fact_bundle_upsert",
-                        result_consumer="competitor writeback projection",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="writeback_competitor_rows",
-                description="Write detail projection back into TK competitor rows.",
-                execution_mode="worker_jobs",
-                enter_condition="fact upsert has produced writeback-ready projection data",
-                exit_condition="detail writeback jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="feishu_table_write",
-                        mapper_code="competitor_table_projection_mapper",
-                        result_consumer="detail terminal result",
+                        job_code="competitor_row_refresh",
+                        flow_code="competitor_row_refresh_pipeline",
+                        result_consumer="row terminal result",
                     ),
                 ),
             ),
@@ -173,7 +88,7 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
                 stage_code="ready_for_summary",
                 description="Aggregate search, seed, and detail outcomes and enqueue the final notification.",
                 execution_mode="summary",
-                enter_condition="all child jobs across search, seed, collection, and writeback are terminal",
+                enter_condition="keyword seed import and row refresh jobs are terminal",
                 exit_condition="summary and outbox payload have been persisted",
                 job_bindings=(
                     StageJobBinding(
@@ -185,67 +100,26 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
             ),
         ),
         job_defs=(
-            FASTMOSS_PRODUCT_SEARCH_JOB,
-            FEISHU_TABLE_WRITE_JOB,
-            TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
-            FASTMOSS_PRODUCT_FETCH_JOB,
+            KEYWORD_SEED_IMPORT_JOB,
+            COMPETITOR_ROW_REFRESH_JOB,
             TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
-            MEDIA_ASSET_SYNC_JOB,
-            FACT_BUNDLE_UPSERT_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
             TransitionDefinition(
-                from_stage_code="search_product_candidates",
-                to_stage_code="process_product_candidates",
-                condition="fastmoss_product_search is terminal and candidate payload is available",
+                from_stage_code="keyword_seed_import",
+                to_stage_code="dispatch_row_refresh_jobs",
+                condition="keyword seed import job is terminal",
             ),
             TransitionDefinition(
-                from_stage_code="process_product_candidates",
-                to_stage_code="insert_seed_rows",
-                condition="candidate filtering produced at least one seed payload or an empty seed set was recorded",
+                from_stage_code="dispatch_row_refresh_jobs",
+                to_stage_code="refresh_competitor_rows",
+                condition="row refresh fan-out completed or no new seed rows were eligible",
             ),
             TransitionDefinition(
-                from_stage_code="insert_seed_rows",
-                to_stage_code="dispatch_product_collection",
-                condition="seed row writes are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="dispatch_product_collection",
-                to_stage_code="collect_product_data",
-                condition="product collection fan-out completed or no seed rows were eligible",
-            ),
-            TransitionDefinition(
-                from_stage_code="collect_product_data",
-                to_stage_code="browser_fallback",
-                condition="at least one tiktok_product_request_fetch result requires browser fallback",
-                transition_type="conditional",
-            ),
-            TransitionDefinition(
-                from_stage_code="collect_product_data",
-                to_stage_code="sync_media",
-                condition="product collection jobs are terminal and no browser fallback is pending",
-                transition_type="conditional",
-            ),
-            TransitionDefinition(
-                from_stage_code="browser_fallback",
-                to_stage_code="sync_media",
-                condition="browser fallback jobs are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="sync_media",
-                to_stage_code="persist_facts",
-                condition="media sync jobs are terminal or skipped",
-            ),
-            TransitionDefinition(
-                from_stage_code="persist_facts",
-                to_stage_code="writeback_competitor_rows",
-                condition="fact upsert jobs are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="writeback_competitor_rows",
+                from_stage_code="refresh_competitor_rows",
                 to_stage_code="ready_for_summary",
-                condition="competitor detail writeback jobs are terminal",
+                condition="competitor row refresh jobs are terminal",
             ),
         ),
         summary_policy=notification_summary_policy(
