@@ -21,6 +21,7 @@
 - TikTok 商品数据采集优先走 request/API 路径。
 - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景。
 - Workflow 的业务差异主要在来源飞书表读取、事实关系/快照记录、选品表写回字段映射。
+- TikTok、FastMoss、media sync 和 Fact DB upsert 必须复用统一事实采集 contract；选品 workflow 不能因为自身只写回部分字段而丢弃已采集事实。
 
 ## 2. Task
 
@@ -204,9 +205,10 @@ fallback 决策必须写入 result / stage cursor:
 业务 mapper 负责:
 
 - 从飞书源行映射 product key。
-- 从 normalized product result 映射 Fact DB entities / relations / observations。
 - 从事实和观测映射 `TK选品收集` 写回字段。
 - 定义部分成功时哪些字段可以写回，哪些字段必须留空或标记失败。
+
+事实入库不由选品 projection mapper 负责。mapper 只能读取标准事实结果并生成业务表投影；Fact DB 写入统一走 `media_asset_sync` 和 `fact_bundle_upsert`。
 
 ## 9. Handler 与 Flow 边界
 

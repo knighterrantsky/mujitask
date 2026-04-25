@@ -23,7 +23,7 @@ fi
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 if [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
-  exec "${ROOT_DIR}/.venv/bin/python" -m "${MODULE_NAME}"
+  exec "${ROOT_DIR}/.venv/bin/python" -m "${MODULE_NAME}" "${@:2}"
 fi
 
-exec python3 -m "${MODULE_NAME}"
+exec python3 -m "${MODULE_NAME}" "${@:2}"

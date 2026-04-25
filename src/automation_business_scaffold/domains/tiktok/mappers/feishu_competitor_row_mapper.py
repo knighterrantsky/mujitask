@@ -32,6 +32,10 @@ def _adapt_competitor_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[s
     skip_statuses = set(_list_text(spec.get("skip_product_status")))
     candidate_policy = _text(spec.get("candidate_policy"))
     auto_fields = tuple(_list_text(spec.get("auto_fields")) or _COMPETITOR_AUTO_FIELDS)
+    target_identity = _target_identity_from_payload(payload)
+    source_record_ids = {record_id for record_id in _list_text(payload.get("source_record_ids")) if record_id}
+    explicit_identity_lookup = bool(target_identity)
+    explicit_row_selection = explicit_identity_lookup or bool(source_record_ids)
     snapshot_enabled = bool(_mapping(payload.get("snapshot_policy")).get("store_raw_rows"))
     source_rows: list[dict[str, Any]] = []
     skipped_complete = 0
@@ -39,17 +43,26 @@ def _adapt_competitor_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[s
     dropped_empty = 0
 
     for row in raw_rows:
+        record_id = _text(row.get("record_id"))
+        if source_record_ids and record_id not in source_record_ids:
+            continue
         fields = _mapping(row.get("fields"))
         identity = _product_identity_from_fields(fields)
         if not identity:
             dropped_empty += 1
             continue
+        if explicit_identity_lookup and not _identity_matches(identity, target_identity):
+            continue
         product_status = _field_text(fields, "商品状态", "product_status")
-        if product_status and product_status in skip_statuses:
+        if not explicit_row_selection and product_status and product_status in skip_statuses:
             skipped_unavailable += 1
             continue
         missing_auto_fields = [field for field in auto_fields if not _field_has_value(fields.get(field))]
-        if candidate_policy == "missing_auto_maintained_fields" and not missing_auto_fields:
+        if (
+            not explicit_row_selection
+            and candidate_policy == "missing_auto_maintained_fields"
+            and not missing_auto_fields
+        ):
             skipped_complete += 1
             continue
         source_rows.append(
@@ -63,14 +76,43 @@ def _adapt_competitor_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[s
             )
         )
 
+    if explicit_identity_lookup and len(source_rows) > 1:
+        return {
+            "source_rows": [],
+            "candidate_keys": [],
+            "adapter_summary": {
+                "adapter_code": "competitor_table_source_adapter",
+                "input_row_count": len(raw_rows),
+                "source_row_count": 0,
+                "deduped_count": 0,
+                "skipped_complete_count": skipped_complete,
+                "skipped_unavailable_count": skipped_unavailable,
+                "dropped_empty_count": dropped_empty,
+                "lookup_status": "ambiguous_match",
+                "matched_row_count": len(source_rows),
+                "matched_record_ids": [
+                    _text(item.get("source_record_id"))
+                    for item in source_rows
+                    if _text(item.get("source_record_id"))
+                ],
+            },
+        }
+
     return _adapter_result(
         source_rows,
         input_count=len(raw_rows),
         adapter_code="competitor_table_source_adapter",
+        dedupe=not explicit_row_selection,
         extra_summary={
             "skipped_complete_count": skipped_complete,
             "skipped_unavailable_count": skipped_unavailable,
             "dropped_empty_count": dropped_empty,
+            "lookup_status": (
+                "matched"
+                if explicit_identity_lookup and source_rows
+                else "not_found" if explicit_identity_lookup else ""
+            ),
+            "matched_row_count": len(source_rows) if explicit_identity_lookup else 0,
         },
     )
 
@@ -120,8 +162,21 @@ def _adapter_result(
     *,
     input_count: int,
     adapter_code: str,
+    dedupe: bool,
     extra_summary: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if not dedupe:
+        return {
+            "source_rows": list(source_rows),
+            "candidate_keys": [_candidate_key(row.get("product_identity")) for row in source_rows],
+            "adapter_summary": {
+                "adapter_code": adapter_code,
+                "input_row_count": input_count,
+                "source_row_count": len(source_rows),
+                "deduped_count": 0,
+                **dict(extra_summary),
+            },
+        }
     deduped_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     deduped_count = 0
@@ -151,6 +206,26 @@ def competitor_table_source_adapter(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     return _adapt_competitor_rows(raw_rows, payload)
+
+
+def _target_identity_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return _compact(
+        {
+            "product_id": _first_non_empty(payload.get("product_id"), _extract_product_id(payload.get("product_url"))),
+            "product_url": payload.get("product_url"),
+            "normalized_product_url": _normalize_product_url(payload.get("product_url")),
+        }
+    )
+
+
+def _identity_matches(identity: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+    identity_product_id = _text(identity.get("product_id"))
+    target_product_id = _text(target.get("product_id"))
+    if identity_product_id and target_product_id and identity_product_id == target_product_id:
+        return True
+    identity_url = _normalize_product_url(identity.get("normalized_product_url") or identity.get("product_url"))
+    target_url = _normalize_product_url(target.get("normalized_product_url") or target.get("product_url"))
+    return bool(identity_url and target_url and identity_url == target_url)
 
 
 def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:

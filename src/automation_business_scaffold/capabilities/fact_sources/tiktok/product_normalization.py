@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 
 
-
+from typing import Any
 
 
 from automation_business_scaffold.contracts.handler.shared import (
@@ -15,9 +16,6 @@ from automation_business_scaffold.contracts.handler.shared import (
     first_non_empty,
     new_fact_bundle,
 )
-
-
-from typing import Any
 
 
 PRODUCT_STATUS_UNAVAILABLE = "off_shelf_or_region_unavailable"
@@ -48,14 +46,18 @@ def _build_tiktok_normalized_product_result(
         raw.get("product_id"),
         extract_product_id(product_url),
     )
-    shop_name = first_non_empty(
-        shop_payload.get("shop_name"),
-        shop_payload.get("name"),
-        product_payload.get("shop_name"),
-        product_payload.get("seller_name"),
-        raw.get("shop_name"),
+    shop_name = _clean_shop_name(
+        first_non_empty(
+            shop_payload.get("shop_name"),
+            shop_payload.get("name"),
+            product_payload.get("shop_name"),
+            product_payload.get("seller_name"),
+            raw.get("shop_name"),
+        )
     )
     shop_url = first_non_empty(shop_payload.get("shop_url"), product_payload.get("shop_url"), raw.get("shop_url"))
+    gallery_images = _coerce_image_list(raw.get("gallery_images") or product_payload.get("gallery_images"))
+    sku_images = _coerce_image_list(raw.get("sku_images") or product_payload.get("sku_images"))
     product_facts = compact_dict(
         {
             "collection_path": collection_path,
@@ -100,6 +102,16 @@ def _build_tiktok_normalized_product_result(
             "seller_name": shop_name,
             "shop_name": shop_name,
             "shop_url": shop_url,
+            "main_image_url": product_facts.get("main_image_url"),
+            "price_text": product_facts.get("price_text"),
+            "price_amount": product_facts.get("price_amount"),
+            "price_currency": product_facts.get("price_currency"),
+            "sales_count": product_facts.get("sales_count"),
+            "rating_score": product_facts.get("rating_score"),
+            "review_count": product_facts.get("review_count"),
+            "comment_count": product_facts.get("comment_count"),
+            "gallery_images": gallery_images,
+            "sku_images": sku_images,
             "source_platform": "tiktok",
             "status": product_status,
             "facts": product_facts or {"collection_path": collection_path},
@@ -189,6 +201,14 @@ def _build_tiktok_normalized_product_result(
                     raw.get("real_price"),
                     raw.get("price"),
                 ),
+                "price_amount": product_facts.get("price_amount"),
+                "price_currency": product_facts.get("price_currency"),
+                "sales_count": product_facts.get("sales_count"),
+                "rating_score": product_facts.get("rating_score"),
+                "review_count": product_facts.get("review_count"),
+                "comment_count": product_facts.get("comment_count"),
+                "gallery_images": gallery_images,
+                "sku_images": sku_images,
             }
         ),
     }
@@ -199,6 +219,17 @@ def _product_status_from_availability(product_facts: dict[str, Any]) -> str:
     if availability_status == "unavailable":
         return PRODUCT_STATUS_UNAVAILABLE
     return "active"
+
+
+def _clean_shop_name(value: Any) -> str:
+    text = first_non_empty(value)
+    return re.sub(r"^\s*(?:sold\s+by|seller|shop)\s*[:：]?\s*", "", text, flags=re.IGNORECASE).strip()
+
+
+def _coerce_image_list(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if item not in ("", None, [], {})]
 
 
 def _normalize_product_skus(raw_payload: dict[str, Any], *, product_id: str) -> list[dict[str, Any]]:

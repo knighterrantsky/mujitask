@@ -23,6 +23,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-id")
     parser.add_argument("--lease-seconds", type=float)
     parser.add_argument("--heartbeat-interval-seconds", type=float)
+    parser.add_argument("--supervisor-mode", choices=("inline", "child_process"), default="")
+    parser.add_argument("--child-start-method", default="")
     parser.add_argument("--poll-interval-seconds", type=float)
     parser.add_argument("--stop-when-idle", action="store_true")
     parser.add_argument("--max-idle-cycles", type=int, default=1)
@@ -42,6 +44,10 @@ def _build_params(args: argparse.Namespace) -> dict[str, Any]:
         params["execution_lease_seconds"] = args.lease_seconds
     if args.heartbeat_interval_seconds is not None:
         params["execution_heartbeat_interval_seconds"] = args.heartbeat_interval_seconds
+    if args.supervisor_mode:
+        params["execution_child_runner_mode"] = args.supervisor_mode
+    if args.child_start_method:
+        params["execution_child_start_method"] = args.child_start_method
     if args.poll_interval_seconds is not None:
         params["execution_control_poll_interval_seconds"] = args.poll_interval_seconds
     if not args.once:

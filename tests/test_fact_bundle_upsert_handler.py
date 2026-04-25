@@ -95,6 +95,39 @@ def test_fact_bundle_upsert_ignores_legacy_nested_fact_bundle_inputs() -> None:
     assert result.result["upserted_entities"] == []
 
 
+def test_fact_bundle_upsert_uses_request_execution_control_db_url(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_persist_fact_bundle(fact_bundle: dict, *, fact_db_url: str) -> dict:
+        captured["fact_bundle"] = fact_bundle
+        captured["fact_db_url"] = fact_db_url
+        return {
+            "upserted_entities": ["product:123456789"],
+            "upserted_relations": [],
+            "observation_refs": [],
+            "persisted_counts": {"products": 1},
+        }
+
+    monkeypatch.setattr(fact_bundle_module, "_persist_fact_bundle", fake_persist_fact_bundle)
+
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "request_payload": {
+                    "execution_control_db_url": "postgresql+psycopg://runtime",
+                },
+                "fact_bundle": {
+                    "products": [{"product_id": "123456789"}],
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["persistence_mode"] == "database"
+    assert captured["fact_db_url"] == "postgresql+psycopg://runtime"
+
+
 def test_fact_bundle_upsert_persists_unavailable_product_status(monkeypatch) -> None:
     captured: dict[str, str] = {}
 

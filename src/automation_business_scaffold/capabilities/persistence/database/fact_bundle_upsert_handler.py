@@ -28,6 +28,7 @@ CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
 def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
+    request_payload = coerce_mapping(payload.get("request_payload"))
     merged_bundle = merge_fact_bundles(coerce_mapping(payload.get("fact_bundle")))
 
     entity_keys = bundle_entity_keys(merged_bundle)
@@ -42,8 +43,14 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     persistence_mode = "dry_run"
     fact_db_url = first_non_empty(
         payload.get("fact_db_url"),
+        request_payload.get("fact_db_url"),
+        request_payload.get("execution_control_fact_db_url"),
         coerce_mapping(payload.get("persistence")).get("fact_db_url"),
+        coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
         payload.get("db_url"),
+        request_payload.get("db_url"),
+        payload.get("execution_control_db_url"),
+        request_payload.get("execution_control_db_url"),
     )
     if fact_db_url:
         persistence_mode = "database"

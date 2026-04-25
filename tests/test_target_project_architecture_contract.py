@@ -313,10 +313,12 @@ def test_tiktok_domain_structure() -> None:
     assert missing_dirs == [], "tiktok domain dirs are missing:\n" + "\n".join(missing_dirs)
 
     required_files = (
+        "tasks/refresh_competitor_row_by_url.py",
         "tasks/refresh_current_competitor_table.py",
         "tasks/search_keyword_competitor_products.py",
         "tasks/sync_tk_influencer_pool.py",
         "tasks/tiktok_fastmoss_product_ingest.py",
+        "workflows/refresh_competitor_row_by_url.py",
         "workflows/refresh_current_competitor_table.py",
         "workflows/search_keyword_competitor_products.py",
         "workflows/sync_tk_influencer_pool.py",

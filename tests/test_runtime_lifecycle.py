@@ -125,8 +125,8 @@ def test_runtime_progress_helpers_and_stale_scans_cover_unified_tables(runtime_d
     assert claimed_job is not None
     updated_job = store.update_api_worker_job_progress(
         job_id=claimed_job["job_id"],
+        run_id=claimed_job["run_id"],
         progress_stage="fastmoss_request",
-        lease_seconds=30.0,
     )
 
     executions = store.enqueue_task_executions(
@@ -151,8 +151,8 @@ def test_runtime_progress_helpers_and_stale_scans_cover_unified_tables(runtime_d
     assert claimed_execution is not None
     updated_execution = store.update_task_execution_progress(
         execution_id=execution_id,
+        run_id=claimed_execution.run_id,
         progress_stage="browser_collect",
-        lease_seconds=30.0,
     )
 
     outbox = store.create_notification_outbox(

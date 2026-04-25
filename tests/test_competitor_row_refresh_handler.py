@@ -32,6 +32,11 @@ def _context(payload: dict) -> HandlerContext:
 
 
 def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    fact_payloads: list[dict] = []
+    media_payloads: list[dict] = []
+    fastmoss_payloads: list[dict] = []
+    write_payloads: list[dict] = []
+
     def fake_tiktok(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(
             context,
@@ -59,6 +64,12 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                             "entity_type": "product",
                             "entity_external_id": "123456789",
                             "media_role": "product_main_image",
+                        },
+                        {
+                            "source_url": "https://cdn.example.com/main.jpg",
+                            "entity_type": "product",
+                            "entity_external_id": "123456789",
+                            "media_role": "product_sku_image",
                         }
                     ],
                     "fact_bundle": {
@@ -78,17 +89,57 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         )
 
     def fake_media(context: HandlerContext) -> HandlerResult:
+        media_payloads.append(dict(context.payload))
         return HandlerResult.success(
             context,
             result={
-                "synced_assets": [{"remote_uri": "https://cdn.example.com/main.jpg"}],
+                "synced_assets": [
+                    {
+                        "source_url": "https://cdn.example.com/main.jpg",
+                        "object_key": "runtime/media/main.jpg",
+                        "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
+                        "source_path": "/tmp/main.jpg",
+                        "file_name": "main.jpg",
+                        "mime_type": "image/jpeg",
+                        "entity_type": "product",
+                        "entity_external_id": "123456789",
+                        "media_role": "product_main_image",
+                    },
+                    {
+                        "source_url": "https://cdn.example.com/main.jpg",
+                        "object_key": "runtime/media/main.jpg",
+                        "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
+                        "source_path": "/tmp/main.jpg",
+                        "file_name": "main.jpg",
+                        "mime_type": "image/jpeg",
+                        "entity_type": "product",
+                        "entity_external_id": "123456789",
+                        "media_role": "product_sku_image",
+                    }
+                ],
                 "media_fact_bundle": {
                     "media_assets": [
                         {
-                            "remote_uri": "https://cdn.example.com/main.jpg",
+                            "source_url": "https://cdn.example.com/main.jpg",
+                            "object_key": "runtime/media/main.jpg",
+                            "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
+                            "source_path": "/tmp/main.jpg",
+                            "file_name": "main.jpg",
+                            "mime_type": "image/jpeg",
                             "entity_type": "product",
                             "entity_external_id": "123456789",
                             "media_role": "product_main_image",
+                        },
+                        {
+                            "source_url": "https://cdn.example.com/main.jpg",
+                            "object_key": "runtime/media/main.jpg",
+                            "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
+                            "source_path": "/tmp/main.jpg",
+                            "file_name": "main.jpg",
+                            "mime_type": "image/jpeg",
+                            "entity_type": "product",
+                            "entity_external_id": "123456789",
+                            "media_role": "product_sku_image",
                         }
                     ]
                 },
@@ -96,6 +147,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         )
 
     def fake_fastmoss(context: HandlerContext) -> HandlerResult:
+        fastmoss_payloads.append(dict(context.payload))
         return HandlerResult.success(
             context,
             result={
@@ -117,12 +169,14 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         )
 
     def fake_fact(context: HandlerContext) -> HandlerResult:
+        fact_payloads.append(dict(context.payload))
         return HandlerResult.success(
             context,
             result={"upserted_entities": ["product:123456789"]},
         )
 
     def fake_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
         return HandlerResult.success(
             context,
             result={"written_count": 1, "target_record_ids": ["row-1"]},
@@ -142,6 +196,9 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                 "product_identity": {
                     "product_id": "123456789",
                     "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                },
+                "request_payload": {
+                    "execution_control_db_url": "postgresql+psycopg://runtime",
                 },
                 "source_context": {
                     "source_fields": {
@@ -166,7 +223,21 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     ]
     assert result.result["writeback_projection"]["fields"]["SKU-ID"] == "123456789"
     assert result.result["writeback_projection"]["fields"]["标题"] == "Graduation Kit"
+    assert result.result["writeback_projection"]["fields"]["图片"]["local_path"] == "/tmp/main.jpg"
     assert result.result["runtime_evidence"]["browser_fallback_used"] is False
+    assert media_payloads[0]["sync_referenced_files"] is True
+    assert media_payloads[0]["require_materialized_assets"] is True
+    assert [asset["media_role"] for asset in media_payloads[0]["asset_refs"]] == [
+        "product_main_image",
+        "product_sku_image",
+    ]
+    assert fact_payloads[0]["request_payload"]["execution_control_db_url"] == "postgresql+psycopg://runtime"
+    assert str(fastmoss_payloads[0]["fastmoss_window_days"]) == "90"
+    assert [asset["media_role"] for asset in fact_payloads[0]["fact_bundle"]["media_assets"]] == [
+        "product_main_image",
+        "product_sku_image",
+    ]
+    assert write_payloads[0]["records"][0]["projection_fields"]["图片"]["local_path"] == "/tmp/main.jpg"
 
 
 def test_competitor_row_refresh_handler_uses_browser_fallback_inside_row_job(

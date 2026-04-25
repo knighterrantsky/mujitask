@@ -59,6 +59,7 @@ class RuntimeTaskExecutionRecord:
     progress_stage: str = ""
     available_at: float = 0.0
     worker_id: str = ""
+    worker_pid: int = 0
     attempt_count: int = 0
     max_attempts: int = 3
     payload: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +77,10 @@ class RuntimeTaskExecutionRecord:
     heartbeat_at: float = 0.0
     last_progress_at: float = 0.0
     max_execution_seconds: float = 0.0
+    max_idle_seconds: float = 0.0
+    heartbeat_timeout_seconds: float = 0.0
+    progress_seq: int = 0
+    progress_message: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

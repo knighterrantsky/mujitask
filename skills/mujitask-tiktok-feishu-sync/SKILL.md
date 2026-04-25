@@ -54,6 +54,10 @@ metadata:
 
 - 竞品表刷新：
   - `bash skills/mujitask-tiktok-feishu-sync/run_refresh_current_competitor_table_step.sh`
+- 竞品表单行 URL 定位并补全：
+  - `bash skills/mujitask-tiktok-feishu-sync/run_competitor_row_by_url_step.sh --product-url "<tiktok product url>"`
+- 单商品 URL 补全：
+  - `bash skills/mujitask-tiktok-feishu-sync/run_product_url_complete_step.sh --product-url "<tiktok product url>"`
 - 关键词搜索：
   - `bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh --search-keyword "<keyword>" --sales-7d-threshold <number>`
 - 达人池同步：

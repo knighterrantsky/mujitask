@@ -239,7 +239,41 @@ Flow = handler 内部复用的业务过程
 - handler 不是天然的一条 job。一个 handler 可以被多个 workflow 复用，也可以在一个更大的业务 job 内部作为处理步骤被复用；是否单独建 job，取决于它是否需要独立生命周期，而不是它是否“恰好是一个现成 handler”。
 - “有几个外部 API 调用”也不是 job 数量设计依据。同一业务实体内严格顺序的多个 API 调用，应优先放在同一个 job 内串行执行，并共享同一重试、审计和幂等边界。
 
-### 3.6.1 Adapter / Mapper 设计原则
+### 3.6.1 统一事实采集与业务投影约束
+
+所有 TikTok / FastMoss / Feishu 业务 workflow 必须把“事实采集”和“业务投影”分开设计。
+
+事实采集统一口径:
+
+- 商品、SKU、店铺、达人、视频、媒体资产、指标、关系和 raw response 属于事实数据，不属于某个飞书表或某个 workflow 的私有数据。
+- TikTok request、TikTok browser fallback、FastMoss 商品/达人/店铺/视频采集输出的 normalized result / fact bundle，必须进入统一事实写入 contract。
+- 媒体资产包括商品主图、商品侧边图、SKU 图、达人头像、店铺图、视频封面等；只要被采集到，就按事实媒体处理，不能因为当前飞书写回只需要一张图而丢弃。
+- 媒体内容必须先经过 `media_asset_sync` 落到 MinIO / object store，Fact DB 只保存 `object_key` / `remote_uri` / `source_url` / `mime_type` / metadata 和实体绑定关系。
+- `fact_bundle_upsert` 是 Fact DB 主体、关系、指标、raw link 和媒体引用的统一持久化边界；业务 workflow 不应另写一套私有事实入库函数。
+- 已采集、已标准化的事实不能因为业务表字段已满、飞书写回被跳过、或某个 projection mapper 不需要该字段而跳过入库。
+
+业务流程只负责:
+
+- 决定采集对象: 采什么商品、达人、店铺、视频，来源是飞书表、URL、关键词搜索还是人工提交。
+- 决定采集策略: request-first、是否允许 browser fallback、FastMoss detail level、指标窗口、强制刷新或缓存复用。
+- 决定业务投影: 把事实和观测映射到哪个飞书表、哪些字段、是否覆盖已有人工值。
+- 决定业务关系上下文: 来源记录、活动/节日、运营状态、绑定关系和写回记录 ID。
+
+业务流程不能负责:
+
+- 定义另一套事实 schema 或绕过 `fact_bundle_upsert` 直接写事实表。
+- 把业务投影字段当成事实主档字段反向驱动 schema。
+- 在 workflow 私有 helper 中复制 TikTok / FastMoss / media / Fact DB 的通用写入逻辑。
+- 因为当前业务只展示部分字段，就丢弃 normalized result 中的其他事实数据。
+
+实现约束:
+
+- 新增事实类型时，优先扩展现有 handler contract、fact mapper 或 Fact DB migration；不要新增与 workflow 强绑定的 helper 层来包一层“临时统一逻辑”。
+- 如果多个 workflow 需要同一事实采集行为，应复用同一 handler / mapper contract，并在 workflow 文档中声明使用同一事实写入路径。
+- Adapter 只处理来源表业务语义和候选过滤；projection mapper 只处理目标表字段映射；二者都不能承担事实入库职责。
+- 写回字段映射和事实入库必须是两个方向: Fact -> Projection，而不是 Projection -> Fact。
+
+### 3.6.2 Adapter / Mapper 设计原则
 
 当 workflow 使用 `feishu_table_read` / `feishu_table_write` 这类通用 handler 时，必须同时说明对应 `source adapter` / `projection mapper` 的业务所有权边界。
 
@@ -272,7 +306,7 @@ Flow = handler 内部复用的业务过程
 
 字段级详细契约可引用 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)，workflow 文档不需要逐字段重复所有细节，但必须明确本流程依赖的业务规则归属。
 
-### 3.6.2 Workflow 中的 Adapter 使用规范
+### 3.6.3 Workflow 中的 Adapter 使用规范
 
 Workflow 设计和实现 adapter 时，默认按下面规则:
 

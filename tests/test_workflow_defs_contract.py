@@ -23,6 +23,7 @@ JOBS_ROOT = (
     / "jobs"
 )
 OFFICIAL_WORKFLOW_CODES = (
+    "refresh_competitor_row_by_url",
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
     "sync_tk_influencer_pool",

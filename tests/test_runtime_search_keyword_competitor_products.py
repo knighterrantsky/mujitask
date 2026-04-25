@@ -69,9 +69,9 @@ def _latest_stage_execution(store: RuntimeStore, *, request_id: str, stage_code:
 
 
 def _mark_search_success(store: RuntimeStore, *, job_id: str, candidate_suffix: str = "1") -> None:
-    store.mark_api_worker_job_success(
+    _mark_api_job_success(
+        store,
         job_id=job_id,
-        run_id=f"pytest:search:{candidate_suffix}",
         summary={"candidates": 1},
         result={
             "candidates": [
@@ -84,6 +84,36 @@ def _mark_search_success(store: RuntimeStore, *, job_id: str, candidate_suffix: 
             ],
             "condition_context": {"normalized": True},
         },
+    )
+
+
+def _mark_api_job_success(
+    store: RuntimeStore,
+    *,
+    job_id: str,
+    summary: dict,
+    result: dict,
+) -> None:
+    job = store.load_api_worker_job(job_id=job_id)
+    stage_code = str((job.get("payload") or {}).get("stage_code") or "")
+    store.update_task_request(
+        request_id=str(job["request_id"]),
+        status="waiting_children",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=str(job["request_id"]),
+        job_code=str(job["job_code"]),
+    )
+    assert claimed is not None and claimed["job_id"] == job_id
+    store.mark_api_worker_job_success(
+        job_id=job_id,
+        run_id=str(claimed["run_id"]),
+        summary=summary,
+        result=result,
     )
 
 
@@ -115,9 +145,9 @@ def _advance_to_collect_stage(store: RuntimeStore, request, workflow) -> tuple[o
         stage_code="insert_seed_rows",
         job_code="feishu_table_write",
     )
-    store.mark_api_worker_job_success(
-        job_id=seed_job["job_id"],
-        run_id="pytest:seed-write",
+    _mark_api_job_success(
+        store,
+        job_id=str(seed_job["job_id"]),
         summary={"written": 1},
         result={"written_count": 1, "target_record_ids": ["seed-row-1"]},
     )
@@ -160,9 +190,9 @@ def _advance_from_sync_to_finalization(store: RuntimeStore, request, workflow) -
         stage_code="sync_media",
         job_code="media_asset_sync",
     )
-    store.mark_api_worker_job_success(
-        job_id=media_job["job_id"],
-        run_id="pytest:media",
+    _mark_api_job_success(
+        store,
+        job_id=str(media_job["job_id"]),
         summary={"synced": 1},
         result={"synced_assets": [{"source_url": "https://cdn.example.com/p1.jpg"}]},
     )
@@ -180,9 +210,9 @@ def _advance_from_sync_to_finalization(store: RuntimeStore, request, workflow) -
         stage_code="persist_facts",
         job_code="fact_bundle_upsert",
     )
-    store.mark_api_worker_job_success(
-        job_id=fact_job["job_id"],
-        run_id="pytest:fact",
+    _mark_api_job_success(
+        store,
+        job_id=str(fact_job["job_id"]),
         summary={"upserted": 1},
         result={"upserted_entities": [PRODUCT_ID]},
     )
@@ -205,9 +235,9 @@ def _advance_from_sync_to_finalization(store: RuntimeStore, request, workflow) -
         stage_code="writeback_competitor_rows",
         job_code="feishu_table_write",
     )
-    store.mark_api_worker_job_success(
-        job_id=write_job["job_id"],
-        run_id="pytest:writeback",
+    _mark_api_job_success(
+        store,
+        job_id=str(write_job["job_id"]),
         summary={"written": 1},
         result={"written_count": 1, "target_record_ids": ["seed-row-1"]},
     )
@@ -241,9 +271,9 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
 
     assert tiktok_job["payload"]["source_record_id"] == "seed-row-1"
     assert fastmoss_job["payload"]["source_record_id"] == "seed-row-1"
-    store.mark_api_worker_job_success(
-        job_id=tiktok_job["job_id"],
-        run_id="pytest:tiktok",
+    _mark_api_job_success(
+        store,
+        job_id=str(tiktok_job["job_id"]),
         summary={"transport": "request"},
         result={
             "normalized_product_result": {
@@ -259,9 +289,9 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
             }
         },
     )
-    store.mark_api_worker_job_success(
-        job_id=fastmoss_job["job_id"],
-        run_id="pytest:fastmoss",
+    _mark_api_job_success(
+        store,
+        job_id=str(fastmoss_job["job_id"]),
         summary={"transport": "fastmoss"},
         result={
             "product_fact_bundle": {
@@ -289,18 +319,18 @@ def test_keyword_runtime_browser_fallback_path_finalizes(runtime_db_url: str) ->
     store, request, workflow = _submit_keyword_request(runtime_db_url)
     request, tiktok_job, fastmoss_job = _advance_to_collect_stage(store, request, workflow)
 
-    store.mark_api_worker_job_success(
-        job_id=tiktok_job["job_id"],
-        run_id="pytest:tiktok-fallback",
+    _mark_api_job_success(
+        store,
+        job_id=str(tiktok_job["job_id"]),
         summary={"transport": "request"},
         result={
             "fallback_required": True,
             "fallback_source_job_id": "fallback-job-1",
         },
     )
-    store.mark_api_worker_job_success(
-        job_id=fastmoss_job["job_id"],
-        run_id="pytest:fastmoss",
+    _mark_api_job_success(
+        store,
+        job_id=str(fastmoss_job["job_id"]),
         summary={"transport": "fastmoss"},
         result={
             "product_fact_bundle": {
@@ -324,9 +354,15 @@ def test_keyword_runtime_browser_fallback_path_finalizes(runtime_db_url: str) ->
         stage_code="browser_fallback",
         item_code="tiktok_product_browser_fetch",
     )
+    claimed_execution = store.claim_browser_execution(
+        execution_id=execution.execution_id,
+        worker_id="pytest-browser",
+        lease_seconds=30.0,
+    )
+    assert claimed_execution is not None
     store.mark_browser_execution_success(
         execution_id=execution.execution_id,
-        run_id="pytest:browser",
+        run_id=claimed_execution.run_id,
         summary={"transport": "browser"},
         result={
             "normalized_product_result": {

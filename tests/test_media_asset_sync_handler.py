@@ -74,6 +74,49 @@ def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypa
     assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
 
 
+def test_media_asset_sync_reuses_duplicate_source_url_within_same_run(monkeypatch, tmp_path) -> None:
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int):
+        requested_urls.append(request.full_url)
+        return _FakeResponse()
+
+    monkeypatch.setattr(asset_sync_handler, "urlopen", fake_urlopen)
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "sync_referenced_files": True,
+                "media_download_dir": str(tmp_path / "downloads"),
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_gallery_image",
+                        "source_url": "https://cdn.example.com/shared.webp",
+                    },
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_sku_image",
+                        "source_url": "https://cdn.example.com/shared.webp",
+                    },
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert requested_urls == ["https://cdn.example.com/shared.webp"]
+    assert len(result.result["artifact_refs"]) == 1
+    assert [asset["sync_state"] for asset in result.result["synced_assets"]] == ["linked_local", "reused_in_run"]
+    assert result.result["synced_assets"][0]["object_key"] == result.result["synced_assets"][1]["object_key"]
+    assert result.result["synced_assets"][1]["media_role"] == "product_sku_image"
+
+
 def test_media_asset_sync_can_leave_referenced_url_unmaterialized(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         asset_sync_handler,
@@ -102,6 +145,38 @@ def test_media_asset_sync_can_leave_referenced_url_unmaterialized(monkeypatch, t
     assert result.status == "success"
     assert result.result["synced_assets"][0]["sync_state"] == "referenced"
     assert result.result["artifact_refs"] == []
+
+
+def test_media_asset_sync_can_require_referenced_assets_to_materialize(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not download")),
+    )
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "sync_referenced_files": False,
+                "require_materialized_assets": True,
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_gallery_image",
+                        "source_url": "https://cdn.example.com/gallery.webp",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "media_asset_materialization_failed"
+    assert result.result["synced_assets"][0]["sync_state"] == "referenced"
 
 
 def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch, tmp_path) -> None:

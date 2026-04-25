@@ -5,6 +5,7 @@ import time
 from typing import Any, Mapping
 
 from automation_business_scaffold.control_plane.runtime_config.settings import (
+    REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
     build_outbox_message_text,
 )
@@ -21,7 +22,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     compute_final_status,
     extract_effective_result_payload,
     has_active_records as _has_active_children,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     stage_child_records as _stage_child_records,
@@ -63,10 +63,13 @@ FEISHU_READ_PASSTHROUGH_KEYS = (
     "feishu_table",
     "field_names",
     "pagination",
+    "product_id",
+    "product_url",
     "raw_rows",
     "read_policy",
     "records",
     "snapshot_policy",
+    "source_record_ids",
     "source_table_url",
     "table_refs",
     "table_url",
@@ -144,6 +147,7 @@ DEFAULT_COMPETITOR_FILTER_SPEC = {
     "candidate_policy": "missing_auto_maintained_fields",
     "skip_product_status": ["已下架/区域不可售"],
 }
+SUPPORTED_REFRESH_TASK_CODES = {REFRESH_TASK_CODE, REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE}
 
 
 def advance_stage(
@@ -153,7 +157,7 @@ def advance_stage(
     workflow: WorkflowDefinition,
     stage_code: str,
 ) -> dict[str, Any]:
-    if request.task_code != REFRESH_TASK_CODE:
+    if request.task_code not in SUPPORTED_REFRESH_TASK_CODES:
         raise ValueError(f"Unsupported task_code for refresh runtime: {request.task_code}")
     if stage_code == "read_competitor_rows":
         return _advance_read_competitor_rows(store=store, request=request, workflow=workflow)
@@ -268,7 +272,7 @@ def release_request_after_child_completion(
     request_id: str,
 ) -> list[dict[str, Any]]:
     request = store.load_task_request(request_id=request_id)
-    if request.task_code != REFRESH_TASK_CODE:
+    if request.task_code not in SUPPORTED_REFRESH_TASK_CODES:
         return []
     workflow = _require_refresh_workflow(request.task_code)
     current_stage = str(request.current_stage or "").strip()
@@ -347,22 +351,28 @@ def _advance_read_competitor_rows(
     workflow: WorkflowDefinition,
 ) -> dict[str, Any]:
     stage_code = "read_competitor_rows"
+    source_table_ref = _source_table_ref_from_request_payload(request.payload)
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     stage_job = workflow.require_stage(stage_code).job_bindings[0]
     job_def = workflow.require_job(stage_job.job_code)
+    explicit_identity_lookup = _has_explicit_identity_lookup(request.payload)
+    explicit_row_selection = explicit_identity_lookup or _has_explicit_record_selection(request.payload)
     if not jobs:
         field_names = list(request.payload.get("field_names") or ()) or list(DEFAULT_COMPETITOR_READ_FIELDS)
         filter_spec = dict(request.payload.get("refresh_filter") or request.payload.get("filter_spec") or {})
-        if not filter_spec:
+        if not filter_spec and not explicit_row_selection:
             filter_spec = dict(DEFAULT_COMPETITOR_FILTER_SPEC)
         payload = {
             **_runtime_child_context(request=request, workflow=workflow, stage_code=stage_code),
             **_payload_subset(request.payload, FEISHU_READ_PASSTHROUGH_KEYS),
             "stage_code": stage_code,
-            "source_table_ref": str(request.payload.get("source_table_ref") or ""),
+            "source_table_ref": source_table_ref,
             "view_ref": str(request.payload.get("view_ref") or ""),
             "field_names": field_names,
             "filter_spec": filter_spec,
+            "product_id": str(request.payload.get("product_id") or ""),
+            "product_url": str(request.payload.get("product_url") or ""),
+            "source_record_ids": list(_list_text(request.payload.get("source_record_ids"))),
             "adapter_code": stage_job.adapter_code,
             "cursor_context": dict(request.stage_cursor.get(stage_code) or {}),
         }
@@ -411,7 +421,7 @@ def _advance_read_competitor_rows(
         cleanup_payload = build_projection_write_payload(
             stage_code=stage_code,
             request_id=request.request_id,
-            target_table_ref=str(request.payload.get("source_table_ref") or ""),
+            target_table_ref=source_table_ref,
             records=empty_row_deletes,
             mapper_code="",
             write_mode="delete",
@@ -453,6 +463,38 @@ def _advance_read_competitor_rows(
     row_contexts = _normalize_source_rows(
         read_payload.get("source_rows")
     )
+    adapter_summary = dict(read_payload.get("adapter_summary") or {})
+    if explicit_identity_lookup:
+        lookup_status = str(adapter_summary.get("lookup_status") or "")
+        if lookup_status == "ambiguous_match":
+            return {
+                "action": "finalize",
+                "final_status": "failed",
+                "result": {
+                    "status": "failed",
+                    "message": "product_url matched multiple competitor rows",
+                    "product_url": str(request.payload.get("product_url") or ""),
+                    "matched_row_count": int(adapter_summary.get("matched_row_count") or 0),
+                    "matched_record_ids": list(adapter_summary.get("matched_record_ids") or []),
+                },
+                "summary": {"total": 1, "counts": {"ambiguous_competitor_row": 1}},
+                "details": {
+                    "product_url": str(request.payload.get("product_url") or ""),
+                    "matched_row_count": int(adapter_summary.get("matched_row_count") or 0),
+                },
+            }
+        if not row_contexts:
+            return {
+                "action": "finalize",
+                "final_status": "failed",
+                "result": {
+                    "status": "failed",
+                    "message": "product_url was not found in the competitor table",
+                    "product_url": str(request.payload.get("product_url") or ""),
+                },
+                "summary": {"total": 1, "counts": {"competitor_row_not_found": 1}},
+                "details": {"product_url": str(request.payload.get("product_url") or "")},
+            }
     _update_request_cursor(
         store=store,
         request=request,
@@ -517,6 +559,7 @@ def _advance_dispatch_product_collection(
 ) -> dict[str, Any]:
     stage_code = "dispatch_product_collection"
     row_contexts = _row_contexts(store, request_id=request.request_id)
+    source_table_ref = _source_table_ref_from_request_payload(request.payload)
     if not row_contexts:
         _update_request_cursor(
             store=store,
@@ -552,9 +595,10 @@ def _advance_dispatch_product_collection(
             "request_payload": dict(request.payload or {}),
             "stage_code": "collect_product_data",
             "source_record_id": row["source_record_id"],
+            "source_record_id_or_product_id": _first_text(row.get("source_record_id"), row.get("product_id")),
             "product_identity": dict(row["product_identity"]),
             "normalized_product_url": row.get("normalized_product_url") or "",
-            "source_table_ref": str(request.payload.get("source_table_ref") or ""),
+            "source_table_ref": source_table_ref,
             "source_context": dict(row["source_context"]),
             "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
         }
@@ -860,7 +904,7 @@ def _advance_writeback_competitor_rows(
 
         job_def = workflow.require_job("feishu_table_write")
         payloads: list[dict[str, Any]] = []
-        target_table_ref = str(request.payload.get("source_table_ref") or "")
+        target_table_ref = _source_table_ref_from_request_payload(request.payload)
         for row in row_contexts:
             projection = _build_writeback_projection(store=store, request_id=request.request_id, row_context=row)
             payload = build_projection_write_payload(
@@ -1090,6 +1134,7 @@ def _build_row_result(
         "source_record_id": source_record_id,
         "product_id": str(row_context.get("product_id") or row_context["product_identity"].get("product_id") or ""),
         "row_status": row_status,
+        "failure_reason": _row_failure_reason(row_job=row_job, row_payload=row_payload, row_status=row_status),
         "competitor_row_refresh_status": _record_effective_status(row_job),
         "tiktok_status": step_statuses.get("tiktok_request", ""),
         "browser_status": step_statuses.get("browser_fallback", ""),
@@ -1099,6 +1144,35 @@ def _build_row_result(
         "writeback_status": step_statuses.get("feishu_writeback", ""),
         "runtime_evidence": dict(row_payload.get("runtime_evidence") or {}) if isinstance(row_payload, Mapping) else {},
     }
+
+
+def _row_failure_reason(
+    *,
+    row_job: Mapping[str, Any],
+    row_payload: Mapping[str, Any],
+    row_status: str,
+) -> str:
+    if row_status == "success":
+        return ""
+    for source in (row_payload, row_job):
+        for key in ("failure_reason", "error_text", "error_message", "error_code"):
+            value = _first_text(source.get(key) if isinstance(source, Mapping) else "")
+            if value:
+                return value
+    result = row_job.get("result") if isinstance(row_job, Mapping) else {}
+    handler_result = result.get("handler_result") if isinstance(result, Mapping) else {}
+    error = handler_result.get("error") if isinstance(handler_result, Mapping) else {}
+    if isinstance(error, Mapping):
+        return _first_text(error.get("message"), error.get("error_code"), error.get("error_type"))
+    step_timeline = row_payload.get("step_timeline") if isinstance(row_payload.get("step_timeline"), list) else []
+    failed_steps = [
+        _first_text(item.get("step"))
+        for item in step_timeline
+        if isinstance(item, Mapping) and _first_text(item.get("status")) == "failed"
+    ]
+    if failed_steps:
+        return f"failed_steps={','.join(failed_steps)}"
+    return f"row_status={row_status}" if row_status else "unknown"
 
 
 def _build_competitor_projection_fields(
@@ -1331,7 +1405,15 @@ def _daily_sales_text(daily_metrics: list[Mapping[str, Any]], *, window_days: in
 
 
 def _price_number_text(*values: Any) -> str:
-    text = _first_text(*values)
+    text = ""
+    for value in values:
+        candidate = _first_text(value)
+        if not candidate:
+            continue
+        if "*" in candidate:
+            continue
+        text = candidate
+        break
     if not text:
         return ""
     normalized = text.strip().replace(",", "")
@@ -1371,6 +1453,23 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _list_text(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [text for item in value if (text := _first_text(item))]
+    if isinstance(value, tuple):
+        return [text for item in value if (text := _first_text(item))]
+    text = _first_text(value)
+    return [text] if text else []
+
+
+def _has_explicit_identity_lookup(payload: Mapping[str, Any]) -> bool:
+    return bool(_first_text(payload.get("product_url"), payload.get("product_id")))
+
+
+def _has_explicit_record_selection(payload: Mapping[str, Any]) -> bool:
+    return bool(_list_text(payload.get("source_record_ids")))
 
 
 def _resolve_final_status_from_rows(
@@ -1731,6 +1830,10 @@ def _fastmoss_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[
     return settings
 
 
+def _source_table_ref_from_request_payload(payload: Mapping[str, Any]) -> str:
+    return _first_text(payload.get("source_table_ref"), payload.get("table_url"))
+
+
 def _artifact_settings_from_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     settings: dict[str, Any] = {}
     for source_key, target_key in (
@@ -1810,7 +1913,7 @@ def _require_refresh_workflow(task_code: str) -> WorkflowDefinition:
     from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     workflow = get_workflow_definition(task_code)
-    if workflow.workflow_code != REFRESH_TASK_CODE:
+    if workflow.workflow_code not in SUPPORTED_REFRESH_TASK_CODES:
         raise ValueError(f"Expected refresh workflow definition, got {workflow.workflow_code}")
     return workflow
 

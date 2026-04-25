@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import time
 from typing import Any, Mapping
 
@@ -10,16 +11,12 @@ from automation_business_scaffold.control_plane.executor.looping import (
     supervisor_error_payload,
 )
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.control_plane.outbox.dispatcher import (
-    dispatch_outbox_once,
-    ensure_request_outbox,
-    run_outbox_dispatcher,
-)
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
+    REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
     build_idle_payload,
     build_request_payload,
@@ -158,8 +155,36 @@ def run_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"Unsupported control_action '{action}' for {normalized_task_code}.")
 
 
+def dispatch_outbox_once(params: dict[str, Any]) -> dict[str, Any]:
+    from automation_business_scaffold.control_plane.outbox.dispatcher import (
+        dispatch_outbox_once as _dispatch_outbox_once,
+    )
+
+    return _dispatch_outbox_once(params)
+
+
+def ensure_request_outbox(*args: Any, **kwargs: Any) -> Any:
+    from automation_business_scaffold.control_plane.outbox.dispatcher import (
+        ensure_request_outbox as _ensure_request_outbox,
+    )
+
+    return _ensure_request_outbox(*args, **kwargs)
+
+
+def run_outbox_dispatcher(params: dict[str, Any]) -> dict[str, Any]:
+    from automation_business_scaffold.control_plane.outbox.dispatcher import (
+        run_outbox_dispatcher as _run_outbox_dispatcher,
+    )
+
+    return _run_outbox_dispatcher(params)
+
+
 def run_refresh_current_competitor_table_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(REFRESH_TASK_CODE, params)
+
+
+def run_refresh_competitor_row_by_url_request(params: dict[str, Any]) -> dict[str, Any]:
+    return run_task_request(REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE, params)
 
 
 def run_search_keyword_competitor_products_request(params: dict[str, Any]) -> dict[str, Any]:
@@ -333,6 +358,7 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
     store = create_runtime_store(settings)
     job = store.claim_next_api_worker_job(
         worker_id=settings.worker_id,
+        worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
     )
     if job is None:
@@ -359,6 +385,13 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         max_attempts=int(job.get("max_attempts") or 0),
         metadata={"request_payload": dict((job.get("payload") or {}).get("request_payload") or {})},
     )
+    run_id = str(job.get("run_id") or "")
+    store.update_api_worker_job_progress(
+        job_id=str(job["job_id"]),
+        run_id=run_id,
+        progress_stage="handler_started",
+        message=f"Starting api handler {job['job_code']}.",
+    )
 
     outcome = run_supervised_handler(
         context=context,
@@ -367,12 +400,14 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         callbacks=ExecutionSupervisorCallbacks(
             heartbeat=lambda: store.heartbeat_api_worker_job(
                 job_id=str(job["job_id"]),
+                run_id=run_id,
                 lease_seconds=settings.lease_seconds,
             ),
             on_progress=lambda event: store.update_api_worker_job_progress(
                 job_id=str(job["job_id"]),
+                run_id=run_id,
                 progress_stage=event.progress_stage,
-                lease_seconds=settings.lease_seconds,
+                message=event.message,
             ),
         ),
         child_runner_config=build_child_runner_config(
@@ -385,7 +420,7 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
     marked_job, success_count, failed_count = _persist_api_worker_outcome(
         store=store,
         job_id=str(job["job_id"]),
-        run_id=f"api-worker-{job['job_id']}",
+        run_id=run_id,
         outcome=outcome,
         retry_delay_seconds=settings.retry_delay_seconds,
     )
@@ -428,6 +463,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
     store = create_runtime_store(settings)
     execution = store.claim_next_browser_execution(
         worker_id=settings.worker_id,
+        worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
         item_codes=("tiktok_product_browser_fetch",),
     )
@@ -457,6 +493,13 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         max_attempts=execution.max_attempts,
         metadata={"request_payload": dict(payload_data.get("request_payload") or {})},
     )
+    run_id = str(execution.run_id or "")
+    store.update_task_execution_progress(
+        execution_id=execution.execution_id,
+        run_id=run_id,
+        progress_stage="handler_started",
+        message=f"Starting browser handler {execution.item_code}.",
+    )
 
     outcome = run_supervised_handler(
         context=context,
@@ -465,12 +508,14 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         callbacks=ExecutionSupervisorCallbacks(
             heartbeat=lambda: store.heartbeat_browser_execution(
                 execution_id=execution.execution_id,
+                run_id=run_id,
                 lease_seconds=settings.lease_seconds,
             ),
             on_progress=lambda event: store.update_task_execution_progress(
                 execution_id=execution.execution_id,
+                run_id=run_id,
                 progress_stage=event.progress_stage,
-                lease_seconds=settings.lease_seconds,
+                message=event.message,
             ),
         ),
         child_runner_config=build_child_runner_config(
@@ -483,7 +528,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
     stored_execution, success_count, failed_count = _persist_browser_execution_outcome(
         store=store,
         execution_id=execution.execution_id,
-        run_id=f"browser-{execution.execution_id}",
+        run_id=run_id,
         outcome=outcome,
         retry_delay_seconds=settings.retry_delay_seconds,
     )
@@ -553,7 +598,7 @@ def _persist_api_worker_outcome(
         result=stored_result,
         stage=_api_worker_stage_from_handler_result(outcome.worker_result.status),
     )
-    return marked_job, 1, 0
+    return marked_job, 1 if marked_job.get("status") == "success" else 0, 0
 
 
 def _persist_browser_execution_outcome(
@@ -586,14 +631,14 @@ def _persist_browser_execution_outcome(
             summary=stored_summary,
             result=stored_result,
         )
-        return execution, 1, 0
+        return execution, 1 if execution.status == "skipped" else 0, 0
     execution = store.mark_browser_execution_success(
         execution_id=execution_id,
         run_id=run_id,
         summary=stored_summary,
         result=stored_result,
     )
-    return execution, 1, 0
+    return execution, 1 if execution.status == "success" else 0, 0
 
 
 def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:

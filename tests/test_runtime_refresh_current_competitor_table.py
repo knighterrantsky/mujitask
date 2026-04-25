@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+from automation_business_scaffold.control_plane.runtime_config.settings import build_outbox_message_text
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
     advance_stage,
@@ -13,6 +16,54 @@ REFRESH_TASK_CODE = "refresh_current_competitor_table"
 SOURCE_TABLE_REF = "tbl_competitor_source"
 PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 PRODUCT_ID = "123456789"
+
+
+def test_refresh_outbox_message_includes_row_update_statuses() -> None:
+    message = json.loads(
+        build_outbox_message_text(
+            request_id="req-1",
+            task_code=REFRESH_TASK_CODE,
+            summary={"final_status": "partial_success"},
+            result={
+                "row_total_count": 2,
+                "row_success_count": 1,
+                "row_failed_count": 1,
+                "row_results": [
+                    {
+                        "source_record_id": "row-ok",
+                        "product_id": "sku-ok",
+                        "row_status": "success",
+                    },
+                    {
+                        "source_record_id": "row-fail",
+                        "product_id": "sku-fail",
+                        "row_status": "failed",
+                        "failure_reason": "FastMoss fetch failed.",
+                    },
+                ],
+            },
+        )
+    )
+
+    assert message["total_count"] == 2
+    assert message["updated_count"] == 1
+    assert message["success_count"] == 1
+    assert message["failed_count"] == 1
+    assert message["rows"] == [
+        {
+            "sku": "sku-ok",
+            "product_id": "sku-ok",
+            "source_record_id": "row-ok",
+            "status": "success",
+        },
+        {
+            "sku": "sku-fail",
+            "product_id": "sku-fail",
+            "source_record_id": "row-fail",
+            "status": "fail",
+            "failure_reason": "FastMoss fetch failed.",
+        },
+    ]
 
 
 def _store(runtime_db_url: str) -> RuntimeStore:
@@ -41,6 +92,25 @@ def _submit_refresh_request(runtime_db_url: str) -> tuple[RuntimeStore, object, 
     return store, request, workflow
 
 
+def _submit_refresh_request_with_payload(runtime_db_url: str, payload: dict) -> tuple[RuntimeStore, object, object]:
+    store = _store(runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code=REFRESH_TASK_CODE,
+        payload=payload,
+        requested_by="pytest",
+        source_channel_code="console",
+        reply_target="reply://pytest",
+    )
+    workflow = get_workflow_definition(REFRESH_TASK_CODE)
+    request = store.update_task_request(
+        request_id=request.request_id,
+        current_stage=workflow.entry_stage_code,
+        progress_stage=workflow.entry_stage_code,
+    )
+    return store, request, workflow
+
+
 def _latest_stage_job(store: RuntimeStore, *, request_id: str, stage_code: str, job_code: str) -> dict:
     jobs = [
         job
@@ -50,6 +120,37 @@ def _latest_stage_job(store: RuntimeStore, *, request_id: str, stage_code: str, 
     ]
     assert jobs, f"expected stage job {stage_code}/{job_code}"
     return jobs[-1]
+
+
+def _mark_stage_job_success(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    stage_code: str,
+    job_code: str,
+    summary: dict,
+    result: dict,
+) -> dict:
+    job = _latest_stage_job(store, request_id=request_id, stage_code=stage_code, job_code=job_code)
+    store.update_task_request(
+        request_id=request_id,
+        status="waiting_children",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code=job_code,
+    )
+    assert claimed is not None and claimed["job_id"] == job["job_id"]
+    return store.mark_api_worker_job_success(
+        job_id=str(job["job_id"]),
+        run_id=str(claimed["run_id"]),
+        summary=summary,
+        result=result,
+    )
 
 
 def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_db_url: str) -> None:
@@ -73,9 +174,11 @@ def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_d
     assert read_job["payload"]["field_names"][-1] == "商品状态"
     assert read_job["payload"]["filter_spec"]["candidate_policy"] == "missing_auto_maintained_fields"
 
-    store.mark_api_worker_job_success(
-        job_id=read_job["job_id"],
-        run_id="pytest:read",
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
         summary={"rows": 1},
         result={
             "source_rows": [
@@ -103,11 +206,15 @@ def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_d
         job_code="competitor_row_refresh",
     )
     assert row_job["payload"]["source_record_id"] == "row-1"
+    assert row_job["business_key"] == "row-1"
+    assert f"{request.request_id}:collect_product_data:row-1" in row_job["dedupe_key"]
     assert row_job["payload"]["request_payload"]["source_table_ref"] == SOURCE_TABLE_REF
 
-    store.mark_api_worker_job_success(
-        job_id=row_job["job_id"],
-        run_id="pytest:row-refresh",
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
         summary={"row_status": "success"},
         result={
             "row_status": "success",
@@ -148,15 +255,17 @@ def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_d
 
     read_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
     assert read_waiting["action"] == "waiting"
-    read_job = _latest_stage_job(
+    _latest_stage_job(
         store,
         request_id=request.request_id,
         stage_code="read_competitor_rows",
         job_code="feishu_table_read",
     )
-    store.mark_api_worker_job_success(
-        job_id=read_job["job_id"],
-        run_id="pytest:read",
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
         summary={"rows": 2},
         result={
             "raw_rows_all": [
@@ -196,9 +305,11 @@ def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_d
         }
     ]
 
-    store.mark_api_worker_job_success(
-        job_id=cleanup_job["job_id"],
-        run_id="pytest:cleanup",
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_write",
         summary={"deleted": 1},
         result={"deleted_count": 1, "target_record_ids": ["rec-empty"]},
     )
@@ -206,6 +317,55 @@ def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_d
     read_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
     assert read_advance["action"] == "advance"
     assert read_advance["next_stage"] == "dispatch_product_collection"
+
+
+def test_refresh_runtime_table_url_is_passed_to_row_writeback(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_refresh_request_with_payload(
+        runtime_db_url,
+        {
+            "table_url": SOURCE_TABLE_REF,
+            "reply_target": "reply://pytest",
+        },
+    )
+
+    read_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
+    assert read_waiting["action"] == "waiting"
+    read_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
+    )
+    assert read_job["payload"]["source_table_ref"] == SOURCE_TABLE_REF
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
+        summary={"rows": 1},
+        result={
+            "source_rows": [
+                {
+                    "source_record_id": "row-1",
+                    "product_id": PRODUCT_ID,
+                    "product_url": PRODUCT_URL,
+                }
+            ]
+        },
+    )
+    request = store.load_task_request(request_id=request.request_id)
+    assert advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")["next_stage"] == "dispatch_product_collection"
+    request = store.load_task_request(request_id=request.request_id)
+    dispatch = advance_stage(store=store, request=request, workflow=workflow, stage_code="dispatch_product_collection")
+    assert dispatch["action"] == "advance"
+    row_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
+    )
+    assert row_job["payload"]["source_table_ref"] == SOURCE_TABLE_REF
+    assert row_job["payload"]["request_payload"]["table_url"] == SOURCE_TABLE_REF
 
 
 def test_refresh_runtime_release_request_after_child_completion_requeues_collect_stage(runtime_db_url: str) -> None:
@@ -232,15 +392,17 @@ def test_refresh_runtime_release_request_after_child_completion_requeues_collect
             }
         ],
     )
-    row_job = _latest_stage_job(
+    _latest_stage_job(
         store,
         request_id=request.request_id,
         stage_code="collect_product_data",
         job_code="competitor_row_refresh",
     )
-    store.mark_api_worker_job_success(
-        job_id=row_job["job_id"],
-        run_id="pytest:release",
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
         summary={"row_status": "success"},
         result={
             "row_status": "success",

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
 LEASE_EXPIRED_RULE = "running_job_lease_expired"
+WORKER_HEARTBEAT_TIMEOUT_RULE = "worker_heartbeat_timeout"
 STALE_PROGRESS_RULE = "stale_progress"
 EXECUTION_TIMEOUT_RULE = "execution_timeout"
 WAITING_CHILDREN_RULE = "parent_waiting_children_unreconciled"
@@ -20,6 +23,7 @@ DEFAULT_LIMIT_PER_RULE = 200
 
 RULE_PRECEDENCE = {
     EXECUTION_TIMEOUT_RULE: 500,
+    WORKER_HEARTBEAT_TIMEOUT_RULE: 450,
     STALE_PROGRESS_RULE: 400,
     LEASE_EXPIRED_RULE: 300,
     OUTBOX_SENDING_TIMEOUT_RULE: 200,
@@ -55,6 +59,12 @@ RULE_SPECS = (
         helper_name="scan_expired_running_leases",
         target_status="running",
         description="Recover running jobs whose lease has expired.",
+    ),
+    WatchdogRuleSpec(
+        rule_code=WORKER_HEARTBEAT_TIMEOUT_RULE,
+        helper_name="scan_worker_heartbeat_timeouts",
+        target_status="running",
+        description="Fail jobs whose owning worker heartbeat has stopped.",
     ),
     WatchdogRuleSpec(
         rule_code=STALE_PROGRESS_RULE,
@@ -93,6 +103,8 @@ class WatchdogCandidate:
     request_id: str = ""
     parent_request_id: str = ""
     worker_id: str = ""
+    worker_pid: int = 0
+    run_id: str = ""
     attempt_count: int = 0
     max_attempts: int = 0
     retry_count: int = 0
@@ -102,6 +114,8 @@ class WatchdogCandidate:
     heartbeat_at: float = 0.0
     last_progress_at: float = 0.0
     max_execution_seconds: float = 0.0
+    max_idle_seconds: float = 0.0
+    heartbeat_timeout_seconds: float = 0.0
     progress_stage: str = ""
     next_retry_at: float = 0.0
     reason: str = ""
@@ -143,6 +157,7 @@ class WatchdogAction:
     request_id: str = ""
     next_status: str = ""
     error_type: str = ""
+    error_code: str = ""
     reason: str = ""
     repair_operation: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -201,6 +216,9 @@ class WatchdogStoreProtocol(Protocol):
         ...
 
     def scan_stale_progress(self, *, now: float, limit: int | None = None) -> Iterable[Mapping[str, Any]]:
+        ...
+
+    def scan_worker_heartbeat_timeouts(self, *, now: float, limit: int | None = None) -> Iterable[Mapping[str, Any]]:
         ...
 
     def scan_execution_timeouts(self, *, now: float, limit: int | None = None) -> Iterable[Mapping[str, Any]]:
@@ -304,6 +322,8 @@ def _candidate_from_mapping(rule_code: str, payload: Mapping[str, Any], spec: Wa
         request_id=request_id,
         parent_request_id=str(payload.get("parent_request_id") or metadata.get("parent_request_id") or "").strip(),
         worker_id=str(payload.get("worker_id") or "").strip(),
+        worker_pid=_coerce_int(payload.get("worker_pid")),
+        run_id=str(payload.get("run_id") or metadata.get("run_id") or "").strip(),
         attempt_count=_coerce_int(payload.get("attempt_count")),
         max_attempts=_coerce_int(payload.get("max_attempts")),
         retry_count=_coerce_int(payload.get("retry_count")),
@@ -313,6 +333,8 @@ def _candidate_from_mapping(rule_code: str, payload: Mapping[str, Any], spec: Wa
         heartbeat_at=_coerce_float(payload.get("heartbeat_at")),
         last_progress_at=_coerce_float(payload.get("last_progress_at")),
         max_execution_seconds=_coerce_float(payload.get("max_execution_seconds")),
+        max_idle_seconds=_coerce_float(payload.get("max_idle_seconds")),
+        heartbeat_timeout_seconds=_coerce_float(payload.get("heartbeat_timeout_seconds")),
         progress_stage=str(payload.get("progress_stage") or "").strip(),
         next_retry_at=_coerce_float(payload.get("next_retry_at")),
         reason=str(payload.get("reason") or metadata.get("reason") or "").strip(),
@@ -369,6 +391,12 @@ def _action_metadata(candidate: WatchdogCandidate, **extra: Any) -> dict[str, An
             "observed_started_at": candidate.started_at,
             "observed_last_progress_at": candidate.last_progress_at,
             "observed_max_execution_seconds": candidate.max_execution_seconds,
+            "observed_run_id": candidate.run_id,
+            "observed_worker_id": candidate.worker_id,
+            "observed_worker_pid": candidate.worker_pid,
+            "observed_heartbeat_at": candidate.heartbeat_at,
+            "observed_max_idle_seconds": candidate.max_idle_seconds,
+            "observed_heartbeat_timeout_seconds": candidate.heartbeat_timeout_seconds,
         }
     )
     metadata.update(extra)
@@ -424,39 +452,87 @@ def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
         )
 
     if candidate.rule_code == EXECUTION_TIMEOUT_RULE:
-        exhausted = candidate.retry_budget_exhausted
-        action_type = FAIL_ACTION if exhausted else RETRY_ACTION
-        next_status = fail_status if exhausted else retry_status
+        if target_table not in {"api_worker_job", "task_execution"}:
+            exhausted = candidate.retry_budget_exhausted
+            action_type = FAIL_ACTION if exhausted else RETRY_ACTION
+            next_status = fail_status if exhausted else retry_status
+            reason = candidate.reason or "Execution exceeded max_execution_seconds."
+            return WatchdogAction(
+                action_type=action_type,
+                rule_code=candidate.rule_code,
+                target_table=target_table,
+                target_id=candidate.target_id,
+                target_status=candidate.target_status,
+                request_id=candidate.request_id,
+                next_status=next_status,
+                error_type="timeout",
+                error_code="job_total_timeout",
+                reason=reason,
+                metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
+            )
         reason = candidate.reason or "Execution exceeded max_execution_seconds."
         return WatchdogAction(
-            action_type=action_type,
+            action_type=FAIL_ACTION,
             rule_code=candidate.rule_code,
             target_table=target_table,
             target_id=candidate.target_id,
             target_status=candidate.target_status,
             request_id=candidate.request_id,
-            next_status=next_status,
+            next_status=fail_status,
             error_type="timeout",
+            error_code="job_total_timeout",
             reason=reason,
-            metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
+            metadata=_action_metadata(candidate, retry_budget_exhausted=True),
+        )
+
+    if candidate.rule_code == WORKER_HEARTBEAT_TIMEOUT_RULE:
+        reason = candidate.reason or "Worker heartbeat exceeded heartbeat_timeout_seconds."
+        return WatchdogAction(
+            action_type=FAIL_ACTION,
+            rule_code=candidate.rule_code,
+            target_table=target_table,
+            target_id=candidate.target_id,
+            target_status=candidate.target_status,
+            request_id=candidate.request_id,
+            next_status=fail_status,
+            error_type="timeout",
+            error_code="worker_heartbeat_timeout",
+            reason=reason,
+            metadata=_action_metadata(candidate, retry_budget_exhausted=True),
         )
 
     if candidate.rule_code == STALE_PROGRESS_RULE:
-        exhausted = candidate.retry_budget_exhausted
-        action_type = FAIL_ACTION if exhausted else RETRY_ACTION
-        next_status = fail_status if exhausted else retry_status
+        if target_table not in {"api_worker_job", "task_execution"}:
+            exhausted = candidate.retry_budget_exhausted
+            action_type = FAIL_ACTION if exhausted else RETRY_ACTION
+            next_status = fail_status if exhausted else retry_status
+            reason = candidate.reason or "Heartbeat is still moving, but last_progress_at has gone stale."
+            return WatchdogAction(
+                action_type=action_type,
+                rule_code=candidate.rule_code,
+                target_table=target_table,
+                target_id=candidate.target_id,
+                target_status=candidate.target_status,
+                request_id=candidate.request_id,
+                next_status=next_status,
+                error_type="stale_progress",
+                error_code="job_no_progress_timeout",
+                reason=reason,
+                metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
+            )
         reason = candidate.reason or "Heartbeat is still moving, but last_progress_at has gone stale."
         return WatchdogAction(
-            action_type=action_type,
+            action_type=FAIL_ACTION,
             rule_code=candidate.rule_code,
             target_table=target_table,
             target_id=candidate.target_id,
             target_status=candidate.target_status,
             request_id=candidate.request_id,
-            next_status=next_status,
+            next_status=fail_status,
             error_type="stale_progress",
+            error_code="job_no_progress_timeout",
             reason=reason,
-            metadata=_action_metadata(candidate, retry_budget_exhausted=exhausted),
+            metadata=_action_metadata(candidate, retry_budget_exhausted=True),
         )
 
     exhausted = candidate.retry_budget_exhausted
@@ -483,6 +559,96 @@ def apply_watchdog_action(store: Any, action: WatchdogAction) -> dict[str, Any]:
         raise RuntimeError("Watchdog store is missing apply_watchdog_action().")
     payload = helper(action=action.to_dict())
     return dict(payload or {})
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _process_command(pid: int) -> str:
+    try:
+        return subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def looks_like_mujitask_worker(pid: int, *, expected_worker_id: str = "") -> bool:
+    command = _process_command(pid)
+    if not command:
+        return False
+    normalized = command.lower()
+    has_project_marker = "mujitask" in normalized or "automation_business_scaffold" in normalized
+    has_worker_marker = any(
+        marker in normalized
+        for marker in (
+            "api_worker",
+            "api-worker",
+            "browser_worker",
+            "browser-runloop",
+            "browser_worker",
+            "outbox",
+            "daemon",
+            "run_launchd_agent",
+        )
+    )
+    if expected_worker_id and expected_worker_id.lower() in normalized:
+        return True
+    return has_project_marker and has_worker_marker
+
+
+def kill_worker_process(
+    worker_pid: int | str | None,
+    *,
+    expected_worker_id: str = "",
+    terminate_grace_seconds: float = 5.0,
+) -> dict[str, Any]:
+    pid = _coerce_int(worker_pid)
+    if pid <= 0:
+        return {"attempted": False, "killed": False, "reason": "missing_worker_pid"}
+    if not _process_exists(pid):
+        return {"attempted": True, "killed": True, "reason": "worker_already_exited", "worker_pid": pid}
+    if not looks_like_mujitask_worker(pid, expected_worker_id=expected_worker_id):
+        return {
+            "attempted": True,
+            "killed": False,
+            "reason": "refuse_to_kill_non_mujitask_pid",
+            "worker_pid": pid,
+            "command": _process_command(pid),
+        }
+
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + max(terminate_grace_seconds, 0.1)
+    while time.time() < deadline:
+        if not _process_exists(pid):
+            return {"attempted": True, "killed": True, "signal": "SIGTERM", "worker_pid": pid}
+        time.sleep(0.1)
+    if _process_exists(pid):
+        os.kill(pid, signal.SIGKILL)
+        return {"attempted": True, "killed": True, "signal": "SIGKILL", "worker_pid": pid}
+    return {"attempted": True, "killed": True, "signal": "SIGTERM", "worker_pid": pid}
+
+
+def _maybe_kill_timed_out_worker(action: WatchdogAction, store_result: Mapping[str, Any]) -> dict[str, Any]:
+    if action.action_type != FAIL_ACTION:
+        return {}
+    if action.target_table not in {"api_worker_job", "task_execution"}:
+        return {}
+    metadata = dict(action.metadata or {})
+    worker_pid = store_result.get("worker_pid") or metadata.get("observed_worker_pid")
+    worker_id = str(store_result.get("worker_id") or metadata.get("observed_worker_id") or "")
+    return kill_worker_process(worker_pid, expected_worker_id=worker_id)
 
 
 def execute_watchdog_scan_once(
@@ -515,6 +681,9 @@ def execute_watchdog_scan_once(
             store_result = apply_watchdog_action(resolved_store, action)
             applied = bool(store_result.get("applied", True))
             if applied:
+                kill_result = _maybe_kill_timed_out_worker(action, store_result)
+                if kill_result:
+                    store_result["kill_result"] = kill_result
                 applied_count += 1
         outcomes.append(
             WatchdogActionOutcome(

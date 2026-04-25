@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 import time
 
 import pytest
@@ -123,6 +124,10 @@ def test_outbox_dispatcher_can_use_child_process_runner(
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform == "darwin":
+        pytest.skip("macOS forbids fork child runner; child_process remains explicit experimental mode.")
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("Runtime child-process registry monkeypatch e2e requires fork start method.")
     task = TikTokFastMossProductIngestTask()
     submitted = task.run_runtime_request(
         _runtime_params(
@@ -153,6 +158,7 @@ def test_outbox_dispatcher_can_use_child_process_runner(
         _runtime_params(
             runtime_db_url,
             execution_child_runner_mode="child_process",
+            execution_child_start_method="fork",
             execution_child_timeout_seconds=1.0,
         )
     )
@@ -163,7 +169,7 @@ def test_outbox_dispatcher_can_use_child_process_runner(
     assert payload["supervisor"]["progress_stage"] == "dispatching"
 
 
-def test_runtime_workers_default_to_child_process_with_record_timeout() -> None:
+def test_runtime_workers_default_to_inline_supervision() -> None:
     api_config = build_child_runner_config(
         {},
         worker_type="api_worker",
@@ -182,15 +188,9 @@ def test_runtime_workers_default_to_child_process_with_record_timeout() -> None:
         handler_code="outbox_dispatch",
     )
 
-    assert api_config is not None
-    assert api_config.mode == "child_process"
-    assert api_config.timeout_seconds == 240.0
-    assert browser_config is not None
-    assert browser_config.mode == "child_process"
-    assert browser_config.timeout_seconds == 600.0
-    assert outbox_config is not None
-    assert outbox_config.mode == "child_process"
-    assert outbox_config.timeout_seconds == 60.0
+    assert api_config is None
+    assert browser_config is None
+    assert outbox_config is None
 
 
 def test_runtime_child_process_policy_allows_explicit_inline_override() -> None:
@@ -224,6 +224,8 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform == "darwin":
+        pytest.skip("macOS runtime defaults to inline and forbids fork child runner.")
     if "fork" not in multiprocessing.get_all_start_methods():
         pytest.skip("Runtime child-process registry monkeypatch e2e requires fork start method.")
 
@@ -292,6 +294,7 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     _bind_timeout_e2e_api_handlers(monkeypatch)
     worker_params = _runtime_params(
         runtime_db_url,
+        execution_child_runner_mode="child_process",
         execution_child_start_method="fork",
         execution_child_poll_interval_seconds=0.005,
         execution_child_terminate_grace_seconds=0.02,

@@ -13,6 +13,7 @@ LABELS=(
   "com.happyzhao.mujitask.api-worker"
   "com.happyzhao.mujitask.browser-runloop"
   "com.happyzhao.mujitask.outbox-dispatcher"
+  "com.happyzhao.mujitask.watchdog"
 )
 
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${LOG_DIR}"
@@ -56,6 +57,7 @@ pkill -f 'automation_business_scaffold.apps.daemons.executor.main' >/dev/null 2>
 pkill -f 'automation_business_scaffold.apps.daemons.api_worker.main' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.apps.daemons.browser_worker.main' >/dev/null 2>&1 || true
 pkill -f 'automation_business_scaffold.apps.daemons.outbox.main' >/dev/null 2>&1 || true
+pkill -f 'automation_business_scaffold.apps.daemons.watchdog.main' >/dev/null 2>&1 || true
 
 sleep 1
 

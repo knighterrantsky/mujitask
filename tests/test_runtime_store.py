@@ -145,7 +145,7 @@ def test_api_worker_job_queue_round_trip(runtime_db_url):
     assert claimed["request_id"] == request.request_id
     assert claimed["job_code"] == "tiktok_fastmoss_product_ingest"
     assert claimed["status"] == "running"
-    assert claimed["progress_stage"] == "running"
+    assert claimed["progress_stage"] == "job_claimed"
 
     store.mark_api_worker_job_success(
         job_id=claimed["job_id"],

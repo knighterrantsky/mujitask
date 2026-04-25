@@ -192,6 +192,51 @@ def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric
     assert result.result["candidate_keys"] == ["product:1729421577515077639"]
 
 
+def test_feishu_table_read_can_locate_single_competitor_row_by_product_url() -> None:
+    payload = _table_payload(
+        request_id="req-read-by-url",
+        raw_rows=[
+            {
+                "record_id": "rec-other",
+                "fields": {
+                    "产品链接": "https://www.tiktok.com/shop/pdp/111111111",
+                    "SKU-ID": "111111111",
+                    "商品状态": "",
+                },
+            },
+            {
+                "record_id": "rec-target",
+                "fields": {
+                    "产品链接": {"text": "target", "link": "https://www.tiktok.com/shop/pdp/1732323487665722003"},
+                    "SKU-ID": "1732323487665722003",
+                    "商品状态": "已下架/区域不可售",
+                    "标题": "Complete product",
+                    "图片": "https://cdn.example.com/1732323487665722003.jpg",
+                    "节日": "Easter",
+                    "卖家": "Demo shop",
+                    "价格": "$19.99",
+                    "Fastmoss价格": "$18.88",
+                    "昨日销量": "10",
+                    "近7天销量": "30",
+                    "近90天销量": "99",
+                    "记录日期": "2026-04-25",
+                },
+            },
+        ],
+        product_url="https://www.tiktok.com/shop/pdp/1732323487665722003",
+        filter_spec={},
+        adapter_code="competitor_table_source_adapter",
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_read", _context("feishu_table_read", payload))
+
+    assert result.status == "success"
+    assert [row["source_record_id"] for row in result.result["source_rows"]] == ["rec-target"]
+    assert result.result["source_rows"][0]["product_identity"]["product_id"] == "1732323487665722003"
+    assert result.result["adapter_summary"]["lookup_status"] == "matched"
+    assert result.result["adapter_summary"]["matched_row_count"] == 1
+
+
 def test_feishu_table_write_upsert_is_idempotent_on_upsert_key(monkeypatch) -> None:
     class FakeClient:
         created: list[dict[str, Any]] = []
@@ -343,9 +388,10 @@ def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
     }
 
 
-def test_feishu_table_write_skips_attachment_url_without_file_token(monkeypatch) -> None:
+def test_feishu_table_write_uploads_attachment_file_before_write(monkeypatch, tmp_path) -> None:
     class FakeClient:
         updated: list[dict[str, Any]] = []
+        uploads: list[dict[str, Any]] = []
 
         def __init__(self, access_token: str) -> None:
             self.access_token = access_token
@@ -356,15 +402,30 @@ def test_feishu_table_write_skips_attachment_url_without_file_token(monkeypatch)
                 {"field_name": "记录日期", "type": 5},
             ]
 
+        def upload_media(self, file_name, file_data, parent_type="bitable_file", parent_node="", extra=None):
+            self.uploads.append(
+                {
+                    "file_name": file_name,
+                    "file_data": file_data,
+                    "parent_type": parent_type,
+                    "parent_node": parent_node,
+                    "extra": extra,
+                }
+            )
+            return "file-token-main"
+
         def update_record(self, app_token, table_id, record_id, fields):
             self.updated.append({"record_id": record_id, "fields": dict(fields)})
             return {"code": 0, "data": {"record": {"record_id": record_id}}}
 
     FakeClient.updated = []
+    FakeClient.uploads = []
     monkeypatch.setattr(
         "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
         FakeClient,
     )
+    image_path = tmp_path / "main.webp"
+    image_path.write_bytes(b"webp-bytes")
     payload = _table_payload(
         target_table_ref="feishu://mujitask/TK竞品收集",
         records=[
@@ -373,8 +434,9 @@ def test_feishu_table_write_skips_attachment_url_without_file_token(monkeypatch)
                 "record_id": "rec-1",
                 "fields": {
                     "图片": {
-                        "text": "https://p16-oec.example.com/image.webp",
-                        "link": "https://p16-oec.example.com/image.webp",
+                        "local_path": str(image_path),
+                        "file_name": "main.webp",
+                        "mime_type": "image/webp",
                     },
                     "记录日期": "2026-04-24",
                 },
@@ -385,8 +447,75 @@ def test_feishu_table_write_skips_attachment_url_without_file_token(monkeypatch)
     result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
 
     assert result.status == "success"
-    assert FakeClient.updated[0]["fields"] == {"记录日期": 1776960000000}
-    assert result.result["records"][0]["fields_written"] == ["记录日期"]
+    assert FakeClient.uploads[0]["file_name"] == "main.webp"
+    assert FakeClient.uploads[0]["file_data"] == b"webp-bytes"
+    assert FakeClient.updated[0]["fields"] == {
+        "图片": [{"file_token": "file-token-main"}],
+        "记录日期": 1776960000000,
+    }
+    assert result.result["records"][0]["fields_written"] == ["图片", "记录日期"]
+
+
+def test_feishu_table_write_uploads_tiktok_uri_attachment_before_write(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+        uploads: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "图片", "type": 17}]
+
+        def upload_media(self, file_name, file_data, parent_type="bitable_file", parent_node="", extra=None):
+            self.uploads.append(
+                {
+                    "file_name": file_name,
+                    "file_data": file_data,
+                    "parent_type": parent_type,
+                    "parent_node": parent_node,
+                    "extra": extra,
+                }
+            )
+            return "feishu-file-token"
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    FakeClient.uploads = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    image_path = tmp_path / "main.webp"
+    image_path.write_bytes(b"webp-bytes")
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        records=[
+            {
+                "op": "update",
+                "record_id": "rec-1",
+                "fields": {
+                    "图片": {
+                        "file_token": "tiktok_uri:tos-useast8-i-example/image",
+                        "local_path": str(image_path),
+                        "file_name": "main.webp",
+                        "mime_type": "image/webp",
+                    },
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.uploads[0]["file_name"] == "main.webp"
+    assert FakeClient.updated[0]["fields"] == {
+        "图片": [{"file_token": "feishu-file-token"}],
+    }
 
 
 def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:

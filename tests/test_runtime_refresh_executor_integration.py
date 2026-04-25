@@ -327,7 +327,7 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_worker["api_worker_job"]["status"] == "success"
     assert row_worker["api_worker_job"]["result"]["row_status"] == "success"
     assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_fallback_used"] is True
-    assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_supervisor"]["execution_mode"] == "child_process"
+    assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_supervisor"]["execution_mode"] == "inline"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -474,6 +474,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         },
         fact_db_url=runtime_db_url,
         artifact_root=str(tmp_path),
+        require_materialized_assets=False,
         execution_child_runner_mode="inline",
     )
     request_id = str(submitted["request_id"])

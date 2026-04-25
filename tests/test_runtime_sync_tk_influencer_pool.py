@@ -74,9 +74,22 @@ def _mark_stage_job_success(store: RuntimeStore, *, request_id: str, stage_code:
         for job in store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
         if (job.get("payload") or {}).get("stage_code") == stage_code
     )
+    store.update_task_request(
+        request_id=request_id,
+        status="waiting_children",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code=job_code,
+    )
+    assert claimed is not None and claimed["job_id"] == job["job_id"]
     return store.mark_api_worker_job_success(
         job_id=str(job["job_id"]),
-        run_id=f"pytest-{job['job_id']}",
+        run_id=str(claimed["run_id"]),
         summary={"handler_status": "success"},
         result=result,
     )
@@ -347,9 +360,16 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
     )
     success_job_id = creator_enqueue["created_records"][0]["job_id"]
     failed_job_id = creator_enqueue["created_records"][1]["job_id"]
+    claimed_success = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request.request_id,
+        job_code="fastmoss_creator_fetch",
+    )
+    assert claimed_success is not None and claimed_success["job_id"] == success_job_id
     store.mark_api_worker_job_success(
         job_id=success_job_id,
-        run_id=f"pytest-{success_job_id}",
+        run_id=str(claimed_success["run_id"]),
         summary={"handler_status": "success"},
         result={"creator_fact_bundle": {"creator_id": "creator-1"}},
     )
@@ -363,7 +383,7 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
     assert claimed_failed is not None and claimed_failed["job_id"] == failed_job_id
     store.mark_api_worker_job_retry_or_failed(
         job_id=failed_job_id,
-        run_id=f"pytest-{failed_job_id}",
+        run_id=str(claimed_failed["run_id"]),
         error_text="creator fetch failed",
         error_type="transport",
         error_code="creator_fetch_failed",

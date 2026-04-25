@@ -1,10 +1,21 @@
 from automation_business_scaffold.apps.cli.main import list_registered_tasks
 from automation_business_scaffold.domains.tiktok.tasks import (
+    RefreshCompetitorRowByUrlTask,
     RefreshCurrentCompetitorTableTask,
     SearchKeywordCompetitorProductsTask,
     SyncTKInfluencerPoolTask,
     TikTokFastMossProductIngestTask,
 )
+
+
+def test_refresh_competitor_row_by_url_workflow_uses_formal_runtime_shell():
+    task = RefreshCompetitorRowByUrlTask()
+
+    workflow = task.build_workflow({"control_action": "submit"})
+
+    assert workflow.workflow_id == "refresh_competitor_row_by_url"
+    assert workflow.run_mode == "full_auto"
+    assert [step.step_id for step in workflow.steps] == ["dispatch_task_request"]
 
 
 def test_refresh_current_competitor_table_workflow_uses_formal_runtime_shell():
@@ -49,6 +60,10 @@ def test_tiktok_fastmoss_product_ingest_workflow_uses_formal_runtime_shell():
 
 def test_cli_runner_lists_only_formal_runtime_tasks():
     assert list_registered_tasks() == [
+        {
+            "name": "refresh_competitor_row_by_url",
+            "description": "Submit, inspect, or advance a competitor row refresh runtime request located by product URL.",
+        },
         {
             "name": "refresh_current_competitor_table",
             "description": "Submit, inspect, or advance the competitor table refresh runtime request.",

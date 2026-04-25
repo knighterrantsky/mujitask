@@ -4,24 +4,27 @@ import json
 from importlib import import_module
 from typing import Any, Mapping
 
-watchdog_cli = import_module("automation_business_scaffold.apps.daemons.watchdog.main")
 from automation_business_scaffold.control_plane.watchdog.scanner import (
     EXECUTION_TIMEOUT_RULE,
     LEASE_EXPIRED_RULE,
     OUTBOX_SENDING_TIMEOUT_RULE,
     STALE_PROGRESS_RULE,
     WAITING_CHILDREN_RULE,
+    WORKER_HEARTBEAT_TIMEOUT_RULE,
     collect_watchdog_candidates,
     decide_watchdog_action,
     execute_watchdog_scan_once,
     run_watchdog_scanner,
 )
 
+watchdog_cli = import_module("automation_business_scaffold.apps.daemons.watchdog.main")
+
 
 class FakeWatchdogStore:
     def __init__(self) -> None:
         self.rows_by_helper: dict[str, list[dict[str, Any]]] = {
             "scan_expired_running_leases": [],
+            "scan_worker_heartbeat_timeouts": [],
             "scan_stale_progress": [],
             "scan_execution_timeouts": [],
             "scan_waiting_children_reconciliation": [],
@@ -34,6 +37,9 @@ class FakeWatchdogStore:
 
     def scan_stale_progress(self, *, now: float, limit: int | None = None) -> list[Mapping[str, Any]]:
         return self.rows_by_helper["scan_stale_progress"][: limit or None]
+
+    def scan_worker_heartbeat_timeouts(self, *, now: float, limit: int | None = None) -> list[Mapping[str, Any]]:
+        return self.rows_by_helper["scan_worker_heartbeat_timeouts"][: limit or None]
 
     def scan_execution_timeouts(self, *, now: float, limit: int | None = None) -> list[Mapping[str, Any]]:
         return self.rows_by_helper["scan_execution_timeouts"][: limit or None]
@@ -106,6 +112,30 @@ def test_watchdog_scan_decides_fail_when_stale_progress_budget_is_exhausted() ->
     assert outcome["action"]["action_type"] == "fail"
     assert outcome["action"]["next_status"] == "failed"
     assert outcome["action"]["error_type"] == "stale_progress"
+    assert outcome["action"]["error_code"] == "job_no_progress_timeout"
+
+
+def test_watchdog_scan_decides_fail_for_worker_heartbeat_timeout() -> None:
+    store = FakeWatchdogStore()
+    store.rows_by_helper["scan_worker_heartbeat_timeouts"].append(
+        {
+            "target_table": "api_worker_job",
+            "job_id": "job-heartbeat",
+            "request_id": "req-heartbeat",
+            "status": "running",
+            "run_id": "run-heartbeat",
+            "worker_pid": 0,
+            "heartbeat_timeout_seconds": 30.0,
+        }
+    )
+
+    payload = execute_watchdog_scan_once({"now": 100.0}, store=store)
+
+    assert payload["counts_by_action"]["fail"] == 1
+    outcome = payload["outcomes"][0]
+    assert outcome["action"]["rule_code"] == WORKER_HEARTBEAT_TIMEOUT_RULE
+    assert outcome["action"]["action_type"] == "fail"
+    assert outcome["action"]["error_code"] == "worker_heartbeat_timeout"
 
 
 def test_watchdog_scan_decides_repair_for_waiting_children_parent() -> None:
@@ -202,7 +232,7 @@ def test_watchdog_collect_prefers_timeout_over_lease_for_same_target() -> None:
     assert candidates[0].rule_code == EXECUTION_TIMEOUT_RULE
 
 
-def test_decide_watchdog_action_keeps_retry_status_for_execution_timeout() -> None:
+def test_decide_watchdog_action_fails_execution_timeout() -> None:
     candidates, _ = collect_watchdog_candidates(
         _seed_store(
             "scan_execution_timeouts",
@@ -220,9 +250,10 @@ def test_decide_watchdog_action_keeps_retry_status_for_execution_timeout() -> No
     action = decide_watchdog_action(candidates[0])
 
     assert action.rule_code == EXECUTION_TIMEOUT_RULE
-    assert action.action_type == "retry"
-    assert action.next_status == "retry_wait"
+    assert action.action_type == "fail"
+    assert action.next_status == "failed"
     assert action.error_type == "timeout"
+    assert action.error_code == "job_total_timeout"
 
 
 def test_run_watchdog_scanner_stops_after_idle_cycle() -> None:

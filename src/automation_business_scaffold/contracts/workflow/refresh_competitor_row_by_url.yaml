@@ -1,0 +1,83 @@
+schema_version: 1
+workflow_origin: new_workflow
+workflow_code: refresh_competitor_row_by_url
+domain: tiktok
+agent_artifact:
+  skill_code: mujitask-tiktok-feishu-sync
+  path: skills/mujitask-tiktok-feishu-sync
+  status: legacy_skills_directory
+task:
+  code: refresh_competitor_row_by_url
+  module: automation_business_scaffold.domains.tiktok.tasks.refresh_competitor_row_by_url
+  exports:
+    - RefreshCompetitorRowByUrlTask
+workflow:
+  module: automation_business_scaffold.domains.tiktok.workflows.refresh_competitor_row_by_url
+  definition_export: build_refresh_competitor_row_by_url_definition
+  runtime_export: build_refresh_competitor_row_by_url_workflow
+  exports:
+    - REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION
+custom_logic:
+  mappers:
+    - code: competitor_table_source_adapter
+      module: automation_business_scaffold.domains.tiktok.mappers.feishu_competitor_row_mapper
+      export: competitor_table_source_adapter
+  policies:
+    - code: table_workflow_policies
+      module: automation_business_scaffold.domains.tiktok.policies.workflow_policies
+      exports:
+        - table_workflow_idempotency_rules
+        - table_workflow_timeout_rules
+        - standard_watchdog_rules
+        - notification_summary_policy
+  projections:
+    - code: competitor_table_projection_mapper
+      module: automation_business_scaffold.domains.tiktok.projections.feishu_competitor_projection
+      export: competitor_table_projection_mapper
+outbox:
+  job_code: task_completed_notification
+  handler_code: outbox_dispatch
+  capability:
+    role: channel
+    system: outbox
+    module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+    export: outbox_dispatch_handler
+jobs:
+  - code: feishu_table_read
+    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_read
+    handler_code: feishu_table_read
+    capability:
+      role: input_source
+      system: feishu
+      module: automation_business_scaffold.capabilities.input_sources.feishu.table_read_handler
+      export: feishu_table_read_handler
+    custom_logic_refs:
+      mappers:
+        - competitor_table_source_adapter
+  - code: feishu_table_write
+    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_write
+    handler_code: feishu_table_write
+    capability:
+      role: channel
+      system: feishu
+      module: automation_business_scaffold.capabilities.channels.feishu.table_write_handler
+      export: feishu_table_write_handler
+    custom_logic_refs:
+      projections:
+        - competitor_table_projection_mapper
+  - code: competitor_row_refresh
+    module: automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh
+    handler_code: competitor_row_refresh
+    capability:
+      role: fact_source
+      system: tiktok
+      module: automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler
+      export: competitor_row_refresh_handler
+  - code: task_completed_notification
+    module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification
+    handler_code: outbox_dispatch
+    capability:
+      role: channel
+      system: outbox
+      module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+      export: outbox_dispatch_handler

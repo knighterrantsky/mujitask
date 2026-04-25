@@ -121,6 +121,12 @@ def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[s
             normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
             continue
         if name in {"图片", "前台截图", "Fastmoss截图"}:
+            if isinstance(value, Mapping) and any(
+                _first_non_empty(value.get(key))
+                for key in ("file_token", "local_path", "source_path", "path", "url", "source_url", "remote_uri", "object_key")
+            ):
+                normalized[name] = dict(value)
+                continue
             normalized[name] = _raw_link_value(_text_value(value)) if _text_value(value) else value
             continue
         normalized[name] = value

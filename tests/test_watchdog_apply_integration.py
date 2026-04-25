@@ -379,7 +379,7 @@ def test_watchdog_apply_once_persists_retry_fail_repair_and_is_idempotent(runtim
     assert payload["status"] == "ok"
     assert payload["action_count"] == 9
     assert payload["applied_count"] == 9
-    assert payload["counts_by_action"] == {"fail": 3, "retry": 5, "repair": 1}
+    assert payload["counts_by_action"] == {"fail": 5, "retry": 3, "repair": 1}
     stale_request = store.load_task_request(request_id=ids["stale_request_id"])
     assert stale_request.status == "pending"
     assert stale_request.current_stage == ""
@@ -397,10 +397,11 @@ def test_watchdog_apply_once_persists_retry_fail_repair_and_is_idempotent(runtim
     assert timed_out_execution.dead_letter_reason == "watchdog_failed"
 
     retry_execution = store.load_task_execution(execution_id=ids["retry_execution_id"])
-    assert retry_execution.status == "retry_wait"
+    assert retry_execution.status == "failed"
     assert retry_execution.worker_id == ""
     assert retry_execution.error_type == "timeout"
-    assert retry_execution.dead_letter_reason == ""
+    assert retry_execution.error_code == "job_total_timeout"
+    assert retry_execution.dead_letter_reason == "watchdog_failed"
 
     failed_api_job = store.load_api_worker_job(job_id=ids["api_fail_job_id"])
     assert failed_api_job["status"] == "failed"
@@ -415,8 +416,9 @@ def test_watchdog_apply_once_persists_retry_fail_repair_and_is_idempotent(runtim
     assert repaired_request.child_terminal_count == 1
 
     priority_job = store.load_api_worker_job(job_id=ids["priority_job_id"])
-    assert priority_job["status"] == "retry_wait"
+    assert priority_job["status"] == "failed"
     assert priority_job["error_type"] == "timeout"
+    assert priority_job["error_code"] == "job_total_timeout"
 
     retry_outbox = store.load_outbox(outbox_id=ids["retry_outbox_id"])
     assert retry_outbox.status == "retry_wait"

@@ -26,6 +26,7 @@ from automation_business_scaffold.contracts.handler.contract import (
 )
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
+    coerce_bool,
     coerce_mapping,
     compact_dict,
     failed_result,
@@ -58,7 +59,12 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
     identity = normalize_product_identity({**request_payload, **payload})
     source_context = _source_context(payload)
     source_record_id = first_non_empty(payload.get("source_record_id"), source_context.get("source_record_id"))
-    source_table_ref = first_non_empty(payload.get("source_table_ref"), request_payload.get("source_table_ref"))
+    source_table_ref = first_non_empty(
+        payload.get("source_table_ref"),
+        request_payload.get("source_table_ref"),
+        payload.get("table_url"),
+        request_payload.get("table_url"),
+    )
     business_key = first_non_empty(payload.get("business_key"), product_business_key(identity), source_record_id)
 
     if not source_record_id:
@@ -232,6 +238,15 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
                 "entity_keys": [business_key],
                 "product_id": first_non_empty(identity.get("product_id")),
                 "source_context": source_context,
+                "sync_referenced_files": True,
+                "require_materialized_assets": coerce_bool(
+                    first_non_empty(
+                        payload.get("require_materialized_assets"),
+                        request_payload.get("require_materialized_assets"),
+                        True,
+                    ),
+                    default=True,
+                ),
             },
             step_code="media_sync",
         )
@@ -256,6 +271,11 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
             "product_identity": identity,
             "source_context": source_context,
             "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
+            "fastmoss_window_days": first_non_empty(
+                payload.get("fastmoss_window_days"),
+                request_payload.get("fastmoss_window_days"),
+                90,
+            ),
         },
         step_code="fastmoss_fetch",
     )
@@ -267,9 +287,13 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
         warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
 
     fact_bundle = merge_fact_bundles(
-        coerce_mapping(normalized_product_result.get("fact_bundle")),
+        _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
         coerce_mapping(media_result_payload.get("media_fact_bundle")),
         coerce_mapping(fastmoss_payload.get("product_fact_bundle")),
+    )
+    fact_bundle["media_assets"] = _merge_media_assets_preserving_roles(
+        coerce_mapping(media_result_payload.get("media_fact_bundle")).get("media_assets"),
+        coerce_mapping(fastmoss_payload.get("product_fact_bundle")).get("media_assets"),
     )
     fact_context = _child_context(
         context,
@@ -392,13 +416,20 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
             writeback_projection={"fields": projection_fields},
         )
 
+    product_fact_bundle = dict(fact_bundle)
+    product_fact_bundle["product_id"] = first_non_empty(
+        product_fact_bundle.get("product_id"),
+        normalized_product_result.get("product_id"),
+        coerce_mapping(normalized_product_result.get("product")).get("product_id"),
+        identity.get("product_id"),
+    )
     row_status = "partial_success" if optional_step_failed or write_result.status == "skipped" else "success"
     result = {
         "source_record_id": source_record_id,
         "business_entity_key": business_key,
         "row_status": row_status,
         "normalized_product_result": normalized_product_result,
-        "product_fact_bundle": coerce_mapping(fastmoss_payload.get("product_fact_bundle")),
+        "product_fact_bundle": product_fact_bundle,
         "fact_upsert": dict(fact_result.result),
         "writeback_projection": {"fields": projection_fields},
         "writeback_result": dict(write_result.result),
@@ -451,7 +482,7 @@ def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload:
     mode = first_non_empty(
         payload.get("browser_child_runner_mode"),
         request_payload.get("browser_child_runner_mode"),
-        "child_process",
+        "inline",
     ).lower()
     if mode != "child_process":
         return None
@@ -583,6 +614,37 @@ def _source_fields(source_context: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _fact_bundle_without_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]:
+    cleaned = dict(coerce_mapping(fact_bundle))
+    cleaned["media_assets"] = []
+    return cleaned
+
+
+def _merge_media_assets_preserving_roles(*asset_lists: Any) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for asset_list in asset_lists:
+        for item in asset_list if isinstance(asset_list, list) else []:
+            if not isinstance(item, Mapping):
+                continue
+            record = dict(item)
+            asset_ref = first_non_empty(
+                record.get("asset_key"),
+                record.get("object_key"),
+                record.get("remote_uri"),
+                record.get("source_url"),
+                record.get("source_path"),
+                record.get("local_path"),
+                record.get("file_token"),
+            )
+            dedupe_key = f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
+            if not dedupe_key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            merged.append(record)
+    return merged
+
+
 def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -590,7 +652,8 @@ def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[di
         if not isinstance(item, Mapping):
             continue
         record = dict(item)
-        dedupe_key = first_non_empty(record.get("source_url"), record.get("local_path"), record.get("object_key"))
+        asset_ref = first_non_empty(record.get("source_url"), record.get("local_path"), record.get("object_key"))
+        dedupe_key = f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
         if not dedupe_key or dedupe_key in seen:
             continue
         seen.add(dedupe_key)
@@ -611,15 +674,16 @@ def _build_competitor_projection_fields(
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
     daily_metrics = fastmoss_bundle.get("product_daily_metrics") if isinstance(fastmoss_bundle.get("product_daily_metrics"), list) else []
+    main_image = _first_present(
+        _first_media_asset_ref(media_result),
+        _first_media_asset_ref(normalized_product_result),
+        logical_fields.get("main_image_url"),
+    )
 
     fields = {
         "SKU-ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),
         "产品链接": first_non_empty(product.get("normalized_url"), product.get("product_url"), normalized_product_result.get("normalized_product_url")),
-        "图片": first_non_empty(
-            _first_media_asset_url(media_result),
-            _first_media_asset_url(normalized_product_result),
-            logical_fields.get("main_image_url"),
-        ),
+        "图片": main_image,
         "标题": first_non_empty(logical_fields.get("title"), product.get("title")),
         "节日": first_non_empty(logical_fields.get("holiday"), product.get("holiday")),
         "卖家": first_non_empty(logical_fields.get("shop_name"), product.get("seller_name"), product.get("shop_name")),
@@ -654,7 +718,14 @@ def _build_competitor_projection_fields(
     return {key: value for key, value in fields.items() if value not in ("", None, [], {})}
 
 
-def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in ("", None, [], {}):
+            return value
+    return ""
+
+
+def _first_media_asset_ref(payload: Mapping[str, Any]) -> Any:
     for key in ("synced_assets", "media_assets"):
         items = payload.get(key)
         if not isinstance(items, list):
@@ -662,14 +733,28 @@ def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
         for item in items:
             if not isinstance(item, Mapping):
                 continue
-            value = first_non_empty(item.get("remote_uri"), item.get("source_url"), item.get("object_key"), item.get("local_path"))
-            if value:
-                return value
+            file_token = first_non_empty(item.get("file_token"))
+            local_path = first_non_empty(item.get("source_path"), item.get("local_path"))
+            url = first_non_empty(item.get("remote_uri"), item.get("source_url"))
+            object_key = first_non_empty(item.get("object_key"))
+            if file_token or local_path or url or object_key:
+                return compact_dict(
+                    {
+                        "file_token": file_token,
+                        "local_path": local_path,
+                        "url": url,
+                        "source_url": first_non_empty(item.get("source_url")),
+                        "remote_uri": first_non_empty(item.get("remote_uri")),
+                        "object_key": object_key,
+                        "file_name": first_non_empty(item.get("file_name")),
+                        "mime_type": first_non_empty(item.get("mime_type")),
+                    }
+                )
     for nested_key in ("media_fact_bundle", "fact_bundle"):
         nested = payload.get(nested_key)
         if isinstance(nested, Mapping):
-            value = _first_media_asset_url(nested)
-            if value:
+            value = _first_media_asset_ref(nested)
+            if value not in ("", None, [], {}):
                 return value
     return ""
 
@@ -706,7 +791,15 @@ def _daily_sales_text(daily_metrics: list[Any], *, window_days: int) -> str:
 
 
 def _price_number_text(*values: Any) -> str:
-    text = first_non_empty(*values)
+    text = ""
+    for value in values:
+        candidate = first_non_empty(value)
+        if not candidate:
+            continue
+        if "*" in candidate:
+            continue
+        text = candidate
+        break
     if not text:
         return ""
     normalized = re.sub(r"^(?:US\$|USD\s*|\$|￥|¥|CNY\s*|RMB\s*)", "", text.strip(), flags=re.IGNORECASE).strip()

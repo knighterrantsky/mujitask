@@ -3,14 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.happyzhao.mujitask.browser-runloop</string>
+  <string>com.happyzhao.mujitask.watchdog</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>__ROOT_DIR__/scripts/execution_control/run_launchd_agent.sh</string>
-    <string>automation_business_scaffold.apps.daemons.browser_worker.main</string>
-    <string>--supervisor-mode</string>
-    <string>inline</string>
+    <string>automation_business_scaffold.apps.daemons.watchdog.main</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -24,8 +22,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/browser_runloop.launchd.stdout.log</string>
+  <string>__ROOT_DIR__/runtime/phase1_daemons/watchdog.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/browser_runloop.launchd.stderr.log</string>
+  <string>__ROOT_DIR__/runtime/phase1_daemons/watchdog.launchd.stderr.log</string>
 </dict>
 </plist>

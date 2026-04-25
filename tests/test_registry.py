@@ -12,6 +12,7 @@ TASKS_ROOT = SRC_ROOT / "domains" / "tiktok" / "tasks"
 TASKS_INIT = TASKS_ROOT / "__init__.py"
 REGISTRY_MODULE = SRC_ROOT / "registry.py"
 OFFICIAL_TASK_CODES = (
+    "refresh_competitor_row_by_url",
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
     "sync_tk_influencer_pool",

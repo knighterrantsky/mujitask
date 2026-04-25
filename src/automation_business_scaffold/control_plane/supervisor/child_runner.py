@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import pickle
+import sys
 import time
 import traceback
 from dataclasses import dataclass, field, replace
@@ -205,8 +206,10 @@ def handler_result_from_payload(
 
 def _default_start_method() -> str:
     methods = tuple(multiprocessing.get_all_start_methods())
-    if "fork" in methods:
-        return "fork"
+    if sys.platform == "darwin" and "spawn" in methods:
+        return "spawn"
+    if "spawn" in methods:
+        return "spawn"
     if methods:
         return methods[0]
     return multiprocessing.get_start_method()
@@ -341,6 +344,11 @@ class ChildRunner:
             sanitized_metadata["child_runner_dropped_metadata_keys"] = list(dropped_keys)
         sanitized_context = replace(context, metadata=sanitized_metadata)
         start_method = str(self.config.start_method or _default_start_method())
+        if sys.platform == "darwin" and start_method == "fork":
+            raise RuntimeError(
+                "macOS does not allow the default fork child runner path; use supervisor_mode=inline "
+                "or an explicit non-fork child start method."
+            )
         ctx = multiprocessing.get_context(start_method)
         recv_conn, send_conn = ctx.Pipe(duplex=False)
         process = ctx.Process(

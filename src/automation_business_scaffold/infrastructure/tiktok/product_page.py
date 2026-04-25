@@ -67,7 +67,7 @@ PRICE_CANDIDATE_SELECTORS = (
 SHOP_CANDIDATE_SELECTORS = (
     "[data-e2e='pdp-shop-name']",
     "[data-e2e='shop-name']",
-    "a[href*='/shop/']",
+    "a[href*='/shop/store/']",
 )
 MAIN_IMAGE_CANDIDATE_SELECTORS = (
     "[data-e2e='pdp-main-image'] img",
@@ -781,14 +781,13 @@ def _build_record_from_browser_state(
         or extract_tiktok_product_id(resolved_url or source_url)
     )
     title = str(dom_snapshot.get("title_text", "")).strip() or (router_record.title if router_record else "")
-    main_image_url = (
-        (router_record.main_image_url if router_record else "")
-        or str(dom_snapshot.get("main_image_url", "")).strip()
+    main_image_url = str(dom_snapshot.get("main_image_url", "")).strip() or (
+        router_record.main_image_url if router_record else ""
     )
     price_text = str(dom_snapshot.get("price_text", "")).strip() or (router_record.price_text if router_record else "")
     price_amount = _normalize_price_amount(price_text) or (router_record.price_amount if router_record else "")
     price_currency = (router_record.price_currency if router_record else "") or _infer_currency_from_price_text(price_text)
-    shop_name = (router_record.shop_name if router_record else "") or str(dom_snapshot.get("shop_name", "")).strip()
+    shop_name = _clean_shop_name((router_record.shop_name if router_record else "") or str(dom_snapshot.get("shop_name", "")).strip())
     shop_url = router_record.shop_url if router_record else ""
     sales_count = (
         router_record.sales_count
@@ -829,7 +828,7 @@ def _build_record_from_browser_state(
         raise TikTokProductExtractionError("failed to extract TikTok product title from browser page")
     if not main_image_url:
         raise TikTokProductExtractionError("failed to extract TikTok product main image from browser page")
-    if not price_amount:
+    if not (price_amount or price_text):
         raise TikTokProductExtractionError("failed to extract TikTok product price from browser page")
 
     return TikTokProductRecord(
@@ -1553,20 +1552,35 @@ def _read_dom_product_snapshot(page: Any) -> dict[str, Any]:
                 if (seen.has(src)) continue;
                 seen.add(src);
                 const rect = element.getBoundingClientRect();
+                const viewportLeft = Math.max(rect.left, 0);
+                const viewportTop = Math.max(rect.top, 0);
+                const viewportRight = Math.min(rect.right, window.innerWidth);
+                const viewportBottom = Math.min(rect.bottom, window.innerHeight);
+                const viewportWidth = Math.max(viewportRight - viewportLeft, 0);
+                const viewportHeight = Math.max(viewportBottom - viewportTop, 0);
+                const viewportArea = viewportWidth * viewportHeight;
                 const width = Math.max(rect.width, element.naturalWidth || 0);
                 const height = Math.max(rect.height, element.naturalHeight || 0);
-                if (width < minSize || height < minSize) continue;
-                const area = width * height;
+                if (width < minSize || height < minSize || viewportWidth < minSize || viewportHeight < minSize) continue;
                 const hintText = `${src} ${element.alt || ""}`;
                 const hasProductHint = /product|pdp|oec|tos|byteimg|tiktokcdn/i.test(hintText);
                 const rightSidePenalty = rect.left > window.innerWidth * 0.45 ? 50000 : 0;
+                const belowFoldPenalty = rect.top > window.innerHeight ? 100000 : 0;
+                const carouselCurrentBonus =
+                  element.closest(".slick-current,.slick-active,[aria-current='true']") ? 100000 : 0;
                 candidates.push({
                   element,
                   src,
                   loaded: Boolean(element.complete && element.naturalWidth > 0),
                   y: rect.top,
                   x: rect.left,
-                  score: -area - (hasProductHint ? 50000 : 0) + rightSidePenalty + Math.max(rect.top, 0),
+                  score:
+                    -viewportArea -
+                    (hasProductHint ? 50000 : 0) -
+                    carouselCurrentBonus +
+                    rightSidePenalty +
+                    belowFoldPenalty +
+                    Math.max(rect.top, 0),
                 });
               }
               candidates.sort((left, right) => {
@@ -2654,10 +2668,17 @@ def _normalize_mime_type(content_type: str, file_suffix: str) -> str:
 
 def _normalize_price_amount(price_value: str) -> str:
     text = str(price_value).replace(",", "").strip()
+    if "*" in text:
+        return ""
     match = re.search(r"(\d+(?:\.\d+)?)", text)
     if match:
         return match.group(1)
     return ""
+
+
+def _clean_shop_name(value: str) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"^\s*(?:sold\s+by|seller|shop)\s*[:：]?\s*", "", text, flags=re.IGNORECASE).strip()
 
 
 def _infer_currency_from_price_text(price_text: str) -> str:

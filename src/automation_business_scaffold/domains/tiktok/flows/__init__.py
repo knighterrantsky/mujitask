@@ -1,4 +1,5 @@
 from automation_business_scaffold.control_plane.executor.runner import (
+    run_refresh_competitor_row_by_url_request,
     run_refresh_current_competitor_table_request,
     run_search_keyword_competitor_products_request,
     run_sync_tk_influencer_pool_request,
@@ -6,6 +7,7 @@ from automation_business_scaffold.control_plane.executor.runner import (
 )
 
 __all__ = [
+    "run_refresh_competitor_row_by_url_request",
     "run_refresh_current_competitor_table_request",
     "run_search_keyword_competitor_products_request",
     "run_sync_tk_influencer_pool_request",

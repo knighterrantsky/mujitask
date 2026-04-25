@@ -3,7 +3,7 @@ from __future__ import annotations
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result as _shared_build_tiktok_normalized_product_result,
 )
-from automation_business_scaffold.business.flows.achieve.tiktok_product_flow import (
+from automation_business_scaffold.infrastructure.tiktok.product_page import (
     TikTokProductExtractionError,
     TikTokRateLimitError,
     TikTokProductUnavailableError,
@@ -294,6 +294,8 @@ def _fallback_reason_from_message(message: str) -> str:
         return "request_signal_rate_limited"
     if any(token in normalized for token in ("region", "unavailable", "not available", "not accessible")):
         return "request_signal_product_unavailable"
+    if "failed to locate script tag" in normalized and "__modern_router_data__" in normalized:
+        return "request_signal_missing_router_data"
     return ""
 
 

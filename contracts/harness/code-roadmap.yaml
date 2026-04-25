@@ -97,7 +97,7 @@ features:
       - Do not claim complete until claim_done.py returns no failed_checks.
 
   - feature_code: tk_competitor_refresh
-    status: in_progress
+    status: complete
     default_context:
       - docs/dev/rewrite-state.yaml
       - docs/domains/tk-competitor/README.md

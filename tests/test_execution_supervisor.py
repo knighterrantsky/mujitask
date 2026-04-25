@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+import sys
+
+import pytest
 
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
@@ -121,6 +124,8 @@ def _child_hanging_dispatch(context: HandlerContext) -> HandlerResult:
 
 
 def test_execution_supervisor_can_run_handler_in_child_process() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("macOS forbids fork child runner.")
     outcome = run_supervised_handler(
         context=_build_context(),
         dispatch=_child_success_dispatch,
@@ -128,6 +133,7 @@ def test_execution_supervisor_can_run_handler_in_child_process() -> None:
         child_runner_config=ChildRunnerConfig(
             mode="child_process",
             timeout_seconds=1.0,
+            start_method="fork",
             poll_interval_seconds=0.01,
         ),
     )
@@ -142,6 +148,8 @@ def test_execution_supervisor_can_run_handler_in_child_process() -> None:
 
 
 def test_execution_supervisor_returns_timeout_outcome_from_child_runner() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("macOS forbids fork child runner.")
     outcome = run_supervised_handler(
         context=_build_context(),
         dispatch=_child_hanging_dispatch,
@@ -149,6 +157,7 @@ def test_execution_supervisor_returns_timeout_outcome_from_child_runner() -> Non
         child_runner_config=ChildRunnerConfig(
             mode="child_process",
             timeout_seconds=0.05,
+            start_method="fork",
             poll_interval_seconds=0.01,
             terminate_grace_seconds=0.05,
         ),

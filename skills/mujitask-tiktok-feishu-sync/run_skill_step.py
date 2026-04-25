@@ -417,6 +417,32 @@ def _refresh_competitor_submit_params(
         "verify_fastmoss_login=false",
         "fastmoss_phone_env=FASTMOSS_PHONE",
         "fastmoss_password_env=FASTMOSS_PASSWORD",
+        "fastmoss_window_days=90",
+    ]
+
+
+def _product_url_complete_submit_params(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str,
+    ensure_ready: bool,
+) -> list[str]:
+    resolved_profile_ref = _resolve_profile_ref_for_task(
+        python_bin=python_bin,
+        install_dir=install_dir,
+        requested_profile_ref=requested_profile_ref,
+        fallback_profile_ref=fallback_profile_ref,
+        ensure_ready=ensure_ready,
+    )
+    return [
+        f"profile_ref={resolved_profile_ref}",
+        "verify_fastmoss_login=false",
+        "fastmoss_phone_env=FASTMOSS_PHONE",
+        "fastmoss_password_env=FASTMOSS_PASSWORD",
+        "fastmoss_window_days=90",
+        "fallback_allowed=true",
     ]
 
 
@@ -943,6 +969,42 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh_result_parser.add_argument("--run-mode", default="canary")
     refresh_result_parser.add_argument("--request-id", required=True)
 
+    product_complete_parser = subparsers.add_parser("product-url-complete")
+    product_complete_parser.add_argument("--run-mode", default="canary")
+    product_complete_parser.add_argument("--profile-ref", default="")
+    product_complete_parser.add_argument("--product-url", required=True)
+
+    product_complete_submit_parser = subparsers.add_parser("product-url-complete-submit")
+    product_complete_submit_parser.add_argument("--run-mode", default="canary")
+    product_complete_submit_parser.add_argument("--profile-ref", default="")
+    product_complete_submit_parser.add_argument("--product-url", required=True)
+
+    product_complete_status_parser = subparsers.add_parser("product-url-complete-status")
+    product_complete_status_parser.add_argument("--run-mode", default="canary")
+    product_complete_status_parser.add_argument("--request-id", required=True)
+
+    product_complete_result_parser = subparsers.add_parser("product-url-complete-result")
+    product_complete_result_parser.add_argument("--run-mode", default="canary")
+    product_complete_result_parser.add_argument("--request-id", required=True)
+
+    competitor_row_parser = subparsers.add_parser("competitor-row-by-url")
+    competitor_row_parser.add_argument("--run-mode", default="canary")
+    competitor_row_parser.add_argument("--profile-ref", default="")
+    competitor_row_parser.add_argument("--product-url", required=True)
+
+    competitor_row_submit_parser = subparsers.add_parser("competitor-row-by-url-submit")
+    competitor_row_submit_parser.add_argument("--run-mode", default="canary")
+    competitor_row_submit_parser.add_argument("--profile-ref", default="")
+    competitor_row_submit_parser.add_argument("--product-url", required=True)
+
+    competitor_row_status_parser = subparsers.add_parser("competitor-row-by-url-status")
+    competitor_row_status_parser.add_argument("--run-mode", default="canary")
+    competitor_row_status_parser.add_argument("--request-id", required=True)
+
+    competitor_row_result_parser = subparsers.add_parser("competitor-row-by-url-result")
+    competitor_row_result_parser.add_argument("--run-mode", default="canary")
+    competitor_row_result_parser.add_argument("--request-id", required=True)
+
     keyword_search_parser = subparsers.add_parser("keyword-search")
     keyword_search_parser.add_argument("--run-mode", default="canary")
     keyword_search_parser.add_argument("--profile-ref", default="")
@@ -1151,6 +1213,170 @@ def main(argv: list[str] | None = None) -> int:
             ],
             skill_env,
         )
+    elif args.command == "product-url-complete-submit":
+        submit_params = _append_runtime_params(
+            [
+                f"product_url={args.product_url}",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _product_url_complete_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="tiktok_fastmoss_product_ingest",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="product-url-complete-submit-step",
+            extra_env=extra_env,
+            accepted_message="Product URL completion task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload)
+        return _emit_final_result(submit_payload)
+    elif args.command == "product-url-complete-status":
+        task_name = "tiktok_fastmoss_product_ingest"
+        prefix = "product-url-complete-status-step"
+        params = _append_runtime_params(
+            [
+                "control_action=status",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "product-url-complete-result":
+        task_name = "tiktok_fastmoss_product_ingest"
+        prefix = "product-url-complete-result-step"
+        params = _append_runtime_params(
+            [
+                "control_action=result",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "product-url-complete":
+        submit_params = _append_runtime_params(
+            [
+                f"product_url={args.product_url}",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _product_url_complete_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="tiktok_fastmoss_product_ingest",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="product-url-complete-submit-step",
+            extra_env=extra_env,
+            accepted_message="Product URL completion task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+        return _emit_final_result(submit_payload)
+    elif args.command == "competitor-row-by-url-submit":
+        submit_params = _append_runtime_params(
+            [
+                f"source_table_ref={table_url}",
+                f"product_url={args.product_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _product_url_complete_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="refresh_competitor_row_by_url",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="competitor-row-by-url-submit-step",
+            extra_env=extra_env,
+            accepted_message="Competitor row refresh by URL task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload)
+        return _emit_final_result(submit_payload)
+    elif args.command == "competitor-row-by-url-status":
+        task_name = "refresh_competitor_row_by_url"
+        prefix = "competitor-row-by-url-status-step"
+        params = _append_runtime_params(
+            [
+                "control_action=status",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "competitor-row-by-url-result":
+        task_name = "refresh_competitor_row_by_url"
+        prefix = "competitor-row-by-url-result-step"
+        params = _append_runtime_params(
+            [
+                "control_action=result",
+                f"request_id={args.request_id}",
+            ],
+            skill_env,
+        )
+    elif args.command == "competitor-row-by-url":
+        submit_params = _append_runtime_params(
+            [
+                f"source_table_ref={table_url}",
+                f"product_url={args.product_url}",
+                "access_token_env=FEISHU_ACCESS_TOKEN",
+                "control_action=submit",
+            ],
+            skill_env,
+        )
+        submit_params.extend(
+            _product_url_complete_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                fallback_profile_ref=browser_profile_ref,
+                ensure_ready=False,
+            )
+        )
+        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="refresh_competitor_row_by_url",
+            run_mode=args.run_mode,
+            params=submit_params,
+            stdout_prefix="competitor-row-by-url-submit-step",
+            extra_env=extra_env,
+            accepted_message="Competitor row refresh by URL task accepted for asynchronous execution.",
+        )
+        if submit_status != 0:
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
+        return _emit_final_result(submit_payload)
     elif args.command == "refresh-current-competitor-table":
         submit_params = _append_runtime_params(
             [

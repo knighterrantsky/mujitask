@@ -9,6 +9,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
+    REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -47,6 +48,10 @@ WORKFLOW_RUNTIME_MODULES = {
         "tiktok_fastmoss_product_ingest"
     ),
     REFRESH_TASK_CODE: (
+        "automation_business_scaffold.domains.tiktok.flows."
+        "refresh_current_competitor_table"
+    ),
+    REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE: (
         "automation_business_scaffold.domains.tiktok.flows."
         "refresh_current_competitor_table"
     ),

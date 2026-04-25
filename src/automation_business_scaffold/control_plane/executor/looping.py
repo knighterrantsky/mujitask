@@ -116,9 +116,7 @@ def build_child_runner_config(
 
 
 def _default_child_runner_mode(*, worker_type: str, handler_code: str) -> str:
-    del handler_code
-    if worker_type in DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER:
-        return "child_process"
+    del worker_type, handler_code
     return "inline"
 
 

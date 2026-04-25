@@ -178,6 +178,30 @@ def test_refresh_competitor_submit_params_include_fastmoss_env_markers(tmp_path,
         "verify_fastmoss_login=false",
         "fastmoss_phone_env=FASTMOSS_PHONE",
         "fastmoss_password_env=FASTMOSS_PASSWORD",
+        "fastmoss_window_days=90",
+    ]
+
+
+def test_product_url_complete_submit_params_enable_browser_fallback(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    params = module._product_url_complete_submit_params(
+        python_bin=tmp_path / "python",
+        install_dir=tmp_path,
+        requested_profile_ref="",
+        fallback_profile_ref="roxy-tiktok",
+        ensure_ready=False,
+    )
+
+    assert params == [
+        "profile_ref=roxy-tiktok",
+        "verify_fastmoss_login=false",
+        "fastmoss_phone_env=FASTMOSS_PHONE",
+        "fastmoss_password_env=FASTMOSS_PASSWORD",
+        "fastmoss_window_days=90",
+        "fallback_allowed=true",
     ]
 
 
@@ -314,6 +338,74 @@ def test_main_refresh_current_competitor_table_returns_after_submit(tmp_path, mo
     assert captured_calls[0]["task_name"] == "refresh_current_competitor_table"
     assert "control_action=submit" in captured_calls[0]["params"]
     assert emitted["request_id"] == "req-async-123"
+    assert emitted["request_status"] == "pending"
+
+
+def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            "TABLE_URL": "https://example.com/table",
+            "FEISHU_ACCESS_TOKEN": "token",
+            "BROWSER_PROFILE_REF": "roxy-default",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-competitor-url-123",
+                "request_status": "pending",
+                "summary": {"total": 1, "counts": {"queued": 1}},
+            },
+        )
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    exit_code = module.main(
+        [
+            "competitor-row-by-url",
+            "--run-mode",
+            "canary",
+            "--product-url",
+            "https://www.tiktok.com/shop/pdp/123456789",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "refresh_competitor_row_by_url"
+    params = list(captured_calls[0]["params"])
+    assert "source_table_ref=https://example.com/table" in params
+    assert "product_url=https://www.tiktok.com/shop/pdp/123456789" in params
+    assert "access_token_env=FEISHU_ACCESS_TOKEN" in params
+    assert "fallback_allowed=true" in params
+    assert emitted["request_id"] == "req-competitor-url-123"
     assert emitted["request_status"] == "pending"
 
 

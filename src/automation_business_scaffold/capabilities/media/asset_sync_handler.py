@@ -13,10 +13,12 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerResult,
 )
 from automation_business_scaffold.contracts.handler.shared import (
+    build_error,
     coerce_mapping,
     coerce_mapping_list,
     coerce_str,
     compact_dict,
+    failed_result,
     first_non_empty,
     new_fact_bundle,
     now_timestamp,
@@ -61,14 +63,27 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     specs: list[ArtifactFileSpec] = []
     local_assets_by_path: dict[str, dict[str, Any]] = {}
     synced_assets: list[dict[str, Any]] = []
+    synced_assets_by_ref: dict[str, dict[str, Any]] = {}
+    deferred_reuse_assets: list[tuple[dict[str, Any], str]] = []
     warnings: list[str] = []
     fact_store = _create_fact_store(payload, warnings=warnings)
 
     for index, asset in enumerate(asset_refs):
         normalized_asset = _normalize_media_asset(asset, fallback_product_id=payload.get("product_id"))
+        asset_ref_key = _asset_ref_key(normalized_asset)
+        if asset_ref_key and asset_ref_key in synced_assets_by_ref:
+            existing_asset = synced_assets_by_ref[asset_ref_key]
+            if existing_asset.get("sync_state") == "pending_upload":
+                deferred_reuse_assets.append((normalized_asset, asset_ref_key))
+            else:
+                synced_assets.append(_reused_in_run_media_asset(normalized_asset, existing_asset))
+            continue
         cached_asset = _find_reusable_media_asset(fact_store, normalized_asset)
         if cached_asset:
-            synced_assets.append(_reused_media_asset(normalized_asset, cached_asset))
+            reused_asset = _reused_media_asset(normalized_asset, cached_asset)
+            synced_assets.append(reused_asset)
+            if asset_ref_key:
+                synced_assets_by_ref[asset_ref_key] = reused_asset
             continue
         local_path = Path(coerce_str(normalized_asset.get("local_path"))).expanduser()
         if local_path.exists() and local_path.is_file():
@@ -80,6 +95,10 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                 handler_code=context.handler_code,
                 local_path=local_path,
             )
+            if asset_ref_key:
+                pending_asset = dict(normalized_asset)
+                pending_asset["sync_state"] = "pending_upload"
+                synced_assets_by_ref[asset_ref_key] = pending_asset
             continue
         if coerce_str(normalized_asset.get("local_path")):
             warnings.append(f"Local asset path not found: {normalized_asset.get('local_path')}")
@@ -100,11 +119,17 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     handler_code=context.handler_code,
                     local_path=downloaded_path,
                 )
+                if asset_ref_key:
+                    pending_asset = dict(downloaded_asset)
+                    pending_asset["sync_state"] = "pending_upload"
+                    synced_assets_by_ref[asset_ref_key] = pending_asset
                 continue
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"Referenced asset download failed: {normalized_asset.get('source_url')} ({exc})")
         normalized_asset["sync_state"] = "referenced"
         synced_assets.append(normalized_asset)
+        if asset_ref_key:
+            synced_assets_by_ref[asset_ref_key] = normalized_asset
 
     artifact_refs: list[dict[str, Any]] = []
     if specs:
@@ -134,8 +159,16 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     "artifact_uri_prefix": artifact_uri_prefix,
                 }
             )
-            synced_assets.append(compact_dict(synced_asset))
+            synced_asset = compact_dict(synced_asset)
+            synced_assets.append(synced_asset)
+            for asset_ref_key in {*_asset_ref_keys(base_asset), *_asset_ref_keys(synced_asset)}:
+                if asset_ref_key:
+                    synced_assets_by_ref[asset_ref_key] = synced_asset
             artifact_refs.append(record.to_dict())
+        for duplicate_asset, asset_ref_key in deferred_reuse_assets:
+            existing_asset = synced_assets_by_ref.get(asset_ref_key, {})
+            if existing_asset:
+                synced_assets.append(_reused_in_run_media_asset(duplicate_asset, existing_asset))
 
     media_bundle = new_fact_bundle()
     media_bundle["media_assets"] = synced_assets
@@ -150,6 +183,22 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "artifact_refs": artifact_refs,
         "media_fact_bundle": media_bundle,
     }
+    if _coerce_bool(payload.get("require_materialized_assets")):
+        referenced_assets = [asset for asset in synced_assets if asset.get("sync_state") == "referenced"]
+        if referenced_assets:
+            return failed_result(
+                context,
+                error=build_error(
+                    error_type="media_sync_failed",
+                    error_code="media_asset_materialization_failed",
+                    message="Media asset sync requires every referenced fact media asset to be materialized.",
+                    retryable=True,
+                    details={"referenced_count": len(referenced_assets)},
+                ),
+                summary=summary,
+                result=result,
+                warnings=tuple(warnings),
+            )
     if warnings:
         return success_result(context, summary=summary, result=result, warnings=tuple(warnings))
     return success_result(context, summary=summary, result=result)
@@ -165,6 +214,8 @@ def _create_fact_store(payload: dict[str, Any], *, warnings: list[str]) -> TKFac
         coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
         payload.get("db_url"),
         request_payload.get("db_url"),
+        payload.get("execution_control_db_url"),
+        request_payload.get("execution_control_db_url"),
     )
     if not fact_db_url:
         return None
@@ -186,10 +237,7 @@ def _find_reusable_media_asset(fact_store: TKFactStore | None, asset: dict[str, 
     )
     if not cached:
         return {}
-    if coerce_str(cached.get("object_key")) or coerce_str(cached.get("file_token")):
-        return cached
-    cached_path = Path(coerce_str(cached.get("local_path"))).expanduser()
-    if coerce_str(cached.get("local_path")) and cached_path.exists() and cached_path.is_file():
+    if coerce_str(cached.get("object_key")) or coerce_str(cached.get("remote_uri")):
         return cached
     return {}
 
@@ -210,6 +258,48 @@ def _reused_media_asset(asset: dict[str, Any], cached: dict[str, Any]) -> dict[s
             "source_platform": first_non_empty(asset.get("source_platform"), cached.get("source_platform")),
         }
     )
+
+
+def _reused_in_run_media_asset(asset: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    return compact_dict(
+        {
+            **asset,
+            "sync_state": "reused_in_run",
+            "asset_id": existing.get("asset_id"),
+            "asset_key": existing.get("asset_key"),
+            "source_url": first_non_empty(asset.get("source_url"), existing.get("source_url")),
+            "file_token": first_non_empty(asset.get("file_token"), existing.get("file_token")),
+            "local_path": first_non_empty(existing.get("local_path"), asset.get("local_path")),
+            "source_path": first_non_empty(existing.get("source_path"), asset.get("source_path")),
+            "object_key": existing.get("object_key"),
+            "bucket": existing.get("bucket"),
+            "remote_uri": existing.get("remote_uri"),
+            "file_name": first_non_empty(existing.get("file_name"), asset.get("file_name")),
+            "mime_type": first_non_empty(existing.get("mime_type"), asset.get("mime_type")),
+            "source_platform": first_non_empty(asset.get("source_platform"), existing.get("source_platform")),
+            "metadata": asset.get("metadata"),
+        }
+    )
+
+
+def _asset_ref_key(asset: dict[str, Any]) -> str:
+    keys = _asset_ref_keys(asset)
+    return keys[0] if keys else ""
+
+
+def _asset_ref_keys(asset: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for prefix, value in (
+        ("file_token", asset.get("file_token")),
+        ("object_key", asset.get("object_key")),
+        ("local_path", asset.get("local_path")),
+        ("source_path", asset.get("source_path")),
+        ("source_url", asset.get("source_url")),
+    ):
+        text = coerce_str(value)
+        if text:
+            keys.append(f"{prefix}:{text}")
+    return keys
 
 
 def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:

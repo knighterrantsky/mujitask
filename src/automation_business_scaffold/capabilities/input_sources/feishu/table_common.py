@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import mimetypes
 import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone, timedelta
+from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -247,7 +250,13 @@ def execute_write_records(
 
     for record in records:
         command = _normalize_write_record(record, payload)
-        command["fields"] = _prepare_fields_for_write(_mapping(command.get("fields")), field_schema)
+        command["fields"] = _prepare_fields_for_write(
+            _mapping(command.get("fields")),
+            field_schema,
+            client=client,
+            target=target,
+            payload=payload,
+        )
         record_key = _write_record_key(command)
         if record_key and record_key in seen_keys:
             skipped_count += 1
@@ -527,6 +536,10 @@ def _load_field_schema(client: FeishuBitableClient, target: FeishuTableTarget) -
 def _prepare_fields_for_write(
     fields: Mapping[str, Any],
     field_schema: Mapping[str, Mapping[str, Any]],
+    *,
+    client: FeishuBitableClient,
+    target: FeishuTableTarget,
+    payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     prepared: dict[str, Any] = {}
     for field_name, value in fields.items():
@@ -534,7 +547,12 @@ def _prepare_fields_for_write(
         if not name:
             continue
         if _is_attachment_field(field_schema.get(name)):
-            attachment_refs = _attachment_file_token_ref_items(value)
+            attachment_refs = _attachment_file_token_ref_items(
+                value,
+                client=client,
+                target=target,
+                payload=payload,
+            )
             if attachment_refs:
                 prepared[name] = attachment_refs
             continue
@@ -952,6 +970,12 @@ def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[s
             normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
             continue
         if name in {"图片", "前台截图", "Fastmoss截图"}:
+            if isinstance(value, Mapping) and any(
+                _first_non_empty(value.get(key))
+                for key in ("file_token", "local_path", "source_path", "path", "url", "source_url", "remote_uri", "object_key")
+            ):
+                normalized[name] = dict(value)
+                continue
             normalized[name] = _raw_link_value(_text_value(value)) if _text_value(value) else value
             continue
         normalized[name] = value
@@ -1127,13 +1151,147 @@ def _attachment_ref_items(value: Any) -> list[dict[str, str]]:
     return _dedupe_ref_items(refs)
 
 
-def _attachment_file_token_ref_items(value: Any) -> list[dict[str, str]]:
+def _attachment_file_token_ref_items(
+    value: Any,
+    *,
+    client: FeishuBitableClient | None = None,
+    target: FeishuTableTarget | None = None,
+    payload: Mapping[str, Any] | None = None,
+) -> list[dict[str, str]]:
     refs = []
-    for item in _attachment_ref_items(value):
+    for item in _attachment_write_items(value):
         file_token = _first_non_empty(item.get("file_token"))
-        if file_token:
+        if _is_feishu_attachment_file_token(file_token):
             refs.append({"file_token": file_token})
+            continue
+        if client is not None and target is not None:
+            uploaded_token = _upload_attachment_item(client, target, item, payload=payload or {})
+            if uploaded_token:
+                refs.append({"file_token": uploaded_token})
     return _dedupe_ref_items(refs)
+
+
+def _attachment_write_items(value: Any) -> list[dict[str, str]]:
+    values = value if isinstance(value, list) else [value]
+    refs: list[dict[str, str]] = []
+    for item in values:
+        if isinstance(item, Mapping):
+            refs.append(
+                {
+                    "file_token": _first_non_empty(item.get("file_token")),
+                    "url": _first_non_empty(
+                        item.get("url"),
+                        item.get("source_url"),
+                        item.get("tmp_url"),
+                        item.get("download_url"),
+                        item.get("link"),
+                        item.get("remote_uri"),
+                    ),
+                    "local_path": _first_non_empty(item.get("local_path"), item.get("source_path"), item.get("path")),
+                    "object_key": _first_non_empty(item.get("object_key")),
+                    "file_name": _first_non_empty(item.get("file_name"), item.get("name")),
+                    "mime_type": _first_non_empty(item.get("mime_type"), item.get("type")),
+                }
+            )
+            continue
+        text = _text(item)
+        if text:
+            refs.append({"url": text})
+    return refs
+
+
+def _is_feishu_attachment_file_token(value: Any) -> bool:
+    token = _text(value)
+    if not token:
+        return False
+    if token.startswith(("tiktok_uri:", "s3://", "http://", "https://", "file://")):
+        return False
+    return not any(separator in token for separator in ("/", "\\", ":", "?"))
+
+
+def _upload_attachment_item(
+    client: FeishuBitableClient,
+    target: FeishuTableTarget,
+    item: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any],
+) -> str:
+    file_name = _attachment_file_name(item)
+    local_path = _attachment_local_path(item)
+    if local_path:
+        file_data = local_path.read_bytes()
+        file_name = file_name or local_path.name
+        return client.upload_media(
+            file_name=file_name,
+            file_data=file_data,
+            parent_node=target.app_token,
+            extra=_attachment_upload_extra(target, payload),
+        )
+
+    url = _first_non_empty(item.get("url"))
+    if not url or url.startswith("s3://"):
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme == "file":
+        path = Path(parsed.path).expanduser()
+        if path.exists() and path.is_file():
+            file_data = path.read_bytes()
+            return client.upload_media(
+                file_name=file_name or path.name,
+                file_data=file_data,
+                parent_node=target.app_token,
+                extra=_attachment_upload_extra(target, payload),
+            )
+        return ""
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+
+    timeout_seconds = _coerce_int(
+        _first_non_empty(payload.get("attachment_download_timeout_seconds"), payload.get("download_timeout_seconds")),
+        default=30,
+        minimum=1,
+        maximum=300,
+    )
+    response = requests.get(url, timeout=timeout_seconds, headers={"User-Agent": "Mozilla/5.0"})
+    response.raise_for_status()
+    if not response.content:
+        return ""
+    content_type = _first_non_empty(item.get("mime_type"), response.headers.get("Content-Type"))
+    return client.upload_media(
+        file_name=file_name or _attachment_file_name_from_url(url, content_type),
+        file_data=response.content,
+        parent_node=target.app_token,
+        extra=_attachment_upload_extra(target, payload),
+    )
+
+
+def _attachment_local_path(item: Mapping[str, Any]) -> Path | None:
+    path_text = _first_non_empty(item.get("local_path"))
+    if not path_text:
+        return None
+    path = Path(path_text).expanduser()
+    if path.exists() and path.is_file():
+        return path
+    return None
+
+
+def _attachment_file_name(item: Mapping[str, Any]) -> str:
+    return Path(_first_non_empty(item.get("file_name"), item.get("name"), "attachment.bin")).name
+
+
+def _attachment_file_name_from_url(url: str, content_type: str) -> str:
+    path_name = Path(urlparse(url).path).name
+    if path_name:
+        return path_name
+    suffix = mimetypes.guess_extension(str(content_type or "").split(";")[0].strip()) or ".bin"
+    return f"attachment{suffix}"
+
+
+def _attachment_upload_extra(target: FeishuTableTarget, payload: Mapping[str, Any]) -> dict[str, Any]:
+    configured = _mapping(payload.get("attachment_upload_extra"))
+    if configured:
+        return configured
+    return {"bitablePerm": {"tableId": target.table_id}}
 
 
 def _dedupe_ref_items(items: list[dict[str, str]]) -> list[dict[str, str]]:

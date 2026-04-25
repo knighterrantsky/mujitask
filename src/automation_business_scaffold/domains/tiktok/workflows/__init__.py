@@ -1,4 +1,9 @@
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from .refresh_competitor_row_by_url import (
+    REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION,
+    build_refresh_competitor_row_by_url_definition,
+    build_refresh_competitor_row_by_url_workflow,
+)
 from .refresh_current_competitor_table import (
     REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION,
     build_refresh_current_competitor_table_definition,
@@ -22,6 +27,7 @@ from .tiktok_fastmoss_product_ingest import (
 
 DEFAULT_WORKFLOW_DEFINITIONS = (
     REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION,
+    REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION,
     SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION,
     SYNC_TK_INFLUENCER_POOL_DEFINITION,
     TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION,
@@ -47,11 +53,14 @@ def get_workflow_definition_by_code(workflow_code: str) -> WorkflowDefinition:
 
 __all__ = [
     "DEFAULT_WORKFLOW_DEFINITIONS",
+    "REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION",
     "REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION",
     "SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION",
     "SYNC_TK_INFLUENCER_POOL_DEFINITION",
     "TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION",
     "WorkflowDefinition",
+    "build_refresh_competitor_row_by_url_definition",
+    "build_refresh_competitor_row_by_url_workflow",
     "build_refresh_current_competitor_table_definition",
     "build_refresh_current_competitor_table_workflow",
     "build_search_keyword_competitor_products_definition",
