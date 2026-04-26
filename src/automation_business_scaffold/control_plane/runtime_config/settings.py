@@ -52,6 +52,9 @@ class RuntimeExecutionSettings:
     max_idle_cycles: int
     max_iterations: int
     stop_when_idle: bool
+    db_health_preflight_enabled: bool
+    db_health_max_connection_ratio: float
+    db_health_max_idle_in_transaction: int
 
 
 def normalize_control_action(raw_value: Any) -> str:
@@ -96,11 +99,44 @@ def build_runtime_settings(params: dict[str, Any]) -> RuntimeExecutionSettings:
         max_idle_cycles=max(int(params.get("execution_control_max_idle_cycles") or 1), 1),
         max_iterations=max(int(params.get("execution_control_max_iterations") or 0), 0),
         stop_when_idle=bool(params.get("execution_control_stop_when_idle", False)),
+        db_health_preflight_enabled=_coerce_bool(
+            params.get("execution_control_db_health_preflight_enabled"),
+            default=defaults.db_health_preflight_enabled,
+        ),
+        db_health_max_connection_ratio=min(
+            max(
+                float(
+                    params.get("execution_control_db_health_max_connection_ratio")
+                    or defaults.db_health_max_connection_ratio
+                    or 0.8
+                ),
+                0.1,
+            ),
+            1.0,
+        ),
+        db_health_max_idle_in_transaction=int(
+            params.get("execution_control_db_health_max_idle_in_transaction")
+            if params.get("execution_control_db_health_max_idle_in_transaction") not in (None, "")
+            else defaults.db_health_max_idle_in_transaction
+        ),
     )
 
 
 def create_runtime_store(settings: RuntimeExecutionSettings) -> RuntimeStore:
     return RuntimeStore(db_url=settings.db_url)
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def ensure_formal_task_code(task_code: str) -> str:

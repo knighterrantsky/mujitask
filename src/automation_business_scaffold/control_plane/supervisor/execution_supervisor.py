@@ -318,7 +318,11 @@ class ExecutionSupervisor:
         error_type = "internal"
         error_code = "handler_unhandled_exception"
         retryable = True
-        if isinstance(exc, (HandlerRegistryError, HandlerInvocationContractError, ValueError)):
+        if _looks_like_db_connection_error(exc):
+            error_type = "infrastructure"
+            error_code = "runtime_db_connection_error"
+            retryable = True
+        elif isinstance(exc, (HandlerRegistryError, HandlerInvocationContractError, ValueError)):
             error_type = "contract"
             error_code = "handler_contract_error"
             retryable = False
@@ -335,6 +339,26 @@ class ExecutionSupervisor:
             retryable=retryable,
             details={"exception_class": type(exc).__name__},
         )
+
+
+def _looks_like_db_connection_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    markers = (
+        "too many clients already",
+        "connection failed",
+        "could not connect to server",
+        "server closed the connection",
+        "terminating connection",
+        "connection timeout",
+        "connection refused",
+        "remaining connection slots are reserved",
+    )
+    module_name = type(exc).__module__.lower()
+    class_name = type(exc).__name__.lower()
+    return (
+        any(marker in message for marker in markers)
+        and ("sqlalchemy" in module_name or "psycopg" in module_name or "operational" in class_name)
+    )
 
 
 def run_supervised_handler(

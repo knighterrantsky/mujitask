@@ -194,6 +194,7 @@ class WatchdogScanResult:
     outcomes: tuple[WatchdogActionOutcome, ...] = ()
     counts_by_rule: dict[str, int] = field(default_factory=dict)
     counts_by_action: dict[str, int] = field(default_factory=dict)
+    db_connection_health: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -206,6 +207,7 @@ class WatchdogScanResult:
             "missing_helpers": list(self.missing_helpers),
             "counts_by_rule": dict(self.counts_by_rule),
             "counts_by_action": dict(self.counts_by_action),
+            "db_connection_health": dict(self.db_connection_health),
             "outcomes": [outcome.to_dict() for outcome in self.outcomes],
         }
 
@@ -662,6 +664,15 @@ def execute_watchdog_scan_once(
     apply_actions = bool(normalized.get("apply_actions", True))
 
     resolved_store = store if store is not None else build_watchdog_store(normalized)
+    db_connection_health = collect_db_connection_health(
+        resolved_store,
+        max_connection_ratio=_coerce_float(normalized.get("db_health_max_connection_ratio")) or 0.8,
+        max_idle_in_transaction=(
+            _coerce_int(normalized.get("db_health_max_idle_in_transaction"))
+            if normalized.get("db_health_max_idle_in_transaction") not in (None, "")
+            else -1
+        ),
+    )
     candidates, missing_helpers = collect_watchdog_candidates(
         resolved_store,
         now=current_time,
@@ -705,8 +716,27 @@ def execute_watchdog_scan_once(
         outcomes=tuple(outcomes),
         counts_by_rule=counts_by_rule,
         counts_by_action=counts_by_action,
+        db_connection_health=db_connection_health,
     )
     return result.to_dict()
+
+
+def collect_db_connection_health(
+    store: Any,
+    *,
+    max_connection_ratio: float = 0.8,
+    max_idle_in_transaction: int = -1,
+) -> dict[str, Any]:
+    helper = getattr(store, "collect_db_connection_health", None)
+    if not callable(helper):
+        return {"status": "unavailable", "healthy": True, "reason": "store_missing_db_health_helper"}
+    return dict(
+        helper(
+            max_connection_ratio=max_connection_ratio,
+            max_idle_in_transaction=max_idle_in_transaction,
+        )
+        or {}
+    )
 
 
 def run_watchdog_scanner(

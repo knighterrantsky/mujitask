@@ -23,6 +23,16 @@ def _read_int(name: str, default: int) -> int:
         return default
 
 
+def _read_int_alias(name: str, *aliases: str, default: int) -> int:
+    raw = _read_env(name, *aliases, default="")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _read_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
@@ -85,6 +95,9 @@ class ExecutionControlDefaults:
     heartbeat_interval_seconds: float
     poll_interval_seconds: float
     wait_timeout_seconds: float
+    db_health_preflight_enabled: bool
+    db_health_max_connection_ratio: float
+    db_health_max_idle_in_transaction: int
 
 
 def get_business_defaults() -> BusinessDefaults:
@@ -200,5 +213,26 @@ def get_execution_control_defaults() -> ExecutionControlDefaults:
                 default=300.0,
             ),
             1.0,
+        ),
+        db_health_preflight_enabled=_read_bool_alias(
+            "BUSINESS_EXECUTION_CONTROL_DB_HEALTH_PREFLIGHT_ENABLED",
+            "EXECUTION_CONTROL_DB_HEALTH_PREFLIGHT_ENABLED",
+            default=True,
+        ),
+        db_health_max_connection_ratio=min(
+            max(
+                _read_float_alias(
+                    "BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_CONNECTION_RATIO",
+                    "EXECUTION_CONTROL_DB_HEALTH_MAX_CONNECTION_RATIO",
+                    default=0.8,
+                ),
+                0.1,
+            ),
+            1.0,
+        ),
+        db_health_max_idle_in_transaction=_read_int_alias(
+            "BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION",
+            "EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION",
+            default=-1,
         ),
     )

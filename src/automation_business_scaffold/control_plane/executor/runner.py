@@ -45,6 +45,26 @@ def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any
     normalized_task_code = ensure_formal_task_code(task_code)
     settings = build_runtime_settings(params)
     store = create_runtime_store(settings)
+    preflight = _runtime_db_health_preflight(store=store, settings=settings)
+    if preflight:
+        return {
+            "status": "failed",
+            "control_action": "submit",
+            "request_id": "",
+            "task_code": normalized_task_code,
+            "request_status": "rejected",
+            "current_stage": "",
+            "message": preflight["message"],
+            "error": preflight["message"],
+            "error_type": "infrastructure",
+            "error_code": "runtime_db_connection_unhealthy",
+            "retryable": True,
+            "db_connection_health": preflight["db_connection_health"],
+            "summary": {"total": 0, "counts": {"rejected": 1}},
+            "result": {},
+            "item": {},
+            "items": [],
+        }
     request = store.submit_task_request(
         project_code="automation-business-scaffold",
         task_code=normalized_task_code,
@@ -598,6 +618,22 @@ def _sanitize_task_payload(params: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(params)
     sanitized.pop("control_action", None)
     return sanitized
+
+
+def _runtime_db_health_preflight(*, store: RuntimeStore, settings: Any) -> dict[str, Any]:
+    if not bool(getattr(settings, "db_health_preflight_enabled", True)):
+        return {}
+    health = store.collect_db_connection_health(
+        max_connection_ratio=float(getattr(settings, "db_health_max_connection_ratio", 0.8) or 0.8),
+        max_idle_in_transaction=int(getattr(settings, "db_health_max_idle_in_transaction", -1)),
+    )
+    if bool(health.get("healthy", False)):
+        return {}
+    warnings = ", ".join(str(item) for item in health.get("warnings", []) or [])
+    return {
+        "message": f"Runtime DB connection health check failed: {warnings or 'unhealthy'}.",
+        "db_connection_health": health,
+    }
 
 
 def _build_runtime_request_payload(

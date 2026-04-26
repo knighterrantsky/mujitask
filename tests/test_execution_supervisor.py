@@ -4,6 +4,7 @@ import time
 import sys
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
@@ -76,6 +77,26 @@ def test_execution_supervisor_classifies_contract_errors_as_terminal() -> None:
     assert outcome.error.retryable is False
     assert outcome.error.terminal is True
     assert outcome.failure_disposition == "terminal"
+
+
+def test_execution_supervisor_classifies_db_connection_errors_as_retryable_infra() -> None:
+    def dispatch(context: HandlerContext) -> HandlerResult:
+        del context
+        raise OperationalError("select 1", {}, Exception("FATAL: sorry, too many clients already"))
+
+    outcome = run_supervised_handler(
+        context=_build_context(),
+        dispatch=dispatch,
+        heartbeat_interval_seconds=0.01,
+    )
+
+    assert outcome.worker_result.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.error_type == "infrastructure"
+    assert outcome.error.error_code == "runtime_db_connection_error"
+    assert outcome.error.retryable is True
+    assert outcome.error.terminal is False
+    assert outcome.failure_disposition == "retryable"
 
 
 def test_execution_supervisor_preserves_retryable_handler_errors() -> None:

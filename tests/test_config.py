@@ -40,6 +40,7 @@ def test_get_execution_control_defaults_accepts_legacy_execution_control_env_nam
     monkeypatch.setenv("EXECUTION_CONTROL_SYNC_REFERENCED_FILES", "true")
     monkeypatch.setenv("EXECUTION_CONTROL_REQUESTED_BY", "openclaw-skill")
     monkeypatch.setenv("EXECUTION_CONTROL_WORKER_ID", "worker-legacy")
+    monkeypatch.setenv("EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION", "3")
 
     defaults = get_execution_control_defaults()
 
@@ -57,6 +58,30 @@ def test_get_execution_control_defaults_accepts_legacy_execution_control_env_nam
     assert defaults.sync_referenced_files is True
     assert defaults.requested_by == "openclaw-skill"
     assert defaults.worker_id == "worker-legacy"
+    assert defaults.db_health_preflight_enabled is True
+    assert defaults.db_health_max_connection_ratio == 0.8
+    assert defaults.db_health_max_idle_in_transaction == 3
+
+
+def test_execution_control_defaults_reads_db_health_overrides(monkeypatch):
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_HEALTH_PREFLIGHT_ENABLED", "false")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_CONNECTION_RATIO", "0.75")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION", "2")
+
+    defaults = get_execution_control_defaults()
+
+    assert defaults.db_health_preflight_enabled is False
+    assert defaults.db_health_max_connection_ratio == 0.75
+    assert defaults.db_health_max_idle_in_transaction == 2
+
+
+def test_execution_control_defaults_observes_idle_transactions_without_rejecting_by_default(monkeypatch):
+    monkeypatch.delenv("BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION", raising=False)
+    monkeypatch.delenv("EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION", raising=False)
+
+    defaults = get_execution_control_defaults()
+
+    assert defaults.db_health_max_idle_in_transaction == -1
 
 
 def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(monkeypatch, tmp_path: Path):

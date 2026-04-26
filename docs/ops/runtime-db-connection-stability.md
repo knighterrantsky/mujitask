@@ -205,10 +205,14 @@ where pid <> pg_backend_pid()
 
 - Runtime 主路径 `RuntimeStore` 使用 `NullPool + pool_pre_ping`。
 - Runtime 状态、job、outbox 都在 Postgres 中可观测。
+- task submit / skill submit 会执行 DB connection health preflight，连接数接近上限时拒绝提交。
+- watchdog 扫描结果会附带 DB connection health 摘要，只观测和记录，不自动 kill 连接。
+- 默认 submit preflight 只按总连接数阈值拒绝；`idle in transaction` 默认观测不拒绝，需要严格拦截时把 `BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION` 显式设为 `0` 或其他上限。
+- `TKFactStore` 独立建连路径使用有界连接池，优先仍建议通过 `runtime_store` 复用连接策略。
+- Supervisor 会把 `too many clients already` 等 DB 连接异常归类为 retryable infrastructure error。
 
 仍需补齐:
 
 - 部署脚本写入 Postgres idle timeout / role connection limit。
-- watchdog 增加 DB connection health check。
-- preflight / skill submit 前增加连接阈值检查。
-- 检查所有单独 `create_engine` 路径，确保生产使用有界连接策略或复用 `RuntimeStore`。
+- preflight / watchdog 健康摘要接入 OpenClaw 可见提示和现场监控。
+- 持续检查新增 `create_engine` 路径，确保生产使用有界连接策略或复用 `RuntimeStore`。

@@ -503,7 +503,15 @@ class TKFactStore:
         if resolved_db_url.lower().startswith("sqlite"):
             raise RuntimeError("SQLite is no longer supported for TKFactStore; use Postgres.")
         self._text = text
-        self._engine = create_engine(resolved_db_url, future=True, pool_pre_ping=True)
+        self._engine = create_engine(
+            resolved_db_url,
+            future=True,
+            pool_size=2,
+            max_overflow=0,
+            pool_timeout=10,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+        )
         with self._engine.begin() as connection:
             ensure_tk_fact_schema(connection)
 

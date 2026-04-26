@@ -65,6 +65,20 @@ class FakeWatchdogStore:
             "applied": True,
         }
 
+    def collect_db_connection_health(
+        self,
+        *,
+        max_connection_ratio: float = 0.8,
+        max_idle_in_transaction: int = 0,
+    ) -> Mapping[str, Any]:
+        return {
+            "status": "warning",
+            "healthy": False,
+            "max_connection_ratio": max_connection_ratio,
+            "max_idle_in_transaction": max_idle_in_transaction,
+            "warnings": ["connection_ratio_exceeded"],
+        }
+
 
 def test_watchdog_scan_decides_retry_for_lease_expired_job() -> None:
     store = FakeWatchdogStore()
@@ -88,6 +102,21 @@ def test_watchdog_scan_decides_retry_for_lease_expired_job() -> None:
     assert payload["outcomes"][0]["action"]["next_status"] == "retry_wait"
     assert payload["outcomes"][0]["action"]["error_type"] == "lease_expired"
     assert store.applied_actions[0]["target_id"] == "job-1"
+
+
+def test_watchdog_scan_includes_db_connection_health_without_actions() -> None:
+    store = FakeWatchdogStore()
+
+    payload = execute_watchdog_scan_once(
+        {"now": 100.0, "db_health_max_connection_ratio": 0.7, "db_health_max_idle_in_transaction": 1},
+        store=store,
+    )
+
+    assert payload["status"] == "idle"
+    assert payload["db_connection_health"]["status"] == "warning"
+    assert payload["db_connection_health"]["max_connection_ratio"] == 0.7
+    assert payload["db_connection_health"]["max_idle_in_transaction"] == 1
+    assert store.applied_actions == []
 
 
 def test_watchdog_scan_decides_fail_when_stale_progress_budget_is_exhausted() -> None:
