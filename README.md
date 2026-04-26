@@ -27,7 +27,7 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 - `docs/README.md` 是文档总入口。
 - `docs/business` 只放需求和业务规则。
 - `docs/arch` 是当前架构事实来源。
-- 目标工程组织和新增 workflow 拆分方式见 [docs/arch/target-project-architecture-contract.md](./docs/arch/target-project-architecture-contract.md)。
+- 项目工程组织和新增 workflow 拆分方式见 [docs/arch/project-architecture-contract.md](./docs/arch/project-architecture-contract.md)。
 - Runtime 控制面归属见 [docs/arch/runtime-control-plane-contract.md](./docs/arch/runtime-control-plane-contract.md)，包括 RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox。
 - Runtime DB schema、Fact DB schema、workflow contract、handler contract 是受控契约，不能随普通业务代码自由破坏。
 - framework contract 不再从本仓库文档读取。
@@ -50,7 +50,7 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 - `tiktok_feishu_single_sync`
 - `fastmoss_login_check`
 
-说明：竞品表刷新和关键词竞品入库的目标重构路径统一通过 `feishu_table_read` / `feishu_table_write` / `fastmoss_product_search` 和商品事实采集 handler 组合完成；关键词只是 `fastmoss_product_search` 的一种输入 filter。
+说明：竞品表刷新和关键词竞品入库的正式重构路径统一通过 `feishu_table_read` / `feishu_table_write` / `fastmoss_product_search` 和商品事实采集 handler 组合完成；关键词只是 `fastmoss_product_search` 的一种输入 filter。
 
 ## 3. 推荐部署方式
 
@@ -71,7 +71,7 @@ cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.loc
 | 配置 | 说明 |
 | --- | --- |
 | `MUJITASK_INSTALL_DIR` | 项目安装目录，默认示例为 `$HOME/apps/mujitask` |
-| `MUJITASK_SKILLS_DIR` | 目标 agent 读取 skills 的目录 |
+| `MUJITASK_SKILLS_DIR` | 部署 agent 读取 skills 的目录 |
 | `MUJITASK_TABLE_URL` | 飞书 Base / Table URL |
 | `MUJITASK_FEISHU_ACCESS_TOKEN` | 飞书访问 token |
 | `MUJITASK_FASTMOSS_PHONE` / `MUJITASK_FASTMOSS_PASSWORD` | FastMoss 登录账号 |
@@ -90,7 +90,7 @@ bash scripts/deploy/macos/deploy.sh
 - 安装当前项目依赖和 `automation-framework`。
 - 安装并启动本机 Postgres 和 MinIO。
 - 生成 `scripts/execution_control/executor.local.env`。
-- 安装 `skills/mujitask-tiktok-feishu-sync` 到目标 skills 目录。
+- 安装 `skills/mujitask-tiktok-feishu-sync` 到部署 skills 目录。
 - 安装并刷新 4 个 launchd 守护进程。
 - 执行 smoke check。
 
@@ -233,7 +233,7 @@ automation-business-scaffold-run run \
 | `src/automation_business_scaffold/models/` | 运行时和业务模型 |
 | `src/automation_business_scaffold/validators/` | 业务参数校验 |
 | `contracts/` | 根级字段、状态、workflow、Codex task routing 机器契约 |
-| `skills/mujitask-tiktok-feishu-sync/` | 仓库内 agent skill bundle 源；部署时复制到目标 agent workspace/skills 目录并生成配置 |
+| `skills/mujitask-tiktok-feishu-sync/` | 仓库内 agent skill bundle 源；部署时复制到部署 agent workspace/skills 目录并生成配置 |
 | `scripts/deploy/macos/` | macOS 一键部署 |
 | `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
 | `docs/` | 项目文档地图 |
@@ -297,7 +297,7 @@ automation-business-scaffold-run run \
 - 不允许生产任务消费路径自动 `CREATE TABLE`、`ALTER TABLE` 或 `DROP TABLE`。
 - workflow / handler payload/result/error contract 需要保持兼容；破坏性变更要通过 `contract_revision`、adapter、migration 或清理旧 job 处理，不能把 `v1` / `v2` 写进稳定 code 名称。
 
-详细规则见 [docs/arch/target-project-architecture-contract.md](./docs/arch/target-project-architecture-contract.md)、[docs/arch/project-structure-contract.md](./docs/arch/project-structure-contract.md)、[docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
+详细规则见 [docs/arch/project-architecture-contract.md](./docs/arch/project-architecture-contract.md)、[docs/arch/project-structure-contract.md](./docs/arch/project-structure-contract.md)、[docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
 
 ## 9. 验证
 

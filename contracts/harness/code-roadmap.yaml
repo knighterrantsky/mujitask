@@ -96,7 +96,7 @@ features:
       - Product fact collection must be governed by contract before implementation.
 
   - feature_code: runtime_watchdog_supervisor
-    status: in_progress
+    status: complete
     feature_area: runtime_control_plane
     default_context:
       - docs/dev/rewrite-state.yaml
@@ -169,7 +169,7 @@ features:
       - Do not claim complete until claim_done.py returns no failed_checks.
 
   - feature_code: tk_influencer_pool_sync
-    status: in_progress
+    status: complete
     default_context:
       - docs/dev/rewrite-state.yaml
       - docs/domains/tk-influencer-pool/README.md
@@ -242,16 +242,18 @@ features:
       - Do not claim complete until claim_done.py returns no failed_checks.
 
   - feature_code: tiktok_fastmoss_product_ingest
-    status: in_progress
+    status: complete
     default_context:
       - docs/dev/rewrite-state.yaml
       - docs/domains/product-fact-ingest/README.md
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - contracts/fields/feishu-tk-selection.yaml
       - src/automation_business_scaffold/domains/tiktok/
       - src/automation_business_scaffold/capabilities/
       - tests/test_tiktok_fastmoss_product_ingest.py
     source_contracts:
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - contracts/fields/feishu-tk-selection.yaml
       - docs/arch/fact-db-schema-design.md
       - docs/arch/storage-architecture-design.md
     allowed_paths:

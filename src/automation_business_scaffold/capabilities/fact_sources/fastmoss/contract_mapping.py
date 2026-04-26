@@ -231,6 +231,7 @@ def _contract_media_refs_from_fact_bundle(fact_bundle: dict[str, Any]) -> list[d
 
 def _contract_contact(payload: dict[str, Any]) -> dict[str, Any]:
     contact_text = first_non_empty(
+        _contact_text_from_list(payload.get("list")),
         payload.get("email"),
         payload.get("mail"),
         payload.get("whatsapp"),
@@ -246,6 +247,33 @@ def _contract_contact(payload: dict[str, Any]) -> dict[str, Any]:
             "available": bool(contact_text),
         }
     )
+
+
+def _contact_text_from_list(value: Any) -> str:
+    rows = coerce_mapping_list(value)
+    if not rows:
+        return ""
+    email = _first_available_contact(rows, preferred_names={"email", "mail"})
+    if email:
+        return email
+    return _first_available_contact(rows, preferred_names=set())
+
+
+def _first_available_contact(rows: list[dict[str, Any]], *, preferred_names: set[str]) -> str:
+    for row in rows:
+        name = coerce_str(row.get("name")).lower()
+        if preferred_names and name not in preferred_names:
+            continue
+        if not bool(row.get("has")):
+            continue
+        text = (
+            first_non_empty(row.get("id"), row.get("link"), row.get("channel_name"), row.get("contact"))
+            if name in {"email", "mail"}
+            else first_non_empty(row.get("link"), row.get("channel_name"), row.get("id"), row.get("contact"))
+        )
+        if text:
+            return text
+    return ""
 
 
 def _metric_fields(*payloads: Mapping[str, Any]) -> dict[str, Any]:

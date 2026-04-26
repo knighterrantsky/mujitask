@@ -15,7 +15,7 @@ PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
 MANIFEST_ROOT = PACKAGE_ROOT / "contracts" / "workflow"
 DOMAIN_ROOT = PACKAGE_ROOT / "domains"
 WORKFLOW_PATTERN_DOC = REPO_ROOT / "docs" / "arch" / "workflow-implementation-patterns.md"
-TARGET_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "target-project-architecture-contract.md"
+PROJECT_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "project-architecture-contract.md"
 
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 LEGACY_WORKFLOW_CODES = {
@@ -301,7 +301,7 @@ def test_workflow_custom_logic_references_are_declared_or_explicit_gap() -> None
             assert referenced_codes <= declared_codes
 
 
-def test_new_workflow_manifests_use_strict_target_shape() -> None:
+def test_new_workflow_manifests_use_strict_project_shape() -> None:
     for manifest in _manifests():
         if manifest["workflow_origin"] != "new_workflow":
             continue
@@ -347,7 +347,7 @@ def test_new_workflow_manifests_use_strict_target_shape() -> None:
 
 def test_workflow_manifest_contract_is_documented() -> None:
     workflow_pattern_doc = _read(WORKFLOW_PATTERN_DOC)
-    target_arch_doc = _read(TARGET_ARCH_DOC)
+    project_arch_doc = _read(PROJECT_ARCH_DOC)
     required_tokens = (
         "Workflow Architecture Manifest",
         "contracts/workflow/{workflow_code}.yaml",
@@ -358,13 +358,13 @@ def test_workflow_manifest_contract_is_documented() -> None:
         "test_workflow_architecture_manifests",
     )
     missing_from_pattern = [token for token in required_tokens if token not in workflow_pattern_doc]
-    missing_from_target = [token for token in required_tokens[:3] if token not in target_arch_doc]
+    missing_from_project = [token for token in required_tokens[:3] if token not in project_arch_doc]
 
     assert not missing_from_pattern, (
         "workflow implementation pattern doc is missing manifest tokens:\n"
         + "\n".join(missing_from_pattern)
     )
-    assert not missing_from_target, (
-        "target architecture contract is missing manifest tokens:\n"
-        + "\n".join(missing_from_target)
+    assert not missing_from_project, (
+        "project architecture contract is missing manifest tokens:\n"
+        + "\n".join(missing_from_project)
     )

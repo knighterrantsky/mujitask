@@ -4,26 +4,12 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler import (
-    tiktok_product_browser_fetch_handler,
-)
-from automation_business_scaffold.capabilities.channels.feishu.table_write_handler import (
-    feishu_table_write_handler,
-)
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler import (
-    fastmoss_product_fetch_handler,
-)
-from automation_business_scaffold.capabilities.media.asset_sync_handler import (
-    media_asset_sync_handler,
-)
-from automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler import (
-    fact_bundle_upsert_handler,
-)
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerResult,
 )
+from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
     coerce_bool,
@@ -41,16 +27,20 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
-from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
-    ExecutionProgressEvent,
-    ExecutionSupervisorCallbacks,
-    run_supervised_handler,
+from automation_business_scaffold.control_plane.supervisor import (
+    execution_supervisor as supervisor_runtime,
 )
-
-from .product_request_fetch_handler import tiktok_product_request_fetch_handler
 
 HANDLER_CODE = "competitor_row_refresh"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
+tiktok_product_browser_fetch_handler = api_handler_callable("tiktok_product_browser_fetch")
+feishu_table_write_handler = api_handler_callable("feishu_table_write")
+fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
+media_asset_sync_handler = api_handler_callable("media_asset_sync")
+fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
+tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_request_fetch")
+run_supervised_handler = supervisor_runtime.run_supervised_handler
+ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
 
 def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
@@ -498,7 +488,10 @@ def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload:
     )
 
 
-def _forward_browser_progress(parent: HandlerContext, event: ExecutionProgressEvent) -> None:
+def _forward_browser_progress(
+    parent: HandlerContext,
+    event: supervisor_runtime.ExecutionProgressEvent,
+) -> None:
     _emit_progress(
         parent,
         f"browser.{event.progress_stage}",

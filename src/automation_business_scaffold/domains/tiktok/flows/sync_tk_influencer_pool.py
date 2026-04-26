@@ -31,6 +31,7 @@ FINAL_STAGE_CODE = "completed"
 READ_STAGE_CODE = "read_competitor_candidates"
 DISPATCH_PRODUCT_STAGE_CODE = "dispatch_product_jobs"
 DISCOVER_CREATORS_STAGE_CODE = "discover_related_creators"
+SYNC_INFLUENCER_POOL_STAGE_CODE = "sync_influencer_pool"
 COLLECT_CREATOR_STAGE_CODE = "collect_creator_detail"
 PERSIST_FACTS_STAGE_CODE = "persist_creator_facts"
 WRITE_POOL_STAGE_CODE = "write_influencer_pool"
@@ -39,7 +40,8 @@ WRITEBACK_STAGE_CODE = "writeback_competitor_status"
 
 STAGE_TO_JOB_CODE = {
     READ_STAGE_CODE: "feishu_table_read",
-    DISCOVER_CREATORS_STAGE_CODE: "fastmoss_product_fetch",
+    DISCOVER_CREATORS_STAGE_CODE: "product_creator_discovery",
+    SYNC_INFLUENCER_POOL_STAGE_CODE: "influencer_creator_sync",
     COLLECT_CREATOR_STAGE_CODE: "fastmoss_creator_fetch",
     PERSIST_FACTS_STAGE_CODE: "fact_bundle_upsert",
     WRITE_POOL_STAGE_CODE: "feishu_table_write",
@@ -48,9 +50,7 @@ STAGE_TO_JOB_CODE = {
 WAITING_STAGES = {
     READ_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
-    COLLECT_CREATOR_STAGE_CODE,
-    PERSIST_FACTS_STAGE_CODE,
-    WRITE_POOL_STAGE_CODE,
+    SYNC_INFLUENCER_POOL_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
 }
 ACTIVE_STATUSES = {"pending", "running", "retry_wait"}
@@ -72,6 +72,8 @@ def advance_stage(
         return _advance_stage_dispatch_product_jobs(store=store, request=request)
     if stage_code == DISCOVER_CREATORS_STAGE_CODE:
         return _advance_stage_discover_related_creators(store=store, request=request)
+    if stage_code == SYNC_INFLUENCER_POOL_STAGE_CODE:
+        return _advance_stage_sync_influencer_pool(store=store, request=request)
     if stage_code == COLLECT_CREATOR_STAGE_CODE:
         return _advance_stage_collect_creator_detail(store=store, request=request)
     if stage_code == PERSIST_FACTS_STAGE_CODE:
@@ -248,6 +250,7 @@ def _advance_stage_dispatch_product_jobs(*, store: RuntimeStore, request: Any) -
                     "workflow_code": WORKFLOW_CODE,
                     "stage_code": DISCOVER_CREATORS_STAGE_CODE,
                     "product_identity": dict(candidate["product_identity"]),
+                    "discovery_plan": {"detail_level": "related_creators", "internal_handler": "fastmoss_product_fetch"},
                     "detail_level": "related_creators",
                     **_fastmoss_common_payload(request_payload),
                     "relation_policy": _relation_policy_from_request(request_payload),
@@ -278,11 +281,11 @@ def _advance_stage_dispatch_product_jobs(*, store: RuntimeStore, request: Any) -
         return _waiting_stage_result(
             current_stage=DISCOVER_CREATORS_STAGE_CODE,
             message="Executor dispatched product discovery jobs.",
-            details={"dispatch_payload": {"fastmoss_product_fetch": enqueue_result}, "candidate_count": len(candidates)},
+            details={"dispatch_payload": {"product_creator_discovery": enqueue_result}, "candidate_count": len(candidates)},
         )
     return _advance_stage_result(
         next_stage=DISCOVER_CREATORS_STAGE_CODE,
-        details={"dispatch_payload": {"fastmoss_product_fetch": enqueue_result}, "candidate_count": len(candidates)},
+        details={"dispatch_payload": {"product_creator_discovery": enqueue_result}, "candidate_count": len(candidates)},
     )
 
 
@@ -291,7 +294,7 @@ def _advance_stage_discover_related_creators(*, store: RuntimeStore, request: An
         store=store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
     )
     if any(str(job.get("status") or "") in ACTIVE_STATUSES for job in product_jobs):
         return _waiting_stage_result(
@@ -300,11 +303,11 @@ def _advance_stage_discover_related_creators(*, store: RuntimeStore, request: An
         )
     if not product_jobs:
         return _advance_stage_result(
-            next_stage=COLLECT_CREATOR_STAGE_CODE,
-            details={"creator_job_count": 0, "reason": "no_product_jobs"},
+            next_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+            details={"creator_sync_job_count": 0, "reason": "no_product_jobs"},
         )
-    creator_jobs = _build_creator_detail_jobs(request=request, product_jobs=product_jobs)
-    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(COLLECT_CREATOR_STAGE_CODE)[0]
+    creator_jobs = _build_influencer_creator_sync_jobs(request=request, product_jobs=product_jobs)
+    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(SYNC_INFLUENCER_POOL_STAGE_CODE)[0]
     enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0, "created_records": [], "updated_records": [], "skipped_records": []}
     if creator_jobs:
         enqueue_result = store.enqueue_api_worker_jobs(
@@ -316,17 +319,57 @@ def _advance_stage_discover_related_creators(*, store: RuntimeStore, request: An
     if _stage_has_children(
         store=store,
         request_id=request.request_id,
-        stage_code=COLLECT_CREATOR_STAGE_CODE,
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
         job_code=resolved_job.job_code,
     ):
         return _waiting_stage_result(
-            current_stage=COLLECT_CREATOR_STAGE_CODE,
-            message="Creator detail jobs were fanned out from product discovery.",
-            details={"dispatch_payload": {"fastmoss_creator_fetch": enqueue_result}, "creator_job_count": len(creator_jobs)},
+            current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+            message="Creator sync jobs were fanned out from product discovery.",
+            details={"dispatch_payload": {"influencer_creator_sync": enqueue_result}, "creator_sync_job_count": len(creator_jobs)},
         )
     return _advance_stage_result(
-        next_stage=COLLECT_CREATOR_STAGE_CODE,
-        details={"dispatch_payload": {"fastmoss_creator_fetch": enqueue_result}, "creator_job_count": len(creator_jobs)},
+        next_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        details={"dispatch_payload": {"influencer_creator_sync": enqueue_result}, "creator_sync_job_count": len(creator_jobs)},
+    )
+
+
+def _advance_stage_sync_influencer_pool(*, store: RuntimeStore, request: Any) -> dict[str, Any]:
+    sync_jobs = _stage_api_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        job_code="influencer_creator_sync",
+    )
+    if any(str(job.get("status") or "") in ACTIVE_STATUSES for job in sync_jobs):
+        return _waiting_stage_result(
+            current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+            message="Influencer creator sync jobs are still running.",
+        )
+    group_summaries = _build_product_group_summaries(store=store, request=request)
+    writeback_jobs = _build_competitor_status_write_jobs(request=request, group_summaries=group_summaries)
+    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(WRITEBACK_STAGE_CODE)[0]
+    enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0, "created_records": [], "updated_records": [], "skipped_records": []}
+    if writeback_jobs:
+        enqueue_result = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=TASK_CODE,
+            job_code=resolved_job.job_code,
+            jobs=writeback_jobs,
+        )
+    if _stage_has_children(
+        store=store,
+        request_id=request.request_id,
+        stage_code=WRITEBACK_STAGE_CODE,
+        job_code=resolved_job.job_code,
+    ):
+        return _waiting_stage_result(
+            current_stage=WRITEBACK_STAGE_CODE,
+            message="Residual competitor status writeback jobs were enqueued.",
+            details={"dispatch_payload": {"feishu_table_write": enqueue_result}, "group_summaries": group_summaries},
+        )
+    return _advance_stage_result(
+        next_stage=WRITEBACK_STAGE_CODE,
+        details={"dispatch_payload": {"feishu_table_write": enqueue_result}, "group_summaries": group_summaries},
     )
 
 
@@ -525,9 +568,7 @@ def advance_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: 
         return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
     if current_stage in {
         DISCOVER_CREATORS_STAGE_CODE,
-        COLLECT_CREATOR_STAGE_CODE,
-        PERSIST_FACTS_STAGE_CODE,
-        WRITE_POOL_STAGE_CODE,
+        SYNC_INFLUENCER_POOL_STAGE_CODE,
         WRITEBACK_STAGE_CODE,
     }:
         return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
@@ -543,8 +584,6 @@ def dispatch_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id:
         return _dispatch_product_jobs(store=store, request=request)
     if current_stage == FINALIZE_PRODUCT_STAGE_CODE:
         return _finalize_product_groups(store=store, request=request)
-    if current_stage == PERSIST_FACTS_STAGE_CODE:
-        return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
     if current_stage == SUMMARY_STAGE_CODE:
         return finalize_sync_tk_influencer_pool_request(store=store, request_id=request_id)
     return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
@@ -557,6 +596,8 @@ def release_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: 
         return _release_read_competitor_candidates(store=store, request=request)
     if current_stage == DISCOVER_CREATORS_STAGE_CODE:
         return _release_discover_related_creators(store=store, request=request)
+    if current_stage == SYNC_INFLUENCER_POOL_STAGE_CODE:
+        return _release_sync_influencer_pool(store=store, request=request)
     if current_stage == COLLECT_CREATOR_STAGE_CODE:
         return _release_collect_creator_detail(store=store, request=request)
     if current_stage == PERSIST_FACTS_STAGE_CODE:
@@ -752,6 +793,7 @@ def _dispatch_product_jobs(*, store: RuntimeStore, request: Any) -> dict[str, An
                     "workflow_code": WORKFLOW_CODE,
                     "stage_code": DISCOVER_CREATORS_STAGE_CODE,
                     "product_identity": dict(candidate["product_identity"]),
+                    "discovery_plan": {"detail_level": "related_creators", "internal_handler": "fastmoss_product_fetch"},
                     "detail_level": "related_creators",
                     **_fastmoss_common_payload(request_payload),
                     "relation_policy": _relation_policy_from_request(request_payload),
@@ -800,6 +842,7 @@ def _dispatch_product_jobs(*, store: RuntimeStore, request: Any) -> dict[str, An
             "next_stage": DISCOVER_CREATORS_STAGE_CODE,
             "candidate_count": len(candidates),
             "enqueue_result": enqueue_result,
+            "job_code": resolved_job.job_code,
         },
     )
 
@@ -809,7 +852,7 @@ def _release_discover_related_creators(*, store: RuntimeStore, request: Any) -> 
         store=store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
     )
     active_jobs = [job for job in product_jobs if str(job.get("status") or "") in ACTIVE_STATUSES]
     if active_jobs:
@@ -822,8 +865,8 @@ def _release_discover_related_creators(*, store: RuntimeStore, request: Any) -> 
             details={"stage_code": DISCOVER_CREATORS_STAGE_CODE, "active_jobs": active_jobs},
         )
 
-    creator_jobs = _build_creator_detail_jobs(request=request, product_jobs=product_jobs)
-    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(COLLECT_CREATOR_STAGE_CODE)[0]
+    creator_jobs = _build_influencer_creator_sync_jobs(request=request, product_jobs=product_jobs)
+    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(SYNC_INFLUENCER_POOL_STAGE_CODE)[0]
     enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0, "created_records": [], "updated_records": [], "skipped_records": []}
     if creator_jobs:
         enqueue_result = store.enqueue_api_worker_jobs(
@@ -836,17 +879,17 @@ def _release_discover_related_creators(*, store: RuntimeStore, request: Any) -> 
     stage_has_children = _stage_has_children(
         store=store,
         request_id=request.request_id,
-        stage_code=COLLECT_CREATOR_STAGE_CODE,
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
         job_code=resolved_job.job_code,
     )
     if stage_has_children:
-        _set_waiting_state(store=store, request=request, stage_code=COLLECT_CREATOR_STAGE_CODE)
+        _set_waiting_state(store=store, request=request, stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE)
         action = "waiting"
-        message = "Creator detail fan-out is ready."
+        message = "Creator sync fan-out is ready."
     else:
-        _set_pending_state(store=store, request=request, stage_code=COLLECT_CREATOR_STAGE_CODE)
+        _set_pending_state(store=store, request=request, stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE)
         action = "advance"
-        message = "No creator detail jobs were required; advancing."
+        message = "No creator sync jobs were required; advancing."
 
     return _build_payload(
         store=store,
@@ -855,10 +898,70 @@ def _release_discover_related_creators(*, store: RuntimeStore, request: Any) -> 
         message=message,
         details={
             "stage_code": DISCOVER_CREATORS_STAGE_CODE,
-            "next_stage": COLLECT_CREATOR_STAGE_CODE,
+            "next_stage": SYNC_INFLUENCER_POOL_STAGE_CODE,
             "enqueue_result": enqueue_result,
             "product_job_count": len(product_jobs),
-            "creator_job_count": len(creator_jobs),
+            "creator_sync_job_count": len(creator_jobs),
+        },
+    )
+
+
+def _release_sync_influencer_pool(*, store: RuntimeStore, request: Any) -> dict[str, Any]:
+    sync_jobs = _stage_api_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        job_code="influencer_creator_sync",
+    )
+    active_jobs = [job for job in sync_jobs if str(job.get("status") or "") in ACTIVE_STATUSES]
+    if active_jobs:
+        _set_waiting_state(store=store, request=request, stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE)
+        return _build_payload(
+            store=store,
+            request_id=request.request_id,
+            action="waiting",
+            message="Influencer creator sync jobs are still running.",
+            details={"stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE, "active_jobs": active_jobs},
+        )
+
+    group_summaries = _build_product_group_summaries(store=store, request=request)
+    writeback_jobs = _build_competitor_status_write_jobs(request=request, group_summaries=group_summaries)
+    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(WRITEBACK_STAGE_CODE)[0]
+    enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0, "created_records": [], "updated_records": [], "skipped_records": []}
+    if writeback_jobs:
+        enqueue_result = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=TASK_CODE,
+            job_code=resolved_job.job_code,
+            jobs=writeback_jobs,
+        )
+
+    stage_has_children = _stage_has_children(
+        store=store,
+        request_id=request.request_id,
+        stage_code=WRITEBACK_STAGE_CODE,
+        job_code=resolved_job.job_code,
+    )
+    if stage_has_children:
+        _set_waiting_state(store=store, request=request, stage_code=WRITEBACK_STAGE_CODE)
+        action = "waiting"
+        message = "Residual competitor status writeback jobs were enqueued."
+    else:
+        _set_pending_state(store=store, request=request, stage_code=WRITEBACK_STAGE_CODE)
+        action = "advance"
+        message = "No residual competitor writeback jobs were required; advancing."
+
+    return _build_payload(
+        store=store,
+        request_id=request.request_id,
+        action=action,
+        message=message,
+        details={
+            "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+            "next_stage": WRITEBACK_STAGE_CODE,
+            "sync_job_count": len(sync_jobs),
+            "group_summaries": group_summaries,
+            "enqueue_result": enqueue_result,
         },
     )
 
@@ -1193,6 +1296,121 @@ def _build_creator_detail_jobs(*, request: Any, product_jobs: list[dict[str, Any
     return jobs_to_enqueue
 
 
+def _build_influencer_creator_sync_jobs(*, request: Any, product_jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.resolve_stage_jobs(SYNC_INFLUENCER_POOL_STAGE_CODE)[0]
+    request_payload = dict(request.payload or {})
+    creator_groups: dict[str, dict[str, Any]] = {}
+    product_candidate_counts: dict[str, int] = {}
+
+    for product_job in product_jobs:
+        if extract_handler_result_status(product_job) not in SUCCESSFUL_HANDLER_STATUSES:
+            continue
+        result_payload = extract_effective_result_payload(product_job)
+        source_context = dict((product_job.get("payload") or {}).get("source_context") or {})
+        product_context = _product_job_business_context(product_job)
+        source_record_id = _first_non_empty(source_context.get("source_record_id"))
+        product_id = _first_non_empty(
+            source_context.get("product_id"),
+            result_payload.get("product_id"),
+            ((product_job.get("payload") or {}).get("product_identity") or {}).get("product_id"),
+        )
+        if not source_record_id or not product_id:
+            continue
+        product_key = _product_group_key(source_record_id=source_record_id, product_id=product_id)
+        candidates = _creator_candidates_from_result_payload(result_payload)
+        product_candidate_counts[product_key] = len(candidates)
+        for creator in candidates:
+            creator_identity = _normalize_creator_identity(creator.get("creator_identity"), creator)
+            creator_id = _first_non_empty(
+                creator_identity.get("creator_id"),
+                creator.get("creator_id"),
+                creator.get("influencer_id"),
+                creator_identity.get("unique_id"),
+                creator_identity.get("uid"),
+            )
+            if not creator_id:
+                continue
+            group = creator_groups.setdefault(
+                creator_id,
+                {
+                    "creator_id": creator_id,
+                    "creator_identity": creator_identity,
+                    "product_hits": [],
+                    "seen_product_keys": set(),
+                },
+            )
+            if not group.get("creator_identity"):
+                group["creator_identity"] = creator_identity
+            seen_product_keys = group["seen_product_keys"]
+            if product_key in seen_product_keys:
+                continue
+            seen_product_keys.add(product_key)
+            hit_context = dict(result_payload.get("product_hit_context") or {})
+            group["product_hits"].append(
+                {
+                    "source_record_id": source_record_id,
+                    "product_id": product_id,
+                    "product_key": product_key,
+                    "product_identity": dict((product_job.get("payload") or {}).get("product_identity") or {}),
+                    "creator_candidate": dict(creator),
+                    "product_job_id": str(product_job.get("job_id") or ""),
+                    "product_hit_context": hit_context,
+                    **product_context,
+                    **_creator_candidate_business_context(creator),
+                }
+            )
+
+    jobs_to_enqueue: list[dict[str, Any]] = []
+    for creator_id, group in creator_groups.items():
+        product_hits: list[dict[str, Any]] = []
+        for hit in group["product_hits"]:
+            hit_payload = dict(hit)
+            product_key = _first_non_empty(hit_payload.get("product_key"))
+            creator_count = int(product_candidate_counts.get(product_key, 0))
+            hit_payload["product_group_creator_count"] = creator_count
+            hit_payload["product_group_terminal"] = creator_count <= 1
+            product_hits.append(hit_payload)
+        keys = render_job_keys(
+            resolved_job,
+            {"creator_id": creator_id},
+            request_id=request.request_id,
+            task_code=TASK_CODE,
+            workflow_code=WORKFLOW_CODE,
+            stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        )
+        jobs_to_enqueue.append(
+            {
+                "business_key": keys["business_key"],
+                "dedupe_key": keys["dedupe_key"],
+                "max_execution_seconds": _timeout_seconds_for(resolved_job.job_code),
+                "payload": {
+                    "request_id": request.request_id,
+                    "task_code": TASK_CODE,
+                    "workflow_code": WORKFLOW_CODE,
+                    "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+                    "request_payload": request_payload,
+                    "creator_identity": dict(group["creator_identity"]),
+                    "creator_id": creator_id,
+                    "product_hits": product_hits,
+                    "detail_level": _creator_detail_level_from_request(request_payload),
+                    "fetch_plan": _creator_fetch_plan_from_request(request_payload),
+                    "relation_policy": _creator_relation_policy_from_request(request_payload),
+                    "sync_plan": {
+                        "creator_detail_handler": "fastmoss_creator_fetch",
+                        "fact_upsert_handler": "fact_bundle_upsert",
+                        "media_sync_handler": "media_asset_sync",
+                        "influencer_pool_write_handler": "feishu_table_write",
+                        "competitor_status_write_handler": "feishu_table_write",
+                    },
+                    "fact_db_url": _fact_db_url_from_request(request_payload),
+                    **_fastmoss_common_payload(request_payload),
+                    **_feishu_common_payload(request_payload),
+                },
+            }
+        )
+    return jobs_to_enqueue
+
+
 def _build_fact_upsert_jobs(
     *,
     request: Any,
@@ -1478,25 +1696,13 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         store=store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
     )
-    creator_jobs = _stage_api_jobs(
+    sync_jobs = _stage_api_jobs(
         store=store,
         request_id=request.request_id,
-        stage_code=COLLECT_CREATOR_STAGE_CODE,
-        job_code="fastmoss_creator_fetch",
-    )
-    fact_jobs = _stage_api_jobs(
-        store=store,
-        request_id=request.request_id,
-        stage_code=PERSIST_FACTS_STAGE_CODE,
-        job_code="fact_bundle_upsert",
-    )
-    influencer_write_jobs = _stage_api_jobs(
-        store=store,
-        request_id=request.request_id,
-        stage_code=WRITE_POOL_STAGE_CODE,
-        job_code="feishu_table_write",
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        job_code="influencer_creator_sync",
     )
     groups: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1506,37 +1712,20 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         matched_product_jobs = [
             job for job in product_jobs if _job_product_key(job) == product_key
         ]
-        matched_creator_jobs = [
-            job for job in creator_jobs if _job_product_key(job) == product_key
-        ]
-        matched_fact_jobs = [
-            job for job in fact_jobs if _job_product_key(job) == product_key
-        ]
-        matched_write_jobs = [
-            job for job in influencer_write_jobs if _job_product_key(job) == product_key
-        ]
+        matched_sync_jobs = [job for job in sync_jobs if _sync_job_has_product_key(job, product_key)]
         creator_candidates = _collect_creator_candidates_from_product_jobs(matched_product_jobs)
-        creator_detail_success_count = sum(
-            1 for job in matched_creator_jobs if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES
+        creator_sync_success_count = sum(
+            1 for job in matched_sync_jobs if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES
         )
-        creator_detail_failed_count = sum(
+        creator_sync_failed_count = sum(
             1
-            for job in matched_creator_jobs
+            for job in matched_sync_jobs
             if str(job.get("status") or "") in {"failed", "cancelled"}
             or extract_handler_result_status(job) in {"failed", "fallback_required"}
         )
-        influencer_write_success_count = sum(
-            1 for job in matched_write_jobs if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES
-        )
-        fact_persist_success_count = sum(
-            1 for job in matched_fact_jobs if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES
-        )
-        fact_persist_failed_count = sum(
-            1
-            for job in matched_fact_jobs
-            if str(job.get("status") or "") in {"failed", "cancelled"}
-            or extract_handler_result_status(job) in {"failed", "fallback_required"}
-        )
+        influencer_write_success_count = sum(_sync_influencer_write_success_count(job) for job in matched_sync_jobs)
+        fact_persist_success_count = sum(_sync_step_success_count(job, "fact_upsert") for job in matched_sync_jobs)
+        fact_persist_failed_count = sum(_sync_step_failed_count(job, "fact_upsert") for job in matched_sync_jobs)
         product_job_success = any(
             extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES for job in matched_product_jobs
         )
@@ -1553,10 +1742,10 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         elif fact_persist_failed_count > 0 and fact_persist_success_count == 0:
             final_status = "failed"
             warnings.append("fact_persist_failed")
-        elif creator_detail_failed_count > 0 and influencer_write_success_count == 0:
+        elif creator_sync_failed_count > 0 and influencer_write_success_count == 0:
             final_status = "failed"
-            warnings.append("creator_detail_failed")
-        elif creator_detail_failed_count > 0 or product_job_failed or fact_persist_failed_count > 0:
+            warnings.append("creator_sync_failed")
+        elif creator_sync_failed_count > 0 or product_job_failed or fact_persist_failed_count > 0:
             final_status = "partial_success"
             warnings.append("partial_creator_projection")
         elif not creator_candidates:
@@ -1568,8 +1757,10 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
                 "product_id": product_id,
                 "product_key": product_key,
                 "creator_candidate_count": len(creator_candidates),
-                "creator_detail_success_count": creator_detail_success_count,
-                "creator_detail_failed_count": creator_detail_failed_count,
+                "creator_sync_success_count": creator_sync_success_count,
+                "creator_sync_failed_count": creator_sync_failed_count,
+                "creator_detail_success_count": creator_sync_success_count,
+                "creator_detail_failed_count": creator_sync_failed_count,
                 "fact_persist_success_count": fact_persist_success_count,
                 "fact_persist_failed_count": fact_persist_failed_count,
                 "influencer_write_success_count": influencer_write_success_count,
@@ -1587,9 +1778,7 @@ def _collect_creator_candidates_from_product_jobs(product_jobs: list[dict[str, A
         if extract_handler_result_status(job) not in SUCCESSFUL_HANDLER_STATUSES:
             continue
         result_payload = extract_effective_result_payload(job)
-        for candidate in list(result_payload.get("related_creators") or []):
-            if not isinstance(candidate, Mapping):
-                continue
+        for candidate in _creator_candidates_from_result_payload(result_payload):
             creator_id = _first_non_empty(
                 candidate.get("creator_id"),
                 candidate.get("influencer_id"),
@@ -1600,6 +1789,55 @@ def _collect_creator_candidates_from_product_jobs(product_jobs: list[dict[str, A
             seen.add(creator_id)
             candidates.append(dict(candidate))
     return candidates
+
+
+def _creator_candidates_from_result_payload(result_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_candidates = (
+        result_payload.get("normalized_creator_candidates")
+        or result_payload.get("related_creators")
+        or result_payload.get("creator_candidates")
+        or []
+    )
+    candidates: list[dict[str, Any]] = []
+    for candidate in list(raw_candidates):
+        if isinstance(candidate, Mapping):
+            candidates.append(dict(candidate))
+    return candidates
+
+
+def _sync_job_has_product_key(job: Mapping[str, Any], product_key: str) -> bool:
+    payload = dict(job.get("payload") or {})
+    for hit in list(payload.get("product_hits") or []):
+        if isinstance(hit, Mapping) and _first_non_empty(hit.get("product_key")) == product_key:
+            return True
+    result_payload = extract_effective_result_payload(job)
+    for writeback in list(result_payload.get("product_status_writebacks") or []):
+        if isinstance(writeback, Mapping) and _first_non_empty(writeback.get("product_key")) == product_key:
+            return True
+    return False
+
+
+def _sync_influencer_write_success_count(job: Mapping[str, Any]) -> int:
+    result_payload = extract_effective_result_payload(job)
+    write_result = dict(result_payload.get("influencer_pool_write") or {})
+    status = _first_non_empty(write_result.get("status"), write_result.get("handler_status"))
+    if status in SUCCESSFUL_HANDLER_STATUSES:
+        return 1
+    if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES and write_result:
+        return 1
+    return 0
+
+
+def _sync_step_success_count(job: Mapping[str, Any], step_code: str) -> int:
+    result_payload = extract_effective_result_payload(job)
+    internal_steps = dict(result_payload.get("internal_steps") or {})
+    return 1 if _first_non_empty(internal_steps.get(step_code)) in SUCCESSFUL_HANDLER_STATUSES else 0
+
+
+def _sync_step_failed_count(job: Mapping[str, Any], step_code: str) -> int:
+    result_payload = extract_effective_result_payload(job)
+    internal_steps = dict(result_payload.get("internal_steps") or {})
+    return 1 if _first_non_empty(internal_steps.get(step_code)) in {"failed", "fallback_required"} else 0
 
 
 def _load_request(*, store: RuntimeStore, request_id: str) -> Any:
@@ -1948,6 +2186,7 @@ def _build_product_job_context(*, request: Any, candidate: Mapping[str, Any], st
         "stage_code": stage_code,
         "source_record_id": candidate["source_record_id"],
         "product_id": candidate["product_id"],
+        "product_id_or_fastmoss_key": _first_non_empty(candidate["product_id"], candidate["product_key"]),
         "product_identity": dict(candidate["product_identity"]),
     }
 
@@ -2077,4 +2316,5 @@ __all__ = [
     "PERSIST_FACTS_STAGE_CODE",
     "release_request_after_child_completion",
     "release_sync_tk_influencer_pool_request",
+    "SYNC_INFLUENCER_POOL_STAGE_CODE",
 ]

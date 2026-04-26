@@ -168,6 +168,22 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词竞品入库-keyword_seed_import",
             side_effects=("fastmoss.request", "feishu.write"),
         ),
+        "product_creator_discovery": _contract(
+            handler_code="product_creator_discovery",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Discover related creators for one competitor product as one business job.",
+            contract_reference="docs/arch/workflow-influencer-pool-sync-design.md#112-商品达人发现-product_creator_discovery",
+            side_effects=("fastmoss.request",),
+        ),
+        "influencer_creator_sync": _contract(
+            handler_code="influencer_creator_sync",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Sync one unique creator into TK influencer pool and reconcile touched product statuses.",
+            contract_reference="docs/arch/workflow-influencer-pool-sync-design.md#113-达人同步业务-job-influencer_creator_sync",
+            side_effects=("fastmoss.request", "fact_db.write", "artifact.write", "feishu.write"),
+        ),
         "tiktok_product_request_fetch": _contract(
             handler_code="tiktok_product_request_fetch",
             worker_type="api_worker",

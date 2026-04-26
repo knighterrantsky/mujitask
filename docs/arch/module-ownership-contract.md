@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [目标项目架构契约](./target-project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
+本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [项目架构契约](./project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
 
 本文解决五类反复混淆的问题:
 
@@ -157,7 +157,7 @@ src/automation_business_scaffold/business/**
 
 `scaffold` 允许:
 
-- 建目标目录、空模块、manifest、TODO 和迁移计划。
+- 建项目目录、空模块、manifest、TODO 和迁移计划。
 - 在文档中记录旧路径和目标路径对应关系。
 - 不宣称实现所有权已迁移完成。
 

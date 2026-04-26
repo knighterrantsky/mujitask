@@ -1,12 +1,12 @@
-# 目标项目架构契约
+# 项目架构契约
 
 日期: 2026-04-24
 
-状态: 受控目标架构契约
+状态: 受控项目架构契约
 
 ## 1. 定位
 
-本文定义 Mujitask 长期目标工程组织方式。它不是对当前目录的解释，也不以当前工程结构为合理性依据；它用于约束后续重构、新 workflow 开发、模块归属评审和代码定位。
+本文定义 Mujitask 当前正式项目工程组织方式。它是当前和后续开发的架构事实来源，用于约束 workflow 开发、模块归属评审、代码定位和旧实现迁移。
 
 本文回答两个问题:
 
@@ -17,11 +17,11 @@
 
 - 当前仓库真实结构见 [project-structure-contract.md](./project-structure-contract.md)。
 - 运行控制面的当前入口见 [runtime-control-plane-contract.md](./runtime-control-plane-contract.md)。
-- 本文是目标结构；新增代码应优先向本文收敛，迁移旧代码时应同步当前结构契约和测试。
+- 本文是正式结构；新增代码、迁移旧代码和结构测试都必须与本文保持一致。
 
-## 2. 目标目录结构
+## 2. 项目目录结构
 
-目标目录按“运行控制面 / 业务编排层 / 集成能力层 / 基础设施层 / 部署产物层”组织:
+项目目录按“运行控制面 / 业务编排层 / 集成能力层 / 基础设施层 / 部署产物层”组织:
 
 ```text
 src/{project}/
@@ -80,14 +80,12 @@ src/{project}/
     config/
     outbox/
 
-configs/
-  project/                  # 项目默认配置 example
-  runtime/                  # executor/worker/watchdog/outbox 配置
-  agents/                   # agent workspace/skill 配置模板
+config/
   deployment/               # launchd/systemd/docker/k8s 配置
+  browser_profiles.example.json
 
-agent_artifacts/
-  skills/{skill_code}/      # 最终复制到用户 agent workspace 的 skill/script/config bundle
+skills/
+  {skill_code}/             # 最终复制到用户 agent workspace 的 skill/script/config bundle
 
 scripts/
   deploy/
@@ -105,15 +103,15 @@ scripts/
 | `capabilities/**` | 可复用 handler capability，按输入源、事实源、存储、通道、浏览器、媒体分类 | 单个业务域的筛选规则、字段命名、写回投影 |
 | `infrastructure/**` | 外部系统 client、数据库 store、object store、schema/migration、日志监控实现 | task/workflow/job 命名、业务终态判断、表级字段映射 |
 | `contracts/**` | runtime/workflow/handler/config/outbox 的稳定协议、schema、envelope | 参考资料、临时 debug 脚本、客户需求原文 |
-| `configs/**` | 项目默认配置、runtime 配置、agent 配置模板、deployment 配置 | Python 业务实现、secret 真值、运行时生成产物 |
-| `agent_artifacts/**` | OpenClaw / Hermes / 用户 agent workspace 可安装的 skill/script/config bundle | worker 消费循环、数据库 schema、workflow 主编排 |
+| `config/**` | deployment 配置、浏览器 profile 示例和项目配置模板 | Python 业务实现、secret 真值、运行时生成产物 |
+| `skills/**` | OpenClaw / Hermes / 用户 agent workspace 可安装的 skill/script/config bundle 源 | worker 消费循环、数据库 schema、workflow 主编排 |
 | `scripts/**` | deploy/dev/ops 操作脚本 | handler 业务逻辑、mapper/projection、长期运行进程代码 |
 
 ## 4. 系统元素归属
 
-| 元素 | 目标归属 | 命名建议 | 边界 |
+| 元素 | 正式归属 | 命名建议 | 边界 |
 | --- | --- | --- | --- |
-| Agent skill / script | `agent_artifacts/skills/{skill_code}/` | `{business_entry}` | 只提交 `task_request`，不消费 runtime job |
+| Agent skill / script | `skills/{skill_code}/` | `{business_entry}` | 只提交 `task_request`，不消费 runtime job |
 | RPC Agent Service | `apps/rpc_agent/` | `server.py`、`routes.py` | 只暴露 task registry、submit/status/result API |
 | CLI | `apps/cli/` | `main.py`、`commands.py` | 本地 submit/status/debug，不承载业务映射 |
 | Daemon | `apps/daemons/{daemon_code}/` | `main.py` | executor/worker/outbox/watchdog/reconciler 入口门面 |
@@ -123,13 +121,13 @@ scripts/
 | Reconciler | `control_plane/reconciler/` | `reconciler.py` | parent-child 汇总、终态判定、repair-ready 判断 |
 | Watchdog | `control_plane/watchdog/` | `scanner.py`、`rules.py` | stale lease、timeout、stuck parent、outbox timeout 扫描 |
 | Outbox 调度 | `control_plane/outbox/` | `dispatcher.py`、`models.py` | 分发控制、retry、状态流转 |
-| Project Configuration | `control_plane/runtime_config/`、`configs/**` | `settings.py`、`*.env.example` | 配置优先级、typed settings、部署模板 |
+| Project Configuration | `control_plane/runtime_config/`、`config/**`、`scripts/execution_control/*.env.example`、`skills/{skill_code}/skill.local.env.example` | `settings.py`、`*.env.example` | 配置优先级、typed settings、部署模板 |
 | Workflow | `domains/{domain}/workflows/` | `{workflow_code}.py` | stage DAG、依赖、summary contract |
 | Task | `domains/{domain}/tasks/` | `{task_code}.py` | 顶层业务入口参数和校验 |
 | Job | `domains/{domain}/jobs/` | `{job_code}.py` | 可执行单元 contract，绑定 capability handler |
 | Policy | `domains/{domain}/policies/` | `{policy_code}.py` | selection/filter/retry/idempotency/finalize 业务决策 |
 | Mapper | `domains/{domain}/mappers/` | `{source}_{business_object}_mapper.py` | 输入行、事实记录到业务对象的映射 |
-| Projection | `domains/{domain}/projections/` | `{target}_{view}_projection.py` | 写回表格、消息、视图字段 |
+| Projection | `domains/{domain}/projections/` | `{destination}_{view}_projection.py` | 写回表格、消息、视图字段 |
 | Input Source Handler | `capabilities/input_sources/{source}/` | `{capability}_handler.py` | Feishu / Dingding 表格等业务输入读取 |
 | Fact Source Handler | `capabilities/fact_sources/{source}/` | `{entity}_fetch_handler.py` | TikTok / FastMoss / AWS 等事实采集 |
 | Persistence Handler | `capabilities/persistence/{store}/` | `{operation}_handler.py` | database/object storage 能力，不写业务规则 |
@@ -141,21 +139,21 @@ scripts/
 
 外部系统必须先按角色分类，再决定代码归属。
 
-| 外部系统角色 | 例子 | 目标目录 | 业务定制放哪里 |
+| 外部系统角色 | 例子 | 项目目录 | 业务定制放哪里 |
 | --- | --- | --- | --- |
 | 输入数据源 | 飞书表格、钉钉表格、表单、人工上传 CSV | `capabilities/input_sources/{source}/` | `domains/{domain}/mappers/`、`policies/` |
 | 事实数据源 | TikTok、FastMoss、AWS、第三方 API、爬虫观测源 | `capabilities/fact_sources/{source}/` | `domains/{domain}/policies/`、`mappers/` |
 | 数据库 | Runtime DB、Fact DB、业务索引库 | `capabilities/persistence/database/`、`infrastructure/stores/` | `domains/{domain}/policies/` 定义 key 和幂等语义 |
 | 文件存储 | MinIO、S3、本地 object store | `capabilities/persistence/object_storage/`、`infrastructure/stores/` | `domains/{domain}/projections/` 只引用 artifact，不直连 store |
 | 消息通道 | 飞书、钉钉、Discord、邮件、Webhook | `capabilities/channels/{channel}/` | `domains/{domain}/projections/` 定义消息内容 |
-| Agent runtime | OpenClaw、Hermes、用户 agent workspace | `agent_artifacts/skills/{skill_code}/` | skill 只保留入口说明和固定输入配置 |
+| Agent runtime | OpenClaw、Hermes、用户 agent workspace | `skills/{skill_code}/` | skill 只保留入口说明和固定输入配置 |
 
 ## 6. Workflow 开发契约
 
 一个 workflow 业务需求进入开发阶段时，必须按下面顺序拆分。
 
 1. Agent 配置
-   在 `agent_artifacts/skills/{skill_code}` 定义触发说明、入口脚本、固定输入配置模板。这里调用 task request submit，只返回 `request_id`、首条状态和用户可读摘要。
+   在 `skills/{skill_code}` 定义触发说明、入口脚本、固定输入配置模板。这里调用 task request submit，只返回 `request_id`、首条状态和用户可读摘要。
 
 2. Task Request 入口
    在 `domains/{domain}/tasks/{task_code}` 定义顶层业务入口参数、校验和业务可见名称；由 `control_plane/task_requests` 负责 submit/status/result/cancel envelope。
@@ -201,10 +199,10 @@ Manifest 是开发阶段的结构契约，必须声明 `workflow_origin`、agent
 
 需求: 从飞书竞品表读取商品，采集 TikTok / FastMoss 事实，写回飞书并通知 Discord。
 
-目标落位:
+正式落位:
 
 ```text
-agent_artifacts/skills/competitor-refresh/
+skills/competitor-refresh/
   SKILL.md
   run_refresh_step.sh
   skill.env.example
@@ -261,16 +259,16 @@ src/{project}/capabilities/channels/discord/
 - 禁止把 input source adapter、fact source mapper、projection、policy 注册成 runtime handler code。
 - 禁止在 capability handler 中写业务域专属筛选、字段投影或终态判定。
 - 禁止在 infrastructure client / store 中引用 task_code、workflow_code、job_code。
-- 禁止把 secret 真值提交进 `configs/**` 或 `agent_artifacts/**`。
+- 禁止把 secret 真值提交进 `config/**` 或 `skills/**`。
 
 ## 9. 真实迁移验收口径
 
-迁移目标结构时，必须先声明迁移模式。
+迁移正式结构时，必须先声明迁移模式。
 
 | 模式 | 允许行为 | 禁止行为 | 完成标准 |
 | --- | --- | --- | --- |
-| `scaffold` | 建目录、建空模块、写文档、写迁移计划 | 宣称完成真实迁移 | 只证明目标落位已预留 |
-| `real_migration` | 把实现所有权移到目标目录，用旧实现作阅读参考和功能对照 | facade、shim、re-export、`sys.modules` alias、旧路径继续承载主实现 | runtime import 主路径只从目标目录加载真实实现 |
+| `scaffold` | 建目录、建空模块、写文档、写迁移计划 | 宣称完成真实迁移 | 只证明正式落位已预留 |
+| `real_migration` | 把实现所有权移到项目目录，用旧实现作阅读参考和功能对照 | facade、shim、re-export、`sys.modules` alias、旧路径继续承载主实现 | runtime import 主路径只从项目目录加载真实实现 |
 
 当用户要求“真实代码迁移”“不要兼容旧逻辑”“旧逻辑只作为参考”时，必须按 `real_migration` 执行。
 
@@ -278,25 +276,25 @@ src/{project}/capabilities/channels/discord/
 
 - `capabilities/**/{capability}_handler.py` 必须拥有该 capability 的 handler 实现，文件内应出现主要 `def` / `class` / helper 逻辑；不能只 `from .implementations import xxx_handler`。
 - 禁止新增或保留 `capabilities/_implementations/*.py` 作为大杂烩实现归属；大文件只能作为迁移前参考，不允许成为 runtime import 主路径。
-- `business/handlers/**` 旧路径不能继续导入 `.implementations` 或目标 capability 作为主路径；完成迁移后应删除旧路径，或仅保留不被 runtime registry 引用的迁移说明。
+- `business/handlers/**` 旧路径不能继续导入 `.implementations` 或正式 capability 作为主路径；完成迁移后应删除旧路径，或仅保留不被 runtime registry 引用的迁移说明。
 - `domains/{domain}/**` 必须拥有业务 task、workflow、job、mapper、projection、policy 的实现；不能只 re-export `business/**`。
 - 根包 daemon alias 只能作为单次提交内的临时过渡；完成 `real_migration` 时 console script 和根包入口应直接指向 `apps/**`。
-- Monkeypatch、旧 import、旧测试不作为保留兼容层的理由；旧测试应迁移到目标 import，旧代码只作为功能验证参考。
+- Monkeypatch、旧 import、旧测试不作为保留兼容层的理由；旧测试应迁移到正式 import，旧代码只作为功能验证参考。
 - “跑通旧测试”不是 `real_migration` 完成标准；完成标准是静态归属、runtime import 主路径和行为对照同时满足。
 
 真实迁移期间的验证策略:
 
 - 可以先不跑全量测试，避免为了旧测试继续保留兼容层。
 - 优先使用静态结构检查、import ownership 检查和新旧行为对照 fixture。
-- 如果需要测试，测试必须改成目标路径导入；不得为了测试 monkeypatch 旧路径而保留 alias。
+- 如果需要测试，测试必须改成正式路径导入；不得为了测试 monkeypatch 旧路径而保留 alias。
 
 ## 10. 测试护栏
 
-目标架构契约由以下测试守住:
+项目架构契约由以下测试守住:
 
 | 测试 | 守护内容 |
 | --- | --- |
-| `test_project_architecture_contract` | 本文存在，并包含 `apps`、`control_plane`、`domains`、`capabilities`、`infrastructure`、`configs`、`agent_artifacts` 的边界 |
+| `test_project_architecture_contract` | 本文存在，并包含 `apps`、`control_plane`、`domains`、`capabilities`、`infrastructure`、`config`、`skills` 的边界 |
 | `test_workflow_development_contract` | 新 workflow 开发必须拆到 task、workflow、job、mapper、projection、policy、capability、outbox、runtime control |
 | `test_control_plane_boundary` | RPC/CLI/daemon/control_plane 只管 request lifecycle、supervisor、reconciler、watchdog、outbox，不承载业务 mapper/projection |
 | `test_capability_boundary` | Feishu / Dingding / TikTok / FastMoss / AWS / database / object storage / channel 等能力按角色分类 |
@@ -311,4 +309,4 @@ src/{project}/capabilities/channels/discord/
 - mapper、projection、policy 按业务域命名。
 - Reconciler 是 control plane 的稳定组件；未来可以独立 daemon 化，但不能业务专用 fork。
 - Agent script / skills 是部署产物源，部署时复制到用户 agent workspace 并生成配置文件。
-- 当前仓库迁移到目标结构可以分阶段进行，但每个阶段必须明确是 `scaffold` 还是 `real_migration`。只有 `real_migration` 才能被描述为“迁移完成”。
+- 当前仓库迁移到正式结构可以分阶段进行，但每个阶段必须明确是 `scaffold` 还是 `real_migration`。只有 `real_migration` 才能被描述为“迁移完成”。

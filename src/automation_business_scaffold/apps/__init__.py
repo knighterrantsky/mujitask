@@ -1,1 +1,1 @@
-"""Process entrypoints for the target project architecture."""
+"""Process entrypoints for the project architecture."""

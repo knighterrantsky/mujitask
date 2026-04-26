@@ -10,7 +10,7 @@
 
 Runtime 控制面负责把 agent / CLI / RPC 入口提交的业务请求变成 Runtime DB 中可追踪、可重试、可恢复的执行过程。它包括 RPC Agent Service、Task Request Entry、Daemon Entry、Execution Supervisor、Reconciler、Watchdog、Outbox Dispatcher 和 Project Configuration。
 
-Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTok / FastMoss / Feishu / Dingding / Discord 等具体业务语义。外部输入源、事实数据源、消息通道和业务映射逻辑应继续落在 handler、adapter、mapper、outbox handler 或业务 flow 中。
+Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTok / FastMoss / Feishu / Dingding / Discord 等具体业务语义。外部输入源、事实数据源、消息通道和业务映射逻辑应继续落在 capability handler、domain mapper、domain projection、domain policy 或 domain flow 中。
 
 相关事实来源:
 
@@ -43,10 +43,10 @@ Agent Skill / RPC Agent Service / CLI
   -> Task Request Entry
   -> Runtime DB task_request
   -> Executor Daemon Entry
-  -> workflow_defs stage/job binding
+  -> domains/{domain}/workflows stage/job binding
   -> API Worker Daemon Entry 或 Browser Runloop Entry
   -> Execution Supervisor
-  -> business/handlers/{worker_lane}/{handler_code}.py
+  -> capabilities/{role}/{system}/{handler_code}_handler.py
   -> Runtime DB job/result/progress
   -> Reconciler aggregate/finalize
   -> notification_outbox
@@ -118,21 +118,21 @@ automation-business-scaffold-reconciler
 
 新增 daemon:
 
-1. 根包新增薄门面文件。
-2. 循环、claim、lease、retry、heartbeat 等控制逻辑放 `business/flows/**`。
-3. 外部系统 transport 放 `infrastructure/**` 或 handler。
-4. 业务字段 mapper 放 adapter/projection mapper，不放 daemon。
+1. 入口新增在 `apps/daemons/{daemon_code}/main.py`，console script 直接指向该入口。
+2. 循环、claim、lease、retry、heartbeat 等控制逻辑放 `control_plane/**`。
+3. 外部系统 transport 放 `infrastructure/**` 或 capability handler。
+4. 业务字段 mapper 放 domain mapper / projection，不放 daemon。
 
 新增消息通道:
 
 1. 通道配置可以进入 Project Configuration。
-2. 出站消息通过 `notification_outbox` 和 `business/handlers/outbox/{channel_code}.py` 扩展。
+2. 出站消息通过 `notification_outbox` 和 `capabilities/channels/{channel_code}/` 扩展。
 3. 不允许 workflow stage 直接调用 Dingding / Discord / Feishu 通知 API 绕过 outbox。
 
 新增外部输入源或事实数据源:
 
 1. 运行控制面只负责调度和可观测性。
-2. 输入源读取能力进入 `business/handlers/api` 或 `business/handlers/browser`。
+2. 输入源读取能力进入 `capabilities/input_sources/**` 或 `capabilities/browser/**`。
 3. 表级或业务定制映射进入 source adapter / projection mapper / policy。
 4. 事实数据写入进入对应 fact/object-store handler 或 flow，不改变 daemon contract。
 

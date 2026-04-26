@@ -4,11 +4,10 @@ from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
-    FACT_BUNDLE_UPSERT_JOB,
-    FASTMOSS_CREATOR_FETCH_JOB,
-    FASTMOSS_PRODUCT_FETCH_JOB,
     FEISHU_TABLE_READ_JOB,
     FEISHU_TABLE_WRITE_JOB,
+    INFLUENCER_CREATOR_SYNC_JOB,
+    PRODUCT_CREATOR_DISCOVERY_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
@@ -89,65 +88,31 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 exit_condition="creator candidates have been discovered or product discovery is terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="fastmoss_product_fetch",
-                        flow_code="fastmoss_product_flow",
+                        job_code="product_creator_discovery",
+                        flow_code="product_creator_discovery_flow",
                         detail_level="related_creators",
-                        result_consumer="creator detail job fan-out",
-                        notes=("Handler result should expose creator candidates for reconciler fan-out.",),
+                        result_consumer="unique creator sync fan-out",
+                        notes=("One competitor product maps to one product creator discovery business job.",),
                     ),
                 ),
             ),
             StageDefinition(
-                stage_code="collect_creator_detail",
-                description="Fetch creator detail and normalized creator facts for each discovered creator.",
+                stage_code="sync_influencer_pool",
+                description="Sync one unique creator with all current product hit contexts.",
                 execution_mode="worker_jobs",
-                enter_condition="creator detail jobs have been created",
-                exit_condition="creator detail jobs are terminal or waiting for retry",
+                enter_condition="unique creator candidates have been aggregated from product discovery results",
+                exit_condition="creator sync jobs are terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="fastmoss_creator_fetch",
-                        flow_code="fastmoss_creator_flow",
-                        result_consumer="influencer projection payload",
-                        notes=("Creator detail may include optional media refs that later mappers can consume.",),
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="persist_creator_facts",
-                description="Persist product and creator fact bundles before Feishu influencer projection.",
-                execution_mode="worker_jobs",
-                enter_condition="product or creator fact bundles are available from FastMoss handlers",
-                exit_condition="fact upsert jobs are terminal or no facts need persistence",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="fact_bundle_upsert",
-                        result_consumer="fact projection checkpoint before influencer pool write",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="write_influencer_pool",
-                description="Project creator detail into TK influencer pool rows.",
-                execution_mode="worker_jobs",
-                enter_condition="creator facts are available for projection",
-                exit_condition="influencer pool writes are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="feishu_table_write",
+                        job_code="influencer_creator_sync",
+                        flow_code="influencer_creator_sync_flow",
                         mapper_code="influencer_pool_projection_mapper",
-                        result_consumer="creator terminal projection result",
+                        result_consumer="creator terminal sync result and product status writeback checkpoint",
+                        notes=(
+                            "The business handler serially calls creator detail, fact upsert, media sync, "
+                            "influencer pool upsert, and terminal product status writeback when applicable.",
+                        ),
                     ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="finalize_product",
-                description="Aggregate creator detail outcomes back into product-group terminal state.",
-                execution_mode="executor_action",
-                enter_condition="creator detail and influencer pool child jobs can be reconciled per product",
-                exit_condition="product groups are terminal or scheduled for retry/follow-up",
-                executor_action_code="finalize_product",
-                notes=(
-                    "This is a reconciler-friendly executor action, not a worker job.",
                 ),
             ),
             StageDefinition(
@@ -181,9 +146,8 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
         ),
         job_defs=(
             FEISHU_TABLE_READ_JOB,
-            FASTMOSS_PRODUCT_FETCH_JOB,
-            FASTMOSS_CREATOR_FETCH_JOB,
-            FACT_BUNDLE_UPSERT_JOB,
+            PRODUCT_CREATOR_DISCOVERY_JOB,
+            INFLUENCER_CREATOR_SYNC_JOB,
             FEISHU_TABLE_WRITE_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
@@ -200,28 +164,13 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="discover_related_creators",
-                to_stage_code="collect_creator_detail",
-                condition="creator detail jobs have been created or product discovery groups reached terminal state",
+                to_stage_code="sync_influencer_pool",
+                condition="unique creator sync jobs have been created or product discovery groups reached terminal state",
             ),
             TransitionDefinition(
-                from_stage_code="collect_creator_detail",
-                to_stage_code="persist_creator_facts",
-                condition="creator detail jobs are terminal and fact bundles are ready to upsert",
-            ),
-            TransitionDefinition(
-                from_stage_code="persist_creator_facts",
-                to_stage_code="write_influencer_pool",
-                condition="fact upsert jobs are terminal or no fact bundles were produced",
-            ),
-            TransitionDefinition(
-                from_stage_code="write_influencer_pool",
-                to_stage_code="finalize_product",
-                condition="influencer pool writes are terminal",
-            ),
-            TransitionDefinition(
-                from_stage_code="finalize_product",
+                from_stage_code="sync_influencer_pool",
                 to_stage_code="writeback_competitor_status",
-                condition="product groups are terminal and competitor status projection is ready",
+                condition="creator sync jobs are terminal and residual competitor status projection is ready",
             ),
             TransitionDefinition(
                 from_stage_code="writeback_competitor_status",
@@ -252,7 +201,7 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
         summary_contract=STANDARD_SUMMARY_CONTRACT,
         error_contract=STANDARD_ERROR_CONTRACT,
         notes=(
-            "Product discovery and creator detail remain logical api_worker_job families; no workflow-specific runtime table is introduced.",
+            "Product discovery and creator sync remain logical api_worker_job families; no workflow-specific runtime table is introduced.",
         ),
     )
 

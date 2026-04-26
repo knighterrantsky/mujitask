@@ -8,6 +8,10 @@ from automation_business_scaffold.capabilities.channels.feishu.table_write_handl
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler import (
     fastmoss_creator_fetch_handler,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers import (
+    influencer_creator_sync_handler,
+    product_creator_discovery_handler,
+)
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler import (
     fastmoss_product_fetch_handler,
 )
@@ -47,6 +51,8 @@ BOUND_API_HANDLERS = MappingProxyType(
         "feishu_table_write": feishu_table_write_handler,
         "competitor_row_refresh": competitor_row_refresh_handler,
         "keyword_seed_import": keyword_seed_import_handler,
+        "product_creator_discovery": product_creator_discovery_handler,
+        "influencer_creator_sync": influencer_creator_sync_handler,
         "tiktok_product_request_fetch": tiktok_product_request_fetch_handler,
         "fastmoss_product_search": fastmoss_product_search_handler,
         "fastmoss_product_fetch": fastmoss_product_fetch_handler,

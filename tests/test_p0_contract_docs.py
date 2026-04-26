@@ -53,10 +53,11 @@ def test_workflow_docs_include_refresh_keyword_and_influencer_contract_examples(
     influencer_tokens = (
         "## 11. P0 Contract Payload / Result 样例",
         "### 11.1 竞品候选读取: `feishu_table_read`",
-        "### 11.2 商品达人发现: `fastmoss_product_fetch`",
-        "### 11.3 达人详情采集: `fastmoss_creator_fetch`",
-        "### 11.4 达人池写入: `influencer_pool_projection_mapper` -> `feishu_table_write`",
-        "### 11.5 竞品状态回写: `competitor_influencer_status_projection_mapper`",
+        "### 11.2 商品达人发现: `product_creator_discovery`",
+        "### 11.3 达人同步业务 job: `influencer_creator_sync`",
+        "### 11.4 竞品状态批量兜底回写: `competitor_influencer_status_projection_mapper`",
+        "influencer_pool_projection_mapper",
+        "product_status_writebacks",
     )
 
     missing_competitor = [token for token in competitor_tokens if token not in competitor_doc]

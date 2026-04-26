@@ -1,1 +1,1 @@
-"""Runtime control-plane implementation for the target project architecture."""
+"""Runtime control-plane implementation for the project architecture."""

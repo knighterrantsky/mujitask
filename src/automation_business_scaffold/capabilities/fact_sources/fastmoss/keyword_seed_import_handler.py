@@ -4,14 +4,9 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.capabilities.channels.feishu.table_write_handler import (
-    feishu_table_write_handler,
-)
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_search_handler import (
-    fastmoss_product_search_handler,
-)
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
     coerce_mapping,
@@ -29,6 +24,8 @@ from automation_business_scaffold.domains.tiktok.projections.feishu_competitor_p
 
 HANDLER_CODE = "keyword_seed_import"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
+fastmoss_product_search_handler = api_handler_callable("fastmoss_product_search")
+feishu_table_write_handler = api_handler_callable("feishu_table_write")
 
 
 def keyword_seed_import_handler(context: HandlerContext) -> HandlerResult:

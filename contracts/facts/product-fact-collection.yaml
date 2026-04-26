@@ -15,6 +15,11 @@ required_pipeline_roles:
   - mapper
   - fact_bundle_upsert
 
+business_job_usage:
+  sync_tk_influencer_pool:
+    - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.
+    - influencer_creator_sync may call fact_bundle_upsert and media_asset_sync internally for one unique creator; product media facts still follow the same object storage materialization rules.
+
 media_rules:
   product_main_image:
     must_materialize: true

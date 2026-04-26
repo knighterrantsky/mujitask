@@ -40,7 +40,7 @@
 
 ## 3. Workflow
 
-正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；framework 兼容入口不作为目标架构设计元素。Runtime 层由 executor 根据 `task_request.current_stage` 和 `stage_cursor_json` 派发 API job / browser job。
+正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；framework 兼容入口不作为项目架构设计元素。Runtime 层由 executor 根据 `task_request.current_stage` 和 `stage_cursor_json` 派发 API job / browser job。
 
 目标 workflow 应表达为:
 

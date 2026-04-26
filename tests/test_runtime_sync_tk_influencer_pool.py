@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
-    COLLECT_CREATOR_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
     DISPATCH_PRODUCT_STAGE_CODE,
-    FINALIZE_PRODUCT_STAGE_CODE,
     READ_STAGE_CODE,
     SUMMARY_STAGE_CODE,
+    SYNC_INFLUENCER_POOL_STAGE_CODE,
     TASK_CODE,
     WORKFLOW_CODE,
     WRITEBACK_STAGE_CODE,
-    WRITE_POOL_STAGE_CODE,
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
@@ -145,10 +143,15 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
         store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
         result={
-            "related_creators": [
-                {"creator_id": "creator-1", "creator_identity": {"creator_id": "creator-1"}, "display_name": "Alice"}
+            "normalized_creator_candidates": [
+                {
+                    "creator_id": "creator-1",
+                    "creator_identity": {"creator_id": "creator-1"},
+                    "display_name": "Alice",
+                    "metrics": {"sold_count": 72, "follower_count": 12000},
+                }
             ],
             "product_fact_bundle": {"product_id": "product-1"},
         },
@@ -166,59 +169,37 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
     )
     assert discover_release["action"] == "waiting"
-    assert discover_release["current_stage"] == COLLECT_CREATOR_STAGE_CODE
+    assert discover_release["current_stage"] == SYNC_INFLUENCER_POOL_STAGE_CODE
     _apply_stage_result(store, request_id=request.request_id, stage_result=discover_release)
 
-    creator_job = _mark_stage_job_success(
+    sync_job = _mark_stage_job_success(
         store,
         request_id=request.request_id,
-        stage_code=COLLECT_CREATOR_STAGE_CODE,
-        job_code="fastmoss_creator_fetch",
-        result={"creator_fact_bundle": {"creator_id": "creator-1", "display_name": "Alice"}},
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        job_code="influencer_creator_sync",
+        result={
+            "creator_id": "creator-1",
+            "status": "success",
+            "internal_steps": {"creator_fetch": "success", "fact_upsert": "success", "influencer_pool_write": "success"},
+            "influencer_pool_write": {"status": "success", "write_result": {"written_count": 1}},
+            "product_hits": [{"source_record_id": "row-1", "product_id": "product-1", "product_key": "row-1:product-1"}],
+        },
     )
-    assert creator_job["status"] == "success"
+    assert sync_job["status"] == "success"
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
-    assert released and released[0]["stage_code"] == COLLECT_CREATOR_STAGE_CODE
+    assert released and released[0]["stage_code"] == SYNC_INFLUENCER_POOL_STAGE_CODE
 
     request = store.load_task_request(request_id=request.request_id)
-    collect_release = advance_stage(
+    sync_release = advance_stage(
         store=store,
         request=request,
         workflow=workflow,
-        stage_code=COLLECT_CREATOR_STAGE_CODE,
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
     )
-    assert collect_release["action"] == "waiting"
-    assert collect_release["current_stage"] == WRITE_POOL_STAGE_CODE
-    _apply_stage_result(store, request_id=request.request_id, stage_result=collect_release)
-
-    write_job = _mark_stage_job_success(
-        store,
-        request_id=request.request_id,
-        stage_code=WRITE_POOL_STAGE_CODE,
-        job_code="feishu_table_write",
-        result={"written_count": 1, "target_record_ids": ["fs-row-1"]},
-    )
-    assert write_job["status"] == "success"
-
-    released = release_request_after_child_completion(store, request_id=request.request_id)
-    assert released and released[0]["stage_code"] == WRITE_POOL_STAGE_CODE
-
-    request = store.load_task_request(request_id=request.request_id)
-    write_release = advance_stage(store=store, request=request, workflow=workflow, stage_code=WRITE_POOL_STAGE_CODE)
-    assert write_release == {"action": "advance", "next_stage": FINALIZE_PRODUCT_STAGE_CODE}
-    _apply_stage_result(store, request_id=request.request_id, stage_result=write_release)
-
-    request = store.load_task_request(request_id=request.request_id)
-    finalize_products = advance_stage(
-        store=store,
-        request=request,
-        workflow=workflow,
-        stage_code=FINALIZE_PRODUCT_STAGE_CODE,
-    )
-    assert finalize_products["action"] == "waiting"
-    assert finalize_products["current_stage"] == WRITEBACK_STAGE_CODE
-    _apply_stage_result(store, request_id=request.request_id, stage_result=finalize_products)
+    assert sync_release["action"] == "waiting"
+    assert sync_release["current_stage"] == WRITEBACK_STAGE_CODE
+    _apply_stage_result(store, request_id=request.request_id, stage_result=sync_release)
 
     writeback_job = _mark_stage_job_success(
         store,
@@ -296,7 +277,7 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
     store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code=TASK_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
         jobs=[
             {
                 "business_key": "product-1",
@@ -316,9 +297,9 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
         store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
-        job_code="fastmoss_product_fetch",
+        job_code="product_creator_discovery",
         result={
-            "related_creators": [
+            "normalized_creator_candidates": [
                 {"creator_id": "creator-1", "creator_identity": {"creator_id": "creator-1"}},
                 {"creator_id": "creator-2", "creator_identity": {"creator_id": "creator-2"}},
             ]
@@ -328,35 +309,35 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
     creator_enqueue = store.enqueue_api_worker_jobs(
         request_id=request.request_id,
         task_code=TASK_CODE,
-        job_code="fastmoss_creator_fetch",
+        job_code="influencer_creator_sync",
         jobs=[
             {
                 "business_key": "creator-1",
                 "dedupe_key": f"{request.request_id}:creator-1",
                 "max_attempts": 1,
                 "payload": {
-                    "request_id": request.request_id,
-                    "task_code": TASK_CODE,
-                    "workflow_code": WORKFLOW_CODE,
-                    "stage_code": COLLECT_CREATOR_STAGE_CODE,
-                    "creator_identity": {"creator_id": "creator-1"},
-                    "source_context": {"source_record_id": "row-1", "product_id": "product-1"},
+                        "request_id": request.request_id,
+                        "task_code": TASK_CODE,
+                        "workflow_code": WORKFLOW_CODE,
+                        "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+                        "creator_identity": {"creator_id": "creator-1"},
+                        "product_hits": [{"source_record_id": "row-1", "product_id": "product-1", "product_key": "row-1:product-1"}],
+                    },
                 },
-            },
             {
                 "business_key": "creator-2",
                 "dedupe_key": f"{request.request_id}:creator-2",
                 "max_attempts": 1,
                 "payload": {
-                    "request_id": request.request_id,
-                    "task_code": TASK_CODE,
-                    "workflow_code": WORKFLOW_CODE,
-                    "stage_code": COLLECT_CREATOR_STAGE_CODE,
-                    "creator_identity": {"creator_id": "creator-2"},
-                    "source_context": {"source_record_id": "row-1", "product_id": "product-1"},
+                        "request_id": request.request_id,
+                        "task_code": TASK_CODE,
+                        "workflow_code": WORKFLOW_CODE,
+                        "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+                        "creator_identity": {"creator_id": "creator-2"},
+                        "product_hits": [{"source_record_id": "row-1", "product_id": "product-1", "product_key": "row-1:product-1"}],
+                    },
                 },
-            },
-        ],
+            ],
     )
     success_job_id = creator_enqueue["created_records"][0]["job_id"]
     failed_job_id = creator_enqueue["created_records"][1]["job_id"]
@@ -364,22 +345,27 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
         worker_id="pytest-api",
         lease_seconds=30.0,
         request_id=request.request_id,
-        job_code="fastmoss_creator_fetch",
+        job_code="influencer_creator_sync",
     )
     assert claimed_success is not None and claimed_success["job_id"] == success_job_id
     store.mark_api_worker_job_success(
         job_id=success_job_id,
         run_id=str(claimed_success["run_id"]),
         summary={"handler_status": "success"},
-        result={"creator_fact_bundle": {"creator_id": "creator-1"}},
+        result={
+            "creator_id": "creator-1",
+            "status": "success",
+            "internal_steps": {"creator_fetch": "success", "fact_upsert": "success", "influencer_pool_write": "success"},
+            "influencer_pool_write": {"status": "success", "write_result": {"written_count": 1}},
+        },
     )
     store.update_task_request(
         request_id=request.request_id,
         status="waiting_children",
-        current_stage=COLLECT_CREATOR_STAGE_CODE,
-        progress_stage=COLLECT_CREATOR_STAGE_CODE,
+        current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        progress_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
     )
-    claimed_failed = store.claim_next_api_worker_job(worker_id="pytest-api", lease_seconds=30.0, request_id=request.request_id, job_code="fastmoss_creator_fetch")
+    claimed_failed = store.claim_next_api_worker_job(worker_id="pytest-api", lease_seconds=30.0, request_id=request.request_id, job_code="influencer_creator_sync")
     assert claimed_failed is not None and claimed_failed["job_id"] == failed_job_id
     store.mark_api_worker_job_retry_or_failed(
         job_id=failed_job_id,
@@ -389,35 +375,6 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
         error_code="creator_fetch_failed",
         retry_delay_seconds=0.0,
     )
-
-    store.enqueue_api_worker_jobs(
-        request_id=request.request_id,
-        task_code=TASK_CODE,
-        job_code="feishu_table_write",
-        jobs=[
-            {
-                "business_key": "creator-1",
-                "dedupe_key": f"{request.request_id}:write:creator-1",
-                    "payload": {
-                        "request_id": request.request_id,
-                        "task_code": TASK_CODE,
-                        "workflow_code": WORKFLOW_CODE,
-                        "stage_code": WRITE_POOL_STAGE_CODE,
-                        "target_table_ref": "feishu://influencer-pool-table",
-                        "source_context": {"source_record_id": "row-1", "product_id": "product-1"},
-                        "records": [{"creator_id": "creator-1"}],
-                    },
-                }
-            ],
-        )
-    _mark_stage_job_success(
-        store,
-        request_id=request.request_id,
-        stage_code=WRITE_POOL_STAGE_CODE,
-        job_code="feishu_table_write",
-        result={"written_count": 1, "target_record_ids": ["fs-row-1"]},
-    )
-
     store.update_task_request(
         request_id=request.request_id,
         status="pending",
