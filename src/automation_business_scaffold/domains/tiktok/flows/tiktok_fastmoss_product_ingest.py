@@ -8,10 +8,12 @@ from typing import Any
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     PRODUCT_INGEST_TASK_CODE,
     build_request_payload,
-    build_outbox_message_text,
 )
 from automation_business_scaffold.contracts.handler.shared import merge_fact_bundles
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
+)
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 

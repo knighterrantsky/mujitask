@@ -3,13 +3,14 @@ contract_type: workflow_contract
 workflow_code: tiktok_fastmoss_product_ingest
 domain: product_fact_ingest
 task_code: tiktok_fastmoss_product_ingest
-status: migrated_existing_without_formal_business_requirement
+status: complete
 
 business_requirement: null
 business_requirement_note: 当前已有系统入口和设计文档，但尚未沉淀为正式客户流程需求
 architecture_design: docs/arch/workflow-selection-analysis-design.md
 implementation_manifest: src/automation_business_scaffold/contracts/workflow/tiktok_fastmoss_product_ingest.yaml
-field_contracts: []
+field_contracts:
+  - contracts/fields/feishu-tk-selection.yaml
 state_contracts: []
 
 source_adapter: selection_table_source_adapter
@@ -47,9 +48,7 @@ stages:
 protected_invariants:
   - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据
   - TikTok 商品数据采集优先走 request/API 路径
-  - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景
+  - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景；request 已明确不可售时直接产出不可售终态，不进入 browser fallback
   - 不从该设计文档反推正式客户需求和验收口径
 
-known_architecture_gaps:
-  - code: selection_field_contract_missing
-    description: TK选品收集尚未沉淀正式字段契约；待正式业务需求确认后新增
+known_architecture_gaps: []

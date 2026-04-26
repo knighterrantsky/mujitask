@@ -1,3 +1,3 @@
-"""Business domain entrypoints aligned with the target architecture contract."""
+"""Business domain entrypoints aligned with the project architecture contract."""
 
 __all__ = ["tiktok"]

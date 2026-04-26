@@ -62,8 +62,8 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 部署脚本负责:
 
-1. 复制仓库内 skill bundle 到目标 agent skills 目录。
-2. 生成或保留目标目录下的 `skill.local.env`。
+1. 复制仓库内 skill bundle 到部署 agent skills 目录。
+2. 生成或保留部署目录下的 `skill.local.env`。
 3. 生成项目安装目录下的 `scripts/execution_control/executor.local.env`。
 4. 安装并启动 executor、api worker、browser runloop、outbox dispatcher。
 

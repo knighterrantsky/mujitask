@@ -57,30 +57,22 @@ jobs:
     custom_logic_refs:
       mappers:
         - influencer_pool_source_adapter
-  - code: fastmoss_product_fetch
-    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_product_fetch
-    handler_code: fastmoss_product_fetch
+  - code: product_creator_discovery
+    module: automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery
+    handler_code: product_creator_discovery
     capability:
-      role: fact_source
-      system: fastmoss
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler
-      export: fastmoss_product_fetch_handler
-  - code: fastmoss_creator_fetch
-    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_creator_fetch
-    handler_code: fastmoss_creator_fetch
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery
+      export: product_creator_discovery_handler
+  - code: influencer_creator_sync
+    module: automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync
+    handler_code: influencer_creator_sync
     capability:
-      role: fact_source
-      system: fastmoss
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler
-      export: fastmoss_creator_fetch_handler
-  - code: fact_bundle_upsert
-    module: automation_business_scaffold.domains.tiktok.jobs.fact_bundle_upsert
-    handler_code: fact_bundle_upsert
-    capability:
-      role: persistence
-      system: database
-      module: automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler
-      export: fact_bundle_upsert_handler
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync
+      export: influencer_creator_sync_handler
   - code: feishu_table_write
     module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_write
     handler_code: feishu_table_write

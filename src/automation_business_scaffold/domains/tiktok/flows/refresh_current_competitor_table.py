@@ -7,7 +7,6 @@ from typing import Any, Mapping
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
-    build_outbox_message_text,
 )
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
@@ -31,6 +30,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
+)
 
 OPTIONAL_FINAL_STATUS_CODES: tuple[str, ...] = ()
 

@@ -11,7 +11,7 @@
 | 内容 | 放置位置 |
 | --- | --- |
 | 通用拆分原则、workflow 必填内容、job 颗粒度约束 | 本文 |
-| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [current-system-architecture-design.md](./current-system-architecture-design.md) |
+| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [system-architecture-design.md](./system-architecture-design.md) |
 | Runtime 表、状态机、claim/lease/retry/watchdog 字段 | [runtime-db-schema-design.md](./runtime-db-schema-design.md) |
 | Fact 表、ERD、upsert/idempotency 规则 | [fact-db-schema-design.md](./fact-db-schema-design.md) |
 | 某一个具体业务流程 | `workflow-<business-name>-design.md` |
@@ -509,6 +509,7 @@ API 优先、浏览器兜底的流程必须先实际发起 request，并记录 a
 不允许 fallback 的情况:
 
 - 没有实际发起 request，只是本地 payload 缺少商品详情。
+- request 已明确返回商品不可访问、已下架或区域不可售；这类结果应作为终态状态写回，不应占用 browser fallback。
 - 普通网络失败、DNS/连接失败、超时、5xx、429 或临时代理异常。
 - response 解析失败但原始响应可重试或可补偿。
 

@@ -52,7 +52,7 @@ jobs:
     capability:
       role: business_orchestration
       system: tiktok
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.keyword_seed_import_handler
+      module: automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import
       export: keyword_seed_import_handler
     custom_logic_refs:
       mappers:
@@ -63,9 +63,9 @@ jobs:
     module: automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh
     handler_code: competitor_row_refresh
     capability:
-      role: fact_source
+      role: business_orchestration
       system: tiktok
-      module: automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler
+      module: automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh
       export: competitor_row_refresh_handler
     custom_logic_refs:
       projections:

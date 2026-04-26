@@ -4,61 +4,64 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SYSTEM_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "current-system-architecture-design.md"
+SYSTEM_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "system-architecture-design.md"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_current_system_architecture_uses_layered_structure() -> None:
+def test_system_architecture_uses_layered_structure() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
-        "状态: 当前系统架构事实来源",
+        "状态: 系统架构设计基准",
         "Agent Artifact / Entry Layer",
         "Runtime Control Plane",
         "Domain Orchestration Layer",
         "Capability Layer",
         "Infrastructure Layer",
         "Deployment / Configuration Layer",
-        "agent_artifacts",
+        "skills",
         "control_plane",
         "domains",
         "capabilities",
         "infrastructure",
-        "configs",
-        "target-project-architecture-contract.md",
+        "config",
+        "project-architecture-contract.md",
         "project-structure-contract.md",
         "runtime-control-plane-contract.md",
     )
 
     missing = [token for token in required_tokens if token not in doc]
-    assert missing == [], "current system architecture is missing layered tokens:\n" + "\n".join(
+    assert missing == [], "system architecture is missing layered tokens:\n" + "\n".join(
         missing
     )
 
 
-def test_current_system_architecture_maps_current_files_to_target_layers() -> None:
+def test_system_architecture_maps_project_files_to_project_layers() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
-        "## 3. 当前落位到目标分层的映射",
+        "## 3. 项目落位到分层的映射",
         "skills/mujitask-tiktok-feishu-sync/",
-        "`agent.py`",
-        "`cli.py`",
-        "`business/flows/runtime_orchestrator.py`",
-        "`runtime_common.py`",
-        "`execution_supervisor.py`",
-        "`runtime_views.py`",
-        "`watchdog_scanner.py`",
-        "`business/tasks/`",
-        "`business/workflow_defs/`",
-        "`business/jobs/`",
-        "`business/feishu/`",
-        "`business/handlers/api/`",
-        "`business/handlers/browser/`",
-        "`business/handlers/outbox/`",
+        "`src/automation_business_scaffold/apps/rpc_agent/`",
+        "`src/automation_business_scaffold/apps/cli/`",
+        "`src/automation_business_scaffold/control_plane/`",
+        "`src/automation_business_scaffold/apps/daemons/`",
+        "`src/automation_business_scaffold/domains/tiktok/tasks/`",
+        "`workflows/`",
+        "`jobs/`",
+        "`flows/`",
+        "`mappers/`",
+        "`projections/`",
+        "`policies/`",
+        "`src/automation_business_scaffold/capabilities/input_sources/`",
+        "`fact_sources/`",
+        "`persistence/`",
+        "`channels/`",
+        "`browser/`",
+        "`media/`",
         "`infrastructure/feishu/`",
         "`infrastructure/fastmoss/`",
         "`infrastructure/runtime/`",
@@ -69,12 +72,12 @@ def test_current_system_architecture_maps_current_files_to_target_layers() -> No
     )
 
     missing = [token for token in required_tokens if token not in doc]
-    assert missing == [], "current system architecture mapping is missing tokens:\n" + "\n".join(
+    assert missing == [], "system architecture mapping is missing tokens:\n" + "\n".join(
         missing
     )
 
 
-def test_current_system_architecture_defines_business_entry_split() -> None:
+def test_system_architecture_defines_business_entry_split() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
@@ -104,7 +107,7 @@ def test_current_system_architecture_defines_business_entry_split() -> None:
     assert missing == [], "business entry split is missing tokens:\n" + "\n".join(missing)
 
 
-def test_current_system_architecture_freezes_runtime_control_components() -> None:
+def test_system_architecture_freezes_runtime_control_components() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
@@ -119,6 +122,9 @@ def test_current_system_architecture_freezes_runtime_control_components() -> Non
         "Watchdog",
         "Outbox Dispatcher",
         "Runtime Config",
+        "apps/rpc_agent/server.py",
+        "control_plane/executor/runner.py",
+        "control_plane/supervisor/execution_supervisor.py",
         "不为单个业务新增专用 daemon",
         "不在 control plane 写 Feishu 表字段",
         "不让 workflow 绕过 outbox",
@@ -130,7 +136,7 @@ def test_current_system_architecture_freezes_runtime_control_components() -> Non
     )
 
 
-def test_current_system_architecture_classifies_capabilities_and_storage() -> None:
+def test_system_architecture_classifies_capabilities_and_storage() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (

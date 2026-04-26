@@ -1,12 +1,12 @@
 # 达人同步 Workflow 设计
 
-日期: 2026-04-23
+日期: 2026-04-25
 
 ## 1. 流程定位
 
-达人同步当前对应 `sync_tk_influencer_pool`。它从 `TK竞品收集` 中筛选待处理竞品，基于 FastMoss 商品关联达人列表动态生成达人详情 job，再将达人详情写入 `TK达人池`，最终回写竞品表的达人查找状态并汇总任务结果。
+达人同步当前对应 `sync_tk_influencer_pool`。它从 `TK竞品收集` 中筛选待处理竞品，先按商品发现关联达人，再按 unique 达人同步达人详情、事实和 `TK达人池` 写回。每个达人同步 job 会携带该达人本次命中的所有商品上下文；当某个商品下所有达人同步 job 都已终态时，最后完成的达人同步 job 同步回写该商品的 `达人查找状态`。
 
-该流程本质上不是独立 worker 类型，而是一个 workflow / job family。它主要由 `api_worker` 执行，因为当前核心动作是飞书 API、FastMoss HTTP API、事实库和飞书写回。
+该流程本质上不是独立 worker 类型，而是一个 workflow / job family。它主要由 `api_worker` 执行，因为当前核心动作是飞书 API、FastMoss HTTP API、事实库和飞书写回。目标颗粒度收敛为“商品发现 job + 达人同步 job”两层 fan-out：不按每个 API 拆 job，也不把整批商品或整批达人塞进一个大 job。
 
 ## 2. Task
 
@@ -18,62 +18,62 @@
 | 编排者 | `executor_daemon` |
 | 主要执行 worker | `api_worker` |
 | Runtime 队列 | `api_worker_job` |
-| 逻辑 job 粒度 | product discovery job、creator detail job、Feishu projection job |
+| 逻辑 job 粒度 | product creator discovery job、influencer creator sync job、status reconcile batch job |
 | 最终结果 | product/creator 汇总、飞书达人池写入结果、竞品表状态、summary/outbox |
 
-说明: product discovery job、creator detail job 是 workflow 内部的逻辑执行颗粒度，不是独立 Runtime 表，也不是专用 handler。
+说明: product creator discovery job 和 influencer creator sync job 是 workflow 内部的业务执行颗粒度，统一进入 `api_worker_job`，不新增达人同步专用 Runtime 表。
 
 ## 3. Workflow
 
-目标 workflow_code 为 `sync_tk_influencer_pool`。正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；历史 framework 兼容入口不作为目标架构设计元素。
+正式 workflow_code 为 `sync_tk_influencer_pool`。正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；历史 framework 兼容入口不作为项目架构设计元素。
 
 架构归一后，该 workflow 可表达为:
 
 ```mermaid
 flowchart TD
     A["Task: sync_tk_influencer_pool"] --> B["read_competitor_candidates<br/>feishu_table_read"]
-    B --> C["dispatch_product_jobs"]
-    C --> D["discover_related_creators<br/>fastmoss_product_fetch"]
-    D --> E["collect_creator_detail<br/>fastmoss_creator_fetch"]
-    E --> F["write_influencer_pool<br/>feishu_table_write"]
-    F --> G["finalize_product"]
-    G --> H["writeback_competitor_status<br/>feishu_table_write"]
-    H --> I["ready_for_summary"]
-    I --> J["notification_outbox"]
+    B --> C["discover_related_creators<br/>product_creator_discovery"]
+    C --> D["group unique creators<br/>merge product_hits"]
+    D --> E["sync_influencer_pool<br/>influencer_creator_sync"]
+    E --> F{"product group terminal?"}
+    F -->|yes| G["write source row status<br/>feishu_table_write inside sync job"]
+    F -->|no| H["wait other creator sync jobs"]
+    C -->|no matched creators / discovery terminal| I["writeback_competitor_status<br/>batch reconcile"]
+    G --> J["ready_for_summary"]
+    I --> J
+    H --> J
+    J --> K["notification_outbox"]
 ```
 
 ## 4. Stage 设计
 
 | Stage code | 作用 | Runtime 表 / 状态 |
 | --- | --- | --- |
-| `read_competitor_candidates` | 从 `TK竞品收集` 中筛选待查找/失败重试/处理中记录 | `api_worker_job` / `feishu_table_read` |
-| `dispatch_product_jobs` | 为每条候选竞品创建商品发现 `api_worker_job` | `api_worker_job` / `stage=discover_related_creators` |
-| `discover_related_creators` | 通过 `fastmoss_product_fetch` 获取商品关联达人，创建 creator detail `api_worker_job` | `api_worker_job` / `job_code=fastmoss_product_fetch` |
-| `collect_creator_detail` | 通过 `fastmoss_creator_fetch` 拉单个达人详情，写达人事实和媒体资产 | `api_worker_job` / `job_code=fastmoss_creator_fetch` |
-| `write_influencer_pool` | 将达人事实和关系投影到 `TK达人池` | `api_worker_job` / `job_code=feishu_table_write` |
-| `finalize_product` | 聚合该竞品下所有 creator detail jobs | `api_worker_job` result + reconciler aggregation |
-| `writeback_competitor_status` | 回写竞品表达人查找状态 | `api_worker_job` / `feishu_table_write` |
-| `ready_for_summary` | 所有 product groups 终态后生成 summary 并写通知 | `task_request` / `notification_outbox` |
+| `read_competitor_candidates` | 从 `TK竞品收集` 中筛选待查找/失败重试/处理中记录 | 1 个 `api_worker_job` / `feishu_table_read` |
+| `discover_related_creators` | 每个竞品商品 1 个 `product_creator_discovery` job，内部调用 FastMoss 商品达人列表，按销量和粉丝阈值过滤，输出 normalized creator candidates + product hit context | `api_worker_job` / `product_creator_discovery` |
+| `sync_influencer_pool` | 每个 unique 达人 1 个 `influencer_creator_sync` job，payload 携带该达人本次命中的所有 `product_hits`；job 内部完成达人详情、事实入库、达人池 upsert，并在商品 group 终态时写回对应竞品商品状态 | `api_worker_job` / `influencer_creator_sync` |
+| `writeback_competitor_status` | 批量兜底回写竞品表达人查找状态，处理无匹配达人、商品发现失败、重试耗尽或未被最后一个达人同步 job 成功写回的 source rows；单个 job 最多 50 条 source rows | `api_worker_job` / `feishu_table_write` |
+| `ready_for_summary` | 汇总 product / creator / Feishu writeback 结果并写通知 | `task_request` / `notification_outbox` |
 
 ## 5. Job 设计
 
 | Job | 表 / job 类型 | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
 | 竞品候选读取 | `api_worker_job` | `api_worker` | `feishu_table_read` | `influencer_pool_source_adapter` |
-| 商品达人列表发现 | `api_worker_job` / `stage=discover_related_creators` | `api_worker` | `fastmoss_product_fetch` | `detail_level=related_creators` + product relation mapper |
-| 达人详情采集 | `api_worker_job` / `stage=collect_creator_detail` | `api_worker` | `fastmoss_creator_fetch` | creator fact mapper + optional `media_asset_sync` |
-| 达人池写入 | `api_worker_job` / `stage=write_influencer_pool` | `api_worker` | `feishu_table_write` | `influencer_pool_projection_mapper` |
-| 商品级汇总 | `api_worker_job` result scan | `executor_daemon` / reconciler | workflow finalizer | product creator status aggregator |
-| 竞品状态回写 | `api_worker_job` | `api_worker` | `feishu_table_write` | `competitor_influencer_status_projection_mapper` |
-| 父任务汇总 | `task_request` finalize | `executor_daemon` | workflow finalizer | product / creator detail summary policy |
+| 商品达人发现 | `api_worker_job` / `stage=discover_related_creators` / 每个商品 1 个 | `api_worker` | `product_creator_discovery` | 内部复用 `fastmoss_product_fetch`，输出 normalized creator candidates + product hit context |
+| 达人同步 | `api_worker_job` / `stage=sync_influencer_pool` / 每个 unique 达人 1 个 | `api_worker` | `influencer_creator_sync` | 内部复用 `fastmoss_creator_fetch`、`fact_bundle_upsert`、`media_asset_sync`、`feishu_table_write`；写 `TK达人池` 并按 product group 终态回写 `达人查找状态` |
+| 竞品状态兜底回写 | `api_worker_job` / 最多 50 条 source rows | `api_worker` | `feishu_table_write` | `competitor_influencer_status_projection_mapper` |
+| 父任务汇总 | `task_request` finalize | `executor_daemon` | workflow finalizer | product / creator / Feishu writeback summary policy |
 
 约束:
 
 - 达人同步不新增业务专用 Runtime job 表；所有 API/IO 执行单元统一进入 `api_worker_job`。
-- 商品发现和达人详情只是逻辑 job 粒度，通过 `stage`、`job_code`、`business_key`、`dedupe_key`、payload 中的 `source_record_id/product_id/influencer_id` 表达。
+- 商品发现和达人同步只是逻辑 job 粒度，通过 `stage`、`job_code`、`business_key`、`dedupe_key`、payload 中的 `source_record_id/product_id/creator_id/product_hits` 表达。
 - 如需要父子收敛，优先在通用 Runtime job schema 中补充 `parent_job_id` / `job_group` / `entity_type` / `entity_key` 这类通用字段，而不是新增达人同步专用表。
-- `api_worker` 只通过通用 handler 执行外部能力: `fastmoss_product_fetch`、`fastmoss_creator_fetch`、`media_asset_sync`、`fact_bundle_upsert`、`feishu_table_write`。
-- 不新增 `influencer_pool_product`、`influencer_pool_author`、`influencer_pool_finalizer` 这类业务专用 worker handler。
+- `product_creator_discovery` 是商品粒度业务 job，内部复用 FastMoss 商品达人列表能力，不再拆成商品 base、overview、author list 等多个 Runtime job。
+- `influencer_creator_sync` 是达人粒度业务 job，内部完成达人详情、事实入库、素材同步、`TK达人池` upsert 和商品终态状态回写，不再把 `persist_creator_facts`、`write_influencer_pool` 拆成独立 Runtime job。
+- 不新增 `influencer_pool_product`、`influencer_pool_author`、`influencer_pool_finalizer` 这类历史业务专用 worker handler；新业务 job 名称以 `product_creator_discovery` 和 `influencer_creator_sync` 为准。
+- 商品状态回写需要幂等。若多个达人同步 job 同时判断同一个 product group 已终态，只允许一个稳定 dedupe key 产生最终写回，其余重复写回应被跳过或视为幂等成功。
 
 ## 6. 进程间调度时序图
 
@@ -97,36 +97,35 @@ sequenceDiagram
     API->>Feishu: read TK competitor candidates
     API->>DB: mark candidate read success
     Exec->>DB: fan-out product discovery jobs
-    Exec->>DB: enqueue api_worker_job(fastmoss_product_fetch)
+    Exec->>DB: enqueue api_worker_job(product_creator_discovery)
     API->>DB: claim product discovery job
-    API->>DB: store related creators result
-    Exec->>DB: fan-out creator detail jobs
-    Exec->>DB: enqueue api_worker_job(fastmoss_creator_fetch)
-    API->>DB: claim creator detail jobs
+    API->>DB: store normalized creator candidates + product hit context
+    Exec->>DB: group product hits by unique creator
+    Exec->>DB: enqueue api_worker_job(influencer_creator_sync)
+    API->>DB: claim influencer creator sync jobs
     API->>Fact: upsert creator facts and product relations
     API->>Obj: sync optional avatar / media assets
-    API->>DB: mark creator detail jobs terminal
-    Exec->>DB: enqueue api_worker_job(feishu_table_write)
-    API->>Feishu: write TK influencer pool projection
-    API->>DB: mark influencer write terminal
-    Exec->>DB: reconcile product groups
-    Exec->>DB: enqueue api_worker_job(feishu_table_write)
-    API->>Feishu: write competitor influencer status
-    API->>DB: mark status write terminal
+    API->>Feishu: upsert TK influencer pool row
+    API->>DB: mark creator sync job terminal
+    API->>DB: check whether related product groups are terminal
+    API->>Feishu: if terminal, write TK competitor influencer status
+    API->>DB: record product status writeback result
+    Exec->>DB: enqueue batch status reconcile for residual source rows
+    API->>Feishu: write residual competitor influencer status
     Exec->>DB: finalize task_request and insert notification_outbox
     Outbox->>DB: claim notification_outbox
     Outbox->>Entry: send summary
 ```
 
-## 7. Product Discovery Job 状态
+## 7. Product Creator Discovery Job 状态
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> running: api_worker claim
     retry_wait --> running: 到达 available_at 后重试
-    running --> success: 已生成 creator detail jobs
-    running --> success: 无需达人详情或无匹配达人
+    running --> success: 已生成 normalized creator candidates
+    running --> success: 无匹配达人，商品可直接进入状态回写
     running --> retry_wait: 可重试失败
     running --> failed: 达到最大重试次数
     success --> [*]
@@ -134,21 +133,22 @@ stateDiagram-v2
     skipped --> [*]
 ```
 
-Product Discovery Job 的关键原则:
+Product Creator Discovery Job 的关键原则:
 
 - 负责一条竞品记录的达人发现。
-- 负责创建对应的 creator detail jobs。
-- 创建 creator detail jobs 后自身进入 `success`，product group 进入等待收敛状态，不在内存中等待。
-- 由 finalizer 基于 Runtime DB 聚合 creator detail jobs 后推进 product group 完成。
+- 内部调用 FastMoss 商品达人列表，不把商品 base、overview、author list 等 API 拆成多个 Runtime job。
+- 按 `sold_count > 50`、`follower_count > 5000` 过滤后输出 normalized creator candidates 和 product hit context。
+- discovery job 自身不直接写 `TK达人池`；它只提供后续按 unique 达人聚合的输入。
+- 如果无匹配达人，商品 group 可以直接进入状态回写，最终状态为 `已完成`，并在 summary 中记录 `matched_creator_count=0`。
 
-## 8. Creator Detail Job 状态
+## 8. Influencer Creator Sync Job 状态
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> running: api_worker claim
     retry_wait --> running: 到达 available_at 后重试
-    running --> success: 达人详情采集和写入成功
+    running --> success: 达人详情、事实入库、达人池 upsert 成功
     running --> skipped: checkpoint 或业务判定跳过
     running --> retry_wait: 可重试失败
     running --> failed: 达到最大重试次数
@@ -157,15 +157,18 @@ stateDiagram-v2
     failed --> [*]
 ```
 
-Creator Detail Job 的关键原则:
+Influencer Creator Sync Job 的关键原则:
 
-- 一条 creator detail job 对应一个达人详情采集和写入动作。
+- 一条 influencer creator sync job 对应一个 unique 达人的同步动作，payload 携带该达人本次命中的所有 `product_hits`。
+- 该 job 内部完成达人详情采集、Fact DB upsert、媒体资产同步、`TK达人池` upsert，不再把这些连续依赖步骤拆成多个 Runtime job。
 - 失败只影响该达人，不拖垮整个 task。
-- 写飞书和事实库必须依赖 `influencer_id / product_id / source_record_id` 做幂等。
+- 写飞书和事实库必须依赖 `creator_id`、`product_hits[*].product_id`、`product_hits[*].source_record_id` 做幂等。
+- job 终态后必须检查它涉及的每个 product group 是否所有相关达人同步 job 都已终态；如果是，则在同一个 job 内通过飞书写回该商品的 `达人查找状态`。
+- 商品状态写回规则为: 所有相关达人同步成功或跳过时写 `已完成`；存在不可恢复失败、达人池写入失败或商品级信息不足时写 `失败重试`，并带失败原因摘要。
 
 ## 9. Handler 与 Flow 边界
 
-达人同步中的 `api_worker` 不理解完整达人同步业务，只根据 job 的执行意图调用通用 handler。
+达人同步中的 `api_worker` 只 claim Runtime job，并根据 `handler_code` 调用准入 handler。业务 job 可以在自己的 handler 内部串行复用 capability handler，但它必须把内部步骤、错误和最终副作用汇总到同一个 Runtime job result。
 
 ```mermaid
 flowchart TD
@@ -173,16 +176,15 @@ flowchart TD
     B --> C["Execution Supervisor"]
     C --> D{"job execution kind"}
     D -->|Feishu read| E["feishu_table_read"]
-    D -->|Product related creators| F["fastmoss_product_fetch"]
-    D -->|Creator detail| G["fastmoss_creator_fetch"]
-    D -->|Facts| H["fact_bundle_upsert"]
-    D -->|Feishu write| I["feishu_table_write"]
+    D -->|Product discovery| F["product_creator_discovery"]
+    D -->|Creator sync| G["influencer_creator_sync"]
+    D -->|Status reconcile| I["feishu_table_write"]
     E --> J["Runtime DB result / status"]
     F --> J
     G --> J
-    H --> J
     I --> J
-    J --> K["Reconciler 推进 product group / parent task"]
+    G --> K["internal capability calls:<br/>fastmoss_creator_fetch / fact_bundle_upsert / media_asset_sync / feishu_table_write"]
+    J --> L["Reconciler 推进 product group / parent task"]
 ```
 
 ## 10. 颗粒度原则
@@ -192,12 +194,12 @@ flowchart TD
 推荐颗粒度:
 
 - 顶层 task 负责一次同步请求。
-- product discovery job 负责一条竞品记录的商品级达人发现。
-- creator detail job 负责一个达人详情和写入。
-- product finalizer 负责一条竞品记录下的 creator detail jobs 汇总。
-- task reconciler 负责整个 task 下 product groups 汇总。
+- product creator discovery job 负责一条竞品记录的商品级达人发现。
+- influencer creator sync job 负责一个 unique 达人的详情、事实、达人池写入，并在对应商品下所有达人 job 完成时写回该商品状态。
+- status reconcile batch job 只处理无达人、discovery 失败、重试耗尽或异常残留的 source rows；每个 job 最多 50 条。
+- task reconciler 负责整个 task 下 product / creator / Feishu writeback 汇总和 outbox。
 
-这样一个达人失败只重试这个达人，一个竞品失败只影响这个竞品，父 task 可以继续推进并保留完整审计状态。
+这样一个达人失败只重试这个达人，一个竞品失败只影响这个竞品，父 task 可以继续推进并保留完整审计状态。示例: 一次读到 20 个商品，发现 60 个候选达人，去重后 35 个达人，目标 Runtime job 数量约为 `1 read + 20 discovery + 35 creator sync + 1 status reconcile + 1 outbox = 58`。
 
 ## 11. P0 Contract Payload / Result 样例
 
@@ -259,7 +261,7 @@ result:
 }
 ```
 
-### 11.2 商品达人发现: `fastmoss_product_fetch`
+### 11.2 商品达人发现: `product_creator_discovery`
 
 stage: `discover_related_creators`
 
@@ -271,11 +273,17 @@ payload:
   "task_code": "sync_tk_influencer_pool",
   "workflow_code": "sync_tk_influencer_pool",
   "stage_code": "discover_related_creators",
+  "job_code": "product_creator_discovery",
   "product_identity": {
     "product_id": "1731194997356205027",
     "fastmoss_product_url": "https://www.fastmoss.com/zh/e-commerce/detail/1731194997356205027"
   },
-  "detail_level": "related_creators",
+  "discovery_plan": {
+    "internal_handler": "fastmoss_product_fetch",
+    "detail_level": "related_creators",
+    "page_size": 50,
+    "max_pages": 5
+  },
   "source_context": {
     "source_record_id": "recInfluencer001",
     "holiday": "毕业季"
@@ -295,7 +303,7 @@ result:
     "product_id": "1731194997356205027",
     "entity_key": "fastmoss_product:1731194997356205027"
   },
-  "related_creators": [
+  "normalized_creator_candidates": [
     {
       "creator_id": "7228697870020199470",
       "creator_identity": {
@@ -319,15 +327,21 @@ result:
       }
     }
   ],
+  "product_hit_context": {
+    "source_record_id": "recInfluencer001",
+    "product_id": "1731194997356205027",
+    "candidate_count": 1,
+    "matched_creator_count": 1
+  },
   "raw_response_refs": [
     "artifact://fastmoss/product/1731194997356205027/author.json"
   ]
 }
 ```
 
-### 11.3 达人详情采集: `fastmoss_creator_fetch`
+### 11.3 达人同步业务 job: `influencer_creator_sync`
 
-stage: `collect_creator_detail`
+stage: `sync_influencer_pool`
 
 payload:
 
@@ -336,141 +350,158 @@ payload:
   "request_id": "req-influencer-001",
   "task_code": "sync_tk_influencer_pool",
   "workflow_code": "sync_tk_influencer_pool",
-  "stage_code": "collect_creator_detail",
+  "stage_code": "sync_influencer_pool",
+  "job_code": "influencer_creator_sync",
   "creator_identity": {
     "creator_id": "7228697870020199470",
     "uid": "7228697870020199470",
     "profile_url": "https://www.fastmoss.com/zh/influencer/detail/7228697870020199470"
   },
   "region": "US",
-  "detail_level": "profile_metrics_contact_goods",
-  "source_context": {
-    "source_record_id": "recInfluencer001",
-    "product_id": "1731194997356205027",
-    "holiday": "毕业季",
-    "matched_product_sold_count": 72
-  },
-  "fetch_plan": {
-    "date_type": 28,
-    "endpoints": ["base_info", "author_index", "stat_info", "contact", "cargo_summary", "goods_list"]
+  "product_hits": [
+    {
+      "source_record_id": "recInfluencer001",
+      "product_id": "1731194997356205027",
+      "holiday": "毕业季",
+      "matched_product_sold_count": 72,
+      "source_status_writeback": {
+        "target_table_ref": "feishu://mujitask/TK竞品收集",
+        "record_id": "recInfluencer001"
+      }
+    }
+  ],
+  "sync_plan": {
+    "creator_fetch": {
+      "internal_handler": "fastmoss_creator_fetch",
+      "detail_level": "profile_metrics_contact_goods",
+      "date_type": 28,
+      "endpoints": ["base_info", "author_index", "stat_info", "contact", "cargo_summary", "goods_list"]
+    },
+    "fact_upsert": {"internal_handler": "fact_bundle_upsert"},
+    "media_asset_sync": {"internal_handler": "media_asset_sync", "optional": true},
+    "influencer_pool_write": {
+      "internal_handler": "feishu_table_write",
+      "mapper_code": "influencer_pool_projection_mapper",
+      "target_table_ref": "feishu://mujitask/TK达人池"
+    },
+    "product_status_reconcile": {
+      "enabled": true,
+      "internal_handler": "feishu_table_write",
+      "mapper_code": "competitor_influencer_status_projection_mapper"
+    }
   }
 }
 ```
 
 result:
 
+`contact` 字段标准化时按邮箱优先选择；没有邮箱时选择 FastMoss 返回的第一个有效联系方式；没有任何联系方式时 `available=false`，后续飞书写入不覆盖已有联系方式。
+
 ```json
 {
-  "entities": {
-    "creators": [
+  "creator_id": "7228697870020199470",
+  "status": "success",
+  "internal_steps": {
+    "creator_fetch": "success",
+    "fact_upsert": "success",
+    "media_asset_sync": "success",
+    "influencer_pool_write": "success",
+    "product_status_reconcile": "success"
+  },
+  "creator_fact_bundle": {
+    "entity_key": "fastmoss_creator:7228697870020199470",
+    "creator_id": "7228697870020199470",
+    "metrics": {
+      "follower_count": 128000,
+      "aweme_28d_count": 16,
+      "video_sale_amount": 32000,
+      "live_sale_amount": 0
+    },
+    "contact": {
+      "raw": "hello@example.com",
+      "normalized_text": "hello@example.com",
+      "available": true
+    }
+  },
+  "influencer_pool_write": {
+    "target_table_ref": "feishu://mujitask/TK达人池",
+    "mapper_code": "influencer_pool_projection_mapper",
+    "records": [
       {
-        "entity_key": "fastmoss_creator:7228697870020199470",
-        "creator_id": "7228697870020199470",
-        "nickname": "Anonymous Billionaires",
-        "avatar_url": "https://cdn.fastmoss.com/avatar.jpg",
-        "metrics": {
-          "follower_count": 128000,
-          "aweme_28d_count": 16,
-          "video_sale_amount": 32000,
-          "live_sale_amount": 0
+        "op": "upsert",
+        "business_entity_key": "creator:7228697870020199470",
+        "upsert_key": {
+          "field": "达人ID",
+          "value": "7228697870020199470"
         },
-        "contact": {
-          "normalized_text": "",
-          "available": false
+        "fields": {
+          "达人ID": "7228697870020199470",
+          "达人头像": [{"asset_ref": "asset://creator/7228697870020199470/avatar"}],
+          "粉丝数": "13W",
+          "28天视频数": "16",
+          "带货视频 GMV": "3W",
+          "带货直播 GMV": "小于1W",
+          "带货商品图": [{"asset_ref": "asset://product/1731194997356205027/main-image"}],
+          "关联商品销量": "72",
+          "关联节日": ["毕业季"],
+          "合作店铺": ["Graduation Shop"],
+          "达人联系方式": "hello@example.com",
+          "记录日期": "2026-04-24",
+          "更新日期": "2026-04-24"
+        },
+        "source_context": {
+          "source_record_id": "recInfluencer001",
+          "product_id": "1731194997356205027",
+          "relation_key": "creator_product:7228697870020199470:1731194997356205027"
         }
       }
-    ]
+    ],
+    "write_result": {
+      "written_count": 1,
+      "skipped_count": 0,
+      "target_record_ids": ["recInfluencerPool001"]
+    }
   },
-  "relations": [
-    {
-      "relation_key": "creator_product:7228697870020199470:1731194997356205027",
-      "relation_type": "creator_promotes_product",
-      "metrics": {
-        "sold_count": 72,
-        "sale_amount": 1299
-      },
-      "source_context": {
-        "source_record_id": "recInfluencer001",
-        "holiday": "毕业季"
-      }
-    }
-  ],
-  "observations": [
-    {"entity_key": "fastmoss_creator:7228697870020199470", "metric_name": "follower_count", "metric_value": 128000}
-  ],
-  "media_refs": [
-    {"entity_key": "fastmoss_creator:7228697870020199470", "media_type": "avatar", "source_url": "https://cdn.fastmoss.com/avatar.jpg"}
-  ],
-  "raw_response_refs": [
-    "artifact://fastmoss/creator/7228697870020199470/base-info.json"
-  ]
-}
-```
-
-### 11.4 达人池写入: `influencer_pool_projection_mapper` -> `feishu_table_write`
-
-stage: `write_influencer_pool`
-
-payload:
-
-```json
-{
-  "target_table_ref": "feishu://mujitask/TK达人池",
-  "write_mode": "batch_upsert",
-  "mapper_code": "influencer_pool_projection_mapper",
-  "records": [
-    {
-      "op": "upsert",
-      "business_entity_key": "creator:7228697870020199470",
-      "upsert_key": {
-        "field": "达人ID",
-        "value": "7228697870020199470"
-      },
-      "fields": {
-        "达人ID": "7228697870020199470",
-        "达人头像": [{"asset_ref": "asset://creator/7228697870020199470/avatar"}],
-        "粉丝数": "12.8W",
-        "28天视频数": "16",
-        "带货视频 GMV": "$3.2W",
-        "带货直播 GMV": "$0",
-        "带货商品图": [{"asset_ref": "asset://product/1731194997356205027/main-image"}],
-        "关联商品销量": "72",
-        "关联节日": ["毕业季"],
-        "合作店铺": ["Graduation Shop"],
-        "达人联系方式": "",
-        "记录时间": "2026-04-24"
-      },
-      "source_context": {
-        "source_record_id": "recInfluencer001",
-        "product_id": "1731194997356205027",
-        "relation_key": "creator_product:7228697870020199470:1731194997356205027"
-      }
-    }
-  ]
-}
-```
-
-result:
-
-```json
-{
-  "written_count": 1,
-  "skipped_count": 0,
-  "target_record_ids": ["recInfluencerPool001"],
-  "records": [
+  "creator_records": [
     {
       "business_entity_key": "creator:7228697870020199470",
       "record_id": "recInfluencerPool001",
       "op": "upsert",
       "status": "success"
     }
+  ],
+  "product_hits": [
+    {
+      "source_record_id": "recInfluencer001",
+      "product_id": "1731194997356205027",
+      "creator_sync_status": "success"
+    }
+  ],
+  "product_status_writebacks": [
+    {
+      "source_record_id": "recInfluencer001",
+      "product_id": "1731194997356205027",
+      "product_group_terminal": true,
+      "final_status": "已完成",
+      "matched_creator_count": 1,
+      "synced_creator_count": 1,
+      "failed_creator_count": 0,
+      "writeback_record_id": "recInfluencer001",
+      "status_writeback": "success"
+    }
+  ],
+  "raw_response_refs": [
+    "artifact://fastmoss/creator/7228697870020199470/base-info.json",
+    "artifact://fastmoss/creator/7228697870020199470/author-contact.json"
   ]
 }
 ```
 
-### 11.5 竞品状态回写: `competitor_influencer_status_projection_mapper`
+### 11.4 竞品状态批量兜底回写: `competitor_influencer_status_projection_mapper`
 
 stage: `writeback_competitor_status`
+
+本 stage 不是正常成功路径的唯一状态回写入口。正常情况下，最后一个让某个 product group 进入终态的 `influencer_creator_sync` job 会在同一个 job 内写回该商品的 `达人查找状态`。本 stage 只负责批量兜底和对账，每个 job 最多处理 50 条 source rows。
 
 payload:
 
@@ -479,6 +510,10 @@ payload:
   "target_table_ref": "feishu://mujitask/TK竞品收集",
   "write_mode": "batch_update",
   "mapper_code": "competitor_influencer_status_projection_mapper",
+  "batch_policy": {
+    "max_source_rows": 50,
+    "only_unwritten_terminal_product_groups": true
+  },
   "records": [
     {
       "op": "update",
@@ -490,7 +525,8 @@ payload:
       "source_context": {
         "matched_creator_count": 1,
         "written_creator_count": 1,
-        "failed_creator_count": 0
+        "failed_creator_count": 0,
+        "status_reason": "all_creator_sync_jobs_terminal"
       }
     }
   ]

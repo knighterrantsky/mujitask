@@ -22,6 +22,8 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
         "record_id": record_id,
         "business_entity_key": _first_non_empty(record.get("business_entity_key"), payload.get("business_entity_key")),
         "upsert_key": _mapping(record.get("upsert_key")),
+        "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
+        "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
         "fields": _mapping(record.get("fields")),
         "source_context": _mapping(record.get("source_context")) or _source_context_from_record(record, payload),
     }
@@ -35,8 +37,6 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
     fields = _compact(
         {
             "达人ID": creator_id,
-            "达人昵称": creator_name,
-            "关联商品ID": product_id,
             "带货商品图": _influencer_product_image_refs(record, product_id=product_id),
             "关联节日": _list_text(_first_non_empty(record.get("holiday"))),
             "关联商品销量": _stringify_scalar(_first_non_empty(record.get("matched_product_sold_count"), _relation_metric(record, "sold_count"))),
@@ -47,7 +47,8 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "带货直播 GMV": _format_w_unit_display(_creator_metric(record, "live_sale_amount", "live_gmv")),
             "合作店铺": _influencer_shop_names(record),
             "达人联系方式": _creator_contact_text(record),
-            "记录时间": date.today().isoformat(),
+            "记录日期": date.today().isoformat(),
+            "更新日期": date.today().isoformat(),
         }
     )
     return _normalize_write_record(
@@ -56,6 +57,8 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "business_entity_key": _first_non_empty(record.get("business_entity_key"), f"creator:{creator_id}" if creator_id else ""),
             "upsert_key": {"field": "达人ID", "value": creator_id} if creator_id else {},
             "fields": fields,
+            "update_excluded_fields": ["记录日期"],
+            "update_replace_fields": ["达人头像"],
             "source_context": _source_context_from_record(record, payload),
         },
         payload,
@@ -196,17 +199,67 @@ def _influencer_shop_names(record: Mapping[str, Any]) -> list[str]:
     for value in _list_text(record.get("cooperation_shop_names")):
         if value and value not in names:
             names.append(value)
-    entities = _mapping(record.get("entities"))
-    for shop in _mapping_list(entities.get("shops")):
-        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+
+    shop_refs = _cooperation_shop_refs(record)
+    shops_by_ref = _shops_by_ref(record)
+    for shop_ref in shop_refs:
+        shop = shops_by_ref.get(shop_ref)
+        name = _first_non_empty(_mapping(shop).get("shop_name"), _mapping(shop).get("name"))
         if name and name not in names:
             names.append(name)
+
+    if names:
+        return names
+
     fact_bundle = _mapping(record.get("fact_bundle"))
-    for shop in _mapping_list(fact_bundle.get("shops")):
-        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+    for relation in _mapping_list(_mapping(fact_bundle.get("relations")).get("shop_creators")):
+        name = _first_non_empty(relation.get("shop_name"), _mapping(_mapping(relation.get("metadata")).get("raw")).get("shop_name"))
         if name and name not in names:
             names.append(name)
     return names
+
+
+def _cooperation_shop_refs(record: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for relation in _mapping_list(record.get("relations")):
+        if _text(relation.get("relation_type")) != "shop_collaborates_with_creator":
+            continue
+        ref = _strip_entity_ref(_first_non_empty(relation.get("from_entity_key"), relation.get("shop_key"), relation.get("shop_id"), relation.get("seller_id")))
+        if ref and ref not in refs:
+            refs.append(ref)
+    fact_bundle = _mapping(record.get("fact_bundle"))
+    for relation in _mapping_list(_mapping(fact_bundle.get("relations")).get("shop_creators")):
+        ref = _strip_entity_ref(_first_non_empty(relation.get("shop_key"), relation.get("shop_id"), relation.get("seller_id"), relation.get("shop_name")))
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _shops_by_ref(record: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    shops: dict[str, Mapping[str, Any]] = {}
+    for shop in _mapping_list(_mapping(record.get("entities")).get("shops")):
+        for ref in _shop_refs(shop):
+            shops.setdefault(ref, shop)
+    for shop in _mapping_list(_mapping(record.get("fact_bundle")).get("shops")):
+        for ref in _shop_refs(shop):
+            shops.setdefault(ref, shop)
+    return shops
+
+
+def _shop_refs(shop: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for value in (shop.get("entity_key"), shop.get("shop_key"), shop.get("shop_id"), shop.get("seller_id"), shop.get("shop_name"), shop.get("name")):
+        ref = _strip_entity_ref(value)
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _strip_entity_ref(value: Any) -> str:
+    text = _text(value)
+    if ":" in text:
+        return text.split(":", 1)[1]
+    return text
 
 
 def _format_w_unit_display(value: Any) -> str:
@@ -216,8 +269,9 @@ def _format_w_unit_display(value: Any) -> str:
     if number is None:
         return _text(value)
     if abs(number) >= 10_000:
-        return f"{_format_trimmed_decimal(number / 10_000)}W"
-    return _format_trimmed_decimal(number)
+        sign = "-" if number < 0 else ""
+        return f"{sign}{int(abs(number) / 10_000 + 0.5)}W"
+    return "小于1W"
 
 
 def _stringify_scalar(value: Any) -> str:

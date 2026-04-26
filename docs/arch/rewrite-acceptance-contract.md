@@ -9,7 +9,7 @@
 本轮重构的目标不是在旧 `business` 代码之上做兼容包装，而是:
 
 - 先把旧实现完整冻结到 `achieve/` 目录，作为黄金基准。
-- 再按新的目标架构重新实现业务层:
+- 再按新的项目架构重新实现业务层:
   - `handler registry`
   - `workflow definition`
   - 通用 `job`
@@ -56,7 +56,7 @@
 
 本轮重构期间，项目允许暂时不可运行，不以“保持旧入口兼容”作为约束。
 
-### 3.3 新实现必须按目标架构落地
+### 3.3 新实现必须按项目架构落地
 
 新代码必须围绕以下结构重建，而不是把旧业务函数重新拼回原目录:
 
@@ -163,7 +163,7 @@ payload 示例:
   },
   "normalization": {
     "ignore_fields": ["request_id", "job_id", "run_id", "created_at", "updated_at", "raw_response_ref"],
-    "date_fields": ["记录日期", "记录时间"],
+    "date_fields": ["记录日期", "更新日期", "记录时间"],
     "numeric_text_fields": ["昨日销量", "近7天销量", "近90天销量", "粉丝数", "关联商品销量"],
     "unordered_list_paths": ["*.warnings", "*.fields.关联节日", "*.fields.合作店铺"]
   },
@@ -175,6 +175,10 @@ payload 示例:
     {
       "path": "feishu_projection.records[*].fields.记录日期",
       "reason": "Record date is execution-date dependent."
+    },
+    {
+      "path": "feishu_projection.records[*].fields.更新日期",
+      "reason": "Update date is execution-date dependent."
     }
   ],
   "failure_policy": {

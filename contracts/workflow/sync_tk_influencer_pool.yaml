@@ -3,7 +3,7 @@ contract_type: workflow_contract
 workflow_code: sync_tk_influencer_pool
 domain: tk_influencer_pool
 task_code: sync_tk_influencer_pool
-status: migrated_existing
+status: complete
 
 business_requirement: docs/business/requirements/sync-tk-influencer-pool.md
 architecture_design: docs/arch/workflow-influencer-pool-sync-design.md
@@ -26,19 +26,16 @@ stages:
     source_adapter: influencer_pool_source_adapter
     purpose: 读取达人查找状态为空、待查找、失败重试或处理中，且商品状态未被跳过的竞品记录
   - stage_code: discover_related_creators
-    handler_code: fastmoss_product_fetch
-    purpose: 获取商品关联达人并按销量、粉丝阈值筛选
-  - stage_code: collect_creator_detail
-    handler_code: fastmoss_creator_fetch
-    purpose: 拉取达人详情、联系方式和画像指标
-  - stage_code: write_influencer_pool
-    handler_code: feishu_table_write
+    handler_code: product_creator_discovery
+    purpose: 每个竞品商品 1 个商品达人发现 job，内部调用 FastMoss 商品达人列表并按销量、粉丝阈值筛选
+  - stage_code: sync_influencer_pool
+    handler_code: influencer_creator_sync
     projection_mapper: influencer_pool_projection_mapper
-    purpose: 按达人ID upsert TK达人池
+    purpose: 每个 unique 达人 1 个同步 job，内部完成达人详情、事实入库、达人池 upsert，并在商品 group 终态时回写对应竞品商品状态
   - stage_code: writeback_competitor_status
     handler_code: feishu_table_write
     projection_mapper: competitor_influencer_status_projection_mapper
-    purpose: 回写 TK竞品收集.达人查找状态
+    purpose: 批量兜底回写 TK竞品收集.达人查找状态，每个 job 最多 50 条 source rows
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总 product/creator 结果并通知
@@ -48,10 +45,11 @@ protected_invariants:
   - 达人查找状态 的正式状态值只有 待查找、处理中、已完成、失败重试
   - 商品状态=已下架/区域不可售 的竞品记录不进入达人查找
   - 达人同步不新增业务专用 Runtime job 表，目标执行单元统一进入 api_worker_job
+  - 达人同步按 商品发现 job + 达人同步 job 两层 fan-out，不按每个 API 拆 Runtime job，也不把整条商品下所有达人塞进一个大 job
+  - influencer_creator_sync 必须在同一个业务 job 内完成达人详情、事实入库、达人池飞书 upsert；当某个商品下所有达人同步 job 都已终态时，同一个 job 同步回写该商品的达人查找状态
+  - writeback_competitor_status 只作为无匹配达人、发现失败、重试耗尽或异常残留 source rows 的批量兜底和对账路径
   - 合作商品数 不作为本期更新字段
-  - 粉丝数、带货视频 GMV、带货直播 GMV 在数据库保留原始数字，飞书展示按 W 单位规则格式化
+  - 粉丝数、带货视频 GMV、带货直播 GMV 在数据库保留原始数字，飞书展示按整数 W 单位四舍五入格式化，小于 1W 显示为 小于1W
+  - 达人联系方式按邮箱优先选择；没有邮箱时选择第一个有效联系方式；没有任何联系方式时不写入且不覆盖已有值
 
-known_architecture_gaps:
-  - code: historical_influencer_job_tables
-    description: influencer_pool_product_job 和 influencer_pool_author_job 只能作为迁移来源或兼容事实，不是目标结构
-    migration_state: docs/arch/migration-state.md
+known_architecture_gaps: []

@@ -194,11 +194,29 @@ def _fetch_request_payload(
     try:
         product = fetch_tiktok_product_record(product_url, timeout=timeout_seconds)
     except TikTokProductUnavailableError as exc:
-        return _fallback_fetch_outcome(
-            reason="request_signal_product_unavailable",
-            message=str(exc),
-            product_url=product_url,
-        )
+        return {
+            "mode": "success",
+            "error_type": "",
+            "error_code": "",
+            "message": str(exc),
+            "retryable": False,
+            "request_attempt": {
+                "attempted": True,
+                "request_source": "live_request",
+                "request_url": product_url,
+                "fallback_signal": False,
+                "fallback_reason": "",
+                "terminal_signal": "product_unavailable",
+            },
+            "raw_request_result": {
+                "product_id": first_non_empty(identity.get("product_id"), extract_product_id(product_url)),
+                "product_url": product_url,
+                "normalized_product_url": first_non_empty(identity.get("normalized_product_url"), product_url),
+                "availability_status": "unavailable",
+                "unavailable_message": str(exc),
+            },
+            "fallback_reason": "",
+        }
     except (TikTokSecurityCheckError, TikTokRateLimitError) as exc:
         return _fallback_fetch_outcome(
             reason=_fallback_reason_from_message(str(exc)),

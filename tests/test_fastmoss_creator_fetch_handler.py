@@ -155,6 +155,39 @@ def test_default_api_registry_binds_fastmoss_creator_fetch_and_maps_contract() -
     )
 
 
+def test_fastmoss_creator_fetch_prefers_email_from_contact_list() -> None:
+    payload = _creator_payload()
+    payload["fastmoss_creator_bundle"]["author_contact"] = {
+        "code": 200,
+        "list": [
+            {"name": "email", "id": "creator@example.com", "has": True, "link": ""},
+            {"name": "bio", "id": "bio", "has": True, "link": "https://example.com/bio"},
+        ],
+    }
+
+    result = fastmoss_creator_fetch_handler(_context(payload))
+
+    assert result.status == "success"
+    assert result.result["creator_fact_bundle"]["contact"]["normalized_text"] == "creator@example.com"
+    assert result.result["quality"]["contact_available"] is True
+
+
+def test_fastmoss_creator_fetch_uses_first_contact_when_email_missing() -> None:
+    payload = _creator_payload()
+    payload["fastmoss_creator_bundle"]["author_contact"] = {
+        "code": 200,
+        "list": [
+            {"name": "email", "id": "", "has": False, "link": ""},
+            {"name": "bio", "id": "bio", "has": True, "link": "https://example.com/bio"},
+        ],
+    }
+
+    result = fastmoss_creator_fetch_handler(_context(payload))
+
+    assert result.status == "success"
+    assert result.result["creator_fact_bundle"]["contact"]["normalized_text"] == "https://example.com/bio"
+
+
 def test_fastmoss_creator_fetch_skips_without_payload_or_live_config() -> None:
     result = fastmoss_creator_fetch_handler(
         _context({"creator_identity": {"unique_id": "roxy_creator"}})

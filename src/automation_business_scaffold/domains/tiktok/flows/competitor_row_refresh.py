@@ -4,26 +4,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler import (
-    tiktok_product_browser_fetch_handler,
-)
-from automation_business_scaffold.capabilities.channels.feishu.table_write_handler import (
-    feishu_table_write_handler,
-)
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler import (
-    fastmoss_product_fetch_handler,
-)
-from automation_business_scaffold.capabilities.media.asset_sync_handler import (
-    media_asset_sync_handler,
-)
-from automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler import (
-    fact_bundle_upsert_handler,
-)
-from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerResult,
 )
+from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
     coerce_bool,
@@ -41,19 +26,21 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
-from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
-    ExecutionProgressEvent,
-    ExecutionSupervisorCallbacks,
-    run_supervised_handler,
+from automation_business_scaffold.control_plane.supervisor import (
+    execution_supervisor as supervisor_runtime,
 )
 
-from .product_request_fetch_handler import tiktok_product_request_fetch_handler
+tiktok_product_browser_fetch_handler = api_handler_callable("tiktok_product_browser_fetch")
+feishu_table_write_handler = api_handler_callable("feishu_table_write")
+fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
+media_asset_sync_handler = api_handler_callable("media_asset_sync")
+fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
+tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_request_fetch")
+run_supervised_handler = supervisor_runtime.run_supervised_handler
+ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
-HANDLER_CODE = "competitor_row_refresh"
-CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
-
-def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
+def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
@@ -223,9 +210,12 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
             runtime_evidence=runtime_evidence,
         )
 
+    product_unavailable = _is_unavailable_product_result(normalized_product_result)
     asset_refs = _collect_asset_refs(normalized_product_result)
     media_result_payload: dict[str, Any] = {}
-    if asset_refs:
+    if product_unavailable:
+        step_timeline.append(_skipped_timeline_entry("media_sync", reason="product_unavailable"))
+    elif asset_refs:
         media_context = _child_context(
             context,
             handler_code="media_asset_sync",
@@ -260,31 +250,35 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
     else:
         step_timeline.append(_skipped_timeline_entry("media_sync", reason="no_assets"))
 
-    fastmoss_context = _child_context(
-        context,
-        handler_code="fastmoss_product_fetch",
-        payload={
-            **request_payload,
-            **payload,
-            "request_payload": request_payload,
-            "source_record_id": source_record_id,
-            "product_identity": identity,
-            "source_context": source_context,
-            "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
-            "fastmoss_window_days": first_non_empty(
-                payload.get("fastmoss_window_days"),
-                request_payload.get("fastmoss_window_days"),
-                90,
-            ),
-        },
-        step_code="fastmoss_fetch",
-    )
-    fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
-    step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
-    fastmoss_payload = dict(fastmoss_result.result)
-    if fastmoss_result.status == "failed":
-        optional_step_failed = True
-        warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
+    fastmoss_payload: dict[str, Any] = {}
+    if product_unavailable:
+        step_timeline.append(_skipped_timeline_entry("fastmoss_fetch", reason="product_unavailable"))
+    else:
+        fastmoss_context = _child_context(
+            context,
+            handler_code="fastmoss_product_fetch",
+            payload={
+                **request_payload,
+                **payload,
+                "request_payload": request_payload,
+                "source_record_id": source_record_id,
+                "product_identity": identity,
+                "source_context": source_context,
+                "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
+                "fastmoss_window_days": first_non_empty(
+                    payload.get("fastmoss_window_days"),
+                    request_payload.get("fastmoss_window_days"),
+                    90,
+                ),
+            },
+            step_code="fastmoss_fetch",
+        )
+        fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
+        step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
+        fastmoss_payload = dict(fastmoss_result.result)
+        if fastmoss_result.status == "failed":
+            optional_step_failed = True
+            warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
@@ -423,7 +417,7 @@ def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
         coerce_mapping(normalized_product_result.get("product")).get("product_id"),
         identity.get("product_id"),
     )
-    row_status = "partial_success" if optional_step_failed or write_result.status == "skipped" else "success"
+    row_status = "unavailable" if product_unavailable else "partial_success" if optional_step_failed or write_result.status == "skipped" else "success"
     result = {
         "source_record_id": source_record_id,
         "business_entity_key": business_key,
@@ -498,7 +492,10 @@ def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload:
     )
 
 
-def _forward_browser_progress(parent: HandlerContext, event: ExecutionProgressEvent) -> None:
+def _forward_browser_progress(
+    parent: HandlerContext,
+    event: supervisor_runtime.ExecutionProgressEvent,
+) -> None:
     _emit_progress(
         parent,
         f"browser.{event.progress_stage}",
@@ -713,9 +710,28 @@ def _build_competitor_projection_fields(
             _daily_sales_text(daily_metrics, window_days=90),
         ),
     }
+    if _is_unavailable_product_result(normalized_product_result):
+        fields["商品状态"] = "已下架/区域不可售"
     if _source_fields(source_context):
         fields["记录日期"] = first_non_empty(source_context.get("记录日期"))
     return {key: value for key, value in fields.items() if value not in ("", None, [], {})}
+
+
+def _is_unavailable_product_result(payload: Mapping[str, Any]) -> bool:
+    product = coerce_mapping(payload.get("product"))
+    facts = coerce_mapping(product.get("facts"))
+    logical_fields = coerce_mapping(payload.get("logical_fields"))
+    status_values = (
+        payload.get("availability_status"),
+        payload.get("status"),
+        product.get("availability_status"),
+        facts.get("availability_status"),
+        logical_fields.get("availability_status"),
+    )
+    if any(str(value or "").strip().lower() == "unavailable" for value in status_values):
+        return True
+    product_status = first_non_empty(product.get("status"), facts.get("status"), payload.get("product_status"))
+    return product_status == "off_shelf_or_region_unavailable"
 
 
 def _first_present(*values: Any) -> Any:
@@ -837,4 +853,4 @@ def _optional_float(value: str) -> float | None:
         return None
 
 
-__all__ = ["CONTRACT", "HANDLER_CODE", "competitor_row_refresh_handler"]
+__all__ = ["run_competitor_row_refresh_flow"]

@@ -6,12 +6,12 @@
 
 ## 1. 定位
 
-本文约束“把已有代码迁移到目标项目结构”的验收口径。它只用于迁移旧实现，不用于新 workflow 从零开发。
+本文约束“把已有代码迁移到项目结构”的验收口径。它只用于迁移旧实现，不用于新 workflow 从零开发。
 
 相关文档:
 
-- 目标结构: [target-project-architecture-contract.md](./target-project-architecture-contract.md)
-- 当前系统分层: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 正式结构: [project-architecture-contract.md](./project-architecture-contract.md)
+- 当前系统分层: [system-architecture-design.md](./system-architecture-design.md)
 - 新 workflow 开发模式: [workflow-implementation-patterns.md](./workflow-implementation-patterns.md)
 - 重构验收基准: [rewrite-acceptance-contract.md](./rewrite-acceptance-contract.md)
 
@@ -21,8 +21,8 @@
 
 | 模式 | 含义 | 允许交付 | 不允许声称 |
 | --- | --- | --- | --- |
-| `scaffold` | 为目标结构预留目录、模块和测试入口 | 空模块、TODO、导入计划、结构文档 | 真实迁移完成 |
-| `real_migration` | 把实现所有权从旧目录搬到目标目录 | 目标目录真实实现、旧实现只作参考、目标 import 主路径 | 兼容包装算完成 |
+| `scaffold` | 为正式结构预留目录、模块和测试入口 | 空模块、TODO、导入计划、结构文档 | 真实迁移完成 |
+| `real_migration` | 把实现所有权从旧目录搬到项目目录 | 项目目录真实实现、旧实现只作参考、目标 import 主路径 | 兼容包装算完成 |
 
 当任务描述包含“真实代码迁移”“不要兼容旧逻辑”“旧逻辑只作为参考”“全部文件按真实逻辑拆分”时，必须使用 `real_migration`。
 
@@ -30,8 +30,8 @@
 
 一次 `real_migration` 完成时，必须同时满足:
 
-- 目标目录拥有真实实现。
-- runtime import 主路径指向目标目录。
+- 项目目录拥有真实实现。
+- runtime import 主路径指向项目目录。
 - 旧目录不再承载主实现。
 - 旧实现只作为功能验证参考，不作为运行时依赖。
 - 行为对照或 fixture 证明迁移前后的业务结果等价。
@@ -203,10 +203,10 @@
 提交前逐项确认:
 
 - [ ] 本次任务声明了 `scaffold` 或 `real_migration`。
-- [ ] 如果是 `real_migration`，目标目录拥有真实实现。
+- [ ] 如果是 `real_migration`，项目目录拥有真实实现。
 - [ ] 没有新增 facade / shim / re-export / `sys.modules` alias。
 - [ ] 没有新增 `_implementations` 聚合大文件。
-- [ ] runtime registry / console script / task registry 指向目标目录。
+- [ ] runtime registry / console script / task registry 指向项目目录。
 - [ ] 旧路径未作为 runtime 主路径。
 - [ ] 新测试使用目标路径 import。
 - [ ] 旧实现仅作为功能参考或 fixture 来源。

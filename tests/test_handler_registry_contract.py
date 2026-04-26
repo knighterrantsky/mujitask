@@ -27,6 +27,8 @@ ALLOWLIST_BY_WORKER = {
         "fastmoss_creator_fetch",
         "fastmoss_shop_fetch",
         "fastmoss_video_fetch",
+        "product_creator_discovery",
+        "influencer_creator_sync",
         "media_asset_sync",
         "fact_bundle_upsert",
     },

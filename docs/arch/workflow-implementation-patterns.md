@@ -10,15 +10,15 @@
 
 本文目标:
 
-- 让新 workflow 默认按目标项目结构开发。
+- 让新 workflow 默认按项目结构开发。
 - 明确每类文件必须写什么、不写什么。
 - 固定常用设计模式，避免把业务逻辑重新堆进 handler、flow、daemon 或 agent script。
 - 给代码评审和自动测试提供可检查的结构标准。
 
 相关文档:
 
-- 目标项目结构: [target-project-architecture-contract.md](./target-project-architecture-contract.md)
-- 当前系统架构: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 项目结构: [project-architecture-contract.md](./project-architecture-contract.md)
+- 当前系统架构: [system-architecture-design.md](./system-architecture-design.md)
 - Workflow 拆分规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - Handler contract: [handler-contract-design.md](./handler-contract-design.md)
 
@@ -27,7 +27,7 @@
 新增 workflow 必须按下面顺序设计和落文件:
 
 ```text
-agent_artifacts
+skills
   -> domains/{domain}/tasks
   -> domains/{domain}/workflows
   -> domains/{domain}/jobs
@@ -90,13 +90,7 @@ contracts/workflow/{workflow_code}.yaml
 
 ### 4.1 Agent Artifact Pattern
 
-目标目录:
-
-```text
-agent_artifacts/skills/{skill_code}/
-```
-
-当前兼容目录:
+项目目录:
 
 ```text
 skills/{skill_code}/
@@ -125,7 +119,7 @@ skills/{skill_code}/
 
 ### 4.2 Task Entry Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/tasks/{task_code}.py
@@ -155,7 +149,7 @@ domains/{domain}/tasks/{task_code}.py
 
 ### 4.3 Workflow Definition Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/workflows/{workflow_code}.py
@@ -188,7 +182,7 @@ domains/{domain}/workflows/{workflow_code}.py
 
 ### 4.4 Job Contract Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/jobs/{job_code}.py
@@ -219,7 +213,7 @@ domains/{domain}/jobs/{job_code}.py
 
 ### 4.5 Mapper Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/mappers/{source}_{business_object}_mapper.py
@@ -247,7 +241,7 @@ domains/{domain}/mappers/{source}_{business_object}_mapper.py
 
 ### 4.6 Policy Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/policies/{policy_code}.py
@@ -274,7 +268,7 @@ domains/{domain}/policies/{policy_code}.py
 
 ### 4.7 Projection Pattern
 
-目标目录:
+项目目录:
 
 ```text
 domains/{domain}/projections/{target}_{view}_projection.py
@@ -301,7 +295,7 @@ domains/{domain}/projections/{target}_{view}_projection.py
 
 ### 4.8 Capability Handler Pattern
 
-目标目录:
+项目目录:
 
 ```text
 capabilities/{category}/{system}/{capability}_handler.py
@@ -334,7 +328,7 @@ capabilities/{category}/{system}/{capability}_handler.py
 
 ### 4.9 Outbox Channel Pattern
 
-目标目录:
+项目目录:
 
 ```text
 capabilities/channels/{channel}/{message_type}_handler.py
@@ -374,7 +368,7 @@ control_plane -> domain business fields
 capabilities -> domains
 infrastructure -> domains / workflows / tasks / jobs
 domains -> infrastructure.clients
-agent_artifacts -> runtime tables / worker queues
+skills -> runtime tables / worker queues
 ```
 
 ## 6. 命名规则
@@ -454,7 +448,7 @@ from automation_business_scaffold.capabilities.input_sources.feishu.table_read_h
 - [ ] 是否按 `agent -> task -> workflow -> job -> mapper/policy/projection -> capability -> outbox` 顺序拆分。
 - [ ] 是否新增或更新了 `contracts/workflow/{workflow_code}.yaml`。
 - [ ] 如果是新增 workflow，`workflow_origin` 是否为 `new_workflow` 且没有 `known_architecture_gaps`。
-- [ ] 是否所有新文件都在目标目录。
+- [ ] 是否所有新文件都在项目目录。
 - [ ] 是否没有 facade / shim / re-export。
 - [ ] 是否没有 `_implementations` 聚合大文件。
 - [ ] 是否 capability handler 拥有真实实现。

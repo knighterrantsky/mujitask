@@ -27,7 +27,10 @@ PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 PRODUCT_ID = "123456789"
 SOURCE_RECORD_ID = "row-1"
 row_handler_module = importlib.import_module(
-    "automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler"
+    "automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh"
+)
+row_flow_module = importlib.import_module(
+    "automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh"
 )
 
 
@@ -184,11 +187,11 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
             result={"written_count": len(records), "target_record_ids": [SOURCE_RECORD_ID]},
         )
 
-    monkeypatch.setattr(row_handler_module, "tiktok_product_request_fetch_handler", fake_tiktok_product_request_fetch)
-    monkeypatch.setattr(row_handler_module, "fastmoss_product_fetch_handler", fake_fastmoss_product_fetch)
-    monkeypatch.setattr(row_handler_module, "media_asset_sync_handler", fake_media_asset_sync)
-    monkeypatch.setattr(row_handler_module, "fact_bundle_upsert_handler", fake_fact_bundle_upsert)
-    monkeypatch.setattr(row_handler_module, "feishu_table_write_handler", fake_feishu_table_write)
+    monkeypatch.setattr(row_flow_module, "tiktok_product_request_fetch_handler", fake_tiktok_product_request_fetch)
+    monkeypatch.setattr(row_flow_module, "fastmoss_product_fetch_handler", fake_fastmoss_product_fetch)
+    monkeypatch.setattr(row_flow_module, "media_asset_sync_handler", fake_media_asset_sync)
+    monkeypatch.setattr(row_flow_module, "fact_bundle_upsert_handler", fake_fact_bundle_upsert)
+    monkeypatch.setattr(row_flow_module, "feishu_table_write_handler", fake_feishu_table_write)
 
     register_api_handler(registry, "feishu_table_read", fake_feishu_table_read)
     register_api_handler(registry, "competitor_row_refresh", row_handler_module.competitor_row_refresh_handler)
@@ -223,7 +226,7 @@ def _bind_refresh_browser_handler(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
 
-    monkeypatch.setattr(row_handler_module, "tiktok_product_browser_fetch_handler", fake_tiktok_product_browser_fetch)
+    monkeypatch.setattr(row_flow_module, "tiktok_product_browser_fetch_handler", fake_tiktok_product_browser_fetch)
 
 
 def _emit_progress(context: HandlerContext, stage_code: str) -> None:

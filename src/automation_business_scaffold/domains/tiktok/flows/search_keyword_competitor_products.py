@@ -9,7 +9,6 @@ from typing import Any, Mapping
 from automation_business_scaffold.contracts.handler.shared import merge_fact_bundles
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     KEYWORD_TASK_CODE,
-    build_outbox_message_text,
 )
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
@@ -35,6 +34,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
+)
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import (
     keyword_search_parameter_mapper,
 )

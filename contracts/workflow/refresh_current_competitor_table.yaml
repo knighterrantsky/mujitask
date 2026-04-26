@@ -29,7 +29,7 @@ stages:
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
     projection_mapper: competitor_table_projection_mapper
-    purpose: 串行完成 TikTok request、必要 browser fallback、media sync、FastMoss、Fact DB、飞书写回
+    purpose: 串行完成 TikTok request、必要 browser fallback、media sync、FastMoss、Fact DB、飞书写回；request 已明确不可售时直接写 商品状态=已下架/区域不可售 并跳过 browser/media/FastMoss
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总行级结果并写通知 outbox

@@ -10,12 +10,10 @@ import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_f
 import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
-    COLLECT_CREATOR_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
-    PERSIST_FACTS_STAGE_CODE,
     READ_STAGE_CODE,
+    SYNC_INFLUENCER_POOL_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
-    WRITE_POOL_STAGE_CODE,
 )
 from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
@@ -386,40 +384,29 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
 
     product_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
     assert product_dispatch["current_stage"] == DISCOVER_CREATORS_STAGE_CODE
-    product_jobs = _jobs_for_stage(product_dispatch, DISCOVER_CREATORS_STAGE_CODE, "fastmoss_product_fetch")
+    product_jobs = _jobs_for_stage(product_dispatch, DISCOVER_CREATORS_STAGE_CODE, "product_creator_discovery")
     assert len(product_jobs) == 1
     assert product_jobs[0]["payload"]["fastmoss"]["live_fetch"] is True
     assert product_jobs[0]["payload"]["relation_policy"]["creator_sold_count_min"] == 10
 
     product_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
-    assert product_worker["api_worker_job"]["job_code"] == "fastmoss_product_fetch"
+    assert product_worker["api_worker_job"]["job_code"] == "product_creator_discovery"
     assert product_worker["api_worker_job"]["status"] == "success"
     assert product_worker["api_worker_job"]["result"]["related_creators"][0]["creator_id"] == CREATOR_ID
 
     creator_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
-    assert creator_dispatch["current_stage"] == COLLECT_CREATOR_STAGE_CODE
-    creator_jobs = _jobs_for_stage(creator_dispatch, COLLECT_CREATOR_STAGE_CODE, "fastmoss_creator_fetch")
+    assert creator_dispatch["current_stage"] == SYNC_INFLUENCER_POOL_STAGE_CODE
+    creator_jobs = _jobs_for_stage(creator_dispatch, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
     assert len(creator_jobs) == 1
     assert creator_jobs[0]["payload"]["creator_identity"]["uid"] == CREATOR_UID
-    assert creator_jobs[0]["payload"]["source_context"]["holiday"] == "毕业季"
+    assert creator_jobs[0]["payload"]["product_hits"][0]["holiday"] == "毕业季"
+    assert "shop_list" in creator_jobs[0]["payload"]["fetch_plan"]["endpoints"]
 
     creator_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
-    assert creator_worker["api_worker_job"]["job_code"] == "fastmoss_creator_fetch"
+    assert creator_worker["api_worker_job"]["job_code"] == "influencer_creator_sync"
     assert creator_worker["api_worker_job"]["status"] == "success"
     assert creator_worker["api_worker_job"]["result"]["creator_fact_bundle"]["creator_id"] == CREATOR_ID
-    assert creator_worker["api_worker_job"]["result"]["product_relations"][0]["metrics"]["sold_count"] == 72
-
-    fact_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
-    assert fact_dispatch["current_stage"] == PERSIST_FACTS_STAGE_CODE
-    fact_jobs = _jobs_for_stage(fact_dispatch, PERSIST_FACTS_STAGE_CODE, "fact_bundle_upsert")
-    assert len(fact_jobs) == 2
-    assert {job["payload"]["idempotency_context"]["fact_subject"] for job in fact_jobs} == {"product", "creator"}
-
-    first_fact_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
-    second_fact_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
-    assert first_fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
-    assert second_fact_worker["api_worker_job"]["job_code"] == "fact_bundle_upsert"
-    assert {first_fact_worker["api_worker_job"]["status"], second_fact_worker["api_worker_job"]["status"]} == {"success"}
+    assert creator_worker["api_worker_job"]["result"]["influencer_pool_write"]["status"] == "success"
 
     fact_store = TKFactStore(db_url=runtime_db_url)
     assert fact_store.get_product(product_id=PRODUCT_ID)["title"] == "Graduation party decoration set"
@@ -430,28 +417,16 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
         product_id=PRODUCT_ID,
     )
 
-    pool_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
-    assert pool_dispatch["current_stage"] == WRITE_POOL_STAGE_CODE
-    pool_jobs = _jobs_for_stage(pool_dispatch, WRITE_POOL_STAGE_CODE, "feishu_table_write")
-    assert len(pool_jobs) == 1
-    assert pool_jobs[0]["payload"]["records"][0]["matched_product_sold_count"] == "72"
-
-    pool_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
-    assert pool_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert pool_worker["api_worker_job"]["status"] == "success"
-
     pool_records = feishu_state["tables"][(POOL_APP_TOKEN, POOL_TABLE_ID)]
     assert len(pool_records) == 1
     pool_fields = pool_records[0]["fields"]
     assert pool_fields["达人ID"] == CREATOR_ID
-    assert pool_fields["达人昵称"] == "Roxy"
-    assert pool_fields["关联商品ID"] == PRODUCT_ID
     assert pool_fields["关联节日"] == ["毕业季"]
     assert pool_fields["关联商品销量"] == "72"
-    assert pool_fields["粉丝数"] == "12.8W"
+    assert pool_fields["粉丝数"] == "13W"
     assert pool_fields["28天视频数"] == "16"
-    assert pool_fields["带货视频 GMV"] == "3.2W"
-    assert pool_fields["带货直播 GMV"] == "0"
+    assert pool_fields["带货视频 GMV"] == "3W"
+    assert pool_fields["带货直播 GMV"] == "小于1W"
     assert pool_fields["合作店铺"] == ["Graduation Shop"]
     assert pool_fields["达人联系方式"] == "hello@example.com"
     assert pool_fields["带货商品图"] == [{"file_token": "tok-product-image"}]
@@ -479,9 +454,9 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
     assert finalized["request_status"] == "success"
     assert finalized["current_stage"] == "completed"
     assert finalized["summary"]["product_group_status_counts"] == {"success": 1}
-    assert finalized["summary"]["product_groups"][0]["fact_persist_success_count"] == 2
+    assert finalized["summary"]["product_groups"][0]["fact_persist_success_count"] == 1
 
     status_payload = _status(runtime_db_url, request_id)
     assert status_payload["request_status"] == "success"
     assert status_payload["current_stage"] == "completed"
-    assert len(_jobs_for_stage(status_payload, PERSIST_FACTS_STAGE_CODE, "fact_bundle_upsert")) == 2
+    assert len(_jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")) == 1

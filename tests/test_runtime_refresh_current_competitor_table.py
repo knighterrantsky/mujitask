@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 
-from automation_business_scaffold.control_plane.runtime_config.settings import build_outbox_message_text
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -64,6 +66,31 @@ def test_refresh_outbox_message_includes_row_update_statuses() -> None:
             "failure_reason": "FastMoss fetch failed.",
         },
     ]
+
+
+def test_refresh_outbox_message_treats_unavailable_writeback_as_success() -> None:
+    message = json.loads(
+        build_outbox_message_text(
+            request_id="req-1",
+            task_code=REFRESH_TASK_CODE,
+            summary={"final_status": "success"},
+            result={
+                "row_total_count": 1,
+                "row_results": [
+                    {
+                        "source_record_id": "row-unavailable",
+                        "product_id": "sku-unavailable",
+                        "row_status": "unavailable",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert message["success_count"] == 1
+    assert message["failed_count"] == 0
+    assert message["rows"][0]["status"] == "success"
+    assert message["rows"][0]["row_status"] == "unavailable"
 
 
 def _store(runtime_db_url: str) -> RuntimeStore:

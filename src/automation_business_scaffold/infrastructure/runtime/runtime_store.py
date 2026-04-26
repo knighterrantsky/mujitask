@@ -117,6 +117,7 @@ class RuntimeStore:
     def __init__(self, *, db_url: str = ""):
         try:
             from sqlalchemy import create_engine, text
+            from sqlalchemy.pool import NullPool
         except ModuleNotFoundError as exc:
             raise RuntimeError("RuntimeStore requires SQLAlchemy.") from exc
 
@@ -132,7 +133,12 @@ class RuntimeStore:
             raise RuntimeError("SQLite is no longer supported for RuntimeStore; use Postgres.")
         self._db_url = resolved_db_url
         self._text = text
-        self._engine = create_engine(self._db_url, future=True, pool_pre_ping=True)
+        self._engine = create_engine(
+            self._db_url,
+            future=True,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+        )
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:

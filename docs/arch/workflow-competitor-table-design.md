@@ -71,7 +71,7 @@ flowchart TD
 
 `competitor_row_refresh` 是后续实现的目标行级 job_code。TikTok request、media sync、FastMoss fetch、Fact DB upsert 和飞书写回是该 job 内部步骤，不再作为同一条飞书记录的并行 sibling jobs。browser fallback 仍使用独立 `task_execution`，因为它需要独占 browser profile 资源，但它必须引用当前行级 job 和触发 fallback 的 TikTok request attempt。
 
-TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或商品不可访问/已下架/区域不可售信号时，`competitor_row_refresh` 才能创建 `tiktok_product_browser_fetch` 子执行；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
+TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或缺少商品详情脚本时，`competitor_row_refresh` 才能创建 `tiktok_product_browser_fetch` 子执行。商品不可访问、已下架或区域不可售是 request 阶段可判定的终态，应直接写回 `商品状态=已下架/区域不可售` 并停止该行后续 browser fallback、媒体同步和 FastMoss 补齐；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
 
 ### 3.2.1 反面教材: 不要按 Handler / API 调用粒度拆 Job
 

@@ -72,7 +72,7 @@ def test_checker_catches_capability_handler_ownership_violations(tmp_path: Path)
     package = root / "src" / "automation_business_scaffold"
     _write(package / "capabilities" / "_implementations" / "hidden.py", "VALUE = 1\n")
     _write(
-        package / "capabilities" / "sample" / "alpha_handler.py",
+        package / "capabilities" / "sample" / "alpha_handlers.py",
         "from automation_business_scaffold.capabilities.sample.beta_handler import helper\n\n"
         "HANDLER_CODE = 'alpha'\n"
         "HANDLER_CODE = 'alpha_duplicate'\n\n"

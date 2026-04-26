@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create target-architecture scaffold files for a new workflow."
+        description="Create project-architecture scaffold files for a new workflow."
     )
     parser.add_argument(
         "--repo-root",
@@ -336,8 +336,8 @@ workflow_code: {request.workflow_code}
 domain: {request.domain}
 agent_artifact:
   skill_code: {request.skill_code}
-  path: agent_artifacts/skills/{request.skill_code}
-  status: target_agent_artifact
+  path: skills/{request.skill_code}
+  status: project_agent_artifact
 task:
   code: {request.task_code}
   module: automation_business_scaffold.domains.{request.domain}.tasks.{request.task_code}

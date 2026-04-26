@@ -110,6 +110,8 @@ def influencer_timeout_rules() -> tuple[TimeoutRule, ...]:
     return (
         TimeoutRule("workflow", 5400, "Overall influencer synchronization timeout budget."),
         TimeoutRule("feishu_table_read", 180, "Competitor candidate reads should finish quickly."),
+        TimeoutRule("product_creator_discovery", 420, "One-product creator discovery business job timeout."),
+        TimeoutRule("influencer_creator_sync", 720, "One-creator detail, fact, media, and Feishu sync business job timeout."),
         TimeoutRule("fastmoss_product_fetch", 300, "Related creator discovery timeout."),
         TimeoutRule("fastmoss_creator_fetch", 300, "Creator detail fetch timeout."),
         TimeoutRule("fact_bundle_upsert", 180, "Influencer fact persistence timeout."),
@@ -179,9 +181,9 @@ def influencer_idempotency_rules() -> tuple[IdempotencyRule, ...]:
             description="Each product discovery job should be unique within a request.",
         ),
         IdempotencyRule(
-            scope="creator_detail",
-            key_template="{request_id}:collect_creator_detail:{source_record_id}:{product_id}:{influencer_id}",
-            description="Each creator detail job should be unique within a request.",
+            scope="creator_sync",
+            key_template="{request_id}:sync_influencer_pool:{creator_id}",
+            description="Each unique creator sync business job should be unique within a request.",
         ),
         IdempotencyRule(
             scope="outbox",

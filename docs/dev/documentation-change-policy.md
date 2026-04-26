@@ -27,18 +27,19 @@
 | --- | --- | --- |
 | `.platform/**` | 不直接修改 | platform-managed；需要 platform upgrade 口径 |
 | `AGENTS.md` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
-| `docs/arch/target-project-architecture-contract.md` | 受控修改 | 目标工程组织方式、模块归属和 workflow 开发拆分；变更必须同步目标架构测试 |
+| `docs/arch/project-architecture-contract.md` | 受控修改 | 项目工程组织方式、模块归属和 workflow 开发拆分；变更必须同步项目架构测试 |
 | `docs/arch/real-migration-checklist.md` | 受控修改 | 真实迁移验收 checklist；变更必须同步 migration 静态检查 |
 | `docs/arch/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
 | `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
 | `docs/arch/module-ownership-contract.md` | 受控修改 | mapper/projection、capability handler、`__init__.py`、legacy、registry/common 的实现所有权边界；变更必须同步所有权静态检查 |
 | `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
-| `docs/arch/current-system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
+| `docs/arch/system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
 | `docs/arch/runtime-db-schema-design.md`、`fact-db-schema-design.md` | 受控修改 | schema 设计事实来源；变更必须有 migration、兼容策略和权限边界 |
 | `docs/arch/handler-contract-design.md`、`entry-output-contract-design.md` | 受控修改 | contract 事实来源；变更必须保持兼容，或显式说明 `contract_revision`、adapter、migration/回滚策略 |
 | `docs/dev/**` | 可随开发维护同步修改 | 开发、调试、代码维护、skill 集成说明 |
 | `docs/ops/**` | 可随部署/运维实现同步修改 | 部署、发布、回退、巡检、runbook |
 | `docs/reference/**` | 可补充参考资料 | 外部接口研究、页面分析、字段样例；不作为当前设计事实来源 |
+| `docs/business/requirements-backlog.md` | 不改写原始内容 | 原始需求池和候选记录；正式需求变化应提升到 `docs/business/requirements/*.md` 或 `business-requirements.md` |
 | `docs/business/**` | 视内容决定，通常先确认 | 客户需求、业务规则、飞书字段口径、验收口径 |
 | `contracts/**` | 受控修改 | 字段、状态、workflow 机器契约；变更必须同步对应 business/arch 文档 |
 | `README.md` | 可小改，慎重改入口口径 | 项目入口，不承载详细设计 |
@@ -75,7 +76,7 @@
 | 代码变更 | 应更新文档 |
 | --- | --- |
 | 新增/修改 workflow、stage、job、handler | `workflow-*.md`、`workflow-redesign-review.md`、`handler-contract-design.md` |
-| 修改 executor / worker / outbox / watchdog 架构 | `current-system-architecture-design.md` |
+| 修改 executor / worker / outbox / watchdog 架构 | `system-architecture-design.md` |
 | 修改 Runtime 表、状态机、lease、retry、watchdog 字段 | `runtime-db-schema-design.md` |
 | 修改 Fact DB 表、upsert、事实/关系/观测边界 | `fact-db-schema-design.md` |
 | 修改 MinIO bucket、object prefix、artifact 生命周期 | `storage-architecture-design.md` |
@@ -84,8 +85,8 @@
 原则:
 
 - `docs/arch` 是系统设计事实来源。
-- 设计文档应描述当前实现和目标架构的差异。
-- 如果只是目标设计，必须标明“目标”或“演进建议”，不能写成当前事实。
+- 设计文档应描述当前实现和已确认演进建议的差异。
+- 如果只是演进建议，必须标明“演进建议”，不能写成当前事实。
 
 ### 4.1.1 Schema 与 Contract 的受控边界
 
@@ -99,7 +100,7 @@
 | Fact DB schema | `fact-db-schema-design.md` | 必须说明 upsert key、幂等规则、历史数据迁移和查询影响 |
 | Handler contract | `handler-contract-design.md` | 必须说明 payload/result/error 是否兼容；破坏性变更要通过 `contract_revision`、migration、adapter 或新语义 handler 处理 |
 | 入口/输出 contract | `entry-output-contract-design.md` | 必须说明调用方、返回结构、错误结构和兼容窗口 |
-| 目标项目架构 contract | `target-project-architecture-contract.md` | 必须说明目标目录、系统元素归属、workflow 开发拆分和测试护栏 |
+| 项目架构 contract | `project-architecture-contract.md` | 必须说明项目目录、系统元素归属、workflow 开发拆分和测试护栏 |
 | 真实迁移 checklist | `real-migration-checklist.md` | 必须说明迁移模式、分层迁移完成标准、禁止模式、静态验收和行为验收 |
 | Workflow 实现模式 contract | `workflow-implementation-patterns.md` | 必须说明 task/workflow/job/mapper/policy/projection/capability/outbox 的实现模式和依赖方向 |
 | 项目结构与命名 contract | `project-structure-contract.md` | 必须说明目录职责、文件命名、定位路径和测试护栏 |
@@ -120,7 +121,7 @@
 - 修改状态枚举含义。
 - 修改 upsert key / dedupe key / idempotency key。
 - 修改 handler 必填入参或标准 result/error 外壳。
-- 修改目标目录层级、系统元素归属或 workflow 开发拆分规则。
+- 修改项目目录层级、系统元素归属或 workflow 开发拆分规则。
 - 修改真实迁移完成标准或 scaffold / real_migration 判定。
 - 修改新 workflow 的文件模式、依赖方向或测试模式。
 - 修改 `domains/**`、`capabilities/**`、`contracts/**`、`control_plane/**` 或 `business/**/achieve` 的职责边界。
@@ -128,7 +129,7 @@
 - 放宽或取消 thin wrapper、显式 re-export、handler-to-handler 实现复用、一文件多 handler 或 `_implementations` 聚合实现作为 runtime 主路径的禁止规则。
 - 修改 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Outbox Dispatcher 的归属和入口命令。
 - 在 `task_code`、`workflow_code`、`stage_code`、`job_code`、`handler_code` 或 payload/result 字段名中加入 `v1`、`v2`、`stage1`、`stage2B` 这类版本/顺序后缀。
-- 将 `orchestrate_*`、`run_*_workflow`、`run_sync_*` 这类 workflow 编排入口写入 handler contract、handler registry、job handler 名称或目标 Job / Handler 映射表。
+- 将 `orchestrate_*`、`run_*_workflow`、`run_sync_*` 这类 workflow 编排入口写入 handler contract、handler registry、job handler 名称或正式 Job / Handler 映射表。
 - 修改生产运行进程是否允许自动建表、改表、删表。
 
 命名约束:
@@ -196,7 +197,9 @@
 
 ### 5.1 `docs/business`
 
-`docs/business` 是客户需求、业务规则、飞书业务字段含义和验收口径的事实来源。以下变更需要先确认:
+`docs/business` 是客户需求、业务规则、飞书业务字段含义和验收口径的事实来源。`docs/business/requirements-backlog.md` 是原始需求池，只记录原始输入和候选事项；不要为了对齐当前实现或正式口径直接改写 backlog 原文。需求澄清或收敛后，应把结论写入正式需求文档、总需求文档和对应 contract。
+
+以下变更需要先确认:
 
 | 变更 | 原因 |
 | --- | --- |
@@ -272,7 +275,7 @@ framework 相关 contract 不在本仓库维护。
 - 与实现强相关的文档可以和代码同一个提交。
 - 大范围文档重构应单独提交。
 - 需求口径变更应单独提交，并在提交信息里说明已确认。
-- 不要把未确认需求、架构目标和当前实现事实混在同一段文字里。
+- 不要把未确认需求、架构规划和当前实现事实混在同一段文字里。
 
 ## 8. 示例
 

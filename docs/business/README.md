@@ -24,7 +24,7 @@
 | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | 竞品表定时刷新需求 |
 | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | 关键词新增竞品需求 |
 | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | 竞品到达人池同步需求 |
-| [requirements-backlog.md](./requirements-backlog.md) | 待澄清需求和需求候选；不能作为实现事实来源 |
+| [requirements-backlog.md](./requirements-backlog.md) | 原始待澄清需求和需求候选记录；不能改写原始表述，也不能作为实现事实来源 |
 | [feishu-five-table-relationship-analysis.md](./feishu-five-table-relationship-analysis.md) | 飞书业务表结构事实和需求依据 |
 
 `tiktok_fastmoss_product_ingest` 当前已有系统入口和设计文档，但主需求文档中尚未沉淀为正式流程需求；待客户需求确认后再补独立需求文档。

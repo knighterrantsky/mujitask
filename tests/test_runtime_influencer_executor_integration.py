@@ -5,11 +5,10 @@ import pytest
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
-    COLLECT_CREATOR_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
     READ_STAGE_CODE,
+    SYNC_INFLUENCER_POOL_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
-    WRITE_POOL_STAGE_CODE,
 )
 from automation_business_scaffold.contracts.handler.api import (
     build_api_handler_registry,
@@ -120,7 +119,7 @@ def _bind_influencer_api_handlers(
             },
         )
 
-    def fake_fastmoss_product_fetch(context: HandlerContext) -> HandlerResult:
+    def fake_product_creator_discovery(context: HandlerContext) -> HandlerResult:
         progress_callback = context.metadata.get("progress_callback")
         if callable(progress_callback):
             progress_callback("discover_creators", message="fastmoss related creators loaded")
@@ -147,16 +146,22 @@ def _bind_influencer_api_handlers(
                     "product_id": PRODUCT_ID,
                     "product_url": PRODUCT_URL,
                 },
+                "normalized_creator_candidates": creator_candidates,
                 "related_creators": creator_candidates,
+                "product_hit_context": {
+                    "source_record_id": SOURCE_RECORD_ID,
+                    "product_id": PRODUCT_ID,
+                    "matched_creator_count": len(creator_candidates),
+                },
             },
         )
 
-    def fake_fastmoss_creator_fetch(context: HandlerContext) -> HandlerResult:
+    def fake_influencer_creator_sync(context: HandlerContext) -> HandlerResult:
         creator_identity = dict(context.payload.get("creator_identity") or {})
         creator_id = str(creator_identity.get("creator_id") or "")
         progress_callback = context.metadata.get("progress_callback")
         if callable(progress_callback):
-            progress_callback("collect_creator_detail", message=f"creator detail fetch {creator_id}")
+            progress_callback("sync_influencer_pool", message=f"creator sync {creator_id}")
         if creator_id in failure_ids:
             return HandlerResult.fallback_required(
                 context,
@@ -169,16 +174,22 @@ def _bind_influencer_api_handlers(
                     fallback_reason="creator_detail_missing",
                 ),
                 summary={"creator_id": creator_id, "source": "fastmoss_creator"},
-                result={"creator_id": creator_id},
+                result={
+                    "creator_id": creator_id,
+                    "status": "failed",
+                    "product_hits": list(context.payload.get("product_hits") or []),
+                },
             )
         return HandlerResult.success(
             context,
             summary={"creator_id": creator_id, "source": "fastmoss_creator"},
             result={
-                "creator_fact_bundle": {
-                    "creator_id": creator_id,
-                    "display_name": "Alice" if creator_id == "creator-success" else creator_id,
-                }
+                "creator_id": creator_id,
+                "status": "success",
+                "internal_steps": {"creator_fetch": "success", "fact_upsert": "success", "influencer_pool_write": "success"},
+                "creator_fact_bundle": {"creator_id": creator_id, "display_name": "Alice" if creator_id == "creator-success" else creator_id},
+                "influencer_pool_write": {"status": "success", "write_result": {"written_count": 1}},
+                "product_hits": list(context.payload.get("product_hits") or []),
             },
         )
 
@@ -200,8 +211,8 @@ def _bind_influencer_api_handlers(
         )
 
     register_api_handler(registry, "feishu_table_read", fake_feishu_table_read)
-    register_api_handler(registry, "fastmoss_product_fetch", fake_fastmoss_product_fetch)
-    register_api_handler(registry, "fastmoss_creator_fetch", fake_fastmoss_creator_fetch)
+    register_api_handler(registry, "product_creator_discovery", fake_product_creator_discovery)
+    register_api_handler(registry, "influencer_creator_sync", fake_influencer_creator_sync)
     register_api_handler(registry, "feishu_table_write", fake_feishu_table_write)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
@@ -229,41 +240,27 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     assert discover_executor["request_id"] == request_id
     assert discover_executor["request_status"] == "waiting_children"
     assert discover_executor["current_stage"] == DISCOVER_CREATORS_STAGE_CODE
-    product_jobs = _jobs_for_stage(discover_executor, DISCOVER_CREATORS_STAGE_CODE, "fastmoss_product_fetch")
+    product_jobs = _jobs_for_stage(discover_executor, DISCOVER_CREATORS_STAGE_CODE, "product_creator_discovery")
     assert len(product_jobs) == 1
     assert product_jobs[0]["payload"]["product_identity"]["product_id"] == PRODUCT_ID
 
     product_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert product_job["request_id"] == request_id
-    assert product_job["api_worker_job"]["job_code"] == "fastmoss_product_fetch"
+    assert product_job["api_worker_job"]["job_code"] == "product_creator_discovery"
     assert product_job["api_worker_job"]["status"] == "success"
 
     creator_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert creator_executor["request_id"] == request_id
     assert creator_executor["request_status"] == "waiting_children"
-    assert creator_executor["current_stage"] == COLLECT_CREATOR_STAGE_CODE
-    creator_jobs = _jobs_for_stage(creator_executor, COLLECT_CREATOR_STAGE_CODE, "fastmoss_creator_fetch")
+    assert creator_executor["current_stage"] == SYNC_INFLUENCER_POOL_STAGE_CODE
+    creator_jobs = _jobs_for_stage(creator_executor, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
     assert len(creator_jobs) == 1
     assert creator_jobs[0]["payload"]["creator_identity"]["creator_id"] == "creator-success"
 
     creator_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert creator_job["request_id"] == request_id
-    assert creator_job["api_worker_job"]["job_code"] == "fastmoss_creator_fetch"
+    assert creator_job["api_worker_job"]["job_code"] == "influencer_creator_sync"
     assert creator_job["api_worker_job"]["status"] == "success"
-
-    write_pool_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert write_pool_executor["request_id"] == request_id
-    assert write_pool_executor["request_status"] == "waiting_children"
-    assert write_pool_executor["current_stage"] == WRITE_POOL_STAGE_CODE
-    write_jobs = _jobs_for_stage(write_pool_executor, WRITE_POOL_STAGE_CODE, "feishu_table_write")
-    assert len(write_jobs) == 1
-    assert write_jobs[0]["payload"]["records"][0]["creator_id"] == "creator-success"
-
-    write_pool_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert write_pool_job["request_id"] == request_id
-    assert write_pool_job["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert write_pool_job["api_worker_job"]["status"] == "success"
-    assert write_pool_job["api_worker_job"]["result"]["stage_code"] == WRITE_POOL_STAGE_CODE
 
     writeback_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert writeback_executor["request_id"] == request_id
@@ -292,7 +289,7 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     assert status_payload["summary"]["final_status"] == "success"
     assert status_payload["summary"]["product_group_count"] == 1
     assert status_payload["summary"]["product_groups"][0]["creator_detail_success_count"] == 1
-    assert _jobs_for_stage(status_payload, WRITE_POOL_STAGE_CODE, "feishu_table_write")[0]["status"] == "success"
+    assert _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")[0]["status"] == "success"
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"
 
@@ -312,7 +309,7 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     runtime_orchestrator.execute_api_worker_once(runtime_params)
 
     creator_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
-    creator_jobs = _jobs_for_stage(creator_dispatch, COLLECT_CREATOR_STAGE_CODE, "fastmoss_creator_fetch")
+    creator_jobs = _jobs_for_stage(creator_dispatch, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
     assert len(creator_jobs) == 2
 
     first_creator_job = runtime_orchestrator.execute_api_worker_once(runtime_params)
@@ -323,14 +320,6 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     }
     assert creator_statuses["creator-success"] == "success"
     assert creator_statuses["creator-fail"] == "fallback_required"
-
-    write_pool_executor = runtime_orchestrator.execute_executor_once(runtime_params)
-    assert write_pool_executor["current_stage"] == WRITE_POOL_STAGE_CODE
-    write_jobs = _jobs_for_stage(write_pool_executor, WRITE_POOL_STAGE_CODE, "feishu_table_write")
-    assert len(write_jobs) == 1
-    assert write_jobs[0]["payload"]["records"][0]["creator_id"] == "creator-success"
-
-    runtime_orchestrator.execute_api_worker_once(runtime_params)
 
     writeback_executor = runtime_orchestrator.execute_executor_once(runtime_params)
     assert writeback_executor["current_stage"] == WRITEBACK_STAGE_CODE
@@ -348,7 +337,7 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     assert finalized["summary"]["product_group_status_counts"] == {"partial_success": 1}
 
     status_payload = _status(runtime_db_url, request_id)
-    creator_detail_jobs = _jobs_for_stage(status_payload, COLLECT_CREATOR_STAGE_CODE, "fastmoss_creator_fetch")
+    creator_detail_jobs = _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
     assert {job["status"] for job in creator_detail_jobs} == {"success"}
     assert status_payload["request_status"] == "partial_success"
     assert status_payload["summary"]["warnings"] == ["partial_creator_projection"]
@@ -358,6 +347,6 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     assert _api_job_by_creator_id(status_payload, "creator-fail")["result"]["handler_result"]["status"] == (
         "fallback_required"
     )
-    assert _jobs_for_stage(status_payload, WRITE_POOL_STAGE_CODE, "feishu_table_write")[0]["status"] == "success"
+    assert _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")[0]["status"] == "success"
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"

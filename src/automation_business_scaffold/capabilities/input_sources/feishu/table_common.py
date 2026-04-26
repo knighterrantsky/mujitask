@@ -64,6 +64,7 @@ _COMPETITOR_AUTO_FIELDS = (
 _COMPETITOR_WRITEBACK_EXCLUDED_FIELDS = {"商品状态"}
 _FEISHU_ATTACHMENT_FIELD_TYPE = 17
 _FEISHU_DATE_FIELD_TYPE = 5
+_FEISHU_MULTI_SELECT_FIELD_TYPE = 4
 
 
 def build_feishu_client(target: FeishuTableTarget) -> FeishuBitableClient:
@@ -272,7 +273,12 @@ def execute_write_records(
                 result_records.append(_write_result_record(command, status="skipped", message="missing_record_id"))
                 continue
             try:
-                raw_result, target_record_id, effective_op = _execute_one_write(client, target, command)
+                raw_result, target_record_id, effective_op = _execute_one_write(
+                    client,
+                    target,
+                    command,
+                    field_schema=field_schema,
+                )
             except Exception as exc:
                 failed_count += 1
                 classified = classify_feishu_exception(exc)
@@ -316,7 +322,12 @@ def execute_write_records(
                         )
                     )
                     continue
-            raw_result, target_record_id, effective_op = _execute_one_write(client, target, command)
+            raw_result, target_record_id, effective_op = _execute_one_write(
+                client,
+                target,
+                command,
+                field_schema=field_schema,
+            )
         except Exception as exc:
             failed_count += 1
             classified = classify_feishu_exception(exc)
@@ -561,6 +572,11 @@ def _prepare_fields_for_write(
             if prepared_value not in (None, ""):
                 prepared[name] = prepared_value
             continue
+        if _is_multi_select_field(field_schema.get(name)):
+            prepared_value = _multi_select_value_for_write(value, field_schema.get(name))
+            if prepared_value:
+                prepared[name] = prepared_value
+            continue
         prepared[name] = value
     return prepared
 
@@ -585,6 +601,44 @@ def _is_date_field(field_schema: Mapping[str, Any] | None) -> bool:
         "date",
         "datetime",
     }
+
+
+def _is_multi_select_field(field_schema: Mapping[str, Any] | None) -> bool:
+    if not isinstance(field_schema, Mapping):
+        return False
+    field_type = field_schema.get("type")
+    return field_type == _FEISHU_MULTI_SELECT_FIELD_TYPE or _text(field_type).lower() in {
+        str(_FEISHU_MULTI_SELECT_FIELD_TYPE),
+        "multi_select",
+        "multiselect",
+        "multiple_select",
+    }
+
+
+def _multi_select_value_for_write(value: Any, field_schema: Mapping[str, Any] | None) -> list[str]:
+    values = _list_text(value)
+    if not values:
+        return []
+    allowed = _multi_select_allowed_options(field_schema)
+    result: list[str] = []
+    for item in values:
+        if allowed and item not in allowed:
+            continue
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _multi_select_allowed_options(field_schema: Mapping[str, Any] | None) -> set[str]:
+    schema = _mapping(field_schema)
+    property_payload = _mapping(schema.get("property"))
+    options = property_payload.get("options") or schema.get("options")
+    allowed: set[str] = set()
+    for option in _mapping_list(options):
+        name = _first_non_empty(option.get("name"), option.get("text"), option.get("value"), option.get("id"))
+        if name:
+            allowed.add(name)
+    return allowed
 
 
 def _date_value_for_write(value: Any) -> int | str | None:
@@ -882,6 +936,8 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
         "record_id": record_id,
         "business_entity_key": _first_non_empty(record.get("business_entity_key"), payload.get("business_entity_key")),
         "upsert_key": _mapping(record.get("upsert_key")),
+        "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
+        "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
         "fields": _mapping(record.get("fields")),
         "source_context": _mapping(record.get("source_context")) or _source_context_from_record(record, payload),
     }
@@ -1005,8 +1061,6 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
     fields = _compact(
         {
             "达人ID": creator_id,
-            "达人昵称": creator_name,
-            "关联商品ID": product_id,
             "带货商品图": _influencer_product_image_refs(record, product_id=product_id),
             "关联节日": _list_text(_first_non_empty(record.get("holiday"))),
             "关联商品销量": _stringify_scalar(_first_non_empty(record.get("matched_product_sold_count"), _relation_metric(record, "sold_count"))),
@@ -1017,7 +1071,8 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "带货直播 GMV": _format_w_unit_display(_creator_metric(record, "live_sale_amount", "live_gmv")),
             "合作店铺": _influencer_shop_names(record),
             "达人联系方式": _creator_contact_text(record),
-            "记录时间": date.today().isoformat(),
+            "记录日期": date.today().isoformat(),
+            "更新日期": date.today().isoformat(),
         }
     )
     return _normalize_write_record(
@@ -1026,6 +1081,8 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "business_entity_key": _first_non_empty(record.get("business_entity_key"), f"creator:{creator_id}" if creator_id else ""),
             "upsert_key": {"field": "达人ID", "value": creator_id} if creator_id else {},
             "fields": fields,
+            "update_excluded_fields": ["记录日期"],
+            "update_replace_fields": ["达人头像"],
             "source_context": _source_context_from_record(record, payload),
         },
         payload,
@@ -1274,7 +1331,8 @@ def _attachment_local_path(item: Mapping[str, Any]) -> Path | None:
 
 
 def _attachment_file_name(item: Mapping[str, Any]) -> str:
-    return Path(_first_non_empty(item.get("file_name"), item.get("name"), "attachment.bin")).name
+    configured = _first_non_empty(item.get("file_name"), item.get("name"))
+    return Path(configured).name if configured else ""
 
 
 def _attachment_file_name_from_url(url: str, content_type: str) -> str:
@@ -1304,22 +1362,89 @@ def _dedupe_ref_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return deduped
 
 
+def _dedupe_attachment_write_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        file_token = _text(item.get("file_token"))
+        key = ("file_token", file_token, "") if file_token else (
+            "",
+            _text(item.get("url")),
+            _text(item.get("local_path") or item.get("object_key")),
+        )
+        if not any(key) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _influencer_shop_names(record: Mapping[str, Any]) -> list[str]:
     names: list[str] = []
     for value in _list_text(record.get("cooperation_shop_names")):
         if value and value not in names:
             names.append(value)
-    entities = _mapping(record.get("entities"))
-    for shop in _mapping_list(entities.get("shops")):
-        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+
+    shop_refs = _cooperation_shop_refs(record)
+    shops_by_ref = _shops_by_ref(record)
+    for shop_ref in shop_refs:
+        shop = shops_by_ref.get(shop_ref)
+        name = _first_non_empty(_mapping(shop).get("shop_name"), _mapping(shop).get("name"))
         if name and name not in names:
             names.append(name)
+
+    if names:
+        return names
+
     fact_bundle = _mapping(record.get("fact_bundle"))
-    for shop in _mapping_list(fact_bundle.get("shops")):
-        name = _first_non_empty(shop.get("shop_name"), shop.get("name"))
+    for relation in _mapping_list(_mapping(fact_bundle.get("relations")).get("shop_creators")):
+        name = _first_non_empty(relation.get("shop_name"), _mapping(_mapping(relation.get("metadata")).get("raw")).get("shop_name"))
         if name and name not in names:
             names.append(name)
     return names
+
+
+def _cooperation_shop_refs(record: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for relation in _mapping_list(record.get("relations")):
+        if _text(relation.get("relation_type")) != "shop_collaborates_with_creator":
+            continue
+        ref = _strip_entity_ref(_first_non_empty(relation.get("from_entity_key"), relation.get("shop_key"), relation.get("shop_id"), relation.get("seller_id")))
+        if ref and ref not in refs:
+            refs.append(ref)
+    fact_bundle = _mapping(record.get("fact_bundle"))
+    for relation in _mapping_list(_mapping(fact_bundle.get("relations")).get("shop_creators")):
+        ref = _strip_entity_ref(_first_non_empty(relation.get("shop_key"), relation.get("shop_id"), relation.get("seller_id"), relation.get("shop_name")))
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _shops_by_ref(record: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    shops: dict[str, Mapping[str, Any]] = {}
+    for shop in _mapping_list(_mapping(record.get("entities")).get("shops")):
+        for ref in _shop_refs(shop):
+            shops.setdefault(ref, shop)
+    for shop in _mapping_list(_mapping(record.get("fact_bundle")).get("shops")):
+        for ref in _shop_refs(shop):
+            shops.setdefault(ref, shop)
+    return shops
+
+
+def _shop_refs(shop: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for value in (shop.get("entity_key"), shop.get("shop_key"), shop.get("shop_id"), shop.get("seller_id"), shop.get("shop_name"), shop.get("name")):
+        ref = _strip_entity_ref(value)
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _strip_entity_ref(value: Any) -> str:
+    text = _text(value)
+    if ":" in text:
+        return text.split(":", 1)[1]
+    return text
 
 
 def _format_w_unit_display(value: Any) -> str:
@@ -1329,8 +1454,9 @@ def _format_w_unit_display(value: Any) -> str:
     if number is None:
         return _text(value)
     if abs(number) >= 10_000:
-        return f"{_format_trimmed_decimal(number / 10_000)}W"
-    return _format_trimmed_decimal(number)
+        sign = "-" if number < 0 else ""
+        return f"{sign}{int(abs(number) / 10_000 + 0.5)}W"
+    return "小于1W"
 
 
 def _stringify_scalar(value: Any) -> str:
@@ -1371,24 +1497,11 @@ def _map_competitor_influencer_status_record(record: Mapping[str, Any], payload:
     status = _text(record.get("influencer_sync_status"))
     status_text = {
         "success": "已完成",
-        "partial_success": "部分完成",
+        "partial_success": "失败重试",
         "failed": "失败重试",
         "skipped": "跳过",
     }.get(status, status or "已完成")
-    fields = {
-        "达人查找状态": status_text,
-        "达人数量": _coerce_int(
-            _first_non_empty(
-                record.get("influencer_write_success_count"),
-                record.get("creator_detail_success_count"),
-                record.get("creator_candidate_count"),
-            ),
-            default=0,
-            minimum=0,
-            maximum=1_000_000,
-        ),
-        "备注": _status_note(record),
-    }
+    fields = {"达人查找状态": status_text}
     return _normalize_write_record(
         {
             "op": "update",
@@ -1443,6 +1556,8 @@ def _execute_one_write(
     client: FeishuBitableClient,
     target: FeishuTableTarget,
     record: Mapping[str, Any],
+    *,
+    field_schema: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     op = _text(record.get("op"))
     fields = _mapping(record.get("fields"))
@@ -1452,20 +1567,51 @@ def _execute_one_write(
         return raw, record_id, "delete"
 
     if op == "update" and record_id:
-        raw = client.update_record(target.app_token, target.table_id, record_id, fields)
+        raw = client.update_record(
+            target.app_token,
+            target.table_id,
+            record_id,
+            _fields_for_update(
+                record,
+                fields,
+                existing_fields=_find_existing_record_fields(client, target, record_id),
+                field_schema=field_schema or {},
+            ),
+        )
         return raw, record_id, "update"
 
     upsert_key = _mapping(record.get("upsert_key"))
     if op == "upsert" and upsert_key:
-        existing_id = _find_existing_record_id(client, target, upsert_key)
+        existing_row = _find_existing_record(client, target, upsert_key)
+        existing_id = _text(existing_row.get("record_id") or existing_row.get("id"))
         if existing_id:
-            raw = client.update_record(target.app_token, target.table_id, existing_id, fields)
+            raw = client.update_record(
+                target.app_token,
+                target.table_id,
+                existing_id,
+                _fields_for_update(
+                    record,
+                    fields,
+                    existing_fields=_mapping(existing_row.get("fields")),
+                    field_schema=field_schema or {},
+                ),
+            )
             return raw, existing_id, "update"
         raw = client.create_record(target.app_token, target.table_id, fields)
         return raw, _response_record_id(raw), "append"
 
     if op == "upsert" and record_id:
-        raw = client.update_record(target.app_token, target.table_id, record_id, fields)
+        raw = client.update_record(
+            target.app_token,
+            target.table_id,
+            record_id,
+            _fields_for_update(
+                record,
+                fields,
+                existing_fields=_find_existing_record_fields(client, target, record_id),
+                field_schema=field_schema or {},
+            ),
+        )
         return raw, record_id, "update"
 
     if op in {"insert_if_absent", "create_if_absent"}:
@@ -1474,6 +1620,60 @@ def _execute_one_write(
 
     raw = client.create_record(target.app_token, target.table_id, fields)
     return raw, _response_record_id(raw), "append"
+
+
+def _fields_for_update(
+    record: Mapping[str, Any],
+    fields: Mapping[str, Any],
+    *,
+    existing_fields: Mapping[str, Any] | None = None,
+    field_schema: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    excluded = {_text(value) for value in list(record.get("update_excluded_fields") or []) if _text(value)}
+    selected = {key: value for key, value in dict(fields).items() if _text(key) not in excluded}
+    return _merge_update_fields(
+        selected,
+        existing_fields=_mapping(existing_fields),
+        field_schema=field_schema or {},
+        replace_fields={_text(value) for value in list(record.get("update_replace_fields") or []) if _text(value)},
+    )
+
+
+def _merge_update_fields(
+    fields: Mapping[str, Any],
+    *,
+    existing_fields: Mapping[str, Any],
+    field_schema: Mapping[str, Mapping[str, Any]],
+    replace_fields: set[str] | None = None,
+) -> dict[str, Any]:
+    if not existing_fields:
+        return dict(fields)
+    replace_field_names = replace_fields or set()
+    merged: dict[str, Any] = {}
+    for field_name, value in fields.items():
+        if _text(field_name) in replace_field_names:
+            merged[field_name] = value
+            continue
+        schema = field_schema.get(_text(field_name))
+        if _is_attachment_field(schema):
+            merged[field_name] = _dedupe_attachment_write_items(
+                _attachment_write_items(existing_fields.get(field_name)) + _attachment_write_items(value)
+            )
+            continue
+        if _is_multi_select_field(schema):
+            merged[field_name] = _merge_text_lists(existing_fields.get(field_name), value)
+            continue
+        merged[field_name] = value
+    return merged
+
+
+def _merge_text_lists(*values: Any) -> list[str]:
+    merged: list[str] = []
+    for value in values:
+        for item in _list_text(value):
+            if item and item not in merged:
+                merged.append(item)
+    return merged
 
 
 def _find_existing_record_id(
@@ -1485,12 +1685,52 @@ def _find_existing_record_id(
     value = _text(upsert_key.get("value"))
     if not field_name or not value:
         return ""
-    rows = client.list_all_records(target.app_token, target.table_id, page_size=100, view_id=target.view_id or None)
+    try:
+        rows = client.list_all_records(target.app_token, target.table_id, page_size=100, view_id=target.view_id or None)
+    except AttributeError:
+        return ""
     for row in rows:
         fields = _mapping(row.get("fields"))
         if _text_value(fields.get(field_name)) == value:
             return _text(row.get("record_id") or row.get("id"))
     return ""
+
+
+def _find_existing_record(
+    client: FeishuBitableClient,
+    target: FeishuTableTarget,
+    upsert_key: Mapping[str, Any],
+) -> dict[str, Any]:
+    field_name = _text(upsert_key.get("field"))
+    value = _text(upsert_key.get("value"))
+    if not field_name or not value:
+        return {}
+    try:
+        rows = client.list_all_records(target.app_token, target.table_id, page_size=100, view_id=target.view_id or None)
+    except AttributeError:
+        return {}
+    for row in rows:
+        fields = _mapping(row.get("fields"))
+        if _text_value(fields.get(field_name)) == value:
+            return dict(row)
+    return {}
+
+
+def _find_existing_record_fields(
+    client: FeishuBitableClient,
+    target: FeishuTableTarget,
+    record_id: str,
+) -> dict[str, Any]:
+    if not record_id:
+        return {}
+    try:
+        rows = client.list_all_records(target.app_token, target.table_id, page_size=100, view_id=target.view_id or None)
+    except AttributeError:
+        return {}
+    for row in rows:
+        if _text(row.get("record_id") or row.get("id")) == record_id:
+            return _mapping(row.get("fields"))
+    return {}
 
 
 def _response_record_id(response: Mapping[str, Any]) -> str:

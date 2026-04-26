@@ -15,6 +15,11 @@ def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Ma
     spec = _mapping(payload.get("filter_spec"))
     skip_statuses = set(_list_text(spec.get("skip_product_status")))
     candidate_status = _list_text(spec.get("candidate_status"))
+    source_record_ids = {
+        record_id
+        for record_id in (_list_text(payload.get("source_record_ids")) + _list_text(spec.get("source_record_ids")))
+        if record_id
+    }
     snapshot_enabled = bool(_mapping(payload.get("snapshot_policy")).get("store_raw_rows"))
     source_rows: list[dict[str, Any]] = []
     skipped_status = 0
@@ -22,6 +27,9 @@ def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Ma
     dropped_empty = 0
 
     for row in raw_rows:
+        record_id = _text(row.get("record_id") or row.get("id"))
+        if source_record_ids and record_id not in source_record_ids:
+            continue
         fields = _mapping(row.get("fields"))
         identity = _product_identity_from_fields(fields)
         if not identity:

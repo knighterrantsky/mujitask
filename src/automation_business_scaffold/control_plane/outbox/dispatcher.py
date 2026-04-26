@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
@@ -10,7 +11,6 @@ from automation_business_scaffold.control_plane.executor.looping import (
 )
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     build_idle_payload,
-    build_outbox_message_text,
     build_runtime_settings,
     create_runtime_store,
 )
@@ -148,7 +148,7 @@ def ensure_request_outbox(
         ref_id=request.request_id,
         reply_target=request.reply_target,
         payload={
-            "message_text": build_outbox_message_text(
+            "message_text": _build_outbox_message_text(
                 request_id=request.request_id,
                 task_code=request.task_code,
                 summary=summary,
@@ -165,6 +165,22 @@ def ensure_request_outbox(
 
 def _dispatch_outbox_runtime_handler(context: HandlerContext) -> Any:
     return _build_bound_outbox_handler_registry().dispatch("outbox_dispatch", context)
+
+
+def _build_outbox_message_text(
+    *,
+    request_id: str,
+    task_code: str,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> str:
+    preview = {
+        "request_id": request_id,
+        "task_code": task_code,
+        "summary": summary,
+        "result_keys": sorted(result.keys()),
+    }
+    return json.dumps(preview, ensure_ascii=False)
 
 
 def _build_bound_outbox_handler_registry() -> Any:

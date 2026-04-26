@@ -6,6 +6,7 @@ from automation_business_scaffold.infrastructure.tiktok import product_page
 from automation_business_scaffold.infrastructure.tiktok.product_page import (
     SHOP_CANDIDATE_SELECTORS,
     TikTokProductExtractionError,
+    TikTokProductUnavailableError,
     TikTokSecurityCheckError,
 )
 from automation_business_scaffold.models import TikTokProductRecord
@@ -209,6 +210,37 @@ def test_tiktok_product_request_fetch_missing_router_data_requests_browser_fallb
     assert result.result["fallback_reason"] == "request_signal_missing_router_data"
     assert result.result["request_attempt"]["attempted"] is True
     assert result.result["request_attempt"]["fallback_signal"] is True
+
+
+def test_tiktok_product_request_fetch_unavailable_is_terminal_without_browser_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fetch(product_url: str, *, timeout: int = 30, session=None, request_pacer=None):  # noqa: ANN001
+        del timeout, session, request_pacer
+        raise TikTokProductUnavailableError(f"TikTok product unavailable: Product not available in this country or region: {product_url}")
+
+    monkeypatch.setattr(handler_module, "fetch_tiktok_product_record", fake_fetch)
+
+    result = handler_module.tiktok_product_request_fetch_handler(
+        _context(
+            {
+                "product_identity": {
+                    "product_id": "1730730317348636561",
+                    "product_url": "https://www.tiktok.com/shop/pdp/1730730317348636561",
+                },
+                "fallback_allowed": True,
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["fallback_required"] is False
+    assert result.result["request_attempt"]["attempted"] is True
+    assert result.result["request_attempt"]["fallback_signal"] is False
+    assert result.result["request_attempt"]["terminal_signal"] == "product_unavailable"
+    normalized = result.result["normalized_product_result"]
+    assert normalized["product"]["status"] == "off_shelf_or_region_unavailable"
+    assert normalized["product"]["facts"]["availability_status"] == "unavailable"
 
 
 def test_browser_shop_selectors_do_not_match_category_breadcrumb_links() -> None:

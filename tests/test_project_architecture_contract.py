@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TARGET_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "target-project-architecture-contract.md"
+PROJECT_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "project-architecture-contract.md"
 PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
 DOMAIN_ROOT = REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "tiktok"
 
@@ -27,17 +27,17 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def test_project_architecture_contract() -> None:
-    assert TARGET_ARCH_DOC.exists()
+    assert PROJECT_ARCH_DOC.exists()
 
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
     readme = _read(REPO_ROOT / "README.md")
     arch_index = _read(REPO_ROOT / "docs" / "arch" / "README.md")
     dev_index = _read(REPO_ROOT / "docs" / "dev" / "README.md")
     doc_policy = _read(REPO_ROOT / "docs" / "dev" / "documentation-change-policy.md")
 
     required_refs = (
-        "target-project-architecture-contract.md",
-        "目标项目架构契约",
+        "project-architecture-contract.md",
+        "项目架构契约",
     )
     assert required_refs[0] in readme
     assert required_refs[0] in arch_index
@@ -46,16 +46,16 @@ def test_project_architecture_contract() -> None:
     assert required_refs[1] in arch_index
 
     required_tokens = (
-        "状态: 受控目标架构契约",
-        "不以当前工程结构为合理性依据",
+        "状态: 受控项目架构契约",
+        "当前正式项目工程组织方式",
         "apps/",
         "control_plane/",
         "domains/",
         "capabilities/",
         "infrastructure/",
         "contracts/",
-        "configs/",
-        "agent_artifacts/",
+        "config/",
+        "skills/",
         "scripts/",
         "运行控制面 / 业务编排层 / 集成能力层 / 基础设施层 / 部署产物层",
         "`apps/**`",
@@ -63,16 +63,16 @@ def test_project_architecture_contract() -> None:
         "`domains/{business_domain}/**`",
         "`capabilities/**`",
         "`infrastructure/**`",
-        "`configs/**`",
-        "`agent_artifacts/**`",
+        "`config/**`",
+        "`skills/**`",
     )
 
     missing = [token for token in required_tokens if token not in doc]
-    assert missing == [], "target architecture contract is missing tokens:\n" + "\n".join(missing)
+    assert missing == [], "project architecture contract is missing tokens:\n" + "\n".join(missing)
 
 
 def test_workflow_development_contract() -> None:
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
 
     required_tokens = (
         "## 6. Workflow 开发契约",
@@ -85,7 +85,7 @@ def test_workflow_development_contract() -> None:
         "7. 数据库与文件存储",
         "8. 输出通道",
         "9. 运行控制",
-        "agent_artifacts/skills/{skill_code}",
+        "skills/{skill_code}",
         "domains/{domain}/tasks/{task_code}",
         "domains/{domain}/workflows/{workflow_code}",
         "domains/{domain}/jobs/{job_code}",
@@ -105,7 +105,7 @@ def test_workflow_development_contract() -> None:
 
 
 def test_control_plane_boundary() -> None:
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
 
     required_tokens = (
         "RPC Agent Service",
@@ -156,7 +156,7 @@ def test_control_plane_boundary() -> None:
 
 
 def test_capability_boundary() -> None:
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
 
     required_tokens = (
         "## 5. 外部系统分类",
@@ -190,7 +190,7 @@ def test_capability_boundary() -> None:
 
 
 def test_real_migration_contract() -> None:
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
 
     required_tokens = (
         "## 9. 真实迁移验收口径",
@@ -210,7 +210,7 @@ def test_real_migration_contract() -> None:
     assert missing == [], "real migration contract is missing tokens:\n" + "\n".join(missing)
 
 
-def test_target_capability_real_implementation_files_exist() -> None:
+def test_project_capability_real_implementation_files_exist() -> None:
     required_files = (
         "capabilities/input_sources/feishu/table_read_handler.py",
         "capabilities/fact_sources/tiktok/product_request_fetch_handler.py",
@@ -227,10 +227,10 @@ def test_target_capability_real_implementation_files_exist() -> None:
     )
 
     missing = [path for path in required_files if not (PACKAGE_ROOT / path).is_file()]
-    assert missing == [], "target capability implementation files are missing:\n" + "\n".join(missing)
+    assert missing == [], "project capability implementation files are missing:\n" + "\n".join(missing)
 
 
-def test_target_capability_files_must_own_real_implementations() -> None:
+def test_project_capability_files_must_own_real_implementations() -> None:
     capability_files = (
         PACKAGE_ROOT / "capabilities/input_sources/feishu/table_read_handler.py",
         PACKAGE_ROOT / "capabilities/fact_sources/tiktok/product_request_fetch_handler.py",
@@ -265,10 +265,10 @@ def test_target_capability_files_must_own_real_implementations() -> None:
     if implementation_aggregator.exists():
         violations.append("src/automation_business_scaffold/capabilities/_implementations must not exist after real_migration")
 
-    assert violations == [], "target capability files must own real implementations:\n" + "\n".join(violations)
+    assert violations == [], "project capability files must own real implementations:\n" + "\n".join(violations)
 
 
-def test_target_contract_modules_exist() -> None:
+def test_project_contract_modules_exist() -> None:
     required_modules = (
         "automation_business_scaffold.contracts.runtime",
         "automation_business_scaffold.contracts.workflow",
@@ -283,10 +283,10 @@ def test_target_contract_modules_exist() -> None:
 
 
 def test_agent_artifact_boundary() -> None:
-    doc = _read(TARGET_ARCH_DOC)
+    doc = _read(PROJECT_ARCH_DOC)
 
     required_tokens = (
-        "agent_artifacts/skills/{skill_code}/",
+        "skills/{skill_code}/",
         "OpenClaw / Hermes / 用户 agent workspace",
         "只提交 `task_request`",
         "不消费 runtime job",

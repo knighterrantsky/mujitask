@@ -26,7 +26,8 @@ auto_maintained_fields:
   - 带货直播 GMV
   - 合作店铺
   - 达人联系方式
-  - 记录时间
+  - 记录日期
+  - 更新日期
 
 display_rules:
   w_unit_fields:
@@ -34,9 +35,14 @@ display_rules:
     - 带货视频 GMV
     - 带货直播 GMV
   w_unit_threshold: 10000
+  w_unit_rounding: nearest_integer_half_up
+  below_threshold_display: 小于1W
   w_unit_examples:
+    "9999": 小于1W
     "10000": 1W
-    "1230000": 123W
+    "15400": 2W
+    "155500": 16W
+    "2442300": 244W
 
 fields:
   - display_name: 达人ID
@@ -86,7 +92,7 @@ fields:
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.follower_count
-    display_rule: w_unit_when_gte_10000
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
     write_target: feishu.TK达人池.粉丝数
 
   - display_name: 28天视频数
@@ -103,7 +109,7 @@ fields:
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.video_sale_amount
-    display_rule: w_unit_when_gte_10000
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
     write_target: feishu.TK达人池.带货视频 GMV
 
   - display_name: 带货直播 GMV
@@ -112,7 +118,7 @@ fields:
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.live_sale_amount
-    display_rule: w_unit_when_gte_10000
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
     write_target: feishu.TK达人池.带货直播 GMV
 
   - display_name: 合作店铺
@@ -126,18 +132,30 @@ fields:
   - display_name: 达人联系方式
     canonical_name: influencer_contact
     role: auto_maintained_optional
-    update_policy: fill_when_stable_contact_available
+    update_policy: fill_when_contact_available_using_email_first_policy
     overwrite_policy: do_not_overwrite_with_empty
-    source_of_truth: fastmoss.creator.contact.normalized_text
+    source_of_truth: fastmoss.creator.contact.selected_text
+    selection_policy:
+      - prefer_email_when_available
+      - otherwise_first_available_contact
+      - skip_when_no_contact
     write_target: feishu.TK达人池.达人联系方式
 
-  - display_name: 记录时间
-    canonical_name: recorded_time
+  - display_name: 记录日期
+    canonical_name: recorded_date
     role: auto_maintained
-    update_policy: write_when_influencer_pool_projection_has_changes
-    overwrite_policy: system_may_refresh_on_successful_writeback
+    update_policy: write_on_create_only
+    overwrite_policy: do_not_overwrite_after_create
+    source_of_truth: workflow_first_insert_date
+    write_target: feishu.TK达人池.记录日期
+
+  - display_name: 更新日期
+    canonical_name: updated_date
+    role: auto_maintained
+    update_policy: write_on_create_and_refresh_when_new_source_product_merged
+    overwrite_policy: system_may_refresh_on_successful_merge_or_writeback
     source_of_truth: workflow_writeback_date
-    write_target: feishu.TK达人池.记录时间
+    write_target: feishu.TK达人池.更新日期
 
   - display_name: 合作商品数
     canonical_name: cooperation_product_count

@@ -7,6 +7,9 @@ from automation_business_scaffold.contracts.handler.contract import HandlerConte
 from automation_business_scaffold.capabilities.input_sources.feishu.table_common import map_write_records
 from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
+from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_source_mapper import (
+    influencer_pool_source_adapter,
+)
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 
@@ -50,6 +53,40 @@ def test_feishu_business_components_have_named_registries() -> None:
         "competitor_influencer_status_projection_mapper",
         "selection_table_projection_mapper",
     }
+
+
+def test_influencer_source_adapter_honors_explicit_source_record_ids() -> None:
+    rows = [
+        {
+            "record_id": "rec-target",
+            "fields": {
+                "SKU-ID": "1732183562851553564",
+                "产品链接": "https://www.tiktok.com/shop/pdp/1732183562851553564",
+                "达人查找状态": "已完成",
+            },
+        },
+        {
+            "record_id": "rec-other",
+            "fields": {
+                "SKU-ID": "1729421576968704007",
+                "产品链接": "https://www.tiktok.com/shop/pdp/1729421576968704007",
+                "达人查找状态": "失败重试",
+            },
+        },
+    ]
+
+    result = influencer_pool_source_adapter(
+        rows,
+        {
+            "source_table_ref": "feishu://source",
+            "filter_spec": {
+                "source_record_ids": ["rec-target"],
+                "candidate_status": ["已完成", "失败重试"],
+            },
+        },
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-target"]
 
 
 def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
@@ -358,8 +395,33 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert "记录日期" in fields
     assert "SKU-ID" not in fields
     assert "产品链接" not in fields
-    assert "商品状态" not in fields
+    assert fields["商品状态"] == "已下架/区域不可售"
     assert fields.get("价格") is None
+
+
+def test_competitor_projection_keeps_non_terminal_product_status_out_of_auto_writeback() -> None:
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        write_mode="upsert",
+        mapper_code="competitor_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-1",
+                "product_id": "123456789",
+                "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                "projection_fields": {
+                    "SKU-ID": "123456789",
+                    "产品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "商品状态": "在售",
+                },
+                "source_fields": {"SKU-ID": "123456789", "产品链接": "https://www.tiktok.com/shop/pdp/123456789"},
+            }
+        ],
+    )
+
+    mapped = map_write_records(payload)
+
+    assert mapped == []
 
 
 def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
@@ -518,6 +580,62 @@ def test_feishu_table_write_uploads_tiktok_uri_attachment_before_write(monkeypat
     }
 
 
+def test_feishu_table_write_uses_remote_image_name_for_attachment_upload(monkeypatch) -> None:
+    class FakeResponse:
+        content = b"jpeg-bytes"
+        headers = {"Content-Type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+        uploads: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "达人头像", "type": 17}]
+
+        def upload_media(self, file_name, file_data, parent_type="bitable_file", parent_node="", extra=None):
+            self.uploads.append({"file_name": file_name, "file_data": file_data})
+            return "avatar-file-token"
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    FakeClient.uploads = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.requests.get",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        records=[
+            {
+                "op": "update",
+                "record_id": "rec-1",
+                "fields": {
+                    "达人头像": {"url": "https://s.500fd.com/tt_author/avatar~c5_300x300.jpeg"},
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.uploads[0]["file_name"] == "avatar~c5_300x300.jpeg"
+    assert FakeClient.updated[0]["fields"]["达人头像"] == [{"file_token": "avatar-file-token"}]
+
+
 def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:
     class FakeClient:
         created: list[dict[str, Any]] = []
@@ -661,6 +779,148 @@ def test_feishu_table_write_classifies_schema_missing_before_write(monkeypatch) 
     assert result.error.error_type == "schema_missing"
     assert result.error.retryable is False
     assert result.error.details["missing_fields"] == ["备注"]
+
+
+def test_feishu_table_write_filters_and_merges_existing_multi_select_options(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [
+                {
+                    "field_name": "达人ID",
+                    "type": 1,
+                },
+                {
+                    "field_name": "合作店铺",
+                    "type": 4,
+                    "property": {
+                        "options": [
+                            {"name": "Existing Shop"},
+                            {"name": "Allowed Shop"},
+                        ]
+                    },
+                },
+            ]
+
+        def list_all_records(self, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            del app_token, table_id, page_size, filter_expr, view_id
+            return [
+                {
+                    "record_id": "rec-creator",
+                    "fields": {
+                        "达人ID": "creator-1",
+                        "合作店铺": ["Existing Shop"],
+                    },
+                }
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "fields": {
+                    "达人ID": "creator-1",
+                    "合作店铺": ["Allowed Shop", "Not Configured Shop"],
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.updated[0]["fields"]["合作店铺"] == ["Existing Shop", "Allowed Shop"]
+
+
+def test_feishu_table_write_replaces_configured_attachment_field_on_update(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "达人头像", "type": 17}, {"field_name": "达人ID", "type": 1}]
+
+        def list_all_records(self, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            del app_token, table_id, page_size, filter_expr, view_id
+            return [
+                {
+                    "record_id": "rec-creator",
+                    "fields": {
+                        "达人ID": "creator-1",
+                        "达人头像": [{"file_token": "old-bin-token"}],
+                    },
+                }
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "update_replace_fields": ["达人头像"],
+                "fields": {
+                    "达人ID": "creator-1",
+                    "达人头像": [{"file_token": "new-image-token"}],
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.updated[0]["fields"]["达人头像"] == [{"file_token": "new-image-token"}]
+
+
+def test_competitor_influencer_status_writeback_does_not_touch_remark() -> None:
+    records = map_write_records(
+        {
+            "mapper_code": "competitor_influencer_status_projection_mapper",
+            "write_mode": "upsert",
+            "records": [
+                {
+                    "source_record_id": "rec-1",
+                    "product_id": "1732183562851553564",
+                    "product_key": "rec-1:1732183562851553564",
+                    "influencer_sync_status": "success",
+                    "creator_detail_failed_count": 0,
+                    "influencer_write_success_count": 3,
+                    "warnings": [],
+                }
+            ],
+        }
+    )
+
+    assert records[0]["fields"] == {"达人查找状态": "已完成"}
 
 
 def test_feishu_table_read_classifies_rate_limit_as_retryable(monkeypatch) -> None:
