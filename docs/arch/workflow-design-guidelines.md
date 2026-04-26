@@ -509,6 +509,7 @@ API 优先、浏览器兜底的流程必须先实际发起 request，并记录 a
 不允许 fallback 的情况:
 
 - 没有实际发起 request，只是本地 payload 缺少商品详情。
+- request 已明确返回商品不可访问、已下架或区域不可售；这类结果应作为终态状态写回，不应占用 browser fallback。
 - 普通网络失败、DNS/连接失败、超时、5xx、429 或临时代理异常。
 - response 解析失败但原始响应可重试或可补偿。
 

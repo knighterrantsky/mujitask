@@ -58,7 +58,7 @@ def _build_refresh_competitor_outbox_message(
 
 def _build_refresh_competitor_outbox_row(row: dict[str, Any]) -> dict[str, Any]:
     row_status = str(row.get("row_status") or "").strip()
-    status = "success" if row_status == "success" else "fail"
+    status = "success" if row_status in {"success", "unavailable"} else "fail"
     payload: dict[str, Any] = {
         "sku": str(row.get("product_id") or "").strip(),
         "product_id": str(row.get("product_id") or "").strip(),

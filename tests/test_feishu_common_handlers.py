@@ -395,8 +395,33 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert "记录日期" in fields
     assert "SKU-ID" not in fields
     assert "产品链接" not in fields
-    assert "商品状态" not in fields
+    assert fields["商品状态"] == "已下架/区域不可售"
     assert fields.get("价格") is None
+
+
+def test_competitor_projection_keeps_non_terminal_product_status_out_of_auto_writeback() -> None:
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        write_mode="upsert",
+        mapper_code="competitor_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-1",
+                "product_id": "123456789",
+                "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                "projection_fields": {
+                    "SKU-ID": "123456789",
+                    "产品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "商品状态": "在售",
+                },
+                "source_fields": {"SKU-ID": "123456789", "产品链接": "https://www.tiktok.com/shop/pdp/123456789"},
+            }
+        ],
+    )
+
+    mapped = map_write_records(payload)
+
+    assert mapped == []
 
 
 def test_competitor_projection_keeps_image_url_as_raw_link() -> None:

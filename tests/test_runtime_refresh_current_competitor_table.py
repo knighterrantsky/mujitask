@@ -68,6 +68,31 @@ def test_refresh_outbox_message_includes_row_update_statuses() -> None:
     ]
 
 
+def test_refresh_outbox_message_treats_unavailable_writeback_as_success() -> None:
+    message = json.loads(
+        build_outbox_message_text(
+            request_id="req-1",
+            task_code=REFRESH_TASK_CODE,
+            summary={"final_status": "success"},
+            result={
+                "row_total_count": 1,
+                "row_results": [
+                    {
+                        "source_record_id": "row-unavailable",
+                        "product_id": "sku-unavailable",
+                        "row_status": "unavailable",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert message["success_count"] == 1
+    assert message["failed_count"] == 0
+    assert message["rows"][0]["status"] == "success"
+    assert message["rows"][0]["row_status"] == "unavailable"
+
+
 def _store(runtime_db_url: str) -> RuntimeStore:
     return RuntimeStore(db_url=runtime_db_url)
 

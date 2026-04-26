@@ -13,6 +13,7 @@ _PRODUCT_ID_PATTERNS = (
 
 
 _COMPETITOR_WRITEBACK_EXCLUDED_FIELDS = {"商品状态"}
+_UNAVAILABLE_PRODUCT_STATUS = "已下架/区域不可售"
 
 
 def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -138,11 +139,15 @@ def _select_missing_competitor_projection_fields(
 ) -> dict[str, Any]:
     selected: dict[str, Any] = {}
     for field_name, value in projection_fields.items():
-        if field_name in {"记录日期", *_COMPETITOR_WRITEBACK_EXCLUDED_FIELDS}:
+        if field_name in {"记录日期"}:
+            continue
+        if field_name in _COMPETITOR_WRITEBACK_EXCLUDED_FIELDS and _text(value) != _UNAVAILABLE_PRODUCT_STATUS:
             continue
         if not _field_has_value(value):
             continue
-        if not _field_has_value(existing_fields.get(field_name)):
+        if field_name == "商品状态" and _text(value) == _UNAVAILABLE_PRODUCT_STATUS:
+            selected[field_name] = value
+        elif not _field_has_value(existing_fields.get(field_name)):
             selected[field_name] = value
     if selected:
         selected["记录日期"] = projection_fields.get("记录日期") or date.today().isoformat()

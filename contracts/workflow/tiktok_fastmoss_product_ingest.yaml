@@ -48,7 +48,7 @@ stages:
 protected_invariants:
   - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据
   - TikTok 商品数据采集优先走 request/API 路径
-  - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景
+  - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景；request 已明确不可售时直接产出不可售终态，不进入 browser fallback
   - 不从该设计文档反推正式客户需求和验收口径
 
 known_architecture_gaps: []
