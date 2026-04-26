@@ -20,6 +20,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [deployment.md](./deployment.md) | 当前部署说明 |
+| [runtime-db-connection-stability.md](./runtime-db-connection-stability.md) | 用户电脑长期运行时的 Postgres 连接稳定性 runbook |
 | [release-flow.md](./release-flow.md) | 提交代码并发布的 MR / PR、tag 和 release 执行规则 |
 | [phase1-acceptance-and-rollback.md](./phase1-acceptance-and-rollback.md) | Phase 1 历史验收与回退 |
 | [archive/phase1-controlled-execution-pilot.md](./archive/phase1-controlled-execution-pilot.md) | Phase 1 历史 Pilot/runbook |

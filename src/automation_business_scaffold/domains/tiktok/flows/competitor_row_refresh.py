@@ -25,12 +25,14 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
+from automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler import (
+    tiktok_product_browser_fetch_handler,
+)
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
 from automation_business_scaffold.control_plane.supervisor import (
     execution_supervisor as supervisor_runtime,
 )
 
-tiktok_product_browser_fetch_handler = api_handler_callable("tiktok_product_browser_fetch")
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
 media_asset_sync_handler = api_handler_callable("media_asset_sync")

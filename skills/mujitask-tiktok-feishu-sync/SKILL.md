@@ -83,12 +83,6 @@ metadata:
 
 ## 排障说明
 
-- `run_cleanup_step.sh`
-- `run_pending_rows_step.sh`
-- `run_single_row_update_step.sh`
-- `run_keyword_candidate_step.sh`
-- `run_insert_seed_row_step.sh`
-- `run_fastmoss_login_check_step.sh`
-- `run_influencer_pool_worker_step.sh`
-
-这些脚本仅用于人工排障，不再作为默认主流程。
+- 本 skill 只保留顶层 task 提交入口。
+- 不再保留旧 leaf step / 人工排障 wrapper。
+- 需要排查执行进度时，查看 runtime task / job / outbox 状态，不在 skill 中手工串旧步骤。

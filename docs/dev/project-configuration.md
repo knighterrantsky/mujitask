@@ -165,3 +165,42 @@ cp .env.example .env
 1. Runtime DB / MinIO 配置以 `executor.local.env` 为准，不再依赖人工每次手工导出。
 2. skill 的固定业务输入以 `skill.local.env` 为准，不在对话中动态索取。
 3. `.env` 只承载通用本地默认值，不承担完整 Runtime 控制面配置。
+4. Runtime DB engine 创建必须收口到 `RuntimeStore` / `create_runtime_store()`；开发时不要在业务 flow 或 handler 中临时 `create_engine()`。
+5. 如果新增 Fact DB 或辅助 DB 连接，优先复用已有 `runtime_store`；确实需要独立 engine 时，必须显式设置有界连接池或 `NullPool`。
+6. 新增 task submit、watchdog 或 worker 连接健康逻辑时，配置来源仍按本文优先级读取，不允许绕过 `executor.local.env` 私自读取部署脚本变量。
+7. `too many clients already` 等 DB 连接错误在开发和测试中应按基础设施错误处理，不应被写成业务失败或字段校验失败。
+
+## 7. DB 连接开发护栏
+
+新增或修改 Runtime / Fact DB 相关代码时，先确认属于哪一类:
+
+| 类型 | 推荐做法 | 禁止事项 |
+| --- | --- | --- |
+| Runtime 控制面读写 | 使用 `RuntimeStore` | 在 flow / handler 中直接 `create_engine()` |
+| Fact DB 与 Runtime DB 共库 | 传入并复用 `runtime_store` | 每个 handler 调用都新建默认 QueuePool |
+| 独立 Fact DB | 使用有界连接池或 `NullPool` | 不设置 `pool_size` / `max_overflow` 的默认连接池 |
+| preflight / watchdog health check | 通过统一配置解析 DB URL | 从 `skill.local.env` 或部署脚本中私自拼连接串 |
+
+最小有界连接池示例:
+
+```python
+create_engine(
+    db_url,
+    future=True,
+    pool_size=2,
+    max_overflow=0,
+    pool_timeout=10,
+    pool_recycle=1800,
+    pool_pre_ping=True,
+)
+```
+
+如果使用 `NullPool`，必须保证每次 DB 操作都通过上下文管理器关闭连接。
+
+开发验证时建议至少检查:
+
+```bash
+psql "$DATABASE_URL" -c "select state, count(*) from pg_stat_activity group by state order by count desc;"
+```
+
+生产运行的阈值、排障命令和 watchdog 口径见 [../ops/runtime-db-connection-stability.md](../ops/runtime-db-connection-stability.md)。

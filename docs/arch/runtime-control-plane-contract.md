@@ -79,6 +79,21 @@ CLI 参数 > 环境变量 > executor.local.env > skill.local.env > .env
 - 把用户 agent workspace 的 `skill.local.env` 当成 Runtime DB 或 Object Store 的唯一事实来源。
 - 让不同入口用不同配置优先级。
 
+## 4.1 Runtime DB 连接契约
+
+Runtime DB 连接属于 Runtime 控制面基础能力，不属于业务 flow 局部实现。所有 daemon、worker、dispatcher、watchdog 和 task submit / status / result 路径必须遵守以下约束:
+
+- Runtime DB 访问默认通过 `RuntimeStore` 或 `control_plane/runtime_config/create_runtime_store()` 创建。
+- `RuntimeStore` 的连接策略必须适合用户电脑长期运行，不能长期占用无界连接池。
+- 禁止在 domain flow、capability handler 或脚本中随手 `create_engine()` 访问 Runtime DB。
+- 如果 Fact DB 与 Runtime DB 物理共用同一个 Postgres，事实写入路径应优先复用传入的 `RuntimeStore`。
+- 如果确实需要独立 SQLAlchemy engine，必须显式配置有界连接策略，例如 `pool_size`、`max_overflow`、`pool_timeout`、`pool_recycle` 和 `pool_pre_ping`，或明确使用 `NullPool`。
+- `too many clients already`、连接超时、连接被关闭等 DB 连接错误属于基础设施错误，Supervisor / worker 不应把它归因成业务字段失败。
+- Task submit / skill submit 在创建大量 child job 前，应允许接入 DB health preflight。连接数接近上限时，应拒绝大任务提交并返回运行环境异常。
+- Watchdog 应能够扩展 DB connection health check，至少观测总连接数、idle 连接数、idle in transaction 和主要 `application_name` 来源。
+
+运行时连接稳定性的部署与排障动作见 [../ops/runtime-db-connection-stability.md](../ops/runtime-db-connection-stability.md)。本文只约束代码边界和控制面职责。
+
 ## 5. 文件命名契约
 
 应用入口文件归 `apps/**`:
@@ -150,7 +165,7 @@ automation-business-scaffold-reconciler
 | `tests/test_watchdog_scanner.py`、`tests/test_watchdog_apply_integration.py` | Watchdog 候选扫描和修复动作 |
 | `tests/test_outbox_dispatcher_integration.py` | Outbox dispatcher 消费和重试 |
 
-任何变更 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler 或 Watchdog 的实现，都必须同步本文和对应测试。
+任何变更 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Runtime DB 连接策略的实现，都必须同步本文和对应测试。
 
 ## 8. 最终规则
 

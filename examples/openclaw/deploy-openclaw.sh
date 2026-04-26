@@ -863,12 +863,11 @@ import json
 import sys
 
 required = {
-    "tiktok_product_link_cleanup",
-    "feishu_pending_rows_scan",
-    "feishu_single_row_update",
-    "feishu_seed_row_insert",
-    "fastmoss_keyword_candidate_discovery",
-    "fastmoss_login_check",
+    "refresh_current_competitor_table",
+    "refresh_competitor_row_by_url",
+    "tiktok_fastmoss_product_ingest",
+    "search_keyword_competitor_products",
+    "sync_tk_influencer_pool",
 }
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
@@ -883,12 +882,13 @@ PY
     "SKILL.md"
     "skill.local.env"
     "skill.local.env.example"
-    "run_cleanup_step.sh"
-    "run_pending_rows_step.sh"
-    "run_single_row_update_step.sh"
-    "run_keyword_candidate_step.sh"
-    "run_insert_seed_row_step.sh"
-    "run_fastmoss_login_check_step.sh"
+    "run_refresh_current_competitor_table_step.sh"
+    "run_competitor_row_by_url_step.sh"
+    "run_product_url_complete_step.sh"
+    "run_keyword_search_step.sh"
+    "run_influencer_pool_sync_step.sh"
+    "run_skill_step.py"
+    "lightweight_submit.py"
     "start_browser_cdp.sh"
     "start_browser_cdp.ps1"
   )

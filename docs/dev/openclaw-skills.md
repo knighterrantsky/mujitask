@@ -131,7 +131,10 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 - `SKILL.md`
 - `skill.local.env`
 - `run_refresh_current_competitor_table_step.sh`
+- `run_competitor_row_by_url_step.sh`
+- `run_product_url_complete_step.sh`
 - `run_keyword_search_step.sh`
+- `run_influencer_pool_sync_step.sh`
 - `run_skill_step.py`
 - `lightweight_submit.py`
 - `openclaw_result.py`
@@ -140,13 +143,9 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 `skill.local.env.example` 是配置模板；`skill.local.env` 是目标 agent workspace 中的本机配置。新增业务 skill 时，不要把生产密钥写进仓库内模板。
 
-### 6.2 仅用于人工排障的脚本
+### 6.2 已移除的旧 wrapper
 
-下面这些脚本仍保留，但仅用于人工排障，不再作为默认业务入口：
-
-- `run_cleanup_step.sh`
-- `run_pending_rows_step.sh`
-- `run_fastmoss_login_check_step.sh`
+skill bundle 不再保留旧 leaf step / 人工排障 wrapper。OpenClaw 只通过顶层 task 提交入口创建 `task_request`；排障应查看 runtime task / job / outbox 状态。
 
 ## 7. 与运行时的关系
 

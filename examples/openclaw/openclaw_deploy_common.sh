@@ -693,7 +693,10 @@ PY
     "skill.local.env"
     "skill.local.env.example"
     "run_refresh_current_competitor_table_step.sh"
+    "run_competitor_row_by_url_step.sh"
+    "run_product_url_complete_step.sh"
     "run_keyword_search_step.sh"
+    "run_influencer_pool_sync_step.sh"
     "run_skill_step.py"
     "lightweight_submit.py"
   )
