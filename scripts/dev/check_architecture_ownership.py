@@ -81,10 +81,10 @@ def _check_capability_handler_ownership(src_root: Path) -> list[Finding]:
     findings: list[Finding] = []
     capabilities_root = src_root / "capabilities"
     for path in _iter_python_files(capabilities_root):
-        if not path.name.endswith("_handler.py"):
-            continue
         tree = _parse_python(path)
         if tree is None:
+            continue
+        if not _is_capability_handler_module(path, tree):
             continue
         handler_functions = [
             node
@@ -119,6 +119,17 @@ def _check_capability_handler_ownership(src_root: Path) -> list[Finding]:
             )
         findings.extend(_check_handler_imports_handler(path, src_root, tree))
     return findings
+
+
+def _is_capability_handler_module(path: Path, tree: ast.Module) -> bool:
+    if path.name.endswith("_handler.py"):
+        return True
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.endswith("_handler"):
+            return True
+        if _is_assignment_to_name(node, "HANDLER_CODE"):
+            return True
+    return False
 
 
 def _check_handler_imports_handler(path: Path, src_root: Path, tree: ast.Module) -> list[Finding]:

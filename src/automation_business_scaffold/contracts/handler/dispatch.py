@@ -20,19 +20,19 @@ _API_HANDLER_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "feishu_table_write_handler",
     ),
     "competitor_row_refresh": (
-        "automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler",
+        "automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh",
         "competitor_row_refresh_handler",
     ),
     "keyword_seed_import": (
-        "automation_business_scaffold.capabilities.fact_sources.fastmoss.keyword_seed_import_handler",
+        "automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import",
         "keyword_seed_import_handler",
     ),
     "product_creator_discovery": (
-        "automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers",
+        "automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery",
         "product_creator_discovery_handler",
     ),
     "influencer_creator_sync": (
-        "automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers",
+        "automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync",
         "influencer_creator_sync_handler",
     ),
     "tiktok_product_request_fetch": (

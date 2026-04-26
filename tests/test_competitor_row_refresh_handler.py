@@ -11,7 +11,10 @@ from automation_business_scaffold.contracts.handler.contract import (
 )
 
 handler_module = importlib.import_module(
-    "automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler"
+    "automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh"
+)
+flow_module = importlib.import_module(
+    "automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh"
 )
 
 
@@ -182,11 +185,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
             result={"written_count": 1, "target_record_ids": ["row-1"]},
         )
 
-    monkeypatch.setattr(handler_module, "tiktok_product_request_fetch_handler", fake_tiktok)
-    monkeypatch.setattr(handler_module, "media_asset_sync_handler", fake_media)
-    monkeypatch.setattr(handler_module, "fastmoss_product_fetch_handler", fake_fastmoss)
-    monkeypatch.setattr(handler_module, "fact_bundle_upsert_handler", fake_fact)
-    monkeypatch.setattr(handler_module, "feishu_table_write_handler", fake_write)
+    monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
+    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fake_media)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
+    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
+    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
 
     result = handler_module.competitor_row_refresh_handler(
         _context(
@@ -318,11 +321,11 @@ def test_competitor_row_refresh_handler_uses_browser_fallback_inside_row_job(
     def fake_write(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(context, result={"written_count": 1})
 
-    monkeypatch.setattr(handler_module, "tiktok_product_request_fetch_handler", fake_tiktok)
-    monkeypatch.setattr(handler_module, "run_supervised_handler", fake_run_supervised_handler)
-    monkeypatch.setattr(handler_module, "fastmoss_product_fetch_handler", fake_fastmoss)
-    monkeypatch.setattr(handler_module, "fact_bundle_upsert_handler", fake_fact)
-    monkeypatch.setattr(handler_module, "feishu_table_write_handler", fake_write)
+    monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
+    monkeypatch.setattr(flow_module, "run_supervised_handler", fake_run_supervised_handler)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
+    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
+    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
 
     result = handler_module.competitor_row_refresh_handler(
         _context(

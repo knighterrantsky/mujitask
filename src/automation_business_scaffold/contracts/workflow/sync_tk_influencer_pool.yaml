@@ -61,17 +61,17 @@ jobs:
     module: automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery
     handler_code: product_creator_discovery
     capability:
-      role: fact_source
-      system: fastmoss
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery
       export: product_creator_discovery_handler
   - code: influencer_creator_sync
     module: automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync
     handler_code: influencer_creator_sync
     capability:
-      role: fact_source
-      system: fastmoss
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync
       export: influencer_creator_sync_handler
   - code: feishu_table_write
     module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_write

@@ -24,7 +24,7 @@
 ## 架构总览
 
 - [重构验收契约](./rewrite-acceptance-contract.md)
-- [当前整体系统架构设计](./current-system-architecture-design.md)
+- [系统架构设计](./system-architecture-design.md)
 - [项目架构契约](./project-architecture-contract.md)
 - [真实迁移 Checklist](./real-migration-checklist.md)
 - [Workflow 实现模式规范](./workflow-implementation-patterns.md)
@@ -79,10 +79,10 @@
 
 | 历史来源 | 当前事实来源 |
 | --- | --- |
-| 系统架构升级方案 | [current-system-architecture-design.md](./current-system-architecture-design.md)、[storage-architecture-design.md](./storage-architecture-design.md) |
+| 系统架构升级方案 | [system-architecture-design.md](./system-architecture-design.md)、[storage-architecture-design.md](./storage-architecture-design.md) |
 | OpenClaw 输出协议 | [entry-output-contract-design.md](./entry-output-contract-design.md) |
-| 状态流转图与进程交互时序图 | [runtime-db-schema-design.md](./runtime-db-schema-design.md)、[current-system-architecture-design.md](./current-system-architecture-design.md) |
+| 状态流转图与进程交互时序图 | [runtime-db-schema-design.md](./runtime-db-schema-design.md)、[system-architecture-design.md](./system-architecture-design.md) |
 | 系统升级数据库结构设计表 | [runtime-db-schema-design.md](./runtime-db-schema-design.md)、[database-architecture-design.md](./database-architecture-design.md) |
 | 事实数据库 ERD 与表结构设计 | [fact-db-schema-design.md](./fact-db-schema-design.md) |
 | TK 事实数据库升级影响评估 | [fact-db-schema-design.md](./fact-db-schema-design.md) |
-| 当前系统架构 | [current-system-architecture-design.md](./current-system-architecture-design.md) 和具体 workflow 文档 |
+| 当前系统架构 | [system-architecture-design.md](./system-architecture-design.md) 和具体 workflow 文档 |

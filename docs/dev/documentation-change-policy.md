@@ -33,7 +33,7 @@
 | `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
 | `docs/arch/module-ownership-contract.md` | 受控修改 | mapper/projection、capability handler、`__init__.py`、legacy、registry/common 的实现所有权边界；变更必须同步所有权静态检查 |
 | `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
-| `docs/arch/current-system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
+| `docs/arch/system-architecture-design.md`、`workflow-*.md` | 可随实现同步修改 | 描述当前执行链路、workflow、stage/job/handler 拆分；stage/job/handler 命名约束是受控契约 |
 | `docs/arch/runtime-db-schema-design.md`、`fact-db-schema-design.md` | 受控修改 | schema 设计事实来源；变更必须有 migration、兼容策略和权限边界 |
 | `docs/arch/handler-contract-design.md`、`entry-output-contract-design.md` | 受控修改 | contract 事实来源；变更必须保持兼容，或显式说明 `contract_revision`、adapter、migration/回滚策略 |
 | `docs/dev/**` | 可随开发维护同步修改 | 开发、调试、代码维护、skill 集成说明 |
@@ -76,7 +76,7 @@
 | 代码变更 | 应更新文档 |
 | --- | --- |
 | 新增/修改 workflow、stage、job、handler | `workflow-*.md`、`workflow-redesign-review.md`、`handler-contract-design.md` |
-| 修改 executor / worker / outbox / watchdog 架构 | `current-system-architecture-design.md` |
+| 修改 executor / worker / outbox / watchdog 架构 | `system-architecture-design.md` |
 | 修改 Runtime 表、状态机、lease、retry、watchdog 字段 | `runtime-db-schema-design.md` |
 | 修改 Fact DB 表、upsert、事实/关系/观测边界 | `fact-db-schema-design.md` |
 | 修改 MinIO bucket、object prefix、artifact 生命周期 | `storage-architecture-design.md` |

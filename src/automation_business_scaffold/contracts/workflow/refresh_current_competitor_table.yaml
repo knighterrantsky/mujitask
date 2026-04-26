@@ -69,9 +69,9 @@ jobs:
     module: automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh
     handler_code: competitor_row_refresh
     capability:
-      role: fact_source
+      role: business_orchestration
       system: tiktok
-      module: automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler
+      module: automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh
       export: competitor_row_refresh_handler
   - code: task_completed_notification
     module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification

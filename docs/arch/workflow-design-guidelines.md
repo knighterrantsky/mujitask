@@ -11,7 +11,7 @@
 | 内容 | 放置位置 |
 | --- | --- |
 | 通用拆分原则、workflow 必填内容、job 颗粒度约束 | 本文 |
-| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [current-system-architecture-design.md](./current-system-architecture-design.md) |
+| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [system-architecture-design.md](./system-architecture-design.md) |
 | Runtime 表、状态机、claim/lease/retry/watchdog 字段 | [runtime-db-schema-design.md](./runtime-db-schema-design.md) |
 | Fact 表、ERD、upsert/idempotency 规则 | [fact-db-schema-design.md](./fact-db-schema-design.md) |
 | 某一个具体业务流程 | `workflow-<business-name>-design.md` |

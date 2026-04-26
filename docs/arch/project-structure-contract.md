@@ -17,7 +17,7 @@
 
 相关事实来源:
 
-- 系统执行链路: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 系统执行链路: [system-architecture-design.md](./system-architecture-design.md)
 - Workflow 设计规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - Handler 契约: [handler-contract-design.md](./handler-contract-design.md)
 - 飞书表 Adapter/Projection 契约: [feishu-table-adapter-projection-contract.md](./feishu-table-adapter-projection-contract.md)
@@ -134,7 +134,7 @@ skills/{skill_code}/
 | `config/deployment/launchd/` | macOS launchd plist 模板 | Python 业务实现 |
 | `domains/{domain}/tasks/` | 顶层 task 入口，负责 submit/status/cancel 等入口参数适配 | worker 具体执行逻辑、外部 API 细节 |
 | `domains/{domain}/workflows/` | `WorkflowDefinition`、stage、job binding、summary/idempotency/timeout/watchdog policy | handler 实现、飞书字段映射函数 |
-| `domains/{domain}/jobs/` | Runtime job 定义；按 `job_code` 命名并暴露 `JOB_DEFINITION` | 直接调用外部 API、写业务字段映射 |
+| `domains/{domain}/jobs/` | Runtime job 定义；按 `job_code` 命名并暴露 `JOB_DEFINITION`；业务复合 job 可暴露 domain-owned runtime adapter | 直接调用外部 API、写业务字段映射 |
 | `domains/{domain}/mappers/` | 输入源业务语义转换，例如飞书表 source adapter | handler registry key、外部 transport |
 | `domains/{domain}/projections/` | 输出字段投影，例如飞书写回 projection mapper | handler registry key、外部 transport |
 | `domains/{domain}/policies/` | workflow policy、幂等、timeout、summary 策略 | 外部 transport、worker loop |

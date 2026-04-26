@@ -4,7 +4,6 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerResult,
@@ -31,8 +30,6 @@ from automation_business_scaffold.control_plane.supervisor import (
     execution_supervisor as supervisor_runtime,
 )
 
-HANDLER_CODE = "competitor_row_refresh"
-CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 tiktok_product_browser_fetch_handler = api_handler_callable("tiktok_product_browser_fetch")
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
@@ -43,7 +40,7 @@ run_supervised_handler = supervisor_runtime.run_supervised_handler
 ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
 
-def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
+def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
@@ -830,4 +827,4 @@ def _optional_float(value: str) -> float | None:
         return None
 
 
-__all__ = ["CONTRACT", "HANDLER_CODE", "competitor_row_refresh_handler"]
+__all__ = ["run_competitor_row_refresh_flow"]

@@ -6,6 +6,8 @@ from automation_business_scaffold.contracts.workflow import (
     optional_field,
     required_field,
 )
+from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 
 PRODUCT_CREATOR_DISCOVERY_JOB = JobDefinition(
     job_code="product_creator_discovery",
@@ -35,5 +37,27 @@ PRODUCT_CREATOR_DISCOVERY_JOB = JobDefinition(
 JOB_DEFINITION = PRODUCT_CREATOR_DISCOVERY_JOB
 JOB_CODE = JOB_DEFINITION.job_code
 HANDLER_CODE = JOB_DEFINITION.handler_code
+CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
-__all__ = ["HANDLER_CODE", "JOB_CODE", "JOB_DEFINITION", "PRODUCT_CREATOR_DISCOVERY_JOB"]
+
+def product_creator_discovery_handler(context: HandlerContext) -> HandlerResult:
+    from automation_business_scaffold.domains.tiktok.flows.influencer_sync import (
+        run_product_creator_discovery_flow,
+    )
+
+    result = run_product_creator_discovery_flow(context)
+    if result.handler_code != HANDLER_CODE:
+        raise AssertionError(
+            f"product_creator_discovery returned handler_code {result.handler_code!r}."
+        )
+    return result
+
+
+__all__ = [
+    "CONTRACT",
+    "HANDLER_CODE",
+    "JOB_CODE",
+    "JOB_DEFINITION",
+    "PRODUCT_CREATOR_DISCOVERY_JOB",
+    "product_creator_discovery_handler",
+]

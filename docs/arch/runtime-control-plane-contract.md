@@ -15,7 +15,7 @@ Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTo
 相关事实来源:
 
 - 工程结构定位: [project-structure-contract.md](./project-structure-contract.md)
-- 当前系统链路: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 当前系统链路: [system-architecture-design.md](./system-architecture-design.md)
 - Runtime DB 状态机: [runtime-db-schema-design.md](./runtime-db-schema-design.md)
 - 项目配置加载: [../dev/project-configuration.md](../dev/project-configuration.md)
 

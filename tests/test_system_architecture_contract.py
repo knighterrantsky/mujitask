@@ -4,18 +4,18 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SYSTEM_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "current-system-architecture-design.md"
+SYSTEM_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "system-architecture-design.md"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_current_system_architecture_uses_layered_structure() -> None:
+def test_system_architecture_uses_layered_structure() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
-        "状态: 当前系统架构事实来源",
+        "状态: 系统架构设计基准",
         "Agent Artifact / Entry Layer",
         "Runtime Control Plane",
         "Domain Orchestration Layer",
@@ -34,16 +34,16 @@ def test_current_system_architecture_uses_layered_structure() -> None:
     )
 
     missing = [token for token in required_tokens if token not in doc]
-    assert missing == [], "current system architecture is missing layered tokens:\n" + "\n".join(
+    assert missing == [], "system architecture is missing layered tokens:\n" + "\n".join(
         missing
     )
 
 
-def test_current_system_architecture_maps_current_files_to_project_layers() -> None:
+def test_system_architecture_maps_project_files_to_project_layers() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
-        "## 3. 当前落位到项目分层的映射",
+        "## 3. 项目落位到分层的映射",
         "skills/mujitask-tiktok-feishu-sync/",
         "`src/automation_business_scaffold/apps/rpc_agent/`",
         "`src/automation_business_scaffold/apps/cli/`",
@@ -72,12 +72,12 @@ def test_current_system_architecture_maps_current_files_to_project_layers() -> N
     )
 
     missing = [token for token in required_tokens if token not in doc]
-    assert missing == [], "current system architecture mapping is missing tokens:\n" + "\n".join(
+    assert missing == [], "system architecture mapping is missing tokens:\n" + "\n".join(
         missing
     )
 
 
-def test_current_system_architecture_defines_business_entry_split() -> None:
+def test_system_architecture_defines_business_entry_split() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
@@ -107,7 +107,7 @@ def test_current_system_architecture_defines_business_entry_split() -> None:
     assert missing == [], "business entry split is missing tokens:\n" + "\n".join(missing)
 
 
-def test_current_system_architecture_freezes_runtime_control_components() -> None:
+def test_system_architecture_freezes_runtime_control_components() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (
@@ -136,7 +136,7 @@ def test_current_system_architecture_freezes_runtime_control_components() -> Non
     )
 
 
-def test_current_system_architecture_classifies_capabilities_and_storage() -> None:
+def test_system_architecture_classifies_capabilities_and_storage() -> None:
     doc = _read(SYSTEM_ARCH_DOC)
 
     required_tokens = (

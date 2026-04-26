@@ -24,7 +24,7 @@
 
 - [重构验收契约](../arch/rewrite-acceptance-contract.md)
 - [当前重构状态](./rewrite-state.yaml)
-- [当前整体系统架构设计](../arch/current-system-architecture-design.md)
+- [系统架构设计](../arch/system-architecture-design.md)
 - [四个 Workflow 重设计评审](../arch/workflow-redesign-review.md)
 - [Handler Contract 设计](../arch/handler-contract-design.md)
 

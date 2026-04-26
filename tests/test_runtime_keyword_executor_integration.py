@@ -487,10 +487,10 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
         )
 
     register_api_handler(registry, "fastmoss_product_search", fake_fastmoss_product_search, replace=True)
-    keyword_seed_import_module = importlib.import_module(
-        "automation_business_scaffold.capabilities.fact_sources.fastmoss.keyword_seed_import_handler"
+    keyword_seed_import_flow = importlib.import_module(
+        "automation_business_scaffold.domains.tiktok.flows.keyword_seed_import"
     )
-    monkeypatch.setattr(keyword_seed_import_module, "fastmoss_product_search_handler", fake_fastmoss_product_search)
+    monkeypatch.setattr(keyword_seed_import_flow, "fastmoss_product_search_handler", fake_fastmoss_product_search)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
     submitted = _submit_keyword_request(

@@ -124,7 +124,7 @@ scripts/
 | Project Configuration | `control_plane/runtime_config/`、`config/**`、`scripts/execution_control/*.env.example`、`skills/{skill_code}/skill.local.env.example` | `settings.py`、`*.env.example` | 配置优先级、typed settings、部署模板 |
 | Workflow | `domains/{domain}/workflows/` | `{workflow_code}.py` | stage DAG、依赖、summary contract |
 | Task | `domains/{domain}/tasks/` | `{task_code}.py` | 顶层业务入口参数和校验 |
-| Job | `domains/{domain}/jobs/` | `{job_code}.py` | 可执行单元 contract，绑定 capability handler |
+| Job | `domains/{domain}/jobs/` | `{job_code}.py` | 可执行单元 contract，绑定 capability handler；业务复合 job 的 runtime adapter 归 domain job |
 | Policy | `domains/{domain}/policies/` | `{policy_code}.py` | selection/filter/retry/idempotency/finalize 业务决策 |
 | Mapper | `domains/{domain}/mappers/` | `{source}_{business_object}_mapper.py` | 输入行、事实记录到业务对象的映射 |
 | Projection | `domains/{domain}/projections/` | `{destination}_{view}_projection.py` | 写回表格、消息、视图字段 |
@@ -162,7 +162,7 @@ scripts/
    在 `domains/{domain}/workflows/{workflow_code}` 定义 stage、job DAG、依赖、终态规则、summary contract 和 outbox 触发点。
 
 4. Job Contract
-   在 `domains/{domain}/jobs/{job_code}` 定义可执行单元，绑定 capability handler，例如 `feishu_table_read`、`fastmoss_product_fetch`、`fact_bundle_upsert`。Job 可以引用 mapper/projection/policy code，但不能实现 transport。
+   在 `domains/{domain}/jobs/{job_code}` 定义可执行单元，绑定 capability handler，例如 `feishu_table_read`、`fastmoss_product_fetch`、`fact_bundle_upsert`。业务复合 job 的 runtime adapter 也放在 domain job 文件中，并进入 domain flow；Job 可以引用 mapper/projection/policy code，但不能实现 transport。
 
 5. 输入数据源
    飞书、钉钉表格这类业务输入源放 `capabilities/input_sources/{source}`；表级筛选、字段解释、行到业务对象转换放 `domains/{domain}/mappers`。

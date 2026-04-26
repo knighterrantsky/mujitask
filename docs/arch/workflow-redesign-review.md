@@ -8,7 +8,7 @@
 
 相关文档:
 
-- [当前整体系统架构设计](./current-system-architecture-design.md)
+- [系统架构设计](./system-architecture-design.md)
 - [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
 - [Fact DB Schema 设计](./fact-db-schema-design.md)
@@ -673,15 +673,19 @@ src/automation_business_scaffold/capabilities/channels/feishu/
 
 src/automation_business_scaffold/capabilities/fact_sources/tiktok/
   product_request_fetch_handler.py
-  competitor_row_refresh_handler.py
 
 src/automation_business_scaffold/capabilities/fact_sources/fastmoss/
   product_search_handler.py
   product_fetch_handler.py
   creator_fetch_handler.py
-  influencer_sync_handlers.py
   shop_fetch_handler.py
   video_fetch_handler.py
+
+src/automation_business_scaffold/domains/tiktok/jobs/
+  competitor_row_refresh.py
+  keyword_seed_import.py
+  product_creator_discovery.py
+  influencer_creator_sync.py
 
 src/automation_business_scaffold/capabilities/browser/
   tiktok_product_fetch_handler.py

@@ -6,6 +6,8 @@ from automation_business_scaffold.contracts.workflow import (
     optional_field,
     required_field,
 )
+from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 
 COMPETITOR_ROW_REFRESH_JOB = JobDefinition(
     job_code="competitor_row_refresh",
@@ -40,5 +42,27 @@ COMPETITOR_ROW_REFRESH_JOB = JobDefinition(
 JOB_DEFINITION = COMPETITOR_ROW_REFRESH_JOB
 JOB_CODE = JOB_DEFINITION.job_code
 HANDLER_CODE = JOB_DEFINITION.handler_code
+CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
-__all__ = ["COMPETITOR_ROW_REFRESH_JOB", "HANDLER_CODE", "JOB_CODE", "JOB_DEFINITION"]
+
+def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
+    from automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh import (
+        run_competitor_row_refresh_flow,
+    )
+
+    result = run_competitor_row_refresh_flow(context)
+    if result.handler_code != HANDLER_CODE:
+        raise AssertionError(
+            f"competitor_row_refresh returned handler_code {result.handler_code!r}."
+        )
+    return result
+
+
+__all__ = [
+    "COMPETITOR_ROW_REFRESH_JOB",
+    "CONTRACT",
+    "HANDLER_CODE",
+    "JOB_CODE",
+    "JOB_DEFINITION",
+    "competitor_row_refresh_handler",
+]

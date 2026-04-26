@@ -18,7 +18,7 @@
 相关文档:
 
 - 项目结构: [project-architecture-contract.md](./project-architecture-contract.md)
-- 当前系统架构: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 当前系统架构: [system-architecture-design.md](./system-architecture-design.md)
 - Workflow 拆分规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - Handler contract: [handler-contract-design.md](./handler-contract-design.md)
 

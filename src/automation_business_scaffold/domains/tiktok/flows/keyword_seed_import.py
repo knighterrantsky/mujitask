@@ -4,7 +4,6 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
@@ -22,13 +21,11 @@ from automation_business_scaffold.domains.tiktok.projections.feishu_competitor_p
     competitor_seed_projection_mapper,
 )
 
-HANDLER_CODE = "keyword_seed_import"
-CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 fastmoss_product_search_handler = api_handler_callable("fastmoss_product_search")
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 
 
-def keyword_seed_import_handler(context: HandlerContext) -> HandlerResult:
+def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     search_request = _search_request(payload)
     seed_write = _seed_write_config(payload)
@@ -284,4 +281,4 @@ def _child_context(context: HandlerContext, *, handler_code: str, payload: Mappi
     )
 
 
-__all__ = ["CONTRACT", "HANDLER_CODE", "keyword_seed_import_handler"]
+__all__ = ["run_keyword_seed_import_flow"]

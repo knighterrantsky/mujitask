@@ -332,8 +332,14 @@ def test_new_workflow_manifests_use_strict_project_shape() -> None:
                 )
 
         for job in manifest["jobs"]:
+            capability = job["capability"]
             capability_module = job["capability"]["module"]
             assert _module_defines_export(capability_module, job["capability"]["export"])
+            if capability.get("role") == "business_orchestration":
+                assert capability_module.startswith(
+                    "automation_business_scaffold.domains."
+                ), f"{capability_module} must be domain-owned business orchestration"
+                continue
             imported_modules = _imported_local_modules(capability_module)
             forbidden_domain_imports = sorted(
                 module

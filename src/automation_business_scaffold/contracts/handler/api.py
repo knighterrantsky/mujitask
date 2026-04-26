@@ -8,27 +8,17 @@ from automation_business_scaffold.capabilities.channels.feishu.table_write_handl
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler import (
     fastmoss_creator_fetch_handler,
 )
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.influencer_sync_handlers import (
-    influencer_creator_sync_handler,
-    product_creator_discovery_handler,
-)
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler import (
     fastmoss_product_fetch_handler,
 )
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.product_search_handler import (
     fastmoss_product_search_handler,
 )
-from automation_business_scaffold.capabilities.fact_sources.fastmoss.keyword_seed_import_handler import (
-    keyword_seed_import_handler,
-)
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.shop_fetch_handler import (
     fastmoss_shop_fetch_handler,
 )
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.video_fetch_handler import (
     fastmoss_video_fetch_handler,
-)
-from automation_business_scaffold.capabilities.fact_sources.tiktok.competitor_row_refresh_handler import (
-    competitor_row_refresh_handler,
 )
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_request_fetch_handler import (
     tiktok_product_request_fetch_handler,
@@ -39,6 +29,18 @@ from automation_business_scaffold.capabilities.input_sources.feishu.table_read_h
 from automation_business_scaffold.capabilities.media.asset_sync_handler import media_asset_sync_handler
 from automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler import (
     fact_bundle_upsert_handler,
+)
+from automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh import (
+    competitor_row_refresh_handler,
+)
+from automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync import (
+    influencer_creator_sync_handler,
+)
+from automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import import (
+    keyword_seed_import_handler,
+)
+from automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery import (
+    product_creator_discovery_handler,
 )
 
 from .allowlist import API_HANDLER_CODES, API_HANDLER_CONTRACTS

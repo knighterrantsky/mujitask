@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 
-from automation_business_scaffold.control_plane.runtime_config.settings import build_outbox_message_text
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore

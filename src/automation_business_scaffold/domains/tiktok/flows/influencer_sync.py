@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
@@ -18,10 +17,6 @@ from automation_business_scaffold.contracts.handler.shared import (
     success_result,
 )
 
-PRODUCT_CREATOR_DISCOVERY_HANDLER_CODE = "product_creator_discovery"
-INFLUENCER_CREATOR_SYNC_HANDLER_CODE = "influencer_creator_sync"
-PRODUCT_CREATOR_DISCOVERY_CONTRACT = API_HANDLER_CONTRACTS[PRODUCT_CREATOR_DISCOVERY_HANDLER_CODE]
-INFLUENCER_CREATOR_SYNC_CONTRACT = API_HANDLER_CONTRACTS[INFLUENCER_CREATOR_SYNC_HANDLER_CODE]
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_creator_fetch_handler = api_handler_callable("fastmoss_creator_fetch")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
@@ -29,7 +24,7 @@ media_asset_sync_handler = api_handler_callable("media_asset_sync")
 fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
 
 
-def product_creator_discovery_handler(context: HandlerContext) -> HandlerResult:
+def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     product_context = _child_context(
         context,
@@ -93,7 +88,7 @@ def product_creator_discovery_handler(context: HandlerContext) -> HandlerResult:
     )
 
 
-def influencer_creator_sync_handler(context: HandlerContext) -> HandlerResult:
+def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     product_hits = coerce_mapping_list(payload.get("product_hits"))
     creator_identity = coerce_mapping(payload.get("creator_identity"))
@@ -526,10 +521,6 @@ def _child_context(context: HandlerContext, *, handler_code: str, payload: Mappi
 
 
 __all__ = [
-    "INFLUENCER_CREATOR_SYNC_CONTRACT",
-    "INFLUENCER_CREATOR_SYNC_HANDLER_CODE",
-    "PRODUCT_CREATOR_DISCOVERY_CONTRACT",
-    "PRODUCT_CREATOR_DISCOVERY_HANDLER_CODE",
-    "influencer_creator_sync_handler",
-    "product_creator_discovery_handler",
+    "run_influencer_creator_sync_flow",
+    "run_product_creator_discovery_flow",
 ]

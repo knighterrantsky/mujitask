@@ -95,6 +95,87 @@ features:
       - New helper-like abstraction must fail unless explicitly allowed by contract.
       - Product fact collection must be governed by contract before implementation.
 
+  - feature_code: system_architecture_baseline_alignment
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - AGENTS.md
+      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/project-structure-contract.md
+      - docs/arch/runtime-control-plane-contract.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/code-roadmap.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - scripts/dev/check_architecture_ownership.py
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - tests/test_system_architecture_contract.py
+      - tests/test_runtime_control_plane_contract.py
+      - tests/test_project_structure_contract.py
+      - tests/test_project_architecture_contract.py
+      - tests/test_architecture_ownership.py
+      - tests/test_handler_registry_contract.py
+      - tests/test_workflow_architecture_manifests.py
+    source_contracts:
+      - docs/arch/system-architecture-design.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/project-structure-contract.md
+      - docs/arch/runtime-control-plane-contract.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+    allowed_paths:
+      - docs/arch/**
+      - docs/dev/**
+      - contracts/harness/**
+      - contracts/facts/**
+      - contracts/workflow/**
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/contracts/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+      - scripts/dev/**
+      - tests/**
+    forbidden_paths:
+      - src/automation_business_scaffold/business/**
+    done_gate:
+      tests:
+        - tests/test_system_architecture_contract.py
+        - tests/test_runtime_control_plane_contract.py
+        - tests/test_project_structure_contract.py
+        - tests/test_project_architecture_contract.py
+        - tests/test_architecture_ownership.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+        - tests/test_runtime_refresh_current_competitor_table.py
+        - tests/test_competitor_row_refresh_handler.py
+        - tests/test_runtime_refresh_executor_integration.py
+        - tests/test_runtime_search_keyword_competitor_products.py
+        - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_runtime_influencer_executor_integration.py
+        - tests/test_runtime_sync_tk_influencer_pool.py
+        - tests/test_tiktok_fastmoss_product_ingest.py
+        - tests/test_runtime_phase2_ingest.py
+        - tests/test_runtime_product_ingest_module.py
+        - tests/test_outbox_dispatcher_integration.py
+        - tests/test_execution_supervisor_runtime.py
+      commands:
+        - uv run --extra dev pytest tests/test_system_architecture_contract.py tests/test_runtime_control_plane_contract.py tests/test_project_structure_contract.py tests/test_project_architecture_contract.py tests/test_architecture_ownership.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_competitor_row_refresh_handler.py tests/test_runtime_refresh_executor_integration.py
+        - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py
+        - uv run --extra dev pytest tests/test_runtime_influencer_executor_integration.py tests/test_runtime_sync_tk_influencer_pool.py
+        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_product_ingest_module.py
+        - uv run --extra dev pytest tests/test_runtime_phase2_ingest.py
+        - uv run --extra dev pytest tests/test_outbox_dispatcher_integration.py
+        - uv run --extra dev pytest tests/test_execution_supervisor_runtime.py
+    completion_rules:
+      - system-architecture-design.md is the architecture design baseline and replaces the current-system document name.
+      - Capability handlers remain runtime adapters; workflow/business orchestration belongs in domain flows.
+      - Control plane must not contain product-ingest fallback orchestration or business message projection logic.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
   - feature_code: runtime_watchdog_supervisor
     status: complete
     feature_area: runtime_control_plane

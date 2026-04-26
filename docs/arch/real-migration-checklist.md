@@ -11,7 +11,7 @@
 相关文档:
 
 - 正式结构: [project-architecture-contract.md](./project-architecture-contract.md)
-- 当前系统分层: [current-system-architecture-design.md](./current-system-architecture-design.md)
+- 当前系统分层: [system-architecture-design.md](./system-architecture-design.md)
 - 新 workflow 开发模式: [workflow-implementation-patterns.md](./workflow-implementation-patterns.md)
 - 重构验收基准: [rewrite-acceptance-contract.md](./rewrite-acceptance-contract.md)
 

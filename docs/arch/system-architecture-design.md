@@ -1,8 +1,8 @@
-# 当前整体系统架构设计
+# 系统架构设计
 
 日期: 2026-04-24
 
-状态: 当前系统架构事实来源
+状态: 系统架构设计基准
 
 ## 1. 结论
 
@@ -105,9 +105,9 @@ flowchart TD
     Deploy --> Configs
 ```
 
-## 3. 当前落位到项目分层的映射
+## 3. 项目落位到分层的映射
 
-| 项目层 | 当前落位 | 当前职责 | 不应放入 |
+| 项目层 | 代码落位 | 职责 | 不应放入 |
 | --- | --- | --- | --- |
 | Agent Artifact / Entry | `skills/mujitask-tiktok-feishu-sync/`、`src/automation_business_scaffold/apps/rpc_agent/`、`src/automation_business_scaffold/apps/cli/` | Agent skill bundle、RPC task registry、本地 submit/status/debug | workflow 主编排、worker loop、字段 mapper |
 | Runtime Control Plane | `src/automation_business_scaffold/control_plane/`、`src/automation_business_scaffold/apps/daemons/`、`project_env.py`、`config.py` | task request 生命周期、executor、worker claim、supervisor、reconciler、watchdog、outbox、runtime config | Feishu 表字段、TikTok/FastMoss 业务策略、业务专用 daemon |
@@ -215,7 +215,7 @@ domains/{business_domain}/
 
 - `tasks`: 顶层业务入口参数、校验、业务可见名称。
 - `workflows`: stage DAG、job binding、依赖、summary contract、outbox 触发点。
-- `jobs`: 可执行单元 contract，绑定 capability handler。
+- `jobs`: 可执行单元 contract，绑定 capability handler；业务复合 job 的 domain-owned runtime adapter 也归这里，adapter 只进入 domain flow，不放入 capability。
 - `policies`: 选择、过滤、幂等、retry、finalize、业务状态判断。
 - `mappers`: 输入源/事实源结果到业务对象的映射。
 - `projections`: 业务结果到飞书/钉钉/Discord/报表字段的投影。
@@ -249,6 +249,7 @@ Capability 层的禁止规则:
 - 不知道完整 workflow。
 - 不直接决定 parent task 是否完成。
 - 不把 mapper、projection、policy 名称注册成 handler code。
+- 不承载 `business_orchestration` 复合 job adapter；这类 adapter 归 `domains/{domain}/jobs/`。
 
 ## 8. Infrastructure、数据与存储边界
 
