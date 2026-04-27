@@ -123,11 +123,25 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 至少需要：
 
 - `INSTALL_DIR`
-- `TABLE_URL`
-- `FEISHU_ACCESS_TOKEN`
+- `MUJITASK_FEISHU_BASE_URL`
+- `MUJITASK_FEISHU_TK_*_TABLE_ID`
+- `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `BROWSER_PROFILE_REF`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
+
+飞书业务表路由配置必须使用英文 alias，不在配置 key 或配置值中写中文表名，也不维护第二套完整 URL 配置。系统只使用一个 Base URL 加每张表的 `table_id` / `view_id` 拼出完整 table URL。当前标准 alias 为:
+
+| alias | table_id | view_id |
+| --- | --- | --- |
+| `TK_SELECTION` | `tblpF46y6SkmVCE5` | `vewhXPD4x1` |
+| `TK_COMPETITOR` | `tblpzuTZXHtDq83t` | `vewT6AtfED` |
+| `TK_INFLUENCER_POOL` | `tblwLYl59TkfVFLe` | `vewuKd9i6D` |
+| `TK_INFLUENCER_OUTREACH` | `tblpK4zCGaaL6h6v` | `vewmMgDNV5` |
+| `TK_HOT_VIDEO` | `tblP9S5mRrirutDT` | `vewu7vztKp` |
+
+达人池同步的来源表固定由 `TK_COMPETITOR` 路由推导，目标表固定由 `TK_INFLUENCER_POOL` 路由推导；配置层不再维护派生出来的完整表 URL。
 
 当前模板见：
 
@@ -144,7 +158,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY`
-- `FEISHU_ACCESS_TOKEN`
+- `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `BROWSER_PROFILE_REF`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
@@ -254,8 +268,10 @@ python3 -m venv .venv
 至少确认：
 
 - `INSTALL_DIR`
-- `TABLE_URL`
-- `FEISHU_ACCESS_TOKEN`
+- `MUJITASK_FEISHU_BASE_URL`
+- `MUJITASK_FEISHU_TK_*_TABLE_ID`
+- `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `BROWSER_PROFILE_REF`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`

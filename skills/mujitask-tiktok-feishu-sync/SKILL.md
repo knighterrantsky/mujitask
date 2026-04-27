@@ -41,11 +41,14 @@ metadata:
 
 - 从 `skill.local.env` 读取：
   - `INSTALL_DIR`
-  - `TABLE_URL`
-  - `FEISHU_ACCESS_TOKEN`
+  - `MUJITASK_FEISHU_BASE_URL`
+  - `MUJITASK_FEISHU_TK_*_TABLE_ID`
+  - `MUJITASK_FEISHU_TK_*_VIEW_ID`
+  - `MUJITASK_FEISHU_ACCESS_TOKEN`
   - `BROWSER_PROFILE_REF`
   - `FASTMOSS_PHONE`
   - `FASTMOSS_PASSWORD`
+- 飞书表路由配置只使用 `MUJITASK_FEISHU_*` 英文配置；wrapper 会拼出完整 table URL，不读取 `TABLE_URL` 或达人池专用 URL 配置。
 - Runtime DB / MinIO 默认配置来自项目自动加载的 `scripts/execution_control/executor.local.env`
 - 不要在对话中向用户索取这些固定配置。
 - 不要手动 `source skill.local.env` 或自己拼接环境变量；wrapper 脚本会自行读取并解析它。

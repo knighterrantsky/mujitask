@@ -484,26 +484,46 @@ seed_key_value_file_from_example() {
 write_skill_local_env() {
   local skill_dir="$1"
   local install_dir="$2"
-  local table_url="$3"
-  local token="$4"
-  local browser_profile_ref="$5"
-  local fastmoss_phone="$6"
-  local fastmoss_password="$7"
-  local db_url="$8"
-  local artifact_root="$9"
-  local artifact_bucket="${10}"
-  local requested_by="${11}"
-  local notification_channel_code="${12}"
-  local openclaw_agent_id="${13}"
-  local openclaw_state_dir="${14}"
+  local feishu_base_url="$3"
+  local tk_selection_table_id="$4"
+  local tk_selection_view_id="$5"
+  local tk_competitor_table_id="$6"
+  local tk_competitor_view_id="$7"
+  local tk_influencer_pool_table_id="$8"
+  local tk_influencer_pool_view_id="$9"
+  local tk_influencer_outreach_table_id="${10}"
+  local tk_influencer_outreach_view_id="${11}"
+  local tk_hot_video_table_id="${12}"
+  local tk_hot_video_view_id="${13}"
+  local token="${14}"
+  local browser_profile_ref="${15}"
+  local fastmoss_phone="${16}"
+  local fastmoss_password="${17}"
+  local db_url="${18}"
+  local artifact_root="${19}"
+  local artifact_bucket="${20}"
+  local requested_by="${21}"
+  local notification_channel_code="${22}"
+  local openclaw_agent_id="${23}"
+  local openclaw_state_dir="${24}"
 
   seed_key_value_file_from_example "$skill_dir/skill.local.env" "$skill_dir/skill.local.env.example"
 
   merge_key_value_file \
     "$skill_dir/skill.local.env" \
     "INSTALL_DIR=$(quote_env_value "$install_dir")" \
-    "TABLE_URL=$(quote_env_value "$table_url")" \
-    "FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
+    "MUJITASK_FEISHU_BASE_URL=$(quote_env_value "$feishu_base_url")" \
+    "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID=$(quote_env_value "$tk_selection_table_id")" \
+    "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID=$(quote_env_value "$tk_selection_view_id")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID=$(quote_env_value "$tk_competitor_table_id")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID=$(quote_env_value "$tk_competitor_view_id")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID=$(quote_env_value "$tk_influencer_pool_table_id")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID=$(quote_env_value "$tk_influencer_pool_view_id")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID=$(quote_env_value "$tk_influencer_outreach_table_id")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$(quote_env_value "$tk_influencer_outreach_view_id")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "$tk_hot_video_table_id")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "$tk_hot_video_view_id")" \
+    "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
     "BROWSER_PROFILE_REF=$(quote_env_value "$browser_profile_ref")" \
     "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \
@@ -557,7 +577,7 @@ write_executor_local_env() {
     "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET=$(quote_env_value "$minio_create_bucket")" \
     "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES=$(quote_env_value "$sync_referenced_files")" \
     "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "$requested_by")" \
-    "FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
+    "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
     "BROWSER_PROFILE_REF=$(quote_env_value "$browser_profile_ref")" \
     "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \

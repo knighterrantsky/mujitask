@@ -17,12 +17,28 @@ main() {
   local existing_skill_env="$target_skill_dir/skill.local.env"
   [[ -f "$existing_skill_env" ]] || fail "Missing deployed skill config: $existing_skill_env"
 
-  local install_dir table_url token browser_profile_ref fastmoss_phone fastmoss_password
+  local install_dir token browser_profile_ref fastmoss_phone fastmoss_password
+  local feishu_base_url
+  local tk_selection_table_id tk_selection_view_id
+  local tk_competitor_table_id tk_competitor_view_id
+  local tk_influencer_pool_table_id tk_influencer_pool_view_id
+  local tk_influencer_outreach_table_id tk_influencer_outreach_view_id
+  local tk_hot_video_table_id tk_hot_video_view_id
   local db_url artifact_root artifact_bucket requested_by notification_channel_code
   local openclaw_agent_id openclaw_state_dir
   install_dir="$(read_kv_value "$existing_skill_env" "INSTALL_DIR" 2>/dev/null || true)"
-  table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
-  token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
+  feishu_base_url="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_BASE_URL" 2>/dev/null || true)"
+  tk_selection_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID" 2>/dev/null || true)"
+  tk_selection_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID" 2>/dev/null || true)"
+  tk_competitor_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID" 2>/dev/null || true)"
+  tk_competitor_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID" 2>/dev/null || true)"
+  tk_influencer_pool_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID" 2>/dev/null || true)"
+  tk_influencer_pool_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID" 2>/dev/null || true)"
+  tk_influencer_outreach_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID" 2>/dev/null || true)"
+  tk_influencer_outreach_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID" 2>/dev/null || true)"
+  tk_hot_video_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID" 2>/dev/null || true)"
+  tk_hot_video_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID" 2>/dev/null || true)"
+  token="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
   browser_profile_ref="$(read_kv_value "$existing_skill_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
   fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
   fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
@@ -34,8 +50,18 @@ main() {
   openclaw_agent_id="$(read_kv_value "$existing_skill_env" "OPENCLAW_AGENT_ID" 2>/dev/null || true)"
   openclaw_state_dir="$(read_kv_value "$existing_skill_env" "OPENCLAW_STATE_DIR" 2>/dev/null || true)"
   [[ -n "$install_dir" ]] || fail "INSTALL_DIR is missing in $existing_skill_env."
-  [[ -n "$table_url" ]] || fail "TABLE_URL is missing in $existing_skill_env."
-  [[ -n "$token" ]] || fail "FEISHU_ACCESS_TOKEN is missing in $existing_skill_env."
+  [[ -n "$feishu_base_url" ]] || fail "MUJITASK_FEISHU_BASE_URL is missing in $existing_skill_env."
+  [[ -n "$tk_selection_table_id" ]] || fail "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID is missing in $existing_skill_env."
+  [[ -n "$tk_selection_view_id" ]] || fail "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID is missing in $existing_skill_env."
+  [[ -n "$tk_competitor_table_id" ]] || fail "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID is missing in $existing_skill_env."
+  [[ -n "$tk_competitor_view_id" ]] || fail "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID is missing in $existing_skill_env."
+  [[ -n "$tk_influencer_pool_table_id" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID is missing in $existing_skill_env."
+  [[ -n "$tk_influencer_pool_view_id" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID is missing in $existing_skill_env."
+  [[ -n "$tk_influencer_outreach_table_id" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID is missing in $existing_skill_env."
+  [[ -n "$tk_influencer_outreach_view_id" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID is missing in $existing_skill_env."
+  [[ -n "$tk_hot_video_table_id" ]] || fail "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID is missing in $existing_skill_env."
+  [[ -n "$tk_hot_video_view_id" ]] || fail "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID is missing in $existing_skill_env."
+  [[ -n "$token" ]] || fail "MUJITASK_FEISHU_ACCESS_TOKEN is missing in $existing_skill_env."
 
   local existing_executor_env="$install_dir/scripts/execution_control/executor.local.env"
   local artifact_store_provider="" artifact_object_prefix="" minio_endpoint="" minio_access_key="" minio_secret_key="" minio_region="" minio_secure="" minio_create_bucket="" sync_referenced_files=""
@@ -160,7 +186,17 @@ main() {
   write_skill_local_env \
     "$target_skill_dir" \
     "$install_dir" \
-    "$table_url" \
+    "$feishu_base_url" \
+    "$tk_selection_table_id" \
+    "$tk_selection_view_id" \
+    "$tk_competitor_table_id" \
+    "$tk_competitor_view_id" \
+    "$tk_influencer_pool_table_id" \
+    "$tk_influencer_pool_view_id" \
+    "$tk_influencer_outreach_table_id" \
+    "$tk_influencer_outreach_view_id" \
+    "$tk_hot_video_table_id" \
+    "$tk_hot_video_view_id" \
     "$token" \
     "$browser_profile_ref" \
     "$fastmoss_phone" \
@@ -178,7 +214,7 @@ main() {
     "$artifact_root" \
     "$artifact_bucket" \
     "${artifact_store_provider:-minio}" \
-    "${artifact_object_prefix:-phase2/local}" \
+    "${artifact_object_prefix:-mujitask/local}" \
     "$minio_endpoint" \
     "$minio_access_key" \
     "$minio_secret_key" \

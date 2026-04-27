@@ -43,7 +43,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--access-token-env",
-        default="FEISHU_ACCESS_TOKEN",
+        default="MUJITASK_FEISHU_ACCESS_TOKEN",
         help="Environment variable containing the Feishu access token.",
     )
     parser.add_argument(

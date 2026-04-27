@@ -58,7 +58,13 @@ main() {
   local existing_openclaw_agent_id=""
   local existing_openclaw_state_dir=""
 
-  local repo_url="" tag="" install_dir="" table_url="" token="" archive_url="" github_slug="" resolved_ref="" github_token_input=""
+  local repo_url="" tag="" install_dir="" token="" archive_url="" github_slug="" resolved_ref="" github_token_input=""
+  local feishu_base_url=""
+  local tk_selection_table_id="" tk_selection_view_id=""
+  local tk_competitor_table_id="" tk_competitor_view_id=""
+  local tk_influencer_pool_table_id="" tk_influencer_pool_view_id=""
+  local tk_influencer_outreach_table_id="" tk_influencer_outreach_view_id=""
+  local tk_hot_video_table_id="" tk_hot_video_view_id=""
   local default_install_dir="$HOME/apps/mujitask"
   if [[ -n "$existing_install_dir" ]]; then
     default_install_dir="$existing_install_dir"
@@ -95,8 +101,18 @@ main() {
   mkdir -p "$install_dir"
 
   if [[ -f "$existing_skill_env" ]]; then
-    table_url="$(read_kv_value "$existing_skill_env" "TABLE_URL" 2>/dev/null || true)"
-    token="$(read_kv_value "$existing_skill_env" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
+    feishu_base_url="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_BASE_URL" 2>/dev/null || true)"
+    tk_selection_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID" 2>/dev/null || true)"
+    tk_selection_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID" 2>/dev/null || true)"
+    tk_competitor_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID" 2>/dev/null || true)"
+    tk_competitor_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID" 2>/dev/null || true)"
+    tk_influencer_pool_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID" 2>/dev/null || true)"
+    tk_influencer_pool_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID" 2>/dev/null || true)"
+    tk_influencer_outreach_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID" 2>/dev/null || true)"
+    tk_influencer_outreach_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID" 2>/dev/null || true)"
+    tk_hot_video_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID" 2>/dev/null || true)"
+    tk_hot_video_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID" 2>/dev/null || true)"
+    token="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
   fi
 
   local existing_executor_env=""
@@ -119,11 +135,17 @@ main() {
 
   repo_url="$(prompt "Repo URL")"
 
-  if [[ -n "$table_url" ]]; then
-    log "Reusing existing Feishu table URL from $existing_skill_env"
-  else
-    table_url="$(prompt "Feishu table URL")"
-  fi
+  feishu_base_url="$(prompt "Feishu base URL" "$feishu_base_url")"
+  tk_selection_table_id="$(prompt "Feishu TK selection table id" "$tk_selection_table_id")"
+  tk_selection_view_id="$(prompt "Feishu TK selection view id" "$tk_selection_view_id")"
+  tk_competitor_table_id="$(prompt "Feishu TK competitor table id" "$tk_competitor_table_id")"
+  tk_competitor_view_id="$(prompt "Feishu TK competitor view id" "$tk_competitor_view_id")"
+  tk_influencer_pool_table_id="$(prompt "Feishu TK influencer pool table id" "$tk_influencer_pool_table_id")"
+  tk_influencer_pool_view_id="$(prompt "Feishu TK influencer pool view id" "$tk_influencer_pool_view_id")"
+  tk_influencer_outreach_table_id="$(prompt "Feishu TK influencer outreach table id" "$tk_influencer_outreach_table_id")"
+  tk_influencer_outreach_view_id="$(prompt "Feishu TK influencer outreach view id" "$tk_influencer_outreach_view_id")"
+  tk_hot_video_table_id="$(prompt "Feishu TK hot video table id" "$tk_hot_video_table_id")"
+  tk_hot_video_view_id="$(prompt "Feishu TK hot video view id" "$tk_hot_video_view_id")"
 
   if [[ -n "$token" ]]; then
     log "Reusing existing Feishu access token from $existing_skill_env"
@@ -149,7 +171,7 @@ main() {
   artifact_root="$(prompt "Artifact root" "${existing_artifact_root:-$install_dir/runtime/execution_control/object_store}")"
   artifact_bucket="$(prompt "Artifact bucket" "${existing_artifact_bucket:-automation-business-scaffold}")"
   artifact_store_provider="$(prompt "Artifact store provider" "minio")"
-  artifact_object_prefix="$(prompt_optional "Artifact object prefix" "phase2/local")"
+  artifact_object_prefix="$(prompt_optional "Artifact object prefix" "mujitask/local")"
   minio_endpoint="$(prompt_optional "MinIO endpoint" "127.0.0.1:9000")"
   minio_access_key="$(prompt_optional "MinIO access key" "minioadmin")"
   minio_secret_key="$(prompt_secret_optional "MinIO secret key (optional, press Enter to use default)")"
@@ -256,7 +278,17 @@ main() {
   write_skill_local_env \
     "$target_skill_dir" \
     "$install_dir" \
-    "$table_url" \
+    "$feishu_base_url" \
+    "$tk_selection_table_id" \
+    "$tk_selection_view_id" \
+    "$tk_competitor_table_id" \
+    "$tk_competitor_view_id" \
+    "$tk_influencer_pool_table_id" \
+    "$tk_influencer_pool_view_id" \
+    "$tk_influencer_outreach_table_id" \
+    "$tk_influencer_outreach_view_id" \
+    "$tk_hot_video_table_id" \
+    "$tk_hot_video_view_id" \
     "$token" \
     "$browser_profile_ref" \
     "$fastmoss_phone" \
@@ -747,14 +779,34 @@ merge_key_value_file() {
 write_skill_local_env() {
   local skill_dir="$1"
   local install_dir="$2"
-  local table_url="$3"
-  local token="$4"
+  local feishu_base_url="$3"
+  local tk_selection_table_id="$4"
+  local tk_selection_view_id="$5"
+  local tk_competitor_table_id="$6"
+  local tk_competitor_view_id="$7"
+  local tk_influencer_pool_table_id="$8"
+  local tk_influencer_pool_view_id="$9"
+  local tk_influencer_outreach_table_id="${10}"
+  local tk_influencer_outreach_view_id="${11}"
+  local tk_hot_video_table_id="${12}"
+  local tk_hot_video_view_id="${13}"
+  local token="${14}"
 
   merge_key_value_file \
     "$skill_dir/skill.local.env" \
     "INSTALL_DIR=$install_dir" \
-    "TABLE_URL=$table_url" \
-    "FEISHU_ACCESS_TOKEN=$token"
+    "MUJITASK_FEISHU_BASE_URL=$feishu_base_url" \
+    "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID=$tk_selection_table_id" \
+    "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID=$tk_selection_view_id" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID=$tk_competitor_table_id" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID=$tk_competitor_view_id" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID=$tk_influencer_pool_table_id" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID=$tk_influencer_pool_view_id" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID=$tk_influencer_outreach_table_id" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$tk_influencer_outreach_view_id" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$tk_hot_video_table_id" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$tk_hot_video_view_id" \
+    "MUJITASK_FEISHU_ACCESS_TOKEN=$token"
 }
 
 normalize_kv_entry() {

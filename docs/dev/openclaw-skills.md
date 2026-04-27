@@ -98,7 +98,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 规则：
 
 - 如果用户没有明确给出 `7日销量阈值`，默认使用 `200`
-- `TABLE_URL`、`FEISHU_ACCESS_TOKEN`、`BROWSER_PROFILE_REF`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
+- `MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_TK_*_TABLE_ID`、`MUJITASK_FEISHU_TK_*_VIEW_ID`、`MUJITASK_FEISHU_ACCESS_TOKEN`、`BROWSER_PROFILE_REF`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
 - Runtime DB / MinIO 默认配置来自项目自动加载的 `scripts/execution_control/executor.local.env`
 - 不在对话中向用户索取这些部署级配置
 

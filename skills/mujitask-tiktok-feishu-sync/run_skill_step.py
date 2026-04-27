@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "skill.local.env"
@@ -20,6 +20,24 @@ RESULT_HELPER = SCRIPT_DIR / "openclaw_result.py"
 RESOLVE_BROWSER_TARGET = SCRIPT_DIR / "resolve_browser_target.py"
 LIGHTWEIGHT_SUBMIT_HELPER = SCRIPT_DIR / "lightweight_submit.py"
 DEFAULT_OPENCLAW_AGENT_ID = "tiktok-ops"
+FEISHU_TABLE_REF_PREFIX = "feishu://mujitask/"
+TK_SELECTION_TABLE_ALIAS = "tk_selection"
+TK_COMPETITOR_TABLE_ALIAS = "tk_competitor"
+TK_INFLUENCER_POOL_TABLE_ALIAS = "tk_influencer_pool"
+TK_INFLUENCER_OUTREACH_TABLE_ALIAS = "tk_influencer_outreach"
+TK_HOT_VIDEO_TABLE_ALIAS = "tk_hot_video"
+FEISHU_ACCESS_TOKEN_ENV = "MUJITASK_FEISHU_ACCESS_TOKEN"
+TK_FEISHU_TABLE_ENV_SLUGS = {
+    TK_SELECTION_TABLE_ALIAS: "TK_SELECTION",
+    TK_COMPETITOR_TABLE_ALIAS: "TK_COMPETITOR",
+    TK_INFLUENCER_POOL_TABLE_ALIAS: "TK_INFLUENCER_POOL",
+    TK_INFLUENCER_OUTREACH_TABLE_ALIAS: "TK_INFLUENCER_OUTREACH",
+    TK_HOT_VIDEO_TABLE_ALIAS: "TK_HOT_VIDEO",
+}
+
+
+def _feishu_table_ref(table_alias: str) -> str:
+    return f"{FEISHU_TABLE_REF_PREFIX}{table_alias}"
 
 
 def _normalize_env_entry(value: str) -> str:
@@ -61,6 +79,75 @@ def _optional_env_value(env: dict[str, str], key: str) -> str:
 
 def _json_compact(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compose_feishu_table_url(base_url: str, table_id: str, view_id: str = "") -> str:
+    base = str(base_url or "").strip()
+    table = str(table_id or "").strip()
+    view = str(view_id or "").strip()
+    if not base or not table:
+        return ""
+    parsed = urlparse(base)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["table"] = table
+    if view:
+        query["view"] = view
+    elif "view" in query:
+        query.pop("view", None)
+    path = parsed.path.rstrip("/") or parsed.path
+    return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment))
+
+
+def _feishu_table_env_key(table_alias: str, suffix: str) -> str:
+    env_slug = TK_FEISHU_TABLE_ENV_SLUGS[table_alias]
+    return f"MUJITASK_FEISHU_{env_slug}_{suffix}"
+
+
+def _configured_feishu_table_url(*, skill_env: dict[str, str], table_alias: str) -> str:
+    table_id = _optional_env_value(skill_env, _feishu_table_env_key(table_alias, "TABLE_ID"))
+    view_id = _optional_env_value(skill_env, _feishu_table_env_key(table_alias, "VIEW_ID"))
+    base_url = _optional_env_value(skill_env, "MUJITASK_FEISHU_BASE_URL")
+    return _compose_feishu_table_url(base_url, table_id, view_id)
+
+
+def _load_feishu_table_refs(skill_env: dict[str, str]) -> dict[str, Any]:
+    table_refs: dict[str, Any] = {}
+    for table_alias in TK_FEISHU_TABLE_ENV_SLUGS:
+        table_url = _configured_feishu_table_url(skill_env=skill_env, table_alias=table_alias)
+        if not table_url:
+            continue
+        table_refs[table_alias] = table_url
+        table_refs[_feishu_table_ref(table_alias)] = table_url
+    return table_refs
+
+
+def _table_url_from_ref(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("table_url") or "").strip()
+    return ""
+
+
+def _resolve_table_url(
+    skill_env: dict[str, str],
+    table_refs: dict[str, Any],
+    table_alias: str,
+) -> str:
+    for key in (table_alias, _feishu_table_ref(table_alias)):
+        table_url = _table_url_from_ref(table_refs.get(key))
+        if table_url:
+            return table_url
+    raise ValueError(
+        f"{table_alias} table route is required. Configure MUJITASK_FEISHU_BASE_URL with "
+        f"{_feishu_table_env_key(table_alias, 'TABLE_ID')} and {_feishu_table_env_key(table_alias, 'VIEW_ID')}."
+    )
+
+
+def _append_feishu_table_refs(params: list[str], table_refs: dict[str, Any]) -> list[str]:
+    if table_refs:
+        params.append(f"table_refs={_json_compact(table_refs)}")
+    return params
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -476,10 +563,11 @@ def _keyword_search_submit_params(
     return params
 
 
-def _influencer_pool_sync_env(skill_env: dict[str, str]) -> dict[str, str]:
-    source_table_url = _require_env_value(skill_env, "INFLUENCER_POOL_SOURCE_TABLE_URL")
-    target_table_url = _require_env_value(skill_env, "INFLUENCER_POOL_TARGET_TABLE_URL")
-    feishu_access_token_env = _require_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
+def _influencer_pool_sync_env(skill_env: dict[str, str]) -> dict[str, Any]:
+    table_refs = _load_feishu_table_refs(skill_env)
+    source_table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    target_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_POOL_TABLE_ALIAS)
+    feishu_access_token_env = FEISHU_ACCESS_TOKEN_ENV
     fastmoss_phone_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
     fastmoss_password_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
 
@@ -490,6 +578,9 @@ def _influencer_pool_sync_env(skill_env: dict[str, str]) -> dict[str, str]:
     return {
         "source_table_url": source_table_url,
         "target_table_url": target_table_url,
+        "source_table_ref": _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS),
+        "target_table_ref": _feishu_table_ref(TK_INFLUENCER_POOL_TABLE_ALIAS),
+        "table_refs": table_refs,
         "feishu_access_token_env": feishu_access_token_env,
         "feishu_access_token": feishu_access_token,
         "fastmoss_phone_env": fastmoss_phone_env,
@@ -516,12 +607,15 @@ def _influencer_pool_sync_submit_params(
 ) -> tuple[list[str], dict[str, str]]:
     config = _influencer_pool_sync_env(skill_env)
     base_params = [
+        f"source_table_ref={config['source_table_ref']}",
         f"table_url={config['source_table_url']}",
+        f"target_table_ref={config['target_table_ref']}",
         f"target_table_url={config['target_table_url']}",
         f"access_token_env={config['feishu_access_token_env']}",
         f"fastmoss_phone_env={config['fastmoss_phone_env']}",
         f"fastmoss_password_env={config['fastmoss_password_env']}",
     ]
+    _append_feishu_table_refs(base_params, config["table_refs"])
     if max_source_rows > 0:
         base_params.append(f"max_source_rows={max_source_rows}")
     if max_author_pages > 0:
@@ -1091,8 +1185,10 @@ def main(argv: list[str] | None = None) -> int:
     skill_env = _load_skill_env(ENV_FILE)
 
     install_dir = Path(_require_env_value(skill_env, "INSTALL_DIR")).expanduser().resolve()
-    table_url = _require_env_value(skill_env, "TABLE_URL")
-    feishu_access_token = _require_env_value(skill_env, "FEISHU_ACCESS_TOKEN")
+    table_refs = _load_feishu_table_refs(skill_env)
+    table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    competitor_table_ref = _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS)
+    feishu_access_token = _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV)
     browser_profile_ref = str(skill_env.get("BROWSER_PROFILE_REF", "")).strip()
     fastmoss_phone = str(skill_env.get("FASTMOSS_PHONE", "")).strip()
     fastmoss_password = str(skill_env.get("FASTMOSS_PASSWORD", "")).strip()
@@ -1105,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Cannot find Python at {python_bin}. Re-run the deployment script.")
 
     extra_env = {
-        "FEISHU_ACCESS_TOKEN": feishu_access_token,
+        FEISHU_ACCESS_TOKEN_ENV: feishu_access_token,
     }
     if fastmoss_phone:
         extra_env["FASTMOSS_PHONE"] = fastmoss_phone
@@ -1113,10 +1209,12 @@ def main(argv: list[str] | None = None) -> int:
         extra_env["FASTMOSS_PASSWORD"] = fastmoss_password
 
     params = [
+        f"source_table_ref={competitor_table_ref}",
         f"table_url={table_url}",
-        "access_token_env=FEISHU_ACCESS_TOKEN",
+        "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
         f"url_field_name={DEFAULT_URL_FIELD_NAME}",
     ]
+    _append_feishu_table_refs(params, table_refs)
     task_name = ""
     prefix = "skill-step"
 
@@ -1163,12 +1261,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "refresh-current-competitor-table-submit":
         submit_params = _append_runtime_params(
-            [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1191,7 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
             accepted_message="Refresh task accepted for asynchronous execution.",
         )
         if submit_status != 0:
-            return _emit_final_result(submit_payload)
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "refresh-current-competitor-table-status":
         task_name = "refresh_current_competitor_table"
@@ -1215,10 +1317,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "product-url-complete-submit":
         submit_params = _append_runtime_params(
-            [
-                f"product_url={args.product_url}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    f"product_url={args.product_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1241,7 +1349,7 @@ def main(argv: list[str] | None = None) -> int:
             accepted_message="Product URL completion task accepted for asynchronous execution.",
         )
         if submit_status != 0:
-            return _emit_final_result(submit_payload)
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "product-url-complete-status":
         task_name = "tiktok_fastmoss_product_ingest"
@@ -1265,10 +1373,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "product-url-complete":
         submit_params = _append_runtime_params(
-            [
-                f"product_url={args.product_url}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    f"product_url={args.product_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1295,12 +1409,16 @@ def main(argv: list[str] | None = None) -> int:
         return _emit_final_result(submit_payload)
     elif args.command == "competitor-row-by-url-submit":
         submit_params = _append_runtime_params(
-            [
-                f"source_table_ref={table_url}",
-                f"product_url={args.product_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    f"product_url={args.product_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1323,7 +1441,7 @@ def main(argv: list[str] | None = None) -> int:
             accepted_message="Competitor row refresh by URL task accepted for asynchronous execution.",
         )
         if submit_status != 0:
-            return _emit_final_result(submit_payload)
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "competitor-row-by-url-status":
         task_name = "refresh_competitor_row_by_url"
@@ -1347,12 +1465,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "competitor-row-by-url":
         submit_params = _append_runtime_params(
-            [
-                f"source_table_ref={table_url}",
-                f"product_url={args.product_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    f"product_url={args.product_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1379,12 +1501,16 @@ def main(argv: list[str] | None = None) -> int:
         return _emit_final_result(submit_payload)
     elif args.command == "refresh-current-competitor-table":
         submit_params = _append_runtime_params(
-            [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1411,12 +1537,17 @@ def main(argv: list[str] | None = None) -> int:
         return _emit_final_result(submit_payload)
     elif args.command == "keyword-search-submit":
         submit_params = _append_runtime_params(
-            [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"seed_table_ref={competitor_table_ref}",
+                    f"target_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(
@@ -1442,7 +1573,7 @@ def main(argv: list[str] | None = None) -> int:
             accepted_message="Keyword search task accepted for asynchronous execution.",
         )
         if submit_status != 0:
-            return _emit_final_result(submit_payload)
+            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
         return _emit_final_result(submit_payload)
     elif args.command == "keyword-search-status":
         task_name = "search_keyword_competitor_products"
@@ -1466,12 +1597,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "keyword-search":
         submit_params = _append_runtime_params(
-            [
-                f"table_url={table_url}",
-                "access_token_env=FEISHU_ACCESS_TOKEN",
-                f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                "control_action=submit",
-            ],
+            _append_feishu_table_refs(
+                [
+                    f"seed_table_ref={competitor_table_ref}",
+                    f"target_table_ref={competitor_table_ref}",
+                    f"table_url={table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
             skill_env,
         )
         submit_params.extend(

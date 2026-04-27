@@ -4,6 +4,28 @@ import importlib.util
 import json
 from pathlib import Path
 
+FEISHU_BASE_URL = "https://example.feishu.cn/base/app"
+FEISHU_TABLE_ROUTE_ENV = {
+    "MUJITASK_FEISHU_BASE_URL": FEISHU_BASE_URL,
+    "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID": "tblSelection",
+    "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID": "vewSelection",
+    "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID": "tblCompetitor",
+    "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID": "vewCompetitor",
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID": "tblInfluencer",
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID": "vewInfluencer",
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID": "tblOutreach",
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID": "vewOutreach",
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID": "tblVideo",
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID": "vewVideo",
+}
+FEISHU_TABLE_URLS = {
+    "tk_selection": f"{FEISHU_BASE_URL}?table=tblSelection&view=vewSelection",
+    "tk_competitor": f"{FEISHU_BASE_URL}?table=tblCompetitor&view=vewCompetitor",
+    "tk_influencer_pool": f"{FEISHU_BASE_URL}?table=tblInfluencer&view=vewInfluencer",
+    "tk_influencer_outreach": f"{FEISHU_BASE_URL}?table=tblOutreach&view=vewOutreach",
+    "tk_hot_video": f"{FEISHU_BASE_URL}?table=tblVideo&view=vewVideo",
+}
+
 
 def _load_run_skill_step_module():
     module_path = (
@@ -18,6 +40,14 @@ def _load_run_skill_step_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _param_value(params: list[str], key: str):
+    prefix = f"{key}="
+    for item in params:
+        if item.startswith(prefix):
+            return item.split("=", 1)[1]
+    raise AssertionError(f"missing param {key}")
 
 
 def test_append_runtime_params_uses_explicit_openclaw_delivery_context():
@@ -246,8 +276,8 @@ def test_main_refresh_submit_passes_fastmoss_env_markers(tmp_path, monkeypatch):
         "_load_skill_env",
         lambda _path: {
             "INSTALL_DIR": str(install_dir),
-            "TABLE_URL": "https://example.com/table",
-            "FEISHU_ACCESS_TOKEN": "token",
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
             "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
@@ -274,8 +304,8 @@ def test_main_refresh_submit_passes_fastmoss_env_markers(tmp_path, monkeypatch):
 
     assert exit_code == 0
     params = list(captured["params"])
-    assert "table_url=https://example.com/table" in params
-    assert "access_token_env=FEISHU_ACCESS_TOKEN" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
+    assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
     assert "url_field_name=产品链接" in params
     assert "control_action=submit" in params
     assert "profile_ref=roxy-tiktok" in params
@@ -283,6 +313,50 @@ def test_main_refresh_submit_passes_fastmoss_env_markers(tmp_path, monkeypatch):
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
     assert captured["accepted_message"] == "Refresh task accepted for asynchronous execution."
+
+
+def test_main_refresh_submit_resolves_competitor_table_from_english_route_config(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "BROWSER_PROFILE_REF": "roxy-default",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured.update(kwargs)
+        return (0, {"status": "success", "request_id": "req-table-refs"})
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+
+    exit_code = module.main(["refresh-current-competitor-table-submit", "--run-mode", "canary"])
+
+    assert exit_code == 0
+    params = list(captured["params"])
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
+    assert "source_table_ref=feishu://mujitask/tk_competitor" in params
+    table_refs = json.loads(_param_value(params, "table_refs"))
+    assert table_refs["tk_competitor"] == FEISHU_TABLE_URLS["tk_competitor"]
+    assert table_refs["feishu://mujitask/tk_competitor"] == FEISHU_TABLE_URLS["tk_competitor"]
+    assert table_refs["tk_influencer_pool"] == FEISHU_TABLE_URLS["tk_influencer_pool"]
+    assert all("TK" not in key or key.startswith("tk_") for key in table_refs)
 
 
 def test_main_refresh_current_competitor_table_returns_after_submit(tmp_path, monkeypatch):
@@ -302,8 +376,8 @@ def test_main_refresh_current_competitor_table_returns_after_submit(tmp_path, mo
         "_load_skill_env",
         lambda _path: {
             "INSTALL_DIR": str(install_dir),
-            "TABLE_URL": "https://example.com/table",
-            "FEISHU_ACCESS_TOKEN": "token",
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
             "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
@@ -358,8 +432,8 @@ def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
         "_load_skill_env",
         lambda _path: {
             "INSTALL_DIR": str(install_dir),
-            "TABLE_URL": "https://example.com/table",
-            "FEISHU_ACCESS_TOKEN": "token",
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
             "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
@@ -401,9 +475,10 @@ def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
     assert len(captured_calls) == 1
     assert captured_calls[0]["task_name"] == "refresh_competitor_row_by_url"
     params = list(captured_calls[0]["params"])
-    assert "source_table_ref=https://example.com/table" in params
+    assert "source_table_ref=feishu://mujitask/tk_competitor" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
     assert "product_url=https://www.tiktok.com/shop/pdp/123456789" in params
-    assert "access_token_env=FEISHU_ACCESS_TOKEN" in params
+    assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
     assert "fallback_allowed=true" in params
     assert emitted["request_id"] == "req-competitor-url-123"
     assert emitted["request_status"] == "pending"
@@ -426,8 +501,8 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
         "_load_skill_env",
         lambda _path: {
             "INSTALL_DIR": str(install_dir),
-            "TABLE_URL": "https://example.com/table",
-            "FEISHU_ACCESS_TOKEN": "token",
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
             "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
@@ -491,14 +566,11 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
         "_load_skill_env",
         lambda _path: {
             "INSTALL_DIR": str(install_dir),
-            "TABLE_URL": "https://example.com/table",
-            "FEISHU_ACCESS_TOKEN": "token",
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
             "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
-            "INFLUENCER_POOL_SOURCE_TABLE_URL": "https://example.com/source",
-            "INFLUENCER_POOL_TARGET_TABLE_URL": "https://example.com/target",
-            "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV": "FEISHU_ACCESS_TOKEN",
             "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
             "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV": "FASTMOSS_PASSWORD",
         },
@@ -535,10 +607,56 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
     assert captured_calls[0]["task_name"] == "sync_tk_influencer_pool"
     params = list(captured_calls[0]["params"])
     assert "control_action=submit" in params
-    assert "table_url=https://example.com/source" in params
-    assert "target_table_url=https://example.com/target" in params
-    assert "access_token_env=FEISHU_ACCESS_TOKEN" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
+    assert f"target_table_url={FEISHU_TABLE_URLS['tk_influencer_pool']}" in params
+    assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
     assert emitted["request_id"] == "req-influencer-123"
     assert emitted["request_status"] == "pending"
+
+
+def test_main_influencer_pool_sync_uses_english_route_config_for_source_and_target(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "BROWSER_PROFILE_REF": "roxy-default",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+            "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
+            "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV": "FASTMOSS_PASSWORD",
+        },
+    )
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (0, {"status": "success", "request_id": "req-influencer-table-refs"})
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+
+    exit_code = module.main(["influencer-pool-sync", "--run-mode", "canary"])
+
+    assert exit_code == 0
+    params = list(captured_calls[0]["params"])
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
+    assert f"target_table_url={FEISHU_TABLE_URLS['tk_influencer_pool']}" in params
+    assert "source_table_ref=feishu://mujitask/tk_competitor" in params
+    assert "target_table_ref=feishu://mujitask/tk_influencer_pool" in params
+    table_refs = json.loads(_param_value(params, "table_refs"))
+    assert table_refs["tk_competitor"] == FEISHU_TABLE_URLS["tk_competitor"]
+    assert table_refs["tk_influencer_pool"] == FEISHU_TABLE_URLS["tk_influencer_pool"]
+    assert all("TK" not in key or key.startswith("tk_") for key in table_refs)

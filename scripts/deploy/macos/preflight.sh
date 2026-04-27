@@ -52,6 +52,25 @@ require_config_value() {
   [[ -n "${value}" ]] || error "Missing ${primary}${fallback:+ / ${fallback}}. Copy scripts/deploy/macos/deploy.local.env.example to ${ENV_FILE} and fill it in."
 }
 
+require_feishu_table_config() {
+  require_feishu_table_route "TK_SELECTION"
+  require_feishu_table_route "TK_COMPETITOR"
+  require_feishu_table_route "TK_INFLUENCER_POOL"
+  require_feishu_table_route "TK_INFLUENCER_OUTREACH"
+  require_feishu_table_route "TK_HOT_VIDEO"
+}
+
+require_feishu_table_route() {
+  local env_slug="$1"
+  local base_url table_id view_id
+  base_url="$(config_value MUJITASK_FEISHU_BASE_URL "" "")"
+  table_id="$(config_value "MUJITASK_FEISHU_${env_slug}_TABLE_ID" "" "")"
+  view_id="$(config_value "MUJITASK_FEISHU_${env_slug}_VIEW_ID" "" "")"
+  if [[ -z "${base_url}" || -z "${table_id}" || -z "${view_id}" ]]; then
+    error "Missing Feishu table route for ${env_slug}. Configure MUJITASK_FEISHU_BASE_URL plus MUJITASK_FEISHU_${env_slug}_TABLE_ID and MUJITASK_FEISHU_${env_slug}_VIEW_ID."
+  fi
+}
+
 check_port_hint() {
   local port="$1"
   local label="$2"
@@ -108,8 +127,8 @@ fi
 if [[ "${MUJITASK_PREFLIGHT_REQUIRE_ENV:-0}" == "1" ]]; then
   require_config_value MUJITASK_INSTALL_DIR INSTALL_DIR
   require_config_value MUJITASK_SKILLS_DIR SKILLS_INSTALL_DIR
-  require_config_value MUJITASK_TABLE_URL TABLE_URL
-  require_config_value MUJITASK_FEISHU_ACCESS_TOKEN FEISHU_ACCESS_TOKEN
+  require_feishu_table_config
+  require_config_value MUJITASK_FEISHU_ACCESS_TOKEN
   require_config_value MUJITASK_FASTMOSS_PHONE FASTMOSS_PHONE
   require_config_value MUJITASK_FASTMOSS_PASSWORD FASTMOSS_PASSWORD
 fi

@@ -9,6 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
@@ -23,6 +24,15 @@ DEFAULT_CONTACT_FIELD_NAME = "达人联系方式"
 CONTACT_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 CONTACT_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 CONTACT_PHONE_RE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+
+
+def compose_feishu_table_url(base_url: str, table_id: str, view_id: str) -> str:
+    parsed = urlparse(base_url.strip())
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["table"] = table_id.strip()
+    query["view"] = view_id.strip()
+    path = parsed.path.rstrip("/") or parsed.path
+    return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment))
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -205,13 +215,14 @@ def main() -> int:
     args = build_parser().parse_args()
     env_values = load_env_file(Path(args.env_file))
 
-    target_table_url = require_env(env_values, "INFLUENCER_POOL_TARGET_TABLE_URL")
-    feishu_token_env = require_env(env_values, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
-    fastmoss_phone_env = require_env(env_values, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
-    fastmoss_password_env = require_env(env_values, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
-    feishu_token = require_env(env_values, feishu_token_env)
-    fastmoss_phone = require_env(env_values, fastmoss_phone_env)
-    fastmoss_password = require_env(env_values, fastmoss_password_env)
+    target_table_url = compose_feishu_table_url(
+        require_env(env_values, "MUJITASK_FEISHU_BASE_URL"),
+        require_env(env_values, "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID"),
+        require_env(env_values, "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID"),
+    )
+    feishu_token = require_env(env_values, "MUJITASK_FEISHU_ACCESS_TOKEN")
+    fastmoss_phone = require_env(env_values, "FASTMOSS_PHONE")
+    fastmoss_password = require_env(env_values, "FASTMOSS_PASSWORD")
 
     table_meta = parse_table_url(target_table_url)
     feishu = FeishuBitableClient(feishu_token)

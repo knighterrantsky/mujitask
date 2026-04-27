@@ -34,8 +34,8 @@ ENV_FILE="$SKILL_DIR/skill.local.env"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 
 INSTALL_DIR=""
-TABLE_URL=""
-FEISHU_ACCESS_TOKEN=""
+MUJITASK_FEISHU_BASE_URL=""
+MUJITASK_FEISHU_ACCESS_TOKEN=""
 EXECUTOR_ENV_FILE=""
 
 log() {
@@ -135,12 +135,22 @@ load_skill_env() {
   [[ -f "$ENV_FILE" ]] || fail "Missing $ENV_FILE."
 
   INSTALL_DIR="$(read_env_value "$ENV_FILE" "INSTALL_DIR" 2>/dev/null || true)"
-  TABLE_URL="$(read_env_value "$ENV_FILE" "TABLE_URL" 2>/dev/null || true)"
-  FEISHU_ACCESS_TOKEN="$(read_env_value "$ENV_FILE" "FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
+  MUJITASK_FEISHU_BASE_URL="$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_BASE_URL" 2>/dev/null || true)"
+  MUJITASK_FEISHU_ACCESS_TOKEN="$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
 
   [[ -n "$INSTALL_DIR" ]] || fail "INSTALL_DIR is missing in $ENV_FILE."
-  [[ -n "$TABLE_URL" ]] || fail "TABLE_URL is missing in $ENV_FILE."
-  [[ -n "$FEISHU_ACCESS_TOKEN" ]] || fail "FEISHU_ACCESS_TOKEN is missing in $ENV_FILE."
+  [[ -n "$MUJITASK_FEISHU_BASE_URL" ]] || fail "MUJITASK_FEISHU_BASE_URL is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID is missing in $ENV_FILE."
+  [[ -n "$(read_env_value "$ENV_FILE" "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID" 2>/dev/null || true)" ]] || fail "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID is missing in $ENV_FILE."
+  [[ -n "$MUJITASK_FEISHU_ACCESS_TOKEN" ]] || fail "MUJITASK_FEISHU_ACCESS_TOKEN is missing in $ENV_FILE."
 }
 
 main() {
@@ -288,7 +298,7 @@ PY
   log "Verification completed"
   log "Skill directory: $SKILL_DIR"
   log "Install directory: $INSTALL_DIR"
-  log "Table URL: $TABLE_URL"
+  log "Feishu base URL: $MUJITASK_FEISHU_BASE_URL"
 }
 
 main "$@"

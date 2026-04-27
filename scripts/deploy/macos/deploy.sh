@@ -55,6 +55,41 @@ urlencode_component() {
   "$PYTHON_BIN" -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$1"
 }
 
+compose_feishu_table_url() {
+  local base_url="$1"
+  local table_id="$2"
+  local view_id="${3:-}"
+  "$PYTHON_BIN" - "${base_url}" "${table_id}" "${view_id}" <<'PY'
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import sys
+
+base_url, table_id, view_id = [item.strip() for item in sys.argv[1:4]]
+if not base_url or not table_id:
+    print("")
+    raise SystemExit(0)
+parsed = urlparse(base_url)
+query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+query["table"] = table_id
+if view_id:
+    query["view"] = view_id
+elif "view" in query:
+    query.pop("view", None)
+path = parsed.path.rstrip("/") or parsed.path
+print(urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment)))
+PY
+}
+
+resolve_feishu_business_table_url() {
+  local env_slug="$1"
+  local base_url="$2"
+  local table_id view_id
+
+  [[ -n "${base_url}" ]] || fail_deploy "Missing MUJITASK_FEISHU_BASE_URL in ${ENV_FILE}."
+  table_id="$(require_config_value "MUJITASK_FEISHU_${env_slug}_TABLE_ID")"
+  view_id="$(require_config_value "MUJITASK_FEISHU_${env_slug}_VIEW_ID")"
+  compose_feishu_table_url "${base_url}" "${table_id}" "${view_id}"
+}
+
 resolve_path() {
   local raw_path="$1"
   local base_dir="${2:-${SOURCE_DIR}}"
@@ -441,18 +476,28 @@ PY
 install_agent_skill() {
   local install_dir="$1"
   local skills_dir="$2"
-  local table_url="$3"
-  local token="$4"
-  local browser_profile_ref="$5"
-  local fastmoss_phone="$6"
-  local fastmoss_password="$7"
-  local db_url="$8"
-  local artifact_root="$9"
-  local artifact_bucket="${10}"
-  local requested_by="${11}"
-  local notification_channel_code="${12}"
-  local openclaw_agent_id="${13}"
-  local openclaw_state_dir="${14}"
+  local token="$3"
+  local browser_profile_ref="$4"
+  local fastmoss_phone="$5"
+  local fastmoss_password="$6"
+  local db_url="$7"
+  local artifact_root="$8"
+  local artifact_bucket="$9"
+  local requested_by="${10}"
+  local notification_channel_code="${11}"
+  local openclaw_agent_id="${12}"
+  local openclaw_state_dir="${13}"
+  local feishu_base_url="${14}"
+  local tk_selection_table_id="${15}"
+  local tk_selection_view_id="${16}"
+  local tk_competitor_table_id="${17}"
+  local tk_competitor_view_id="${18}"
+  local tk_influencer_pool_table_id="${19}"
+  local tk_influencer_pool_view_id="${20}"
+  local tk_influencer_outreach_table_id="${21}"
+  local tk_influencer_outreach_view_id="${22}"
+  local tk_hot_video_table_id="${23}"
+  local tk_hot_video_view_id="${24}"
 
   local source_skill_dir="${install_dir}/skills/mujitask-tiktok-feishu-sync"
   local target_skill_dir="${skills_dir}/mujitask-tiktok-feishu-sync"
@@ -480,22 +525,32 @@ install_agent_skill() {
     fi
   fi
 
-  write_skill_local_env \
-    "${target_skill_dir}" \
-    "${install_dir}" \
-    "${table_url}" \
-    "${token}" \
-    "${browser_profile_ref}" \
-    "${fastmoss_phone}" \
-    "${fastmoss_password}" \
-    "${db_url}" \
-    "${artifact_root}" \
-    "${artifact_bucket}" \
-    "${requested_by}" \
-    "${notification_channel_code}" \
-    "${openclaw_agent_id}" \
-    "${openclaw_state_dir}"
-
+  seed_key_value_file_from_example "${target_skill_dir}/skill.local.env" "${target_skill_dir}/skill.local.env.example"
+  merge_key_value_file \
+    "${target_skill_dir}/skill.local.env" \
+    "INSTALL_DIR=$(quote_env_value "${install_dir}")" \
+    "MUJITASK_FEISHU_BASE_URL=$(quote_env_value "${feishu_base_url}")" \
+    "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID=$(quote_env_value "${tk_selection_table_id}")" \
+    "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID=$(quote_env_value "${tk_selection_view_id}")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID=$(quote_env_value "${tk_competitor_table_id}")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID=$(quote_env_value "${tk_competitor_view_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID=$(quote_env_value "${tk_influencer_pool_table_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID=$(quote_env_value "${tk_influencer_pool_view_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID=$(quote_env_value "${tk_influencer_outreach_table_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$(quote_env_value "${tk_influencer_outreach_view_id}")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "${tk_hot_video_table_id}")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "${tk_hot_video_view_id}")" \
+    "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
+    "BROWSER_PROFILE_REF=$(quote_env_value "${browser_profile_ref}")" \
+    "FASTMOSS_PHONE=$(quote_env_value "${fastmoss_phone}")" \
+    "FASTMOSS_PASSWORD=$(quote_env_value "${fastmoss_password}")" \
+    "EXECUTION_CONTROL_DB_URL=$(quote_env_value "${db_url}")" \
+    "EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "${artifact_root}")" \
+    "EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "${artifact_bucket}")" \
+    "EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "${requested_by}")" \
+    "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "${notification_channel_code}")" \
+    "OPENCLAW_AGENT_ID=$(quote_env_value "${openclaw_agent_id}")" \
+    "OPENCLAW_STATE_DIR=$(quote_env_value "${openclaw_state_dir}")"
   INSTALLED_SKILL_DIR="${target_skill_dir}"
 }
 
@@ -509,15 +564,32 @@ main() {
   agent_type="$(config_value MUJITASK_AGENT_TYPE AGENT_TYPE "generic")"
   PROJECT_DIR="${install_dir}"
 
-  local table_url token browser_profile_ref fastmoss_phone fastmoss_password
-  table_url="$(require_config_value MUJITASK_TABLE_URL TABLE_URL)"
-  token="$(require_config_value MUJITASK_FEISHU_ACCESS_TOKEN FEISHU_ACCESS_TOKEN)"
+  local token browser_profile_ref fastmoss_phone fastmoss_password
+  token="$(require_config_value MUJITASK_FEISHU_ACCESS_TOKEN)"
   browser_profile_ref="$(config_value MUJITASK_BROWSER_PROFILE_REF BROWSER_PROFILE_REF "roxy-tiktok")"
   fastmoss_phone="$(require_config_value MUJITASK_FASTMOSS_PHONE FASTMOSS_PHONE)"
   fastmoss_password="$(require_config_value MUJITASK_FASTMOSS_PASSWORD FASTMOSS_PASSWORD)"
 
   ensure_uv
   ensure_python_311
+
+  local feishu_base_url
+  local tk_selection_table_id tk_selection_view_id
+  local tk_competitor_table_id tk_competitor_view_id
+  local tk_influencer_pool_table_id tk_influencer_pool_view_id
+  local tk_influencer_outreach_table_id tk_influencer_outreach_view_id
+  local tk_hot_video_table_id tk_hot_video_view_id
+  feishu_base_url="$(require_config_value MUJITASK_FEISHU_BASE_URL)"
+  tk_selection_table_id="$(require_config_value MUJITASK_FEISHU_TK_SELECTION_TABLE_ID)"
+  tk_selection_view_id="$(require_config_value MUJITASK_FEISHU_TK_SELECTION_VIEW_ID)"
+  tk_competitor_table_id="$(require_config_value MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID)"
+  tk_competitor_view_id="$(require_config_value MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID)"
+  tk_influencer_pool_table_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID)"
+  tk_influencer_pool_view_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID)"
+  tk_influencer_outreach_table_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID)"
+  tk_influencer_outreach_view_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID)"
+  tk_hot_video_table_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID)"
+  tk_hot_video_view_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID)"
 
   local postgres_port postgres_db postgres_user postgres_password
   postgres_port="${MUJITASK_POSTGRES_PORT:-5432}"
@@ -579,6 +651,9 @@ main() {
     "${fastmoss_phone}" \
     "${fastmoss_password}" \
     "${notification_channel_code}"
+  merge_key_value_file \
+    "${install_dir}/scripts/execution_control/executor.local.env" \
+    "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")"
 
   wait_for_runtime \
     "${db_url}" \
@@ -595,7 +670,6 @@ main() {
   install_agent_skill \
     "${install_dir}" \
     "${skills_dir}" \
-    "${table_url}" \
     "${token}" \
     "${browser_profile_ref}" \
     "${fastmoss_phone}" \
@@ -606,7 +680,18 @@ main() {
     "${requested_by}" \
     "${notification_channel_code}" \
     "${openclaw_agent_id}" \
-    "${openclaw_state_dir}"
+    "${openclaw_state_dir}" \
+    "${feishu_base_url}" \
+    "${tk_selection_table_id}" \
+    "${tk_selection_view_id}" \
+    "${tk_competitor_table_id}" \
+    "${tk_competitor_view_id}" \
+    "${tk_influencer_pool_table_id}" \
+    "${tk_influencer_pool_view_id}" \
+    "${tk_influencer_outreach_table_id}" \
+    "${tk_influencer_outreach_view_id}" \
+    "${tk_hot_video_table_id}" \
+    "${tk_hot_video_view_id}"
   target_skill_dir="${INSTALLED_SKILL_DIR}"
   [[ -n "${target_skill_dir}" ]] || fail_deploy "Skill installation did not return a target directory."
 

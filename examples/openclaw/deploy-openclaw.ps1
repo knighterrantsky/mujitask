@@ -349,11 +349,36 @@ for dep in data.get("project", {}).get("dependencies", []):
 '@ | Set-Content -LiteralPath (Join-Path $configDir "browser_profiles.json") -Encoding UTF8
     }
 
-    function Write-SkillLocalEnv([string]$SkillDir, [string]$InstallDir, [string]$TableUrl, [string]$Token) {
+    function Write-SkillLocalEnv(
+        [string]$SkillDir,
+        [string]$InstallDir,
+        [string]$FeishuBaseUrl,
+        [string]$TkSelectionTableId,
+        [string]$TkSelectionViewId,
+        [string]$TkCompetitorTableId,
+        [string]$TkCompetitorViewId,
+        [string]$TkInfluencerPoolTableId,
+        [string]$TkInfluencerPoolViewId,
+        [string]$TkInfluencerOutreachTableId,
+        [string]$TkInfluencerOutreachViewId,
+        [string]$TkHotVideoTableId,
+        [string]$TkHotVideoViewId,
+        [string]$Token
+    ) {
         @"
 INSTALL_DIR=$InstallDir
-TABLE_URL=$TableUrl
-FEISHU_ACCESS_TOKEN=$Token
+MUJITASK_FEISHU_BASE_URL=$FeishuBaseUrl
+MUJITASK_FEISHU_TK_SELECTION_TABLE_ID=$TkSelectionTableId
+MUJITASK_FEISHU_TK_SELECTION_VIEW_ID=$TkSelectionViewId
+MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID=$TkCompetitorTableId
+MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID=$TkCompetitorViewId
+MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID=$TkInfluencerPoolTableId
+MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID=$TkInfluencerPoolViewId
+MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID=$TkInfluencerOutreachTableId
+MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$TkInfluencerOutreachViewId
+MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$TkHotVideoTableId
+MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$TkHotVideoViewId
+MUJITASK_FEISHU_ACCESS_TOKEN=$Token
 "@ | Set-Content -LiteralPath (Join-Path $SkillDir "skill.local.env") -Encoding UTF8
     }
 
@@ -485,15 +510,20 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
         Log "Current installed ref: $($deployState["LAST_RESOLVED_REF"])"
     }
 
-    if ($existingSkillConfig["TABLE_URL"]) {
-        $tableUrl = [string]$existingSkillConfig["TABLE_URL"]
-        Log "Reusing existing Feishu table URL from $existingSkillEnvPath"
-    } else {
-        $tableUrl = Prompt "Feishu table URL"
-    }
+    $feishuBaseUrl = Prompt "Feishu base URL" ([string]$existingSkillConfig["MUJITASK_FEISHU_BASE_URL"])
+    $tkSelectionTableId = Prompt "Feishu TK selection table id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_SELECTION_TABLE_ID"])
+    $tkSelectionViewId = Prompt "Feishu TK selection view id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_SELECTION_VIEW_ID"])
+    $tkCompetitorTableId = Prompt "Feishu TK competitor table id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID"])
+    $tkCompetitorViewId = Prompt "Feishu TK competitor view id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID"])
+    $tkInfluencerPoolTableId = Prompt "Feishu TK influencer pool table id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID"])
+    $tkInfluencerPoolViewId = Prompt "Feishu TK influencer pool view id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID"])
+    $tkInfluencerOutreachTableId = Prompt "Feishu TK influencer outreach table id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID"])
+    $tkInfluencerOutreachViewId = Prompt "Feishu TK influencer outreach view id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID"])
+    $tkHotVideoTableId = Prompt "Feishu TK hot video table id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID"])
+    $tkHotVideoViewId = Prompt "Feishu TK hot video view id" ([string]$existingSkillConfig["MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID"])
 
-    if ($existingSkillConfig["FEISHU_ACCESS_TOKEN"]) {
-        $token = [string]$existingSkillConfig["FEISHU_ACCESS_TOKEN"]
+    if ($existingSkillConfig["MUJITASK_FEISHU_ACCESS_TOKEN"]) {
+        $token = [string]$existingSkillConfig["MUJITASK_FEISHU_ACCESS_TOKEN"]
         Log "Reusing existing Feishu access token from $existingSkillEnvPath"
     } else {
         $tokenSecure = Read-Host "Feishu access token" -AsSecureString
@@ -584,7 +614,21 @@ FRAMEWORK_ARCHIVE_URL=$FrameworkArchiveUrl
 
     Replace-TargetDir -TargetDir $targetSkillDir
     Copy-DirectoryContents -SourceDir $sourceSkillDir -DestinationDir $targetSkillDir
-    Write-SkillLocalEnv -SkillDir $targetSkillDir -InstallDir $installDir -TableUrl $tableUrl -Token $token
+    Write-SkillLocalEnv `
+        -SkillDir $targetSkillDir `
+        -InstallDir $installDir `
+        -FeishuBaseUrl $feishuBaseUrl `
+        -TkSelectionTableId $tkSelectionTableId `
+        -TkSelectionViewId $tkSelectionViewId `
+        -TkCompetitorTableId $tkCompetitorTableId `
+        -TkCompetitorViewId $tkCompetitorViewId `
+        -TkInfluencerPoolTableId $tkInfluencerPoolTableId `
+        -TkInfluencerPoolViewId $tkInfluencerPoolViewId `
+        -TkInfluencerOutreachTableId $tkInfluencerOutreachTableId `
+        -TkInfluencerOutreachViewId $tkInfluencerOutreachViewId `
+        -TkHotVideoTableId $tkHotVideoTableId `
+        -TkHotVideoViewId $tkHotVideoViewId `
+        -Token $token
     Write-DeployState -InstallDir $installDir -RepoUrl $repoUrl -ResolvedRef $resolvedRef -RepoArchiveUrl $archiveUrl -FrameworkArchiveUrl $script:LastFrameworkArchiveUrl
 
     Smoke-Check -InstallDir $installDir -TargetSkillDir $targetSkillDir

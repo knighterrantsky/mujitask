@@ -74,12 +74,22 @@ $envFile = Join-Path $SkillDir "skill.local.env"
 $config = Read-KeyValueFile -Path $envFile
 
 $installDir = [string]$config["INSTALL_DIR"]
-$tableUrl = [string]$config["TABLE_URL"]
-$token = [string]$config["FEISHU_ACCESS_TOKEN"]
+$feishuBaseUrl = [string]$config["MUJITASK_FEISHU_BASE_URL"]
+$token = [string]$config["MUJITASK_FEISHU_ACCESS_TOKEN"]
 
 if ([string]::IsNullOrWhiteSpace($installDir)) { Fail "INSTALL_DIR is missing in $envFile." }
-if ([string]::IsNullOrWhiteSpace($tableUrl)) { Fail "TABLE_URL is missing in $envFile." }
-if ([string]::IsNullOrWhiteSpace($token)) { Fail "FEISHU_ACCESS_TOKEN is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace($feishuBaseUrl)) { Fail "MUJITASK_FEISHU_BASE_URL is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_SELECTION_TABLE_ID"])) { Fail "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_SELECTION_VIEW_ID"])) { Fail "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID"])) { Fail "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID"])) { Fail "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID"])) { Fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID"])) { Fail "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID"])) { Fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID"])) { Fail "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID"])) { Fail "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace([string]$config["MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID"])) { Fail "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID is missing in $envFile." }
+if ([string]::IsNullOrWhiteSpace($token)) { Fail "MUJITASK_FEISHU_ACCESS_TOKEN is missing in $envFile." }
 
 $cliPath = Join-Path $installDir ".venv\Scripts\automation-business-scaffold-run.exe"
 $pythonPath = Join-Path $installDir ".venv\Scripts\python.exe"

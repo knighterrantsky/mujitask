@@ -72,10 +72,13 @@ cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.loc
 | --- | --- |
 | `MUJITASK_INSTALL_DIR` | 项目安装目录，默认示例为 `$HOME/apps/mujitask` |
 | `MUJITASK_SKILLS_DIR` | 部署 agent 读取 skills 的目录 |
-| `MUJITASK_TABLE_URL` | 飞书 Base / Table URL |
+| `MUJITASK_FEISHU_BASE_URL` | 飞书 Base 根 URL，不包含 `table` / `view` query |
+| `MUJITASK_FEISHU_TK_*_TABLE_ID` / `MUJITASK_FEISHU_TK_*_VIEW_ID` | 飞书 5 张业务表的英文 alias 路由配置 |
 | `MUJITASK_FEISHU_ACCESS_TOKEN` | 飞书访问 token |
 | `MUJITASK_FASTMOSS_PHONE` / `MUJITASK_FASTMOSS_PASSWORD` | FastMoss 登录账号 |
 | `MUJITASK_BROWSER_PROFILE_REF` | 浏览器 profile 引用，默认 `roxy-tiktok` |
+
+飞书表配置不使用中文 key，也不维护第二套 URL 配置。标准 alias 为 `TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`。运行时只从 `MUJITASK_FEISHU_BASE_URL` 和每张表的 `TABLE_ID` / `VIEW_ID` 拼出完整 table URL。
 
 执行预检和部署：
 
@@ -184,7 +187,7 @@ automation-business-scaffold-run run \
     "control_action": "submit",
     "table_url": "https://my.feishu.cn/base/appXXX?table=tblSource",
     "target_table_url": "https://my.feishu.cn/base/appXXX?table=tblTarget",
-    "access_token_env": "FEISHU_ACCESS_TOKEN",
+    "access_token_env": "MUJITASK_FEISHU_ACCESS_TOKEN",
     "fastmoss_phone_env": "FASTMOSS_PHONE",
     "fastmoss_password_env": "FASTMOSS_PASSWORD"
   }'

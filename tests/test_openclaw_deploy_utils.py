@@ -17,7 +17,7 @@ def test_merge_key_value_file_preserves_unknown_keys_and_updates_managed_values(
     env_file.write_text(
         "# existing config\n"
         "INSTALL_DIR=/old/install\n"
-        "TABLE_URL=https://old.example\n"
+        "MUJITASK_FEISHU_BASE_URL=https://old.example/base/app\n"
         "BROWSER_PROFILE_REF=profile-a\n"
         "FASTMOSS_PHONE=13800000000\n"
         "UNKNOWN_KEY=keep-me\n",
@@ -28,19 +28,19 @@ def test_merge_key_value_file_preserves_unknown_keys_and_updates_managed_values(
         env_file,
         {
             "INSTALL_DIR": "/new/install",
-            "TABLE_URL": "https://new.example",
-            "FEISHU_ACCESS_TOKEN": "token-new",
+            "MUJITASK_FEISHU_BASE_URL": "https://new.example/base/app",
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token-new",
         },
     )
 
     assert env_file.read_text(encoding="utf-8") == (
         "# existing config\n"
         "INSTALL_DIR=/new/install\n"
-        "TABLE_URL=https://new.example\n"
+        "MUJITASK_FEISHU_BASE_URL=https://new.example/base/app\n"
         "BROWSER_PROFILE_REF=profile-a\n"
         "FASTMOSS_PHONE=13800000000\n"
         "UNKNOWN_KEY=keep-me\n"
-        "FEISHU_ACCESS_TOKEN=token-new\n"
+        "MUJITASK_FEISHU_ACCESS_TOKEN=token-new\n"
     )
 
 

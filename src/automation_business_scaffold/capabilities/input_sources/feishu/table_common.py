@@ -499,7 +499,6 @@ def _resolve_access_token(
         request_payload.get("feishu_access_token"),
         os.environ.get(access_token_env, "") if access_token_env else "",
         _resolve_secret_ref(table_payload.get("access_token_ref")),
-        os.environ.get("FEISHU_ACCESS_TOKEN", ""),
         os.environ.get("MUJITASK_FEISHU_ACCESS_TOKEN", ""),
     )
 
@@ -1056,7 +1055,6 @@ def _select_missing_competitor_projection_fields(
 
 def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     creator_id = _first_non_empty(record.get("creator_id"), _mapping(record.get("creator_fact_bundle")).get("creator_id"))
-    creator_name = _first_non_empty(record.get("creator_name"), _mapping(record.get("creator_fact_bundle")).get("display_name"), _mapping(record.get("creator_fact_bundle")).get("nickname"))
     product_id = _text(record.get("product_id"))
     fields = _compact(
         {
