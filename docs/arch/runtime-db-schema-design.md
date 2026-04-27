@@ -203,6 +203,15 @@ API worker 消费的通用 job 队列。适合飞书 API 读取/写回、FastMos
 | task `outbox_message_template` | 可选模板。存在时优先于 message format。 |
 | `payload_json.dry_run` | 仅用于显式本地演练。生产 outbox 不应依赖 dry-run。未知 channel 不能因为 dry-run 被标记为成功。 |
 
+Feishu `reply_target.to` 归一化规则:
+
+| 输入形式 | 飞书 `receive_id_type` | 来源 |
+| --- | --- | --- |
+| `user:ou_xxx` / `open_id:ou_xxx` | `open_id` | 飞书用户 open id。 |
+| `chat:oc_xxx` / `group:oc_xxx` / `channel:oc_xxx` | `chat_id` | 飞书群 chat id。 |
+| 裸 `oc_xxx` | `chat_id` | 飞书群 chat id 的简写形式。 |
+| 其他裸字符串 | `open_id` | 兼容旧的用户 open id 简写形式。 |
+
 Feishu 账号配置按以下优先级解析:
 
 1. 环境变量 `MUJITASK_FEISHU_ACCOUNTS_JSON`，格式为 `{"default":{"appId":"...","appSecret":"...","domain":"feishu"}}`。
