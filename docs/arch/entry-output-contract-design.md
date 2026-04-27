@@ -63,6 +63,44 @@ CLI / OpenClaw 兼容输出可继续使用 `__OPENCLAW_RESULT__` 作为最终一
 
 最终通知由 `outbox_dispatcher` 发送。通知失败不反向污染主业务成功状态。
 
+### 4.1 Outbox 消息格式契约
+
+`notification_outbox.payload_json` 必须同时保留可机读结果和面向人的通知文本:
+
+| 字段 | 说明 |
+| --- | --- |
+| `summary_payload` / `summary` | 机器可读摘要，供排障、审计和二次消费使用 |
+| `result` | 机器可读结果，包含行级、商品组或候选写入明细 |
+| `message_text` | 默认发送给飞书/OpenClaw/console 的人类可读文本 |
+
+默认 `message_text` 必须使用人类可读格式，不能把一整段压缩 JSON 作为默认飞书消息。JSON 格式只能作为显式调试格式使用。
+
+支持的 message format:
+
+| format | 行为 |
+| --- | --- |
+| `plain_text_detail` | 默认。摘要 + 关键明细，例如 SKU、record、status、失败原因。 |
+| `plain_text_summary` | 只输出摘要，不展开明细。适合大量数据或群聊。 |
+| `json` | 原始 JSON 文本，仅用于调试或机器消费。 |
+| `template` | 使用调用方提供的模板渲染文本。 |
+
+配置优先级:
+
+1. Task payload 中的 `outbox_message_template`。存在时强制使用 `template`。
+2. Task payload 中的 `outbox_message_format`。
+3. 环境变量 `MUJITASK_OUTBOX_MESSAGE_FORMAT`。
+4. 默认 `plain_text_detail`。
+
+各 workflow 的 `ready_for_summary` 必须通过领域 projection 生成 `message_text`，不能在 flow 中手写压缩 JSON，也不能让 outbox channel handler 反向理解业务 result 结构。
+
+当前 TikTok 三个主流程的默认文案约束:
+
+| task_code | 默认标题 | 必须包含 |
+| --- | --- | --- |
+| `refresh_current_competitor_table` | `TK竞品表刷新完成` | request、final_status、总数、更新/成功/失败数、每条 SKU/record/status/失败原因 |
+| `search_keyword_competitor_products` | `关键词竞品入库完成` | request、final_status、关键词、候选数、种子写入/跳过/失败数、详情成功/失败数、每条 SKU/record/status/失败原因 |
+| `sync_tk_influencer_pool` | `TK达人池同步完成` | request、final_status、商品组数、商品组状态计数、子任务成功数、每个商品组 SKU/record/status/creator/pool write 摘要 |
+
 推荐最终 result 包含:
 
 | 字段 | 说明 |

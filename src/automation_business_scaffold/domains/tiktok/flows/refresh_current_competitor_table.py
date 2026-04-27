@@ -252,6 +252,8 @@ def finalize_request(
                 task_code=request.task_code,
                 summary=summary,
                 result=result,
+                message_format=str(request.payload.get("outbox_message_format") or ""),
+                message_template=str(request.payload.get("outbox_message_template") or ""),
             ),
         },
         dedupe_key=f"task_request.completed:{request.request_id}",

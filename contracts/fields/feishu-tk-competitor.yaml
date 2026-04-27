@@ -152,7 +152,12 @@ fields:
     participates_in_pending: true
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: fastmoss.product_detail.sales_90d
+    source_of_truth: fastmoss.goods.overview(d_type=90).overview.sales_90d
+    source_priority:
+      - fastmoss.goods.overview(d_type=90).overview.sales_90d
+      - fastmoss.goods.overview(d_type=90).overview.real_sold_count
+      - fastmoss.goods.overview(d_type=90).overview.sold_count
+      - fastmoss.goods.overview(d_type=90).chart_list.sum(inc_sold_count) when chart_list has 90 days
     write_target: feishu.TK竞品收集.近90天销量
 
   - display_name: 记录日期

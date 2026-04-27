@@ -188,9 +188,12 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
         d_type = int(fastmoss_settings.get("window_days", 28) or 28)
         bundle = {
             "base": session.get_product_base(product_id),
-            "overview": session.get_product_overview(product_id, d_type=d_type),
-            "skus": session.get_product_skus(product_id, d_type=d_type),
-            "sku_distribution": session.get_product_sku_distribution(product_id, d_type=d_type),
+            "overview": _with_fastmoss_window(session.get_product_overview(product_id, d_type=d_type), d_type=d_type),
+            "skus": _with_fastmoss_window(session.get_product_skus(product_id, d_type=d_type), d_type=d_type),
+            "sku_distribution": _with_fastmoss_window(
+                session.get_product_sku_distribution(product_id, d_type=d_type),
+                d_type=d_type,
+            ),
             "session_snapshot": session.cookie_snapshot(),
         }
         if _product_fetch_includes_related_creators(payload, detail_level=detail_level):
@@ -278,17 +281,17 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
         )
     if overview:
         fact_bundle = merge_fact_bundles(fact_bundle, map_fastmoss_goods_overview(overview, product_id=product_id))
+        overview_data = extract_fastmoss_data(overview)
         fact_bundle["raw_api_responses"].append(
             {
                 "source_platform": "fastmoss",
                 "source_endpoint": "goods.overview",
                 "request_url": "",
-                "request_params": {"product_id": product_id},
+                "request_params": compact_dict({"product_id": product_id, "d_type": overview_data.get("d_type")}),
                 "response_payload": overview,
                 "status_code": 200,
             }
         )
-        overview_data = extract_fastmoss_data(overview)
         fact_bundle["product_metric_snapshots"].extend(
             _build_fastmoss_product_metric_snapshots(overview_data, product_id=product_id)
         )
@@ -303,7 +306,7 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
                 "source_platform": "fastmoss",
                 "source_endpoint": "goods.skus",
                 "request_url": "",
-                "request_params": {"product_id": product_id},
+                "request_params": compact_dict({"product_id": product_id, "d_type": extract_fastmoss_data(skus).get("d_type")}),
                 "response_payload": skus,
                 "status_code": 200,
             }
@@ -424,11 +427,12 @@ def _fastmoss_creator_profile_url(uid: Any, unique_id: Any = "") -> str:
 
 def _build_fastmoss_metrics_snapshot(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
     overview = extract_fastmoss_data(coerce_mapping(raw_bundle.get("overview")))
+    overview_metrics = _windowed_overview_metrics(overview)
     return compact_dict(
         {
             "product_id": product_id,
             "window_days": overview.get("d_type"),
-            "overview": coerce_mapping(overview.get("overview")),
+            "overview": overview_metrics,
             "chart_points": len(coerce_mapping_list(overview.get("chart_list"))),
             "session_snapshot": coerce_mapping(raw_bundle.get("session_snapshot")),
         }
@@ -503,7 +507,7 @@ def _coerce_positive_int(value: Any, *, default: int) -> int:
 
 
 def _build_fastmoss_product_metric_snapshots(raw_overview: dict[str, Any], *, product_id: str) -> list[dict[str, Any]]:
-    overview = coerce_mapping(raw_overview.get("overview"))
+    overview = _windowed_overview_metrics(raw_overview)
     chart_list = coerce_mapping_list(raw_overview.get("chart_list"))
     if not overview and not chart_list:
         return []
@@ -606,6 +610,36 @@ def _build_fastmoss_sku_metric_snapshots(
             )
         )
     return snapshots
+
+
+def _with_fastmoss_window(payload: Mapping[str, Any], *, d_type: int | str) -> dict[str, Any]:
+    result = dict(payload)
+    result.setdefault("d_type", d_type)
+    return result
+
+
+def _windowed_overview_metrics(raw_overview: Mapping[str, Any]) -> dict[str, Any]:
+    overview = dict(coerce_mapping(raw_overview.get("overview")))
+    window_days = _coerce_positive_int(raw_overview.get("d_type"), default=0)
+    if window_days <= 0:
+        return overview
+
+    window_sold_count = first_non_empty(
+        overview.get(f"sales_{window_days}d"),
+        overview.get(f"day{window_days}_sold_count"),
+        overview.get(f"day{window_days}_sales"),
+        overview.get(f"sold_count_{window_days}d"),
+        overview.get("real_sold_count"),
+        overview.get("sold_count"),
+    )
+    if window_sold_count:
+        overview.setdefault(f"sales_{window_days}d", window_sold_count)
+        overview.setdefault(f"day{window_days}_sold_count", window_sold_count)
+        overview.setdefault(f"sold_count_{window_days}d", window_sold_count)
+    real_window_sold_count = first_non_empty(overview.get(f"real_sales_{window_days}d"), overview.get("real_sold_count"))
+    if real_window_sold_count:
+        overview.setdefault(f"real_sales_{window_days}d", real_window_sold_count)
+    return overview
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "fastmoss_product_fetch_handler"]

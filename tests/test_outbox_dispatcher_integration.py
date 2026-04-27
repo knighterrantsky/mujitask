@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import time
 from typing import Any
 
@@ -186,12 +187,13 @@ def _create_outbox(
     payload: dict[str, Any],
     dedupe_key: str,
     ref_id: str = "req-outbox",
+    reply_target: str = "reply://pytest",
 ) -> str:
     outbox = store.create_notification_outbox(
         channel_code=channel_code,
         event_type="task_request.completed",
         ref_id=ref_id,
-        reply_target="reply://pytest",
+        reply_target=reply_target,
         payload=payload,
         dedupe_key=dedupe_key,
     )
@@ -203,6 +205,7 @@ def _handler_context(
     payload: dict[str, Any],
     channel_code: str,
     progress_events: list[dict[str, Any]],
+    reply_target: str = "reply://pytest",
 ) -> HandlerContext:
     def _progress_callback(
         progress_stage: str,
@@ -224,7 +227,7 @@ def _handler_context(
         job_code="outbox_dispatch",
         metadata={
             "channel_code": channel_code,
-            "reply_target": "reply://pytest",
+            "reply_target": reply_target,
             "progress_callback": _progress_callback,
         },
     )
@@ -301,6 +304,324 @@ def test_outbox_handler_classifies_webhook_http_4xx_as_terminal_without_db(
     assert result.error.retryable is False
     assert result.error.details["status_code"] == 400
     assert progress_events[-1]["progress_stage"] == "dispatch_terminal_failure"
+
+
+def test_outbox_handler_sends_feishu_bot_api_after_token_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_events: list[dict[str, Any]] = []
+    posted_payloads: list[dict[str, Any]] = []
+    monkeypatch.setenv(
+        "MUJITASK_FEISHU_ACCOUNTS_JSON",
+        json.dumps(
+            {
+                "accounts": {
+                    "client_prod": {
+                        "appId": "cli_app",
+                        "appSecret": "secret-value",
+                        "domain": "feishu",
+                    }
+                }
+            }
+        ),
+    )
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def _fake_post(
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        timeout: float,
+    ) -> _Response:
+        posted_payloads.append({"url": url, "json": json, "headers": headers or {}, "timeout": timeout})
+        if url.endswith("/open-apis/auth/v3/tenant_access_token/internal"):
+            return _Response({"code": 0, "tenant_access_token": "tenant-token"})
+        return _Response({"code": 0, "data": {"message_id": "om_123"}})
+
+    monkeypatch.setattr(outbox_implementations.requests, "post", _fake_post)
+    context = _handler_context(
+        payload={"message_text": "真实发送摘要"},
+        channel_code="feishu_bot_api",
+        reply_target=json.dumps({"channel": "feishu", "to": "user:ou_123", "accountId": "client_prod"}),
+        progress_events=progress_events,
+    )
+
+    result = outbox_implementations.outbox_dispatch_handler(context)
+
+    assert result.status == "success"
+    assert result.result["delivery_state"] == "sent"
+    assert result.result["transport"] == {
+        "channel_code": "feishu_bot_api",
+        "account_id": "client_prod",
+        "domain": "feishu",
+        "receive_id_type": "open_id",
+        "feishu_code": 0,
+        "message_id": "om_123",
+    }
+    assert posted_payloads[0]["json"] == {"app_id": "cli_app", "app_secret": "secret-value"}
+    assert posted_payloads[1]["headers"]["Authorization"] == "Bearer tenant-token"
+    assert posted_payloads[1]["json"]["receive_id"] == "ou_123"
+    assert posted_payloads[1]["json"]["content"] == json.dumps({"text": "真实发送摘要"}, ensure_ascii=False)
+    assert progress_events[-1]["progress_stage"] == "dispatch_sent"
+
+
+def test_dispatch_outbox_once_does_not_mark_sent_when_feishu_token_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "MUJITASK_FEISHU_ACCOUNTS_JSON",
+        json.dumps({"default": {"appId": "cli_app", "appSecret": "bad-secret"}}),
+    )
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"code": 99991663, "msg": "rate limited"}
+
+    def _fake_post(
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        timeout: float,
+    ) -> _Response:
+        del url, json, headers, timeout
+        return _Response()
+
+    monkeypatch.setattr(outbox_implementations.requests, "post", _fake_post)
+    store = _FakeOutboxStore(
+        outbox=_FakeOutboxRecord(
+            outbox_id="outbox-feishu-token-fail",
+            channel_code="feishu_bot_api",
+            reply_target=json.dumps({"channel": "feishu", "to": "user:ou_123"}),
+            payload={"message_text": "token fail"},
+        )
+    )
+    _bind_fake_store(monkeypatch, store)
+
+    payload = runtime_orchestrator.dispatch_outbox_once(_runtime_params("postgresql://unused"))
+
+    assert payload["outbox_id"] == "outbox-feishu-token-fail"
+    assert payload["item"]["status"] == "retry_wait"
+    assert payload["retry_scheduled_count"] == 1
+    assert payload["supervisor"]["failure_disposition"] == "retryable"
+    assert payload["error_code"] == "outbox_feishu_token_request_failed"
+    assert store.mark_sent_count == 0
+
+
+def test_dispatch_outbox_once_does_not_mark_sent_when_feishu_message_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "MUJITASK_FEISHU_ACCOUNTS_JSON",
+        json.dumps({"default": {"appId": "cli_app", "appSecret": "secret-value"}}),
+    )
+    call_count = 0
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def _fake_post(
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        timeout: float,
+    ) -> _Response:
+        nonlocal call_count
+        del url, json, headers, timeout
+        call_count += 1
+        if call_count == 1:
+            return _Response({"code": 0, "tenant_access_token": "tenant-token"})
+        return _Response({"code": 99991400, "msg": "temporary failure"})
+
+    monkeypatch.setattr(outbox_implementations.requests, "post", _fake_post)
+    store = _FakeOutboxStore(
+        outbox=_FakeOutboxRecord(
+            outbox_id="outbox-feishu-message-fail",
+            channel_code="feishu_bot_api",
+            reply_target=json.dumps({"channel": "feishu", "to": "user:ou_123"}),
+            payload={"message_text": "message fail"},
+        )
+    )
+    _bind_fake_store(monkeypatch, store)
+
+    payload = runtime_orchestrator.dispatch_outbox_once(_runtime_params("postgresql://unused"))
+
+    assert payload["outbox_id"] == "outbox-feishu-message-fail"
+    assert payload["item"]["status"] == "retry_wait"
+    assert payload["retry_scheduled_count"] == 1
+    assert payload["error_code"] == "outbox_feishu_message_request_failed"
+    assert store.mark_sent_count == 0
+
+
+def test_outbox_handler_fails_unknown_channel_even_when_dry_run() -> None:
+    progress_events: list[dict[str, Any]] = []
+    context = _handler_context(
+        payload={"message_text": "unsupported", "dry_run": True},
+        channel_code="feishu_future_channel",
+        progress_events=progress_events,
+    )
+
+    result = outbox_implementations.outbox_dispatch_handler(context)
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "outbox_channel_unsupported"
+    assert result.error.retryable is False
+    assert progress_events[-1]["progress_stage"] == "dispatch_failed"
+
+
+def test_outbox_handler_reads_openclaw_feishu_account_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "channels": {
+                    "feishu": {
+                        "defaultAccount": "default",
+                        "accounts": {
+                            "default": {
+                                "appId": "openclaw_app",
+                                "appSecret": "openclaw_secret",
+                                "domain": "lark",
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MUJITASK_FEISHU_ACCOUNTS_JSON", raising=False)
+    monkeypatch.delenv("MUJITASK_FEISHU_ACCOUNTS_FILE", raising=False)
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config_path))
+    posted_payloads: list[dict[str, Any]] = []
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def _fake_post(
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        timeout: float,
+    ) -> _Response:
+        posted_payloads.append({"url": url, "json": json, "headers": headers or {}, "timeout": timeout})
+        if "tenant_access_token" in url:
+            return _Response({"code": 0, "tenant_access_token": "tenant-token"})
+        return _Response({"code": 0, "data": {"message_id": "om_openclaw"}})
+
+    monkeypatch.setattr(outbox_implementations.requests, "post", _fake_post)
+    progress_events: list[dict[str, Any]] = []
+    context = _handler_context(
+        payload={"message_text": "openclaw config"},
+        channel_code="feishu_direct_api",
+        reply_target="{'channel': 'feishu', 'to': 'chat:oc_123', 'accountId': 'default'}",
+        progress_events=progress_events,
+    )
+
+    result = outbox_implementations.outbox_dispatch_handler(context)
+
+    assert result.status == "success"
+    assert result.result["transport"]["domain"] == "lark"
+    assert result.result["transport"]["receive_id_type"] == "chat_id"
+    assert posted_payloads[0]["url"].startswith("https://open.larksuite.com/")
+    assert posted_payloads[0]["json"] == {"app_id": "openclaw_app", "app_secret": "openclaw_secret"}
+    assert posted_payloads[1]["json"]["receive_id"] == "oc_123"
+
+
+def test_outbox_handler_sends_openclaw_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_events: list[dict[str, Any]] = []
+    calls: list[list[str]] = []
+    monkeypatch.setenv("OPENCLAW_CLI_BIN", "/usr/local/bin/openclaw-test")
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps({"ok": True})
+        stderr = ""
+
+    def _fake_run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+        timeout: float,
+    ) -> _Completed:
+        del capture_output, text, check, timeout
+        calls.append(command)
+        return _Completed()
+
+    monkeypatch.setattr(outbox_implementations.subprocess, "run", _fake_run)
+    context = _handler_context(
+        payload={"message_text": "openclaw send"},
+        channel_code="openclaw_message",
+        reply_target=json.dumps({"channel": "feishu", "to": "user:ou_123", "accountId": "default"}),
+        progress_events=progress_events,
+    )
+
+    result = outbox_implementations.outbox_dispatch_handler(context)
+
+    assert result.status == "success"
+    assert result.result["delivery_state"] == "sent"
+    assert calls == [
+        [
+            "/usr/local/bin/openclaw-test",
+            "message",
+            "send",
+            "--channel",
+            "feishu",
+            "--target",
+            "user:ou_123",
+            "--message",
+            "openclaw send",
+            "--json",
+            "--account",
+            "default",
+        ]
+    ]
+    assert progress_events[-1]["progress_stage"] == "dispatch_sent"
 
 
 def test_dispatch_outbox_once_supervises_console_success_without_db(

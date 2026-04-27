@@ -228,6 +228,8 @@ flowchart TD
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由行级 pipeline 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
 
+默认 outbox 文案由 `domains/tiktok/projections/outbox_message_projection.py` 生成，标题为 `关键词竞品入库完成`。默认 `plain_text_detail` 必须包含关键词、候选数、种子写入/跳过/失败数、详情成功/失败数；明细只展示本次新插入并进入详情刷新的 SKU，`existing_record` / `skip_existing` / duplicate 这类跳过商品只进入汇总计数，不进入明细列表。可通过 task payload `outbox_message_format` 或 `outbox_message_template` 覆盖输出格式。
+
 `keyword_seed_import` 是关键词入库前半段的业务 job。它不是新的 FastMoss 专用搜索能力，也不是新的飞书表格写入能力；它只负责把一次业务搜索请求串行编排为:
 
 1. 使用 `keyword_search_parameter_mapper` 把结构化业务条件映射为 `fastmoss_product_search` payload。
@@ -298,6 +300,8 @@ sequenceDiagram
 - `competitor_row_refresh` 绑定串行 queue lane，按 `available_at` / `queue_seq` / `created_at` FIFO claim；同一 lane 同一时刻最多一个 running job。
 - TikTok、FastMoss 和飞书外部请求之间必须记录 request start/end、delay / cooldown 和 fallback reason 等 runtime evidence。
 - 父 task 基于所有子 job 状态汇总。
+
+FastMoss 商品详情指标必须按窗口语义映射，不按固定原始字段名猜测。`近90天销量` 来自 `goods.overview` 以 `d_type=90` 调用后的窗口汇总；mapper 优先使用标准化 `sales_90d`，其次使用同一窗口下的 `overview.real_sold_count`、`overview.sold_count`，最后才在 `chart_list` 满 90 天时按 `inc_sold_count` 求和。`raw_api_responses.request_params` 与 `product_metric_snapshots.window_days` 必须记录 `d_type=90`，让后续审计能区分“90 天窗口汇总”和普通累计字段。不满 90 天的 `chart_list` 不能伪装成完整 90 天销量。
 
 这样可以做到:
 

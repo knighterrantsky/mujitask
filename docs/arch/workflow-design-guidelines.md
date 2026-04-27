@@ -336,6 +336,7 @@ Workflow 设计和实现 adapter 时，默认按下面规则:
 - Fact DB、Feishu、MinIO/object store 的写入发生在哪个 worker 进程里。
 - Reconciler / executor 如何根据 Runtime DB 推进下一 stage 或最终 summary。
 - `notification_outbox` 何时创建，`outbox_dispatcher` 如何发送最终结果。
+- `notification_outbox.payload_json.message_text` 由哪个 domain projection 生成，以及默认人类可读格式覆盖哪些业务计数和明细。
 
 不应该表达:
 
@@ -343,6 +344,17 @@ Workflow 设计和实现 adapter 时，默认按下面规则:
 - adapter/mapper 的字段级映射细节。
 - 某个外部 API 的每一次 HTTP 请求。
 - Flow 内部的普通业务判断，除非它影响跨进程调度。
+
+### 3.7.1 Outbox 文案约束
+
+Workflow 的 `ready_for_summary` 只负责汇总业务 result 并调用领域 projection 生成 outbox 文案。文案生成规则必须满足:
+
+- 默认格式是 `plain_text_detail`，用于飞书/OpenClaw 等人类接收通道。
+- 支持 `outbox_message_format` 覆盖为 `plain_text_summary`、`json` 或 `template`。
+- 支持 `outbox_message_template` 直接渲染模板，模板优先级高于 format。
+- `json` 只能作为显式调试格式，不能作为默认飞书消息。
+- outbox channel handler 只负责发送，不反向解析业务 result，也不生成领域文案。
+- 每个正式 workflow 文档必须说明默认通知标题和必须包含的关键计数/明细。
 
 通用模板:
 

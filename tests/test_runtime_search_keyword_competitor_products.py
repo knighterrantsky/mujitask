@@ -7,6 +7,7 @@ from automation_business_scaffold.domains.tiktok.flows.search_keyword_competitor
 )
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import keyword_search_parameter_mapper
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import build_tiktok_outbox_message_text
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
@@ -36,6 +37,42 @@ def test_keyword_search_parameter_mapper_builds_fastmoss_search_payload() -> Non
     assert mapped["limit"] == 5
     assert mapped["sort"] == {"field": "day7_sold_count", "direction": "desc", "source_order": "2,2"}
     assert mapped["output_conditions"]["business_conditions"]["min_day7_sold_count"] == "200"
+
+
+def test_keyword_outbox_detail_hides_existing_records() -> None:
+    message = build_tiktok_outbox_message_text(
+        request_id="req-keyword",
+        task_code=TASK_CODE,
+        summary={"final_status": "partial_success"},
+        result={
+            "search_query": "2026 graduation",
+            "search_filter_info": {"output_conditions": {"business_conditions": {"min_day7_sold_count": "500"}}},
+            "candidate_total_count": 2,
+            "seed_write_results": [
+                {"product_id": "sku-existing", "status": "skip_existing"},
+                {"product_id": "sku-new", "status": "success"},
+            ],
+            "row_results": [
+                {
+                    "source_record_id": "rec-existing",
+                    "product_id": "sku-existing",
+                    "row_status": "failed",
+                    "failure_reason": "existing_record",
+                },
+                {
+                    "source_record_id": "rec-new",
+                    "product_id": "sku-new",
+                    "row_status": "success",
+                },
+            ],
+        },
+    )
+
+    assert "种子跳过：1 条" in message
+    assert "详情成功：1 条" in message
+    assert "详情失败：0 条" in message
+    assert "sku-existing" not in message
+    assert "1. SKU sku-new" in message
 
 
 def _store(runtime_db_url: str) -> RuntimeStore:
@@ -341,6 +378,12 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     assert finalized["result"]["candidate_total_count"] == 1
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["outbox"][0]["event_type"] == "task_request.completed"
+    message_text = finalized["outbox"][0]["payload"]["message_text"]
+    assert "关键词竞品入库完成" in message_text
+    assert f"关键词：{SEARCH_QUERY}" in message_text
+    assert "候选：1 条" in message_text
+    assert "详情成功：1 条" in message_text
+    assert "1. SKU 123456789" in message_text
 
 
 def test_keyword_runtime_zero_candidates_finalizes_success(runtime_db_url: str) -> None:

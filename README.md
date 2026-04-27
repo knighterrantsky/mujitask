@@ -6,7 +6,7 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 
 - 从 OpenClaw / Skill / CLI 接收业务任务。
 - 通过 Runtime DB 编排长流程任务。
-- 使用 `executor_daemon`、`api_worker_daemon`、`browser_runloop`、`outbox_dispatcher` 执行业务。
+- 使用 `executor_daemon`、`api_worker_daemon`、`browser_runloop`、`outbox_dispatcher`、`watchdog` 执行业务和运行时恢复。
 - 采集 TikTok / FastMoss 数据，写回飞书业务表，并沉淀事实数据库和运行产物。
 
 当前项目依赖 `automation-framework`，但不在本仓库维护 framework 的接口说明和 contract 文档。framework 的公开接口、运行时契约和升级说明应直接从 `automation-framework` 包或 framework 仓库读取；本仓库 README 只说明 Mujitask 这个业务项目如何部署、运行和维护。
@@ -91,7 +91,7 @@ bash scripts/deploy/macos/deploy.sh
 - 安装并启动本机 Postgres 和 MinIO。
 - 生成 `scripts/execution_control/executor.local.env`。
 - 安装 `skills/mujitask-tiktok-feishu-sync` 到部署 skills 目录。
-- 安装并刷新 4 个 launchd 守护进程。
+- 安装并刷新 5 个 launchd 守护进程。
 - 执行 smoke check。
 
 ## 4. 本地开发运行
@@ -147,7 +147,7 @@ automation-business-scaffold-run list-tasks
 
 ## 5. 常驻进程
 
-生产和本地 launchd 部署会运行 4 个常驻角色：
+生产和本地 launchd 部署会运行 5 个常驻角色：
 
 | 进程 | console script | 作用 |
 | --- | --- | --- |
@@ -155,6 +155,7 @@ automation-business-scaffold-run list-tasks
 | API worker | `automation-business-scaffold-api-worker` | 处理 API/HTTP/飞书/FastMoss/事实入库/媒体上传 job |
 | Browser worker | `automation-business-scaffold-browser-runloop` | 串行消费需要浏览器 profile/CDP 的任务 |
 | Outbox dispatcher | `automation-business-scaffold-outbox-dispatcher` | 发送最终通知，处理通知重试 |
+| Watchdog | `automation-business-scaffold-watchdog` | 扫描 lease 过期、stale progress、timeout、stuck parent 和 outbox timeout |
 
 launchd 安装脚本：
 
@@ -169,6 +170,7 @@ automation-business-scaffold-executor --once
 automation-business-scaffold-api-worker --once
 automation-business-scaffold-browser-runloop --once
 automation-business-scaffold-outbox-dispatcher --once
+automation-business-scaffold-watchdog --once
 ```
 
 ## 6. 提交和查询任务
@@ -309,15 +311,15 @@ scripts/execution_control/run_local_postgres_tests.sh
 
 该脚本会读取 `scripts/execution_control/executor.local.env`。本地开发建议同时配置：
 
-- `BUSINESS_EXECUTION_CONTROL_DB_URL`：运行时数据库，例如 `automation_business_scaffold`
-- `TEST_DATABASE_URL`：测试专用数据库，例如 `automation_business_scaffold_test`
+- `BUSINESS_EXECUTION_CONTROL_DB_URL`：运行时数据库，例如 `postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold`
+- `TEST_DATABASE_URL`：测试专用数据库，例如 `postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold_test`
 
 pytest fixture 会优先使用 `TEST_DATABASE_URL`，并在该数据库内为每次测试创建临时 schema，避免数据库回归测试因为没有 DB URL 被跳过，也避免测试污染运行库。直接用 `psql` 排障时需要把 SQLAlchemy URL 的 `postgresql+psycopg://` 改成 `postgresql://`。
 
 首次配置时先创建测试库：
 
 ```bash
-createdb automation_business_scaffold_test
+createdb -O mujitask automation_business_scaffold_test
 ```
 
 轻量测试：
@@ -331,7 +333,7 @@ uv run --extra dev pytest
 部署后建议至少验证：
 
 - `automation-business-scaffold-run list-tasks` 能列出正式 task。
-- 4 个 launchd 守护进程能启动。
+- 5 个 launchd 守护进程能启动。
 - Postgres Runtime 表可连接。
 - MinIO bucket 可写入 artifact。
 - `refresh_current_competitor_table` 可以 submit 并返回 `request_id`。

@@ -165,7 +165,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                         "real_price": "12.99",
                         "yday_sold_count": "12",
                         "day7_sold_count": "88",
-                        "day90_sold_count": "600",
+                        "sales_90d": "600",
                     }
                 },
             },
@@ -227,6 +227,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     assert result.result["writeback_projection"]["fields"]["SKU-ID"] == "123456789"
     assert result.result["writeback_projection"]["fields"]["标题"] == "Graduation Kit"
     assert result.result["writeback_projection"]["fields"]["图片"]["local_path"] == "/tmp/main.jpg"
+    assert result.result["writeback_projection"]["fields"]["近90天销量"] == "600"
     assert result.result["runtime_evidence"]["browser_fallback_used"] is False
     assert media_payloads[0]["sync_referenced_files"] is True
     assert media_payloads[0]["require_materialized_assets"] is True

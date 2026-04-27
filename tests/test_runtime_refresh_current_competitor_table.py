@@ -44,6 +44,7 @@ def test_refresh_outbox_message_includes_row_update_statuses() -> None:
                     },
                 ],
             },
+            message_format="json",
         )
     )
 
@@ -84,6 +85,7 @@ def test_refresh_outbox_message_treats_unavailable_writeback_as_success() -> Non
                     }
                 ],
             },
+            message_format="json",
         )
     )
 
@@ -91,6 +93,73 @@ def test_refresh_outbox_message_treats_unavailable_writeback_as_success() -> Non
     assert message["failed_count"] == 0
     assert message["rows"][0]["status"] == "success"
     assert message["rows"][0]["row_status"] == "unavailable"
+
+
+def test_refresh_outbox_message_defaults_to_readable_plain_text_detail() -> None:
+    message = build_outbox_message_text(
+        request_id="req-readable",
+        task_code=REFRESH_TASK_CODE,
+        summary={"final_status": "success", "warnings": []},
+        result={
+            "row_total_count": 2,
+            "row_results": [
+                {
+                    "source_record_id": "row-ok",
+                    "product_id": "sku-ok",
+                    "row_status": "success",
+                },
+                {
+                    "source_record_id": "row-fail",
+                    "product_id": "sku-fail",
+                    "row_status": "failed",
+                    "failure_reason": "FastMoss fetch failed.",
+                },
+            ],
+        },
+    )
+
+    assert message == "\n".join(
+        [
+            "TK竞品表刷新完成",
+            "",
+            "任务：refresh_current_competitor_table",
+            "请求：req-readable",
+            "状态：success",
+            "总数：2 条",
+            "更新：1 条",
+            "成功：1 条",
+            "失败：1 条",
+            "",
+            "明细：",
+            "1. SKU sku-ok",
+            "   record: row-ok",
+            "   status: success",
+            "2. SKU sku-fail",
+            "   record: row-fail",
+            "   status: fail",
+            "   failure_reason: FastMoss fetch failed.",
+        ]
+    )
+
+
+def test_refresh_outbox_message_supports_summary_and_template_formats() -> None:
+    summary_message = build_outbox_message_text(
+        request_id="req-summary",
+        task_code=REFRESH_TASK_CODE,
+        summary={"final_status": "success"},
+        result={"row_total_count": 1, "row_results": [{"product_id": "sku-1", "row_status": "success"}]},
+        message_format="plain_text_summary",
+    )
+    template_message = build_outbox_message_text(
+        request_id="req-template",
+        task_code=REFRESH_TASK_CODE,
+        summary={"final_status": "success"},
+        result={"row_total_count": 1, "row_results": [{"product_id": "sku-1", "row_status": "success"}]},
+        message_template="更新 {updated_count} 条，失败 {failed_count} 条，状态 {summary.final_status}",
+    )
+
+    assert "明细：" not in summary_message
+    assert template_message == "更新 1 条，失败 0 条，状态 success"
 
 
 def _store(runtime_db_url: str) -> RuntimeStore:

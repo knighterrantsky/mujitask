@@ -189,6 +189,40 @@ API worker 消费的通用 job 队列。适合飞书 API 读取/写回、FastMos
 - `idx_notification_outbox_ref_type_ref_id(ref_type, ref_id)`
 - `idx_notification_outbox_status_lease_until(status, lease_until)`
 
+#### 3.6.1 Outbox Channel 配置模型
+
+`notification_outbox` 只保存路由事实和消息内容，不保存飞书应用密钥。
+
+| 字段 / 参数 | 说明 |
+| --- | --- |
+| `channel_code` | 发送通道。准入值包括 `noop`、`disabled`、`stdout`、`console`、`webhook`、`feishu_bot_api`、`feishu_direct_api`、`openclaw_message`、`feishu_openclaw`。 |
+| `reply_target` | 接收目标。可以是 JSON object、Python dict repr 或简写字符串。Feishu 目标支持 `user:ou_xxx`、`open_id:ou_xxx`、`chat:oc_xxx`、`group:oc_xxx`。 |
+| `accountId` / `account_id` | `reply_target` 中的账号选择字段。缺省使用通道配置的默认账号。 |
+| `payload_json.message_text` | 最终发送文本。必须由 workflow/domain projection 默认生成人类可读文本；压缩 JSON 只能在显式 `message_format=json` 时使用。 |
+| `payload_json.message_format` / task `outbox_message_format` | 可选消息格式。支持 `plain_text_detail`、`plain_text_summary`、`json`、`template`。 |
+| task `outbox_message_template` | 可选模板。存在时优先于 message format。 |
+| `payload_json.dry_run` | 仅用于显式本地演练。生产 outbox 不应依赖 dry-run。未知 channel 不能因为 dry-run 被标记为成功。 |
+
+Feishu 账号配置按以下优先级解析:
+
+1. 环境变量 `MUJITASK_FEISHU_ACCOUNTS_JSON`，格式为 `{"default":{"appId":"...","appSecret":"...","domain":"feishu"}}`。
+2. 环境变量 `MUJITASK_FEISHU_ACCOUNTS_FILE` 指向的部署配置文件，文件内容同上。
+3. OpenClaw 本机兼容配置 `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json` 下的 `channels.feishu`。
+
+`appSecret` 等密钥不得写入 outbox payload、result、日志或错误详情。发送 result 只允许记录 `channel_code`、`reply_target`、`account_id`、`receive_id_type`、HTTP status 和飞书返回 code。
+
+#### 3.6.2 Outbox 失败语义
+
+`outbox_dispatcher` 只有在 handler 返回 success 时才能把 outbox 标记为 `sent`。真实通道发送失败必须进入 `retry_wait` 或 `failed`，不能把 dry-run、unsupported channel 或配置缺失伪装成 sent。
+
+| 场景 | 语义 |
+| --- | --- |
+| `noop` / `disabled` | 明确跳过，标记 sent，`delivery_state=skipped`。 |
+| `stdout` / `console` | 本地输出。`dry_run=true` 时为 `simulated`，否则为 `sent`。 |
+| `webhook` / Feishu / OpenClaw 网络超时或 5xx | retryable infra failure，进入 `retry_wait`。 |
+| 缺少 webhook URL、Feishu 账号密钥、接收目标、OpenClaw CLI 或 unsupported channel | terminal configuration failure，进入 `failed`。 |
+| 飞书 token 或消息接口返回非 0 code | 不标 sent；按 handler 分类进入 `retry_wait` 或 `failed`，错误中保留 code/msg，不保留 secret。 |
+
 ### 3.7 `artifact_object`
 
 运行产物索引表。大文件内容不放数据库，放 MinIO 或本地对象存储。

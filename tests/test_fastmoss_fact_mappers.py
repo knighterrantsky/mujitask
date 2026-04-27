@@ -98,6 +98,52 @@ def test_fastmoss_product_fetch_unwraps_overview_for_metrics_and_observations():
     assert result.result["product_fact_bundle"]["product_daily_metrics"][0]["sold_count"] == 38
 
 
+def test_fastmoss_product_fetch_maps_window_overview_sales_to_sales_90d():
+    result = build_bound_api_handler_registry().dispatch(
+        "fastmoss_product_fetch",
+        _handler_context(
+            "fastmoss_product_fetch",
+            {
+                "product_identity": {"product_id": "1732183618577011482"},
+                "fastmoss_bundle": {
+                    "overview": {
+                        "data": {
+                            "product_id": "1732183618577011482",
+                            "d_type": 90,
+                            "overview": {
+                                "sold_count": 1690,
+                                "real_sold_count": 1659,
+                                "sale_amount": 32642.85,
+                            },
+                            "chart_list": [
+                                {"dt": "2026-04-24", "inc_sold_count": 119},
+                                {"dt": "2026-04-25", "inc_sold_count": 168},
+                            ],
+                        }
+                    }
+                },
+            },
+        ),
+    )
+
+    assert result.status == "success"
+    overview = result.result["metrics_snapshot"]["overview"]
+    assert result.result["metrics_snapshot"]["window_days"] == 90
+    assert overview["sales_90d"] == "1659"
+    assert overview["day90_sold_count"] == "1659"
+    assert overview["sold_count_90d"] == "1659"
+    assert overview["real_sales_90d"] == "1659"
+    metric_snapshot = result.result["product_fact_bundle"]["product_metric_snapshots"][0]
+    assert metric_snapshot["window_days"] == 90
+    assert metric_snapshot["payload"]["overview"]["sales_90d"] == "1659"
+    raw_overview = result.result["product_fact_bundle"]["raw_api_responses"][0]
+    assert raw_overview["source_endpoint"] == "goods.overview"
+    assert raw_overview["request_params"] == {
+        "product_id": "1732183618577011482",
+        "d_type": 90,
+    }
+
+
 def test_fastmoss_product_fetch_resolves_credentials_from_env_markers(monkeypatch):
     monkeypatch.setenv("PYTEST_FASTMOSS_PHONE", "18000000000")
     monkeypatch.setenv("PYTEST_FASTMOSS_PASSWORD", "secret")

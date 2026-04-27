@@ -43,6 +43,18 @@ config_value() {
   printf '%s' "${value}"
 }
 
+sql_literal() {
+  printf "%s" "$1" | sed "s/'/''/g"
+}
+
+sql_identifier() {
+  printf "%s" "$1" | sed 's/"/""/g'
+}
+
+urlencode_component() {
+  "$PYTHON_BIN" -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$1"
+}
+
 resolve_path() {
   local raw_path="$1"
   local base_dir="${2:-${SOURCE_DIR}}"
@@ -177,7 +189,9 @@ ensure_native_postgres() {
 
   local formula="${MUJITASK_POSTGRES_FORMULA:-postgresql@17}"
   local db_name="${MUJITASK_POSTGRES_DB:-automation_business_scaffold}"
-  local db_user="${MUJITASK_POSTGRES_USER:-$(id -un)}"
+  local db_user="${MUJITASK_POSTGRES_USER:-mujitask}"
+  local db_password="${MUJITASK_POSTGRES_PASSWORD:-mujitask}"
+  local admin_user="${MUJITASK_POSTGRES_ADMIN_USER:-$(id -un)}"
   local port="${MUJITASK_POSTGRES_PORT:-5432}"
   local socket_dir="${MUJITASK_POSTGRES_SOCKET_DIR:-/tmp}"
   validate_pg_database_name "${db_name}"
@@ -193,7 +207,7 @@ ensure_native_postgres() {
 
   local last_error=""
   for _ in {1..90}; do
-    if last_error="$(PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${db_user}" "${psql_bin}" -d postgres -Atqc "select 1" 2>&1 >/dev/null)"; then
+    if last_error="$(PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" -d postgres -Atqc "select 1" 2>&1 >/dev/null)"; then
       last_error=""
       break
     fi
@@ -201,14 +215,43 @@ ensure_native_postgres() {
   done
   [[ -z "${last_error}" ]] || fail_deploy "Postgres did not become ready: ${last_error}"
 
-  if PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${db_user}" "${psql_bin}" \
+  local db_user_sql db_password_sql db_name_sql db_user_ident db_name_ident
+  db_user_sql="$(sql_literal "${db_user}")"
+  db_password_sql="$(sql_literal "${db_password}")"
+  db_name_sql="$(sql_literal "${db_name}")"
+  db_user_ident="$(sql_identifier "${db_user}")"
+  db_name_ident="$(sql_identifier "${db_name}")"
+
+  if PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
     -d postgres \
-    -Atqc "SELECT 1 FROM pg_database WHERE datname = '${db_name}'" | grep -q '^1$'; then
+    -Atqc "SELECT 1 FROM pg_roles WHERE rolname = '${db_user_sql}'" | grep -q '^1$'; then
+    log "Postgres role already exists: ${db_user}"
+    PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
+      -d postgres \
+      -v ON_ERROR_STOP=1 \
+      -c "ALTER ROLE \"${db_user_ident}\" WITH LOGIN PASSWORD '${db_password_sql}'" >/dev/null
+  else
+    log "Creating Postgres role: ${db_user}"
+    PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
+      -d postgres \
+      -v ON_ERROR_STOP=1 \
+      -c "CREATE ROLE \"${db_user_ident}\" WITH LOGIN PASSWORD '${db_password_sql}'" >/dev/null
+  fi
+
+  if PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
+    -d postgres \
+    -Atqc "SELECT 1 FROM pg_database WHERE datname = '${db_name_sql}'" | grep -q '^1$'; then
     log "Postgres database already exists: ${db_name}"
   else
-    log "Creating Postgres database: ${db_name}"
-    PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${db_user}" "${createdb_bin}" "${db_name}"
+    log "Creating Postgres database: ${db_name} owned by ${db_user}"
+    PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${createdb_bin}" -O "${db_user}" "${db_name}"
   fi
+
+  PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
+    -d "${db_name}" \
+    -v ON_ERROR_STOP=1 \
+    -c "GRANT ALL PRIVILEGES ON DATABASE \"${db_name_ident}\" TO \"${db_user_ident}\"" \
+    -c "GRANT ALL ON SCHEMA public TO \"${db_user_ident}\"" >/dev/null
 }
 
 ensure_native_minio() {
@@ -473,17 +516,20 @@ main() {
   fastmoss_phone="$(require_config_value MUJITASK_FASTMOSS_PHONE FASTMOSS_PHONE)"
   fastmoss_password="$(require_config_value MUJITASK_FASTMOSS_PASSWORD FASTMOSS_PASSWORD)"
 
-  local postgres_port postgres_db postgres_user postgres_socket_dir
+  ensure_uv
+  ensure_python_311
+
+  local postgres_port postgres_db postgres_user postgres_password
   postgres_port="${MUJITASK_POSTGRES_PORT:-5432}"
   postgres_db="${MUJITASK_POSTGRES_DB:-automation_business_scaffold}"
-  postgres_user="${MUJITASK_POSTGRES_USER:-$(id -un)}"
-  postgres_socket_dir="${MUJITASK_POSTGRES_SOCKET_DIR:-/tmp}"
+  postgres_user="${MUJITASK_POSTGRES_USER:-mujitask}"
+  postgres_password="${MUJITASK_POSTGRES_PASSWORD:-mujitask}"
 
   local db_url artifact_root artifact_bucket artifact_store_provider
   if [[ "${MUJITASK_RUNTIME_MODE:-native}" == "external" ]]; then
     db_url="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "")"
   else
-    db_url="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "postgresql+psycopg://${postgres_user}@/${postgres_db}?host=${postgres_socket_dir}&port=${postgres_port}")"
+    db_url="$(config_value MUJITASK_DB_URL BUSINESS_EXECUTION_CONTROL_DB_URL "postgresql+psycopg://$(urlencode_component "${postgres_user}"):$(urlencode_component "${postgres_password}")@127.0.0.1:${postgres_port}/${postgres_db}")"
   fi
   if [[ -z "${db_url}" ]]; then
     fail_deploy "Missing database config. Set MUJITASK_DB_URL / BUSINESS_EXECUTION_CONTROL_DB_URL in ${ENV_FILE}."
@@ -493,7 +539,7 @@ main() {
   artifact_store_provider="$(config_value MUJITASK_ARTIFACT_STORE_PROVIDER BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER "minio")"
 
   local artifact_object_prefix minio_endpoint minio_access_key minio_secret_key minio_region minio_secure minio_create_bucket sync_referenced_files
-  artifact_object_prefix="$(config_value MUJITASK_ARTIFACT_OBJECT_PREFIX BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX "phase2/local")"
+  artifact_object_prefix="$(config_value MUJITASK_ARTIFACT_OBJECT_PREFIX BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX "mujitask/local")"
   minio_endpoint="$(config_value MUJITASK_MINIO_ENDPOINT BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT "127.0.0.1:${MUJITASK_MINIO_PORT:-9000}")"
   minio_access_key="$(config_value MUJITASK_MINIO_ROOT_USER BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY "minioadmin")"
   minio_secret_key="$(config_value MUJITASK_MINIO_ROOT_PASSWORD BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY "minioadmin")"
@@ -508,8 +554,6 @@ main() {
   openclaw_agent_id="$(config_value MUJITASK_OPENCLAW_AGENT_ID OPENCLAW_AGENT_ID "tiktok-ops")"
   openclaw_state_dir="$(config_value MUJITASK_OPENCLAW_STATE_DIR OPENCLAW_STATE_DIR "${HOME}/.openclaw")"
 
-  ensure_uv
-  ensure_python_311
   prepare_project_tree "${install_dir}"
   ensure_project_install "${install_dir}"
   prepare_local_files "${install_dir}"

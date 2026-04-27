@@ -55,6 +55,8 @@ flowchart TD
 | `writeback_competitor_status` | 批量兜底回写竞品表达人查找状态，处理无匹配达人、商品发现失败、重试耗尽或未被最后一个达人同步 job 成功写回的 source rows；单个 job 最多 50 条 source rows | `api_worker_job` / `feishu_table_write` |
 | `ready_for_summary` | 汇总 product / creator / Feishu writeback 结果并写通知 | `task_request` / `notification_outbox` |
 
+默认 outbox 文案由 `domains/tiktok/projections/outbox_message_projection.py` 生成，标题为 `TK达人池同步完成`。默认 `plain_text_detail` 必须使用简单商品口径，包含商品总数、商品成功数、商品失败数、子任务成功数，以及每个 SKU 的 `record/status/更新达人数量/创建达人数量/warnings` 摘要；不使用“商品组”作为面向用户的描述。可通过 task payload `outbox_message_format` 或 `outbox_message_template` 覆盖输出格式。
+
 ## 5. Job 设计
 
 | Job | 表 / job 类型 | Worker | Handler | Flow / Mapper |

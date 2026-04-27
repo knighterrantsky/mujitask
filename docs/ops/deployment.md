@@ -24,7 +24,7 @@
 2. skill 可以同步提交顶层任务，并立即返回 `request_id`。
 3. `Postgres` 中可以看到 `task_request / task_execution / api_worker_job / resource_lease / notification_outbox / artifact_object`。
 4. `MinIO` 中可以看到运行产物对象。
-5. `launchd` 托管的 4 个守护进程可以持续消费任务。
+5. `launchd` 托管的 5 个守护进程可以持续消费任务并执行运行时恢复。
 6. 真实飞书任务可以收到最终汇总通知。
 
 ## 2. 当前支持范围
@@ -92,6 +92,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
   - `config/deployment/launchd/com.happyzhao.mujitask.api-worker.plist.template`
   - `config/deployment/launchd/com.happyzhao.mujitask.browser-runloop.plist.template`
   - `config/deployment/launchd/com.happyzhao.mujitask.outbox-dispatcher.plist.template`
+  - `config/deployment/launchd/com.happyzhao.mujitask.watchdog.plist.template`
 
 ## 5. 基础依赖
 
@@ -218,6 +219,8 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 部署脚本只负责把 skill bundle 安装到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`，不再推断任何 agent workspace。
 
+本机 Postgres 运行时默认通过 TCP 连接，配置为 `mujitask/mujitask@127.0.0.1:5432/automation_business_scaffold`。部署脚本会在 `native` 模式下创建或更新这个 runtime 账号，并把生成的 URL 写入 `scripts/execution_control/executor.local.env`。`MUJITASK_POSTGRES_SOCKET_DIR=/tmp` 只用于部署脚本以本机管理员身份 bootstrap Homebrew Postgres，不进入 daemon 的运行时连接串；切换云 Postgres 时改为 `MUJITASK_RUNTIME_MODE=external` 并填写 `MUJITASK_DB_URL` 即可。对象存储默认前缀为 `MUJITASK_ARTIFACT_OBJECT_PREFIX=mujitask/local`，用于给 MinIO bucket 内的运行产物分目录，例如 `mujitask/local/runs/...`。
+
 首次部署：
 
 ```bash
@@ -295,8 +298,10 @@ bash scripts/execution_control/install_launch_agents.sh
 安装后会生成：
 
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.executor-daemon.plist`
+- `~/Library/LaunchAgents/com.happyzhao.mujitask.api-worker.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.browser-runloop.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.outbox-dispatcher.plist`
+- `~/Library/LaunchAgents/com.happyzhao.mujitask.watchdog.plist`
 
 查看状态：
 
@@ -352,7 +357,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh
    - `run_influencer_pool_sync_step.sh`
    - `run_skill_step.py`
    - `lightweight_submit.py`
-4. `launchctl list` 中 4 个守护进程处于运行状态。
+4. `launchctl list` 中 5 个守护进程处于运行状态。
 5. `Postgres` 中可以查询到 `task_request / task_execution / api_worker_job / notification_outbox` 等核心表。
 6. `MinIO` bucket 可访问，并能看到 smoke object 或实际运行对象。
 
@@ -369,10 +374,10 @@ scripts/execution_control/run_local_postgres_tests.sh
 本地开发机建议给测试单独建库，并在 `executor.local.env` 中配置：
 
 ```bash
-createdb automation_business_scaffold_test
+createdb -O mujitask automation_business_scaffold_test
 
-BUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold
-TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold_test
+BUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold
+TEST_DATABASE_URL=postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold_test
 ```
 
 fixture 优先使用 `TEST_DATABASE_URL`。没有这两个 DB URL 时，数据库相关测试会跳过；直接用 `psql` 连接排障时请使用 `postgresql://...` 格式。

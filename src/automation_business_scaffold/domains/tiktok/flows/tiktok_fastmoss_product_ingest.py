@@ -196,6 +196,8 @@ def _ensure_request_outbox(*, store: RuntimeStore, request_id: str) -> None:
                 task_code=request.task_code,
                 summary=summary,
                 result=result,
+                message_format=str(request.payload.get("outbox_message_format") or ""),
+                message_template=str(request.payload.get("outbox_message_template") or ""),
             ),
             "request_id": request.request_id,
             "task_code": request.task_code,

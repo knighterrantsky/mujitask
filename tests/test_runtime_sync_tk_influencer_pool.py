@@ -13,6 +13,7 @@ from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool i
     finalize_request,
     release_request_after_child_completion,
 )
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import build_tiktok_outbox_message_text
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
@@ -36,6 +37,49 @@ def _create_request(store: RuntimeStore, **payload: object):
         progress_stage=READ_STAGE_CODE,
     )
     return store.load_task_request(request_id=request.request_id)
+
+
+def test_influencer_outbox_uses_product_counts_and_creator_write_counts() -> None:
+    message = build_tiktok_outbox_message_text(
+        request_id="req-influencer",
+        task_code=TASK_CODE,
+        summary={
+            "final_status": "partial_success",
+            "product_group_count": 2,
+            "product_group_status_counts": {"success": 1, "failed": 1},
+            "child_total_count": 4,
+            "child_success_count": 3,
+            "product_groups": [
+                {
+                    "source_record_id": "rec-success",
+                    "product_id": "sku-success",
+                    "final_status": "success",
+                    "influencer_write_updated_count": 2,
+                    "influencer_write_created_count": 1,
+                },
+                {
+                    "source_record_id": "rec-failed",
+                    "product_id": "sku-failed",
+                    "final_status": "failed",
+                    "influencer_write_updated_count": 0,
+                    "influencer_write_created_count": 0,
+                    "warnings": ["creator_sync_failed"],
+                },
+            ],
+        },
+        result={},
+    )
+
+    assert "商品：2 个" in message
+    assert "商品成功：1 个" in message
+    assert "商品失败：1 个" in message
+    assert "商品组" not in message
+    assert "1. SKU sku-success" in message
+    assert "   更新达人数量：2" in message
+    assert "   创建达人数量：1" in message
+    assert "2. SKU sku-failed" in message
+    assert "   更新达人数量：0" in message
+    assert "   创建达人数量：0" in message
 
 
 def _apply_stage_result(store: RuntimeStore, *, request_id: str, stage_result: dict[str, object]) -> None:
@@ -233,6 +277,11 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
     assert finalized["summary"]["product_group_status_counts"] == {"success": 1}
     assert finalized["outbox"]
     assert finalized["outbox"][0]["event_type"] == "task_request.completed"
+    message_text = finalized["outbox"][0]["payload"]["message_text"]
+    assert "TK达人池同步完成" in message_text
+    assert "商品：1 个" in message_text
+    assert "商品成功：1 个" in message_text
+    assert "1. SKU product-1" in message_text
 
 
 def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtime_db_url: str) -> None:

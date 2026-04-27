@@ -15,14 +15,15 @@
 - 当前正式运行形态请以 [deployment.md](./deployment.md) 和 [../arch/README.md](../arch/README.md) 为准。
 
 补充说明：
-当前 Phase 1/2 运行时不是“只执行一次 CLI 命令”就结束，而是依赖 4 个常驻守护进程：
+当前运行时不是“只执行一次 CLI 命令”就结束，而是依赖 5 个常驻守护进程：
 
 - `executor_daemon`
 - `api_worker_daemon`
 - `browser_runloop`
 - `outbox_dispatcher`
+- `watchdog`
 
-如果部署文档里不明确写出这 4 个常驻进程，后续很容易出现“任务能提交，但无人消费”的误判。
+如果部署文档里不明确写出这 5 个常驻进程，后续很容易出现“任务能提交，但无人消费”或“超时状态无人恢复”的误判。
 
 Phase 1 历史交付口径包含 3 类要求：
 
@@ -138,18 +139,20 @@ bash scripts/execution_control/run_alembic_upgrade.sh
 
 ### 5.4 启动 executor
 历史上 Phase 1 只强调过单个 `executor_daemon`。
-按当前实现，正式部署时应同时启动 4 个常驻进程：
+按当前实现，正式部署时应同时启动 5 个常驻进程：
 
 - 顶层任务推进：`executor_daemon`
 - API / 网络 / I/O job 消费：`api_worker_daemon`
 - 浏览器叶子任务消费：`browser_runloop`
 - 最终通知发送：`outbox_dispatcher`
+- 运行时恢复扫描：`watchdog`
 
 如果只启动其中一个，系统会出现以下问题：
 
 - 只启动 `executor_daemon`：任务只能推进到 `waiting_children`
 - 只启动 `browser_runloop`：没有新的顶层任务被拆解入队
 - 只启动 `outbox_dispatcher`：不会有新的业务执行，也不会产生新的汇总通知
+- 不启动 `watchdog`：lease 过期、stale progress、timeout 和 stuck parent 不会被定期修复
 
 单进程手工启动只适合本地排障，不适合正式部署。
 
@@ -175,7 +178,7 @@ bash scripts/execution_control/run_executor_daemon.sh --once
 
 ### 5.5 推荐部署方式：launchd
 
-在 macOS 真机环境，推荐用 `launchd` 托管这 4 个守护进程，而不是手工在终端里常驻。
+在 macOS 真机环境，推荐用 `launchd` 托管这 5 个守护进程，而不是手工在终端里常驻。
 
 项目内已提供：
 
@@ -200,8 +203,10 @@ bash scripts/execution_control/install_launch_agents.sh
 安装后会在当前用户目录生成：
 
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.executor-daemon.plist`
+- `~/Library/LaunchAgents/com.happyzhao.mujitask.api-worker.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.browser-runloop.plist`
 - `~/Library/LaunchAgents/com.happyzhao.mujitask.outbox-dispatcher.plist`
+- `~/Library/LaunchAgents/com.happyzhao.mujitask.watchdog.plist`
 
 查看状态：
 
@@ -287,7 +292,7 @@ automation-business-scaffold-run run \
 - `notification_outbox` 发送中断后，超时后会回收到 `retry_wait`
 - `request_id -> execution_id -> run_id` 可在数据库回查
 - daemon 执行完成后可查询到 `artifact_object`
-- 4 个守护进程由 `launchd` 托管后，进程退出会被自动拉起
+- 5 个守护进程由 `launchd` 托管后，进程退出会被自动拉起
 
 ### 7.3 业务验收
 
@@ -299,7 +304,7 @@ automation-business-scaffold-run run \
 
 如果 Phase 1 上线后需要快速回退，按下面顺序做：
 
-1. 停掉 4 个守护进程
+1. 停掉 5 个守护进程
 2. 停止给 skill/CLI 传 `control_action` 与 `execution_control_*` 参数
 3. 清空或移除 `BUSINESS_EXECUTION_CONTROL_DB_URL`
 4. 恢复到原同步直跑方式

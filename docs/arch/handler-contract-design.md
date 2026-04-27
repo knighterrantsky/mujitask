@@ -396,6 +396,8 @@ influencer_pool_source_adapter
 
 payload 示例:
 
+字段投影读取 FastMoss 指标时必须保留窗口上下文。`fastmoss_product_fetch` 对 `goods.overview` 传入 `d_type=90` 后，返回的 `overview.real_sold_count` / `overview.sold_count` 代表该窗口汇总，handler 必须标准化为 `sales_90d` 并在 raw response 的 `request_params.d_type` 与 metric snapshot 的 `window_days` 中留下审计证据。投影层只消费标准化窗口指标；只有 `chart_list` 满 90 个日点时才允许按日增量求和兜底。
+
 ```json
 {
   "target_table_ref": "feishu://mujitask/TK竞品收集",
@@ -1309,6 +1311,38 @@ fastmoss_echarts_renderer
 | API | `media_asset_sync` | `api_worker` | `api_worker_job` | Capability | 图片、头像、封面等媒体资产同步到对象存储和事实索引 | 6.6 |
 | API | `fact_bundle_upsert` | `api_worker` | `api_worker_job` | Capability | normalized entities / relations / observations 统一写入 Fact DB | 6.7 |
 | Outbox | `outbox_dispatch` | `outbox_dispatcher` | `notification_outbox` | System | 发送最终通知和任务摘要，不参与业务事实采集 | 当前系统架构 / outbox |
+
+#### 9.1.1 `outbox_dispatch` Channel Contract
+
+`outbox_dispatch` 是唯一准入的通知发送 handler。workflow 和业务 flow 只能写入 `notification_outbox`，不能直接调用飞书、OpenClaw 或 webhook。
+
+| Channel | 行为 |
+| --- | --- |
+| `noop` / `disabled` | 明确跳过通知，返回 `delivery_state=skipped`。 |
+| `stdout` / `console` | 本地输出消息；允许显式 `dry_run=true` 演练。 |
+| `webhook` | 使用 `payload_json.webhook_url` POST。HTTP/network retryable 失败不得标 sent。 |
+| `feishu_bot_api` / `feishu_direct_api` | 使用飞书 OpenAPI 发送 text message。账号由 `reply_target.accountId` 或默认账号选择。 |
+| `openclaw_message` / `feishu_openclaw` | 调用 OpenClaw CLI `message send`，用于客户现场已有 OpenClaw 通道配置。 |
+
+Feishu 账号配置优先级:
+
+1. `MUJITASK_FEISHU_ACCOUNTS_JSON`
+2. `MUJITASK_FEISHU_ACCOUNTS_FILE`
+3. `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`
+
+`reply_target` 可以是 JSON object、Python dict repr 或简写字符串。结构化格式推荐:
+
+```json
+{"channel":"feishu","to":"user:ou_xxx","accountId":"default"}
+```
+
+handler 必须遵守:
+
+- 未支持的 `channel_code` 必须失败，不能因为 `dry_run` 被模拟为成功。
+- 真实通道只有外部系统确认成功后才返回 success。
+- 配置缺失、接收目标缺失、CLI 缺失是 terminal failure。
+- 网络超时、HTTP 5xx、飞书接口临时失败是 retryable failure。
+- result、progress details、日志不得包含 `appSecret` 或 access token。
 
 ### 9.2 未准入名称
 

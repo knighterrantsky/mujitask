@@ -19,6 +19,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     render_job_keys,
     select_latest_successful_api_job_result,
 )
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 SYNC_TK_INFLUENCER_POOL_WORKFLOW = get_workflow_definition("sync_tk_influencer_pool")
@@ -648,8 +651,18 @@ def finalize_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id:
         reply_target=str(request.reply_target or ""),
         payload={
             "request_id": request.request_id,
+            "task_code": TASK_CODE,
             "workflow_code": WORKFLOW_CODE,
             "summary_payload": summary_payload,
+            "result": result_payload,
+            "message_text": build_tiktok_outbox_message_text(
+                request_id=request.request_id,
+                task_code=TASK_CODE,
+                summary=summary_payload,
+                result=result_payload,
+                message_format=str(request.payload.get("outbox_message_format") or ""),
+                message_template=str(request.payload.get("outbox_message_template") or ""),
+            ),
             "reply_target": str(request.reply_target or ""),
             "channel_code": channel_code,
         },
@@ -1724,6 +1737,8 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
             or extract_handler_result_status(job) in {"failed", "fallback_required"}
         )
         influencer_write_success_count = sum(_sync_influencer_write_success_count(job) for job in matched_sync_jobs)
+        influencer_write_created_count = sum(_sync_influencer_write_op_count(job, ("append", "create", "created")) for job in matched_sync_jobs)
+        influencer_write_updated_count = sum(_sync_influencer_write_op_count(job, ("update", "updated")) for job in matched_sync_jobs)
         fact_persist_success_count = sum(_sync_step_success_count(job, "fact_upsert") for job in matched_sync_jobs)
         fact_persist_failed_count = sum(_sync_step_failed_count(job, "fact_upsert") for job in matched_sync_jobs)
         product_job_success = any(
@@ -1764,6 +1779,8 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
                 "fact_persist_success_count": fact_persist_success_count,
                 "fact_persist_failed_count": fact_persist_failed_count,
                 "influencer_write_success_count": influencer_write_success_count,
+                "influencer_write_created_count": influencer_write_created_count,
+                "influencer_write_updated_count": influencer_write_updated_count,
                 "final_status": final_status,
                 "warnings": warnings,
             }
@@ -1826,6 +1843,20 @@ def _sync_influencer_write_success_count(job: Mapping[str, Any]) -> int:
     if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES and write_result:
         return 1
     return 0
+
+
+def _sync_influencer_write_op_count(job: Mapping[str, Any], ops: tuple[str, ...]) -> int:
+    result_payload = extract_effective_result_payload(job)
+    write_result = dict(dict(result_payload.get("influencer_pool_write") or {}).get("write_result") or {})
+    records = [dict(item) for item in write_result.get("records", []) if isinstance(item, Mapping)]
+    allowed_ops = {str(op).strip() for op in ops if str(op).strip()}
+    count = 0
+    for record in records:
+        if str(record.get("status") or "").strip() != "success":
+            continue
+        if str(record.get("op") or "").strip() in allowed_ops:
+            count += 1
+    return count
 
 
 def _sync_step_success_count(job: Mapping[str, Any], step_code: str) -> int:
