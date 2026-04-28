@@ -248,6 +248,8 @@ def execute_write_records(
     target: FeishuTableTarget,
     records: list[Mapping[str, Any]],
     payload: Mapping[str, Any],
+    *,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     batch_size = _coerce_int(_mapping(payload.get("write_policy")).get("batch_size"), default=50, minimum=1, maximum=500)
     del batch_size
@@ -257,10 +259,22 @@ def execute_write_records(
     written_count = 0
     skipped_count = 0
     failed_count = 0
+    _emit_write_progress(progress_callback, "feishu_table_write.schema.start", "Loading Feishu field schema.")
     field_schema = _load_field_schema(client, target)
+    _emit_write_progress(
+        progress_callback,
+        "feishu_table_write.schema.done",
+        f"Loaded Feishu field schema fields={len(field_schema)}.",
+    )
 
-    for record in records:
+    total_records = len(records)
+    for index, record in enumerate(records, start=1):
         command = _normalize_write_record(record, payload)
+        _emit_write_progress(
+            progress_callback,
+            "feishu_table_write.record.prepare",
+            _write_progress_message("Preparing Feishu write record", command, index=index, total=total_records),
+        )
         command["fields"] = _prepare_fields_for_write(
             _mapping(command.get("fields")),
             field_schema,
@@ -272,6 +286,11 @@ def execute_write_records(
         if record_key and record_key in seen_keys:
             skipped_count += 1
             result_records.append(_write_result_record(command, status="skipped", message="duplicate_write_command"))
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.skipped",
+                _write_progress_message("Skipped duplicate Feishu write record", command, index=index, total=total_records),
+            )
             continue
         if record_key:
             seen_keys.add(record_key)
@@ -281,8 +300,18 @@ def execute_write_records(
             if not _text(command.get("record_id")):
                 skipped_count += 1
                 result_records.append(_write_result_record(command, status="skipped", message="missing_record_id"))
+                _emit_write_progress(
+                    progress_callback,
+                    "feishu_table_write.record.skipped",
+                    _write_progress_message("Skipped Feishu delete without record_id", command, index=index, total=total_records),
+                )
                 continue
             try:
+                _emit_write_progress(
+                    progress_callback,
+                    "feishu_table_write.record.write",
+                    _write_progress_message("Deleting Feishu record", command, index=index, total=total_records),
+                )
                 raw_result, target_record_id, effective_op = _execute_one_write(
                     client,
                     target,
@@ -301,6 +330,16 @@ def execute_write_records(
                         error_type=classified.error_type,
                     )
                 )
+                _emit_write_progress(
+                    progress_callback,
+                    "feishu_table_write.record.failed",
+                    _write_progress_message(
+                        f"Feishu delete failed error_code={classified.error_code}",
+                        command,
+                        index=index,
+                        total=total_records,
+                    ),
+                )
                 continue
             written_count += 1
             if target_record_id:
@@ -308,17 +347,32 @@ def execute_write_records(
             item = _write_result_record(command, status="success", record_id=target_record_id, op=effective_op)
             item["raw_result"] = _compact_raw_result(raw_result)
             result_records.append(item)
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.done",
+                _write_progress_message("Deleted Feishu record", command, index=index, total=total_records),
+            )
             continue
 
         fields = _mapping(command.get("fields"))
         if not fields:
             skipped_count += 1
             result_records.append(_write_result_record(command, status="skipped", message="empty_fields"))
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.skipped",
+                _write_progress_message("Skipped empty Feishu write fields", command, index=index, total=total_records),
+            )
             continue
 
         try:
             upsert_key = _mapping(command.get("upsert_key"))
             if op in {"insert_if_absent", "create_if_absent"} and upsert_key:
+                _emit_write_progress(
+                    progress_callback,
+                    "feishu_table_write.record.find_existing",
+                    _write_progress_message("Finding existing Feishu record", command, index=index, total=total_records),
+                )
                 existing_id = _find_existing_record_id(client, target, upsert_key)
                 if existing_id:
                     skipped_count += 1
@@ -331,7 +385,22 @@ def execute_write_records(
                             message="existing_record",
                         )
                     )
+                    _emit_write_progress(
+                        progress_callback,
+                        "feishu_table_write.record.skipped",
+                        _write_progress_message(
+                            f"Skipped existing Feishu record record_id={existing_id}",
+                            command,
+                            index=index,
+                            total=total_records,
+                        ),
+                    )
                     continue
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.write",
+                _write_progress_message("Writing Feishu record", command, index=index, total=total_records),
+            )
             raw_result, target_record_id, effective_op = _execute_one_write(
                 client,
                 target,
@@ -350,6 +419,16 @@ def execute_write_records(
                     error_type=classified.error_type,
                 )
             )
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.failed",
+                _write_progress_message(
+                    f"Feishu write failed error_code={classified.error_code}",
+                    command,
+                    index=index,
+                    total=total_records,
+                ),
+            )
             continue
 
         written_count += 1
@@ -360,6 +439,16 @@ def execute_write_records(
             item["raw_result_ref"] = _raw_result_ref(payload, target_record_id or command.get("business_entity_key"))
         item["raw_result"] = _compact_raw_result(raw_result)
         result_records.append(item)
+        _emit_write_progress(
+            progress_callback,
+            "feishu_table_write.record.done",
+            _write_progress_message(
+                f"Wrote Feishu record op={effective_op} record_id={target_record_id}",
+                command,
+                index=index,
+                total=total_records,
+            ),
+        )
 
     return {
         "written_count": written_count,
@@ -373,6 +462,19 @@ def execute_write_records(
         },
         "raw_response_ref": _raw_batch_ref(payload) if _mapping(payload.get("raw_capture_policy")).get("store_raw_response") else "",
     }
+
+
+def _emit_write_progress(callback: Any | None, progress_stage: str, message: str) -> None:
+    if callable(callback):
+        callback(progress_stage, message=message)
+
+
+def _write_progress_message(prefix: str, command: Mapping[str, Any], *, index: int, total: int) -> str:
+    fields = _mapping(command.get("fields"))
+    upsert_key = _mapping(command.get("upsert_key"))
+    product_id = _first_non_empty(fields.get("SKU-ID"), upsert_key.get("value"), command.get("business_entity_key"))
+    op = _text(command.get("op"))
+    return f"{prefix} {index}/{total} op={op} product_id={product_id}."
 
 
 def classify_feishu_exception(exc: Exception) -> FeishuCommonError:

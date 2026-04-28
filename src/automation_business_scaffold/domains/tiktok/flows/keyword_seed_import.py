@@ -36,7 +36,21 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
         payload=search_request,
         step_code="fastmoss_product_search",
     )
+    _emit_progress(
+        context,
+        "keyword_seed_import.fastmoss_search.start",
+        message=f"Searching FastMoss keyword={first_non_empty(search_request.get('search_query'), search_request.get('keyword'))}.",
+    )
     search_result = fastmoss_product_search_handler(search_context)
+    search_payload = dict(search_result.result)
+    _emit_progress(
+        context,
+        "keyword_seed_import.fastmoss_search.done",
+        message=(
+            f"FastMoss search status={search_result.status} "
+            f"candidates={len(search_payload.get('candidates') or [])}."
+        ),
+    )
     if _requires_fastmoss_security_browser_fallback(search_result):
         fallback_payload = _fastmoss_security_fallback_payload(
             context,
@@ -77,12 +91,16 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
             result={"search_result": search_result.result},
         )
 
-    search_payload = dict(search_result.result)
     candidates = [
         _normalize_candidate(item, search_query=str(search_request.get("search_query") or search_request.get("keyword") or ""))
         for item in search_payload.get("candidates", [])
         if isinstance(item, Mapping)
     ]
+    _emit_progress(
+        context,
+        "keyword_seed_import.seed_write.prepare",
+        message=f"Preparing Feishu seed writes candidates={len(candidates)}.",
+    )
 
     seed_contexts: list[dict[str, Any]] = []
     seed_write_records: list[dict[str, Any]] = []
@@ -92,6 +110,7 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
     failed_count = 0
     write_pacer = RequestPacer(resolve_api_request_pacer_config(payload, provider="feishu"))
 
+    total_candidates = len(candidates)
     for index, candidate in enumerate(candidates, start=1):
         write_payload = _write_payload_for_candidate(payload, seed_write, candidate)
         seed_write_records.extend([dict(item) for item in write_payload.get("records", []) if isinstance(item, Mapping)])
@@ -103,6 +122,12 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
             handler_code="feishu_table_write",
             payload=write_payload,
             step_code=f"feishu_seed_write.{index}",
+        )
+        product_id = first_non_empty(candidate.get("product_id"), candidate.get("candidate_key"))
+        _emit_progress(
+            context,
+            "keyword_seed_import.seed_write.start",
+            message=f"Writing Feishu seed {index}/{total_candidates} product_id={product_id}.",
         )
         write_pacer.wait_before_request("feishu:seed_write")
         try:
@@ -157,6 +182,11 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
                 "target_record_ids": target_record_ids,
             }
         )
+        _emit_progress(
+            context,
+            "keyword_seed_import.seed_write.done",
+            message=f"Feishu seed {index}/{total_candidates} product_id={product_id} status={record_status}.",
+        )
 
     result = {
         "search_parameters": search_request,
@@ -192,6 +222,14 @@ def run_keyword_seed_import_flow(context: HandlerContext) -> HandlerResult:
         "skipped_count": skipped_count,
         "failed_count": failed_count,
     }
+    _emit_progress(
+        context,
+        "keyword_seed_import.done",
+        message=(
+            f"Keyword seed import done candidates={len(candidates)} "
+            f"written={written_count} skipped={skipped_count} failed={failed_count}."
+        ),
+    )
     if failed_count and (written_count or skipped_count):
         return partial_success_result(context, summary=summary, result=result)
     if failed_count:
@@ -355,6 +393,18 @@ def _child_context(context: HandlerContext, *, handler_code: str, payload: Mappi
         max_attempts=context.max_attempts,
         metadata=dict(context.metadata),
     )
+
+
+def _emit_progress(
+    context: HandlerContext,
+    progress_stage: str,
+    *,
+    message: str = "",
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    callback = context.metadata.get("progress_callback")
+    if callable(callback):
+        callback(progress_stage, message=message, details=dict(details or {}))
 
 
 __all__ = ["run_keyword_seed_import_flow"]

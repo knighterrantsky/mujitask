@@ -252,9 +252,11 @@ Feishu 账号配置按以下优先级解析:
 
 ### 3.8 `fastmoss_session_cookie_cache`
 
-FastMoss 登录态运行缓存。它是可再生缓存，不属于事实库。该缓存可由 API 登录刷新流程写入，也可由 FastMoss browser security resolve 流程在真实浏览器完成风控解除后刷新；例如 `fastmoss_security_browser_resolve` 成功验证原始 `/api/goods/V2/search` 不再返回 `MSG_SAFE_0001` 后，应将浏览器导出的 FastMoss cookies 写入本表。
+FastMoss 登录态运行缓存。它是可再生缓存，不属于事实库。该缓存可由 API 登录刷新流程写入，也可由 FastMoss browser security resolve 流程在真实浏览器完成风控解除后刷新；例如 `fastmoss_security_browser_resolve` 成功验证原始 FastMoss API 请求不再返回 `MSG_SAFE_0001` 后，应将浏览器导出的 FastMoss cookies 写入本表。原始请求可以是搜索 `/api/goods/V2/search`，也可以是商品详情 `/api/goods/v3/base`、达人、店铺或视频接口。
 
 Runtime DB 只记录 cookie cache 元数据审计，不在 summary/log 输出 cookie value。可出现在 result、summary、日志中的字段只限于 `cookie_count`、`has_fd_tk`、`fd_tk_digest`、`expires_at`、`updated_at`、`verified_path` 等脱敏信息；完整 cookie value 只能保存在 `cookies_json`，并按运行缓存处理。
+
+FastMoss session/cookie 恢复是 `infrastructure/fastmoss` 的平台策略，不属于 `product_search`、`product_fetch`、`creator_fetch`、`shop_fetch`、`video_fetch` 等业务 handler。缓存复用必须同时检查 `expires_at` 和 `last_auth_failed_at`；`last_auth_failed_at` 已标记的 cookie 不得继续加载复用。任意 FastMoss API 遇到明确 auth 失效时，平台层应在账号级 lock 内刷新登录并保存新 cookie，保存成功后清空 `last_auth_failed_at`。如果刷新后原请求仍 auth 失败，应归类为 `fastmoss_session_conflict_or_external_login`，表示可能存在单点登录或外部登录冲突。
 
 | 字段 | 说明 |
 | --- | --- |

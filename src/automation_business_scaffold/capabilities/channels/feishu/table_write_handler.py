@@ -33,8 +33,15 @@ CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     try:
+        _emit_progress(context, "feishu_table_write.target.start", message="Resolving Feishu write target.")
         target = resolve_write_target(payload)
+        _emit_progress(
+            context,
+            "feishu_table_write.target.done",
+            message=f"Resolved Feishu write target table_ref={first_non_empty(payload.get('target_table_ref'), target.table_ref)}.",
+        )
         client = build_feishu_client(target, payload)
+        _emit_progress(context, "feishu_table_write.map.start", message="Mapping Feishu write records.")
         records = map_write_records(payload)
         if not records:
             return skipped_result(
@@ -58,10 +65,21 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
                 },
                 warnings=("No Feishu write records were produced.",),
             )
+        _emit_progress(context, "feishu_table_write.map.done", message=f"Mapped Feishu write records count={len(records)}.")
         write_policy = coerce_mapping(payload.get("write_policy"))
         if coerce_bool(write_policy.get("validate_schema")) or coerce_bool(payload.get("validate_schema")):
+            _emit_progress(context, "feishu_table_write.validate_schema.start", message="Validating Feishu write schema.")
             validate_write_schema(client, target, records)
-        write_result = execute_write_records(client, target, records, payload)
+            _emit_progress(context, "feishu_table_write.validate_schema.done", message="Validated Feishu write schema.")
+        _emit_progress(context, "feishu_table_write.execute.start", message=f"Executing Feishu write records count={len(records)}.")
+        write_result = execute_write_records(
+            client,
+            target,
+            records,
+            payload,
+            progress_callback=context.metadata.get("progress_callback"),
+        )
+        _emit_progress(context, "feishu_table_write.execute.done", message="Executed Feishu write records.")
     except Exception as exc:  # pragma: no cover - defensive boundary uses classified payloads in tests
         return _feishu_failed_result(context, exc, table_ref=payload.get("target_table_ref"))
 
@@ -129,6 +147,12 @@ def _error_from_failed_write_records(write_result: dict[str, Any]):
         retryable=retryable,
         details={"failed_count": int(write_result.get("failed_count") or 0), "failed_records": failed_records[:3]},
     )
+
+
+def _emit_progress(context: HandlerContext, progress_stage: str, *, message: str = "") -> None:
+    callback = context.metadata.get("progress_callback")
+    if callable(callback):
+        callback(progress_stage, message=message)
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "feishu_table_write_handler"]

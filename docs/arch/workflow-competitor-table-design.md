@@ -229,7 +229,7 @@ flowchart TD
 | Job | item_code / job_code | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
 | 关键词种子入库 | `keyword_seed_import` | `api_worker` | `keyword_seed_import` | `keyword_search_parameter_mapper` -> `fastmoss_product_search` -> candidate iteration -> `feishu_table_write` + `competitor_seed_projection_mapper` |
-| FastMoss 搜索风控解除 | `fastmoss_security_browser_resolve` | `browser_worker` | `fastmoss_security_browser_resolve` | 打开 FastMoss 搜索页，围绕原始 `/api/goods/V2/search` 请求复现风控、解滑块、二次确认、保存 cookie cache |
+| FastMoss API 风控解除 | `fastmoss_security_browser_resolve` | `browser_worker` | `fastmoss_security_browser_resolve` | 打开与原始失败 FastMoss API 对应的页面，围绕 `verification_request` 复现风控、解滑块、二次确认、保存 cookie cache，并验证原始 API 不再返回 `MSG_SAFE_0001` |
 | 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | 与竞品表刷新相同的行级 pipeline |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由行级 pipeline 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
@@ -245,13 +245,38 @@ flowchart TD
 
 `fastmoss_product_search` 的原始响应只作为排障证据保存，不直接进入竞品表 mapper。search 结果已经是 normalized candidates，因此本 workflow 不再单独定义 search result mapper；业务 job 只按返回顺序逐条调用种子写入。种子写入的已存在判断沿用 `competitor_seed_projection_mapper` 输出的 `upsert_key`: 优先使用 `SKU-ID` / `product_id`，缺少 product_id 时才按标准化 `产品链接` 兜底。
 
-`max_candidates` 默认值为 `20`。当调用方传入 `max_candidates=0` 时，`fastmoss_product_search` 不按候选数截断，只在分页、FastMoss total、空页、无新商品或 `fastmoss_search_max_pages` 等停止条件触发时结束。真实翻页请求之间默认间隔 1 秒，避免连续请求触发 FastMoss 风控。
+`max_candidates` 默认值为 `20`。当调用方传入 `max_candidates=0` 时，`fastmoss_product_search` 不按候选数截断，只在分页、FastMoss total、空页、无新商品、销量阈值或 `fastmoss_search_max_pages` 等停止条件触发时结束。真实翻页请求之间默认间隔 1 秒，避免连续请求触发 FastMoss 风控。
+
+FastMoss API HTTP session 默认不继承系统代理配置，避免生产 daemon 因 macOS/system proxy 或本机调试代理被动走 `127.0.0.1` 代理。只有调用方显式设置 `fastmoss_trust_env=true` 或 `fastmoss_use_system_proxy=true` 时，FastMoss API 才允许读取环境/系统代理；browser worker 自身仍按 browser profile 的网络配置执行。
+
+关键词搜索默认使用 FastMoss `order=2,2`，按“近 7 天销量倒序”处理。当请求带有 `output_conditions.business_conditions.min_day7_sold_count` 时，live 翻页必须按整页判断是否继续：如果当前页所有可解析商品的 `day7_sold_count` 最大值低于该阈值，handler 将停止继续请求后续页，并返回 `pagination.stop_reason=below_min_day7_sold_count`。该规则只在搜索排序明确为 7 日销量倒序时启用，避免非销量排序下提前截断造成漏采。
 
 FastMoss 搜索接口返回 `MSG_SAFE_0001` 时，`fastmoss_product_search` 必须先执行一次现有登录态刷新策略: 清理 FastMoss cookies、重新登录、`ensure_logged_in()`，并重试原始 `/api/goods/V2/search` 请求。如果重试后仍返回 `MSG_SAFE_0001`，`keyword_seed_import` 不应把整个 workflow 直接终止为普通失败，而应返回 `fallback_required`，并保留原始失败请求上下文: method/path、keyword、region、page、pagesize、order、filters、referer、response_code、`data.id` 和 `ext.is_login`。
 
-`fastmoss_security_browser_fallback` 只能围绕原始失败的 FastMoss 搜索请求解除风控。browser worker 必须打开对应 FastMoss 搜索页，在同一登录态下触发同等 `/api/goods/V2/search` 请求；若出现滑块，使用 framework captcha 能力处理，滑块消失后等待 2 秒并再次确认风控容器仍然消失。成功判据是浏览器中原始搜索接口不再返回 `MSG_SAFE_0001`，商品详情页不能作为搜索风控解除成功判据。商品详情页最多用于登录态 warm-up，不能作为本 stage 的验收条件。
+`fastmoss_security_browser_fallback` 是 FastMoss provider 级风控解除 stage。搜索入库场景中，它只能围绕原始失败的 FastMoss 搜索请求解除风控。browser worker 必须打开对应 FastMoss 搜索页，在同一登录态下触发同等 `/api/goods/V2/search` 请求；若出现滑块，使用 framework v0.3.8 `SliderCaptchaResolver` 处理，滑块消失后等待 2 秒并再次确认风控容器仍然消失。成功判据是浏览器中原始搜索接口不再返回 `MSG_SAFE_0001`，商品详情页不能作为搜索风控解除成功判据。商品详情页最多用于登录态 warm-up，不能作为搜索 stage 的验收条件。
 
-FastMoss browser fallback 的持久化对象是 FastMoss cookies，不是 API token。browser handler 成功后只把 FastMoss cookies 写入 `fastmoss_session_cookie_cache`；summary/log 只允许记录 `cookie_count`、`has_fd_tk`、`fd_tk_digest`、`verified_path` 等脱敏元数据，不得输出 cookie value。fallback 成功后，workflow 重新派发 `keyword_seed_import`，使用新的 dedupe suffix，例如 `after-fastmoss-security-browser-fallback`，再由 API handler 加载 cookie cache 并重新请求原始搜索接口。该 FastMoss 搜索风控 fallback 最多执行一次；再次失败时终态错误为 `fastmoss_security_verification_required`。
+同一能力也服务搜索后的详情补齐和其它 FastMoss provider API。`fastmoss_product_fetch`、`fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 遇到 `MSG_SAFE_0001` 时，API handler 必须返回 `fallback_required` 和脱敏 `verification_request`，其中包含原始失败的 FastMoss API 请求 method/path/params/referer/region/stage，例如商品详情 `/api/goods/v3/base`。workflow 或行级主 job 再派发 `fastmoss_security_browser_resolve`，browser handler 只验证该原始失败请求不再返回 `MSG_SAFE_0001`，成功后持久化 FastMoss cookies 并由原调用方重试原 handler 一次。
+
+FastMoss 与 TikTok 商品页的验证码逻辑保持独立。TikTok browser fallback 使用 TikTok 商品页 selector 和商品页继续采集判据；FastMoss browser fallback 使用 FastMoss/Tencent selector profile，并且只验证原始 `/api/goods/V2/search`。两者可以共用 framework 的 audited slider resolver，但不能共用业务 handler、成功判据或 cookie/token 持久化策略。
+
+安全验证码处理策略必须和业务触发条件对齐:
+
+- 验证码等待只在已识别风控信号后发生。正常 FastMoss 搜索、正常 TikTok request、正常 TikTok 商品页 browser 采集不得进入滑块等待，也不得预先等待验证码元素。
+- TikTok 商品页只有在 request-first 返回明确风控/验证码/访问受限信号，或 browser 页面检测到 TikTok 商品页 security check popup 时，才进入 TikTok slider resolver。
+- FastMoss 只有在原始 FastMoss API 请求返回 `MSG_SAFE_0001`，且调用方决定进入 `fastmoss_security_browser_fallback` 时，才进入 FastMoss/Tencent slider resolver。搜索场景的原始请求是 `/api/goods/V2/search`；详情补齐场景可以是 `/api/goods/v3/base`，达人、店铺、视频场景使用各自原始失败 API。
+- `image_timeout_ms` 是元素出现的最大等待，不是固定 sleep；背景图、拼图块和手柄提前可用时必须立刻识别和拖动。
+- 滑动后最多轮询 5 秒验证结果；轮询中如果 popup 消失或成功 selector 出现，立即进入稳定性确认，不继续固定等待。
+- 弹窗消失后延迟 2 秒二次确认；二次确认时 popup 仍消失才允许把当前滑块 attempt 标记为成功。
+- 如果 TikTok 页面出现 `Unable to verify. Please try again.` 等失败态文本，或二次确认时弹层重新出现，本次 attempt 视为失败，应按 max attempts 和 refresh 策略进入下一次尝试。
+- TikTok 商品页默认 `simple_target=false`，沿用已通过 Roxy/TikTok 实测的 framework `SliderCaptchaResolver` match 行为；FastMoss 由 FastMoss/Tencent selector profile 和对应 provider config 单独决定。FastMoss/Tencent 默认背景取 CSS `background-image` 原图、拼图取元素截图、`simple_target=false`，距离按目标中心点减当前拼图中心点计算。
+- FastMoss/Tencent 失败重试前必须等待上一轮 loading/verifying 结束，刷新后必须等背景图、拼图块、手柄和起点 reset 都 ready 后再截图识别；不得在 spinner 画面或上一轮残留位置上进行 ddddocr 识别。默认拖动节奏为 36 steps、每步 0.012s，可通过 resolver config 覆盖。
+- 审计必须记录 ddddocr 原始坐标、坐标换算、拖动距离、前后截图、目标位置截图、失败态文本、滑动后轮询结果和二次确认结果，便于区分识别错误、距离计算错误和鼠标执行异常。目标位置截图 artifact 名称为 `target_position_screenshot`，必须在鼠标移动到计算终点且释放之前捕获。
+
+FastMoss browser fallback 的持久化对象是 FastMoss cookies，不是 API token。browser handler 成功后只把 FastMoss cookies 写入 `fastmoss_session_cookie_cache`；summary/log 只允许记录 `cookie_count`、`has_fd_tk`、`fd_tk_digest`、`verified_path` 等脱敏元数据，不得输出 cookie value。搜索 fallback 成功后，workflow 重新派发 `keyword_seed_import`，使用新的 dedupe suffix，例如 `after-fastmoss-security-browser-fallback`，再由 API handler 加载 cookie cache 并重新请求原始搜索接口。详情补齐 fallback 成功后，行级主 job 只重试原 FastMoss API handler 一次，例如 `fastmoss_product_fetch`。同一原始 FastMoss API 请求的 fallback 最多执行一次；再次失败时终态错误为 `fastmoss_security_verification_required`。
+
+FastMoss session/cookie 恢复由 `infrastructure/fastmoss` 统一处理。业务 workflow 不判断 cookie 是否失效，也不直接保存 cookie value。平台层加载 cookie cache 时必须检查 `expires_at` 和 `last_auth_failed_at`；明确 auth 失效时在账号级 lock 内登录刷新并持久化新 cookie。若刷新后原请求仍 auth 失败，终态错误为 `fastmoss_session_conflict_or_external_login`，用于提示单点登录或外部登录冲突；该错误不进入 browser fallback。
+
+TikTok 商品页 browser fallback 和 FastMoss browser fallback 的安全验证滑块都不在 workflow 内手写识别逻辑。TikTok 商品页通过 framework v0.3.8 `SliderCaptchaResolver` 暴露 selector、`DdddOcrCaptchaProvider` 参数、拖动修正参数和审计 artifact；FastMoss/Tencent 通过独立 FastMoss resolver 暴露同样的 provider config、拖动修正参数和审计 artifact。若默认 ddddocr 模型不足，可用 `dddd_trainer` 训练导出的 ONNX/charset 作为 provider config 注入。运行结果必须带 `slider_captcha_resolution` / `slider_resolution` 和 `slider_captcha_audit_artifact_refs`，让后续能区分“识别坐标错误”“CSS 缩放/距离计算错误”和“鼠标拖动执行异常”。
 
 ### 4.3 进程间调度时序图
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
@@ -36,6 +35,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossAuthError,
     FastMossHTTPError,
     FastMossHTTPSession,
+)
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
+    attach_fastmoss_cookie_cache_if_configured,
+    fastmoss_security_fallback_required_result,
+    fastmoss_session_conflict_failed_result,
+    fastmoss_settings_from_payload,
+    is_fastmoss_security_verification_error,
+    is_fastmoss_session_conflict_error,
 )
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import Mapping
@@ -102,6 +109,22 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
             summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
         )
     except FastMossHTTPError as exc:
+        if is_fastmoss_session_conflict_error(exc):
+            return fastmoss_session_conflict_failed_result(
+                context,
+                exc=exc,
+                operation="fastmoss_product_fetch",
+                summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
+            )
+        if is_fastmoss_security_verification_error(exc):
+            return fastmoss_security_fallback_required_result(
+                context,
+                exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=_resolve_fastmoss_product_settings(payload),
+                operation="fastmoss_product_fetch",
+                entity_identity={"product_identity": identity},
+            )
         error = build_error(
             error_type="transport_failure",
             error_code="fastmoss_http_failure",
@@ -169,7 +192,10 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
             return candidate
 
     fastmoss_settings = _resolve_fastmoss_product_settings(payload)
-    live_fetch = coerce_bool(fastmoss_settings.get("live_fetch"), default=bool(product_id and fastmoss_settings))
+    live_fetch = coerce_bool(
+        fastmoss_settings.get("live_fetch"),
+        default=bool(product_id and fastmoss_settings.get("_has_live_config")),
+    )
     if not live_fetch or not product_id:
         return {}
 
@@ -180,8 +206,22 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
         default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(
+            first_non_empty(
+                fastmoss_settings.get("trust_env"),
+                fastmoss_settings.get("use_system_proxy"),
+                fastmoss_settings.get("fastmoss_trust_env"),
+                fastmoss_settings.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
     )
     with session:
+        attach_fastmoss_cookie_cache_if_configured(
+            session,
+            settings=fastmoss_settings,
+            default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
+        )
         cookies = fastmoss_settings.get("browser_cookies")
         if isinstance(cookies, list):
             session.replace_browser_cookies(cookies)
@@ -213,67 +253,23 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
 
 
 def _resolve_fastmoss_product_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    settings = coerce_mapping(payload.get("fastmoss"))
-    phone_env = first_non_empty(
-        settings.get("phone_env"),
-        settings.get("fastmoss_phone_env"),
-        payload.get("fastmoss_phone_env"),
+    settings = fastmoss_settings_from_payload(payload, defaults={"window_days": 28, "author_list": True})
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    settings["window_days"] = first_non_empty(
+        settings.get("window_days"),
+        payload.get("fastmoss_window_days"),
+        request_payload.get("fastmoss_window_days"),
+        28,
     )
-    password_env = first_non_empty(
-        settings.get("password_env"),
-        settings.get("fastmoss_password_env"),
-        payload.get("fastmoss_password_env"),
+    settings["author_list"] = first_non_empty(
+        settings.get("author_list"),
+        payload.get("fastmoss_author_list"),
+        request_payload.get("fastmoss_author_list"),
+        True,
     )
-    browser_cookies = settings.get("browser_cookies", payload.get("browser_cookies"))
-    return {
-        "phone": first_non_empty(
-            settings.get("phone"),
-            payload.get("fastmoss_phone"),
-            _env_value(phone_env),
-        ),
-        "password": first_non_empty(
-            settings.get("password"),
-            payload.get("fastmoss_password"),
-            _env_value(password_env),
-        ),
-        "phone_env": phone_env,
-        "password_env": password_env,
-        "base_url": first_non_empty(settings.get("base_url"), payload.get("fastmoss_base_url"), "https://www.fastmoss.com"),
-        "region": first_non_empty(settings.get("region"), payload.get("region"), "US"),
-        "timeout": settings.get("timeout", payload.get("fastmoss_timeout", 30.0)),
-        "browser_cookies": browser_cookies if isinstance(browser_cookies, list) else [],
-        "live_fetch": settings.get("live_fetch", payload.get("fastmoss_live_fetch", True)),
-        "ensure_logged_in": settings.get("ensure_logged_in", payload.get("ensure_fastmoss_logged_in", None)),
-        "window_days": settings.get("window_days", payload.get("fastmoss_window_days", 28)),
-        "author_list": settings.get("author_list", payload.get("fastmoss_author_list", True)),
-        "api_request_delay_min_seconds": first_non_empty(
-            settings.get("api_request_delay_min_seconds"),
-            settings.get("request_delay_min_seconds"),
-            payload.get("api_request_delay_min_seconds"),
-        ),
-        "api_request_delay_max_seconds": first_non_empty(
-            settings.get("api_request_delay_max_seconds"),
-            settings.get("request_delay_max_seconds"),
-            payload.get("api_request_delay_max_seconds"),
-        ),
-        "fastmoss_api_request_delay_min_seconds": first_non_empty(
-            settings.get("fastmoss_api_request_delay_min_seconds"),
-            settings.get("fastmoss_request_delay_min_seconds"),
-            payload.get("fastmoss_api_request_delay_min_seconds"),
-        ),
-        "fastmoss_api_request_delay_max_seconds": first_non_empty(
-            settings.get("fastmoss_api_request_delay_max_seconds"),
-            settings.get("fastmoss_request_delay_max_seconds"),
-            payload.get("fastmoss_api_request_delay_max_seconds"),
-        ),
-    }
-
-
-def _env_value(env_name: str) -> str:
-    name = coerce_str(env_name)
-    if not name:
-        return ""
-    return coerce_str(os.environ.get(name))
+    browser_cookies = settings.get("browser_cookies")
+    settings["browser_cookies"] = browser_cookies if isinstance(browser_cookies, list) else []
+    return settings
 
 
 def _product_fetch_includes_related_creators(payload: Mapping[str, Any], *, detail_level: str) -> bool:

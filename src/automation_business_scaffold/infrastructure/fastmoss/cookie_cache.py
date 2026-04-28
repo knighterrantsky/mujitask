@@ -6,7 +6,11 @@ import hashlib
 import time
 from typing import Any, Mapping
 
-from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
+from automation_business_scaffold.infrastructure.fastmoss.http_session import (
+    FastMossHTTPError,
+    FastMossHTTPSession,
+    FastMossSessionConflictError,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 DEFAULT_FASTMOSS_COOKIE_CACHE_TTL_SECONDS = 12 * 60 * 60
@@ -59,7 +63,7 @@ def attach_fastmoss_cookie_cache(
         return {"enabled": False, "reason": "missing_store"}
 
     context = build_fastmoss_cookie_cache_context(
-        base_url=fastmoss.base_url,
+        base_url=str(getattr(fastmoss, "base_url", "https://www.fastmoss.com") or "https://www.fastmoss.com"),
         account_key=account_key,
         region=region,
         namespace=namespace,
@@ -77,22 +81,29 @@ def attach_fastmoss_cookie_cache(
                 latest_digest = str((latest or {}).get("fd_tk_digest") or "")
                 if latest_digest and latest_digest != current_digest:
                     session.replace_browser_cookies((latest or {}).get("cookies", []))
-                    return
+                    try:
+                        _ensure_logged_in_without_refresh(session)
+                        return
+                    except FastMossHTTPError:
+                        store.mark_fastmoss_cookie_cache_auth_failed(cache_key=cache_key)
             store.mark_fastmoss_cookie_cache_auth_failed(cache_key=cache_key)
-            session.login()
-            save_fastmoss_cookie_cache_from_session(
-                session,
-                store=store,
-                context=context,
-                ttl_seconds=ttl_seconds,
-                last_login_at=time.time(),
-            )
+            try:
+                _login_refresh_session(session)
+                save_fastmoss_cookie_cache_from_session(
+                    session,
+                    store=store,
+                    context=context,
+                    ttl_seconds=ttl_seconds,
+                    last_login_at=time.time(),
+                )
+            except FastMossHTTPError as exc:
+                raise _session_conflict_error(exc, event=event) from exc
 
     fastmoss.set_auth_refresh_callback(_refresh_session)
 
     if force_refresh:
         with store.fastmoss_cookie_cache_lock(cache_key=cache_key):
-            fastmoss.login()
+            _login_refresh_session(fastmoss)
             saved = save_fastmoss_cookie_cache_from_session(
                 fastmoss,
                 store=store,
@@ -122,6 +133,71 @@ def attach_fastmoss_cookie_cache(
         "cache_key": cache_key,
         "status": "missing" if cached is None else "expired",
         **_redacted_cache_status(cached),
+    }
+
+
+def refresh_fastmoss_session_cookies(
+    fastmoss: FastMossHTTPSession,
+    *,
+    store: RuntimeStore | None,
+    account_key: str,
+    region: str,
+    namespace: str = "",
+    enabled: bool = True,
+    cookies: list[Mapping[str, Any]] | None = None,
+    prefer_login: bool = True,
+    ttl_seconds: float = DEFAULT_FASTMOSS_COOKIE_CACHE_TTL_SECONDS,
+    reason: str = "manual_refresh",
+) -> dict[str, Any]:
+    """Refresh FastMoss session material and save the resulting cookie cache.
+
+    This is the provider-level recovery hook used when a request needs fresh
+    session material outside the normal auth callback path, for example after
+    FastMoss returns a security verification response.
+    """
+
+    if not enabled:
+        return {"enabled": False, "reason": "disabled"}
+
+    context = build_fastmoss_cookie_cache_context(
+        base_url=str(getattr(fastmoss, "base_url", "https://www.fastmoss.com") or "https://www.fastmoss.com"),
+        account_key=account_key,
+        region=region,
+        namespace=namespace,
+    )
+    if not context.get("enabled"):
+        return context
+
+    cache_key = str(context["cache_key"])
+    if store is None:
+        _refresh_session_without_cache(fastmoss, cookies=cookies or [], prefer_login=prefer_login)
+        return {
+            "enabled": False,
+            "cache_key": cache_key,
+            "status": "refreshed_without_cache",
+            "reason": reason,
+            **fastmoss.cookie_snapshot(),
+        }
+
+    with store.fastmoss_cookie_cache_lock(cache_key=cache_key):
+        store.mark_fastmoss_cookie_cache_auth_failed(cache_key=cache_key)
+        try:
+            _refresh_session_without_cache(fastmoss, cookies=cookies or [], prefer_login=prefer_login)
+        except FastMossHTTPError as exc:
+            raise _session_conflict_error(exc, event={"stage": reason}) from exc
+        saved = save_fastmoss_cookie_cache_from_session(
+            fastmoss,
+            store=store,
+            context=context,
+            ttl_seconds=ttl_seconds,
+            last_login_at=time.time() if prefer_login else None,
+        )
+    return {
+        "enabled": True,
+        "cache_key": cache_key,
+        "status": "refreshed",
+        "reason": reason,
+        **_redacted_cache_status(saved),
     }
 
 
@@ -173,8 +249,63 @@ def _record_can_be_reused(record: Mapping[str, Any] | None) -> bool:
     cookies = record.get("cookies")
     if not isinstance(cookies, list) or not cookies:
         return False
+    if float(record.get("last_auth_failed_at") or 0.0) > 0:
+        return False
     expires_at = float(record.get("expires_at") or 0.0)
     return expires_at <= 0 or expires_at > time.time()
+
+
+def _refresh_session_without_cache(
+    session: FastMossHTTPSession,
+    *,
+    cookies: list[Mapping[str, Any]],
+    prefer_login: bool,
+) -> None:
+    if prefer_login and _session_has_credentials(session):
+        _login_refresh_session(session)
+        return
+    if cookies:
+        session.replace_browser_cookies(cookies)
+        _ensure_logged_in_without_refresh(session)
+        return
+    _login_refresh_session(session)
+
+
+def _login_refresh_session(session: FastMossHTTPSession) -> None:
+    session.clear_cookies_for_domain("fastmoss.com")
+    session.login()
+    _ensure_logged_in_without_refresh(session)
+
+
+def _ensure_logged_in_without_refresh(session: FastMossHTTPSession) -> dict[str, Any]:
+    try:
+        return session.ensure_logged_in(relogin_on_auth_fail=False)
+    except TypeError:
+        return session.ensure_logged_in()
+
+
+def _session_has_credentials(session: FastMossHTTPSession) -> bool:
+    has_credentials = getattr(session, "has_credentials", None)
+    if callable(has_credentials):
+        return bool(has_credentials())
+    return True
+
+
+def _session_conflict_error(exc: FastMossHTTPError, *, event: Mapping[str, Any]) -> FastMossSessionConflictError:
+    if isinstance(exc, FastMossSessionConflictError):
+        return exc
+    return FastMossSessionConflictError(
+        "FastMoss session refresh did not restore authentication; the account may have been logged in elsewhere.",
+        status_code=exc.status_code,
+        response_code=exc.response_code,
+        payload=exc.payload,
+        stage=str(event.get("stage") or exc.stage or "auth.refresh"),
+        method=str(event.get("method") or exc.method or ""),
+        path=str(event.get("path") or exc.path or ""),
+        params=exc.params,
+        referer=exc.referer,
+        region=exc.region,
+    )
 
 
 def _resolve_expires_at(cookies: list[dict[str, Any]], *, ttl_seconds: float) -> float:

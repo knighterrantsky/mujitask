@@ -47,6 +47,7 @@ DEFAULT_FEISHU_FIELD_MAPPING = {
 }
 DEFAULT_IMAGE_DOWNLOAD_DIR = "runtime/downloads/tiktok_product_images"
 DEFAULT_PAGE_SCREENSHOT_DIR = "runtime/downloads/tiktok_product_page_screenshots"
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_AUDIT_DIR = "runtime/downloads/tiktok_slider_captcha_audit"
 DEFAULT_HOLIDAY_OPTIONS = ("情人节", "复活节", "毕业季", "万圣节", "圣诞节", "其他")
 HOLIDAY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "情人节": ("情人节", "valentine", "valentines", "valentine's"),
@@ -111,9 +112,19 @@ DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS = 280
 DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS = 520
 DEFAULT_TIKTOK_SLIDER_CAPTCHA_MAX_ATTEMPTS = 3
 DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS = 8000
-DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS = 1600
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS = 5000
 DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS = 2000
-DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS = 900
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS = 2500
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_IMAGE_TIMEOUT_MS = 8000
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEPS = 35
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEP_DELAY_SECONDS = 0.03
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_SIMPLE_TARGET = False
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_POLL_MS = 250
+TIKTOK_SLIDER_CAPTCHA_FAILURE_TEXTS = (
+    "Unable to verify. Please try again.",
+    "Unable to verify",
+    "Please try again",
+)
 TIKTOK_LOGIN_PROMO_KEYWORDS = (
     "welcome! ready for some savings",
     "exclusive discounts",
@@ -334,6 +345,10 @@ def fetch_tiktok_product_record_via_browser(
     capture_page_screenshot: bool = True,
     security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
     slider_captcha_appear_timeout_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS,
+    slider_captcha_audit_dir: str = DEFAULT_TIKTOK_SLIDER_CAPTCHA_AUDIT_DIR,
+    slider_captcha_provider_config: Mapping[str, Any] | None = None,
+    slider_captcha_resolver_config: Mapping[str, Any] | None = None,
+    slider_captcha_selectors: Mapping[str, str] | None = None,
     trace_id: str = "",
 ) -> TikTokProductRecord:
     _log_tiktok_fetch_timing(
@@ -349,6 +364,7 @@ def fetch_tiktok_product_record_via_browser(
         blocked_handling=_tiktok_blocked_handling(),
     ) as browser_page:
         page = browser_page.page
+        slider_resolutions: list[dict[str, Any]] = []
         _page_goto(page, product_url, timeout_ms=timeout_ms)
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
@@ -380,9 +396,15 @@ def fetch_tiktok_product_record_via_browser(
             slider_resolution = _try_resolve_tiktok_slider_security_check(
                 page,
                 product_url=product_url,
+                automation_page=browser_page,
                 appear_timeout_ms=slider_captcha_appear_timeout_ms,
+                audit_dir=slider_captcha_audit_dir,
+                provider_config=slider_captcha_provider_config,
+                resolver_config=slider_captcha_resolver_config,
+                selectors=slider_captcha_selectors,
                 trace_id=trace_id,
             )
+            slider_resolutions.append(slider_resolution)
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
                 phase="security_check_slider_resolution",
@@ -428,9 +450,15 @@ def fetch_tiktok_product_record_via_browser(
             slider_resolution = _try_resolve_tiktok_slider_security_check(
                 page,
                 product_url=product_url,
+                automation_page=browser_page,
                 appear_timeout_ms=slider_captcha_appear_timeout_ms,
+                audit_dir=slider_captcha_audit_dir,
+                provider_config=slider_captcha_provider_config,
+                resolver_config=slider_captcha_resolver_config,
+                selectors=slider_captcha_selectors,
                 trace_id=trace_id,
             )
+            slider_resolutions.append(slider_resolution)
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
                 phase="security_check_slider_resolution",
@@ -480,6 +508,10 @@ def fetch_tiktok_product_record_via_browser(
             dom_snapshot=dom_snapshot,
             source_url=product_url,
             resolved_url=resolved_url,
+        )
+        product = _attach_tiktok_slider_resolution(
+            product,
+            slider_resolutions,
         )
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
@@ -1430,10 +1462,15 @@ def _try_resolve_tiktok_slider_security_check(
     page: Any,
     *,
     product_url: str,
+    automation_page: Any | None = None,
     max_attempts: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_MAX_ATTEMPTS,
     appear_timeout_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS,
     settle_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS,
     confirm_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS,
+    audit_dir: str = DEFAULT_TIKTOK_SLIDER_CAPTCHA_AUDIT_DIR,
+    provider_config: Mapping[str, Any] | None = None,
+    resolver_config: Mapping[str, Any] | None = None,
+    selectors: Mapping[str, str] | None = None,
     trace_id: str = "",
 ) -> dict[str, Any]:
     effective_max_attempts = max(int(max_attempts), 0)
@@ -1443,6 +1480,21 @@ def _try_resolve_tiktok_slider_security_check(
     state = _wait_for_tiktok_slider_captcha_state(page, timeout_ms=appear_timeout_ms)
     if not state.get("visible"):
         return {"attempted": False, "resolved": False, "reason": "slider_not_visible", "attempts": []}
+
+    if automation_page is not None:
+        return _resolve_tiktok_slider_with_framework_captcha(
+            automation_page,
+            page=page,
+            product_url=product_url,
+            max_attempts=effective_max_attempts,
+            settle_ms=settle_ms,
+            confirm_ms=confirm_ms,
+            audit_dir=audit_dir,
+            provider_config=provider_config,
+            resolver_config=resolver_config,
+            selectors=selectors,
+            trace_id=trace_id,
+        )
 
     try:
         captcha_provider = _build_tiktok_slider_captcha_provider()
@@ -1536,17 +1588,22 @@ def _try_resolve_tiktok_slider_security_check(
                 }
             )
             _drag_tiktok_slider_handle(page, handle_box=handle_box, drag_distance=drag_distance)
-            _safe_wait_for_timeout(page, max(int(settle_ms), 1))
-
-            state = _read_tiktok_slider_captcha_state(page)
+            state = _wait_for_tiktok_slider_post_drag_state(page, timeout_ms=max(int(settle_ms), 1))
+            attempt["post_drag_verify_wait_ms"] = max(int(settle_ms), 1)
+            attempt["post_drag_wait_elapsed_ms"] = state.get("wait_elapsed_ms")
             attempt["popup_still_visible"] = bool(state.get("visible"))
-            if not state.get("visible"):
-                _safe_wait_for_timeout(page, max(int(confirm_ms), 1))
-                confirmed_state = _read_tiktok_slider_captcha_state(page)
-                attempt["confirmation_wait_ms"] = max(int(confirm_ms), 1)
-                attempt["confirmation_popup_still_visible"] = bool(confirmed_state.get("visible"))
-                if confirmed_state.get("visible"):
+            if state.get("failure_text"):
+                attempt["failure_text"] = state.get("failure_text")
+                attempt["reason"] = "slider_verification_failed_text"
+                continue
+            if not state.get("visible") or state.get("success"):
+                confirmed_state = _confirm_tiktok_slider_cleared(page, confirm_ms=max(int(confirm_ms), 1))
+                attempt.update(confirmed_state)
+                if confirmed_state.get("confirmation_popup_still_visible"):
                     attempt["reason"] = "slider_reappeared_after_confirmation_wait"
+                    continue
+                if confirmed_state.get("confirmation_failure_text"):
+                    attempt["reason"] = "slider_verification_failed_text"
                     continue
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
@@ -1598,6 +1655,324 @@ def _summarize_tiktok_slider_attempts(slider_resolution: Mapping[str, Any]) -> d
         "last_popup_still_visible": last_attempt.get("popup_still_visible", ""),
         "last_confirmation_popup_still_visible": last_attempt.get("confirmation_popup_still_visible", ""),
     }
+
+
+def _resolve_tiktok_slider_with_framework_captcha(
+    automation_page: Any,
+    *,
+    page: Any,
+    product_url: str,
+    max_attempts: int,
+    settle_ms: int,
+    confirm_ms: int,
+    audit_dir: str,
+    provider_config: Mapping[str, Any] | None,
+    resolver_config: Mapping[str, Any] | None,
+    selectors: Mapping[str, str] | None,
+    trace_id: str,
+) -> dict[str, Any]:
+    from automation_framework.captcha import (
+        DdddOcrCaptchaProvider,
+        SliderCaptchaResolveConfig,
+        SliderCaptchaResolver,
+        SliderCaptchaSelectors,
+    )
+
+    selector_payload = {
+        "popup": "#tts_web_captcha_container",
+        "background": "#captcha-verify-image",
+        "piece": ".captcha_verify_img_slide",
+        "handle": ".secsdk-captcha-drag-icon",
+        "refresh": ".secsdk_captcha_refresh",
+        **dict(selectors or {}),
+    }
+    resolver_overrides = dict(resolver_config or {})
+    post_drag_poll_ms = max(int(resolver_overrides.pop("after_drag_wait_ms", settle_ms)), 1)
+    refresh_wait_ms = max(int(resolver_overrides.pop("refresh_wait_ms", DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS)), 0)
+    image_timeout_ms = max(int(resolver_overrides.pop("image_timeout_ms", DEFAULT_TIKTOK_SLIDER_CAPTCHA_IMAGE_TIMEOUT_MS)), 1)
+    resolver_overrides.pop("success_timeout_ms", None)
+    resolver_overrides.pop("max_attempts", None)
+    config_payload = {
+        "max_attempts": 1,
+        "image_timeout_ms": image_timeout_ms,
+        "refresh_wait_ms": refresh_wait_ms,
+        "after_drag_wait_ms": 0,
+        "success_timeout_ms": 0,
+        "drag_steps": DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEPS,
+        "drag_step_delay_seconds": DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEP_DELAY_SECONDS,
+        "simple_target": DEFAULT_TIKTOK_SLIDER_CAPTCHA_SIMPLE_TARGET,
+        "capture_page_screenshots": True,
+        "capture_image_artifacts": True,
+        **resolver_overrides,
+    }
+    provider = DdddOcrCaptchaProvider(**dict(provider_config or {}))
+    selector_model = SliderCaptchaSelectors(**selector_payload)
+    artifact_refs: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+    raw_attempts: list[dict[str, Any]] = []
+    audit_payload: dict[str, Any] = {
+        "config": dict(config_payload),
+        "selectors": selector_model.model_dump(mode="json"),
+        "success": False,
+        "attempts": raw_attempts,
+    }
+    reason = "slider_popup_still_visible"
+    resolved = False
+    confirmation_wait_ms = max(int(confirm_ms), 1)
+    for attempt_index in range(1, max(int(max_attempts), 1) + 1):
+        if attempt_index > 1:
+            _click_first_visible_locator(page, _selector_candidates(str(selector_payload.get("refresh") or ""), TIKTOK_SLIDER_CAPTCHA_REFRESH_SELECTORS))
+            if refresh_wait_ms:
+                _safe_wait_for_timeout(page, refresh_wait_ms)
+        resolver = SliderCaptchaResolver(
+            provider=provider,
+            selectors=selector_model,
+            config=SliderCaptchaResolveConfig(**config_payload),
+        )
+        resolution = resolver.resolve(automation_page)
+        current_audit = resolution.audit.model_dump(mode="json")
+        current_artifact_refs = _persist_tiktok_slider_artifacts_payload(
+            resolution.artifacts_payload,
+            audit_dir=audit_dir,
+            product_url=product_url,
+            trace_id=f"{trace_id or ''}-attempt-{attempt_index}".strip("-"),
+        )
+        artifact_refs.extend(current_artifact_refs)
+        current_raw_attempts = current_audit.get("attempts")
+        for raw_attempt in current_raw_attempts if isinstance(current_raw_attempts, list) else []:
+            if isinstance(raw_attempt, Mapping):
+                item = dict(raw_attempt)
+                item["attempt_index"] = attempt_index
+                raw_attempts.append(item)
+        current_records = _framework_slider_attempts_from_audit(
+            {"attempts": [raw_attempts[-1]]} if raw_attempts else current_audit,
+            post_drag_verify_wait_ms=post_drag_poll_ms,
+            confirmation_wait_ms=0,
+            confirmation_popup_still_visible=None,
+        )
+        record = current_records[-1] if current_records else {"attempt": attempt_index}
+        record["attempt"] = attempt_index
+        state = _wait_for_tiktok_slider_post_drag_state(page, timeout_ms=post_drag_poll_ms)
+        record["post_drag_verify_wait_ms"] = post_drag_poll_ms
+        record["post_drag_wait_elapsed_ms"] = state.get("wait_elapsed_ms")
+        record["popup_still_visible"] = bool(state.get("visible"))
+        if state.get("failure_text"):
+            record["failure_text"] = state.get("failure_text")
+            record["reason"] = "slider_verification_failed_text"
+            attempts.append(record)
+            reason = "slider_verification_failed_text"
+            continue
+        if not state.get("visible") or state.get("success"):
+            confirmed_state = _confirm_tiktok_slider_cleared(page, confirm_ms=confirmation_wait_ms)
+            record.update(confirmed_state)
+            if confirmed_state.get("confirmation_popup_still_visible"):
+                record["reason"] = "slider_reappeared_after_confirmation_wait"
+                attempts.append(record)
+                reason = "slider_reappeared_after_confirmation_wait"
+                continue
+            if confirmed_state.get("confirmation_failure_text"):
+                record["reason"] = "slider_verification_failed_text"
+                attempts.append(record)
+                reason = "slider_verification_failed_text"
+                continue
+            record["reason"] = "slider_cleared"
+            attempts.append(record)
+            resolved = True
+            reason = "slider_cleared"
+            break
+        record["reason"] = "slider_popup_still_visible"
+        attempts.append(record)
+        reason = "slider_popup_still_visible"
+    audit_payload["success"] = resolved
+    return {
+        "attempted": True,
+        "resolved": resolved,
+        "reason": reason,
+        "attempts": attempts,
+        "framework_resolver": "SliderCaptchaResolver",
+        "post_drag_verify_wait_ms": post_drag_poll_ms,
+        "confirmation_wait_ms": confirmation_wait_ms,
+        "drag_profile": {
+            "steps": int(config_payload["drag_steps"]),
+            "step_delay_seconds": float(config_payload["drag_step_delay_seconds"]),
+        },
+        "audit": audit_payload,
+        "artifact_refs": artifact_refs,
+    }
+
+
+def _framework_slider_attempts_from_audit(
+    audit_payload: Mapping[str, Any],
+    *,
+    post_drag_verify_wait_ms: int,
+    confirmation_wait_ms: int,
+    confirmation_popup_still_visible: bool | None,
+) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    raw_attempts = audit_payload.get("attempts")
+    for item in raw_attempts if isinstance(raw_attempts, list) else []:
+        attempt = item if isinstance(item, Mapping) else {}
+        mapping = attempt.get("mapping") if isinstance(attempt.get("mapping"), Mapping) else {}
+        slider_result = attempt.get("slider_result") if isinstance(attempt.get("slider_result"), Mapping) else {}
+        background = attempt.get("background") if isinstance(attempt.get("background"), Mapping) else {}
+        piece = attempt.get("piece") if isinstance(attempt.get("piece"), Mapping) else {}
+        record = {
+            "attempt": attempt.get("attempt_index"),
+            "reason": "" if attempt.get("success") else str(attempt.get("error") or "slider_attempt_failed"),
+            "match_method": "framework_slider_resolver",
+            "mode": attempt.get("mode"),
+            "simple_target": attempt.get("simple_target"),
+            "target_x": slider_result.get("target_x"),
+            "target_y": slider_result.get("target_y"),
+            "confidence": slider_result.get("confidence"),
+            "raw_result": slider_result.get("raw"),
+            "coordinate_mapping": mapping,
+            "drag_distance": mapping.get("drag_distance"),
+            "popup_still_visible": attempt.get("popup_still_visible"),
+            "selector_success": attempt.get("selector_success"),
+            "post_drag_verify_wait_ms": post_drag_verify_wait_ms,
+            "artifact_keys": {
+                "background": background.get("artifact_key"),
+                "piece": piece.get("artifact_key"),
+                "before_screenshot": attempt.get("before_screenshot_key"),
+                "after_screenshot": attempt.get("after_screenshot_key"),
+            },
+        }
+        if attempt.get("success") and confirmation_wait_ms:
+            record["confirmation_wait_ms"] = confirmation_wait_ms
+            record["confirmation_popup_still_visible"] = bool(confirmation_popup_still_visible)
+            if confirmation_popup_still_visible:
+                record["reason"] = "slider_reappeared_after_confirmation_wait"
+        attempts.append(record)
+    return attempts
+
+
+def _selector_candidates(primary: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = str(primary or "").strip()
+    if not normalized:
+        return fallback
+    return (normalized, *tuple(selector for selector in fallback if selector != normalized))
+
+
+def _wait_for_tiktok_slider_post_drag_state(
+    page: Any,
+    *,
+    timeout_ms: int,
+    poll_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_POLL_MS,
+) -> dict[str, Any]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    elapsed_ms = 0
+    last_state: dict[str, Any] = {}
+    while True:
+        state = _read_tiktok_slider_captcha_state(page)
+        failure_text = _read_tiktok_slider_failure_text(page)
+        last_state = {
+            **state,
+            "failure_text": failure_text,
+            "wait_elapsed_ms": elapsed_ms,
+        }
+        if failure_text or not state.get("visible") or state.get("success") or elapsed_ms >= effective_timeout_ms:
+            return last_state
+        wait_ms = min(effective_poll_ms, effective_timeout_ms - elapsed_ms)
+        if wait_ms <= 0:
+            return last_state
+        _safe_wait_for_timeout(page, wait_ms)
+        elapsed_ms += wait_ms
+
+
+def _confirm_tiktok_slider_cleared(page: Any, *, confirm_ms: int) -> dict[str, Any]:
+    wait_ms = max(int(confirm_ms), 1)
+    _safe_wait_for_timeout(page, wait_ms)
+    confirmed_state = _read_tiktok_slider_captcha_state(page)
+    failure_text = _read_tiktok_slider_failure_text(page)
+    return {
+        "confirmation_wait_ms": wait_ms,
+        "confirmation_popup_still_visible": bool(confirmed_state.get("visible")),
+        "confirmation_failure_text": failure_text,
+    }
+
+
+def _read_tiktok_slider_failure_text(page: Any) -> str:
+    for text in TIKTOK_SLIDER_CAPTCHA_FAILURE_TEXTS:
+        selector = f"text={text}"
+        try:
+            locator = page.locator(selector)
+            target = getattr(locator, "first", locator)
+            if _locator_is_visible(target, timeout_ms=250):
+                return text
+        except Exception:
+            continue
+    return ""
+
+
+def _persist_tiktok_slider_artifacts_payload(
+    artifacts_payload: Mapping[str, Any],
+    *,
+    audit_dir: str,
+    product_url: str,
+    trace_id: str,
+) -> list[dict[str, Any]]:
+    root = Path(audit_dir or DEFAULT_TIKTOK_SLIDER_CAPTCHA_AUDIT_DIR)
+    product_key = extract_tiktok_product_id(product_url) or "unknown-product"
+    run_key = re.sub(r"[^a-zA-Z0-9_.-]+", "-", trace_id or str(int(time.time() * 1000))).strip("-")
+    target_dir = root / product_key / run_key
+    target_dir.mkdir(parents=True, exist_ok=True)
+    refs: list[dict[str, Any]] = []
+
+    state_dump = artifacts_payload.get("state_dump")
+    if state_dump:
+        refs.append(_write_tiktok_slider_audit_file(target_dir / "slider_captcha_audit.json", state_dump))
+
+    extra = artifacts_payload.get("extra") if isinstance(artifacts_payload.get("extra"), Mapping) else {}
+    for key, value in extra.items():
+        safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(key)).strip("_") or "artifact"
+        if isinstance(value, bytes):
+            refs.append(_write_tiktok_slider_binary_file(target_dir / f"{safe_key}.bin", value, artifact_key=str(key)))
+        elif key == "slider_captcha_audit":
+            continue
+        elif isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+            refs.append(_write_tiktok_slider_audit_file(target_dir / f"{safe_key}.json", value, artifact_key=str(key)))
+    return refs
+
+
+def _write_tiktok_slider_audit_file(path: Path, value: Any, *, artifact_key: str = "slider_captcha_audit") -> dict[str, Any]:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "artifact_key": artifact_key,
+        "local_path": str(path),
+        "file_name": path.name,
+        "mime_type": "application/json",
+    }
+
+
+def _write_tiktok_slider_binary_file(path: Path, value: bytes, *, artifact_key: str) -> dict[str, Any]:
+    suffix = ".png" if value.startswith(b"\x89PNG") else ".jpg" if value.startswith(b"\xff\xd8") else ".bin"
+    final_path = path.with_suffix(suffix)
+    final_path.write_bytes(value)
+    return {
+        "artifact_key": artifact_key,
+        "local_path": str(final_path),
+        "file_name": final_path.name,
+        "mime_type": "image/png" if suffix == ".png" else "image/jpeg" if suffix == ".jpg" else "application/octet-stream",
+    }
+
+
+def _attach_tiktok_slider_resolution(
+    product: TikTokProductRecord,
+    slider_resolutions: list[dict[str, Any]],
+) -> TikTokProductRecord:
+    attempted = [item for item in slider_resolutions if item.get("attempted")]
+    if not attempted:
+        return product
+    latest = attempted[-1]
+    return replace(
+        product,
+        slider_captcha_resolution=latest,
+        slider_captcha_audit_artifact_refs=[
+            dict(item) for item in latest.get("artifact_refs", []) if isinstance(item, Mapping)
+        ],
+    )
 
 
 def _build_tiktok_slider_captcha_provider() -> Any:

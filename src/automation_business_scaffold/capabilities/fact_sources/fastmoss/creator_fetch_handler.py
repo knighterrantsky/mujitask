@@ -31,6 +31,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
+    attach_fastmoss_cookie_cache_if_configured,
+    fastmoss_security_fallback_required_result,
+    fastmoss_session_conflict_failed_result,
+    fastmoss_settings_from_payload,
+    is_fastmoss_security_verification_error,
+    is_fastmoss_session_conflict_error,
+)
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import (
     Mapping,
@@ -109,6 +117,22 @@ def fastmoss_creator_fetch_handler(context: HandlerContext) -> HandlerResult:
             summary={"detail_level": detail_level, "creator_key": _creator_business_key(creator_identity)},
         )
     except FastMossHTTPError as exc:
+        if is_fastmoss_session_conflict_error(exc):
+            return fastmoss_session_conflict_failed_result(
+                context,
+                exc=exc,
+                operation="fastmoss_creator_fetch",
+                summary={"detail_level": detail_level, "creator_key": _creator_business_key(creator_identity)},
+            )
+        if is_fastmoss_security_verification_error(exc):
+            return fastmoss_security_fallback_required_result(
+                context,
+                exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=fastmoss_settings_from_payload(payload),
+                operation="fastmoss_creator_fetch",
+                entity_identity={"creator_identity": creator_identity},
+            )
         error = build_error(
             error_type="transport_failure",
             error_code="fastmoss_http_failure",
@@ -239,10 +263,10 @@ def _resolve_fastmoss_creator_bundle(
     if inline_bundle:
         return inline_bundle
 
-    fastmoss_settings = coerce_mapping(payload.get("fastmoss"))
+    fastmoss_settings = fastmoss_settings_from_payload(payload)
     live_fetch = coerce_bool(
         fastmoss_settings.get("live_fetch"),
-        default=bool(fastmoss_settings and _creator_business_key(creator_identity)),
+        default=bool(fastmoss_settings.get("_has_live_config") and _creator_business_key(creator_identity)),
     )
     if not live_fetch:
         return {}
@@ -259,8 +283,22 @@ def _resolve_fastmoss_creator_bundle(
         ),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(
+            first_non_empty(
+                fastmoss_settings.get("trust_env"),
+                fastmoss_settings.get("use_system_proxy"),
+                fastmoss_settings.get("fastmoss_trust_env"),
+                fastmoss_settings.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
     )
     with session:
+        attach_fastmoss_cookie_cache_if_configured(
+            session,
+            settings=fastmoss_settings,
+            default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
+        )
         cookies = fastmoss_settings.get("browser_cookies")
         if isinstance(cookies, list):
             session.replace_browser_cookies(cookies)

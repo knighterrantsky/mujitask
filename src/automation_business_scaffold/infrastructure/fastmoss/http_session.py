@@ -64,6 +64,9 @@ class FastMossHTTPError(RuntimeError):
     stage: str = ""
     method: str = ""
     path: str = ""
+    params: dict[str, Any] | None = None
+    referer: str = ""
+    region: str = ""
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
@@ -76,12 +79,19 @@ class FastMossHTTPError(RuntimeError):
             "stage": self.stage,
             "method": self.method,
             "path": self.path,
+            "params": self.params or {},
+            "referer": self.referer,
+            "region": self.region,
             "payload": self.payload or {},
         }
 
 
 class FastMossAuthError(FastMossHTTPError):
     """Raised when FastMoss requires a fresh login."""
+
+
+class FastMossSessionConflictError(FastMossHTTPError):
+    """Raised when a refreshed FastMoss session is still rejected."""
 
 
 def _coerce_str(value: Any) -> str:
@@ -229,11 +239,13 @@ class FastMossHTTPSession:
         sleep_factory: Callable[[float], None] = time.sleep,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         auth_refresh_callback: Callable[["FastMossHTTPSession", dict[str, Any]], None] | None = None,
+        trust_env: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.user_agent = user_agent
         self.default_region = default_region
+        self.trust_env = bool(trust_env)
         self.request_delay_range = (
             resolve_api_request_delay_range(provider="fastmoss")
             if request_delay_range is None
@@ -249,6 +261,7 @@ class FastMossHTTPSession:
         self._auth_refresh_callback = auth_refresh_callback
         self._debug_context: dict[str, Any] = {}
         self.session = requests.Session()
+        self.session.trust_env = self.trust_env
 
     def __enter__(self) -> "FastMossHTTPSession":
         return self
@@ -408,7 +421,18 @@ class FastMossHTTPSession:
             )
         return payload
 
-    def ensure_logged_in(self, phone: str | None = None, password: str | None = None) -> dict[str, Any]:
+    def has_credentials(self) -> bool:
+        """Return True when the session has credentials for a login refresh."""
+
+        return self._has_credentials()
+
+    def ensure_logged_in(
+        self,
+        phone: str | None = None,
+        password: str | None = None,
+        *,
+        relogin_on_auth_fail: bool = True,
+    ) -> dict[str, Any]:
         """Verify login state, re-login once if FastMoss reports an expired session."""
 
         self._update_credentials(phone=phone, password=password)
@@ -418,7 +442,7 @@ class FastMossHTTPSession:
             referer=FASTMOSS_ACCOUNT_CENTER_REFERER,
             region=FASTMOSS_DEFAULT_LOGIN_REGION,
             retries=3,
-            relogin_on_auth_fail=True,
+            relogin_on_auth_fail=relogin_on_auth_fail,
             check_auth=True,
             stage="auth.user_info",
         )
@@ -512,6 +536,9 @@ class FastMossHTTPSession:
                         stage=stage,
                         method=method,
                         path=path,
+                        params=dict(signed_params),
+                        referer=referer or "",
+                        region=region or "",
                     ) from exc
                 time.sleep(2**attempt)
                 continue
@@ -524,6 +551,9 @@ class FastMossHTTPSession:
                         stage=stage,
                         method=method,
                         path=path,
+                        params=dict(signed_params),
+                        referer=referer or "",
+                        region=region or "",
                     )
                 time.sleep(2**attempt)
                 continue
@@ -581,14 +611,24 @@ class FastMossHTTPSession:
                         **self.cookie_snapshot(),
                     )
                     continue
-                raise FastMossAuthError(
-                    _coerce_str(payload.get("msg")) or "FastMoss login required",
+                error_class = FastMossSessionConflictError if login_retried else FastMossAuthError
+                message = (
+                    "FastMoss session refresh did not restore authentication; "
+                    "the account may have been logged in elsewhere."
+                    if login_retried
+                    else (_coerce_str(payload.get("msg")) or "FastMoss login required")
+                )
+                raise error_class(
+                    message,
                     status_code=response.status_code,
                     response_code=payload.get("code"),
                     payload=payload,
                     stage=stage,
                     method=method,
                     path=path,
+                    params=dict(signed_params),
+                    referer=referer or "",
+                    region=region or "",
                 )
 
             if not _is_success_code(payload):
@@ -600,6 +640,9 @@ class FastMossHTTPSession:
                     stage=stage,
                     method=method,
                     path=path,
+                    params=dict(signed_params),
+                    referer=referer or "",
+                    region=region or "",
                 )
 
             return payload
@@ -609,6 +652,9 @@ class FastMossHTTPSession:
             stage=stage,
             method=method,
             path=path,
+            params=dict(signed_params),
+            referer=referer or "",
+            region=region or "",
         )
 
     def get_product_base(self, product_id: str) -> dict[str, Any]:

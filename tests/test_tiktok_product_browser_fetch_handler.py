@@ -49,6 +49,26 @@ class _FakeProduct:
                     "spec_name": "Color: Blue",
                 }
             ],
+            "slider_captcha_resolution": {
+                "attempted": True,
+                "resolved": True,
+                "reason": "slider_cleared",
+                "attempts": [
+                    {
+                        "attempt": 1,
+                        "target_x": 150,
+                        "drag_distance": 85.0,
+                        "coordinate_mapping": {"drag_distance": 85.0},
+                    }
+                ],
+            },
+            "slider_captcha_audit_artifact_refs": [
+                {
+                    "artifact_key": "slider_attempt_1_background_image",
+                    "local_path": "/tmp/slider/background.png",
+                    "mime_type": "image/png",
+                }
+            ],
         }
 
 
@@ -87,6 +107,7 @@ def test_tiktok_product_browser_fetch_reuses_legacy_product_fetch(monkeypatch) -
 
     assert result.status == "success"
     assert captured["capture_page_screenshot"] is False
+    assert captured["slider_captcha_audit_dir"] == ""
     normalized = result.result["normalized_product_result"]
     assert normalized["product"]["title"] == "Candy Boxes"
     assert normalized["product"]["facts"]["rating_score"] == "4.8"
@@ -99,6 +120,55 @@ def test_tiktok_product_browser_fetch_reuses_legacy_product_fetch(monkeypatch) -
         "product_sku_image",
     ]
     assert normalized["media_assets"][0]["local_path"] == "/tmp/1730964478199763166-main.webp"
+    assert result.summary["slider_captcha_attempted"] is True
+    assert result.summary["slider_captcha_resolved"] is True
+    assert result.result["slider_captcha_resolution"]["attempts"][0]["coordinate_mapping"]["drag_distance"] == 85.0
+    assert result.result["slider_captcha_audit_artifact_refs"][0]["artifact_key"] == "slider_attempt_1_background_image"
+
+
+def test_tiktok_product_browser_fetch_passes_framework_slider_configuration(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch(product_url: str, **kwargs: Any) -> _FakeProduct:
+        captured["product_url"] = product_url
+        captured.update(kwargs)
+        return _FakeProduct()
+
+    monkeypatch.setattr(browser_handler, "fetch_tiktok_product_record_via_browser", fake_fetch)
+
+    result = browser_handler.tiktok_product_browser_fetch_handler(
+        _context(
+            {
+                "product_url": "https://www.tiktok.com/shop/pdp/1730964478199763166",
+                "slider_captcha_audit_dir": "/tmp/tiktok-slider-audit",
+                "slider_captcha_provider_config": {
+                    "import_onnx_path": "/models/slider.onnx",
+                    "charsets_path": "/models/charsets.json",
+                },
+                "slider_captcha_resolver_config": {
+                    "max_attempts": 2,
+                    "simple_target": True,
+                    "drag_offset_x": -3,
+                },
+                "slider_captcha_selectors": {
+                    "popup": "#tts_web_captcha_container",
+                    "background": "#captcha-verify-image",
+                    "piece": ".captcha_verify_img_slide",
+                    "handle": ".secsdk-captcha-drag-icon",
+                    "refresh": ".secsdk_captcha_refresh",
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert captured["slider_captcha_audit_dir"] == "/tmp/tiktok-slider-audit"
+    assert captured["slider_captcha_provider_config"]["import_onnx_path"] == "/models/slider.onnx"
+    assert captured["slider_captcha_provider_config"]["charsets_path"] == "/models/charsets.json"
+    assert captured["slider_captcha_resolver_config"]["max_attempts"] == 2
+    assert captured["slider_captcha_resolver_config"]["simple_target"] is True
+    assert captured["slider_captcha_resolver_config"]["drag_offset_x"] == -3
+    assert captured["slider_captcha_selectors"]["handle"] == ".secsdk-captcha-drag-icon"
 
 
 def test_tiktok_product_browser_fetch_returns_unavailable_as_terminal_result(monkeypatch) -> None:

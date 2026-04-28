@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 
+from automation_framework.captcha import SliderMatchResult
+
+from automation_business_scaffold.capabilities.browser import fastmoss_security_resolve_handler as fastmoss_security_module
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
 )
@@ -25,6 +31,20 @@ SEARCH_QUERY = "water bottle"
 PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 PRODUCT_ID = "123456789"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        + struct.pack(">II", width, height)
+        + b"\x08\x02\x00\x00\x00"
+        + b"fake"
+    )
+
+
+def _png_base64(width: int, height: int) -> str:
+    return base64.b64encode(_png_bytes(width, height)).decode("ascii")
 
 
 def _read_repo_text(relative_path: str) -> str:
@@ -51,10 +71,52 @@ def test_fastmoss_search_security_browser_fallback_design_contract_is_documented
         "商品详情页不能作为搜索风控解除成功判据",
         "cookies，不是 API token",
         "API worker 不直接驱动浏览器",
+        "原始失败的 FastMoss API 请求",
+        "/api/goods/v3/base",
+        "fastmoss_api_security_verification",
+        "verification_request",
+        "fastmoss_product_fetch",
+        "fastmoss_creator_fetch",
+        "fastmoss_shop_fetch",
+        "fastmoss_video_fetch",
+        "infrastructure/fastmoss",
+        "last_auth_failed_at",
+        "fastmoss_session_conflict_or_external_login",
+        "单点登录或外部登录冲突",
     )
 
     missing = [token for token in required_tokens if token not in combined]
     assert missing == [], "FastMoss browser fallback design contract is missing tokens:\n" + "\n".join(missing)
+
+
+def test_security_captcha_handling_strategy_is_documented() -> None:
+    combined = "\n".join(
+        [
+            _read_repo_text("docs/business/requirements/search-keyword-competitor-products.md"),
+            _read_repo_text("docs/arch/workflow-competitor-table-design.md"),
+            _read_repo_text("docs/arch/workflow-design-guidelines.md"),
+            _read_repo_text("docs/arch/handler-contract-design.md"),
+            _read_repo_text("contracts/workflow/search_keyword_competitor_products.yaml"),
+        ]
+    )
+
+    required_tokens = (
+        "验证码等待只在已识别风控信号后发生",
+        "正常商品页抓取不得进入滑块等待",
+        "正常 FastMoss 搜索、正常 TikTok request、正常 TikTok 商品页采集不得进入滑块等待",
+        "image_timeout_ms 是元素出现的最大等待，不是固定 sleep",
+        "滑动后最多轮询 5 秒验证结果",
+        "弹窗消失后延迟 2 秒二次确认",
+        "Unable to verify. Please try again.",
+        "TikTok 商品页默认 simple_target=false",
+        "FastMoss 与 TikTok 商品页验证码逻辑独立",
+        "审计必须记录 ddddocr 原始坐标、坐标换算、拖动距离、前后截图",
+        "目标位置截图",
+        "target_position_screenshot",
+    )
+
+    missing = [token for token in required_tokens if token not in combined]
+    assert missing == [], "security captcha handling strategy is missing tokens:\n" + "\n".join(missing)
 
 
 def test_fastmoss_security_browser_resolve_persists_cookie_cache_without_leaking_values(
@@ -114,6 +176,484 @@ def test_fastmoss_security_browser_resolve_persists_cookie_cache_without_leaking
     loaded = store.load_fastmoss_cookie_cache(cache_key=str(cache_context["cache_key"]))
     assert loaded is not None
     assert loaded["cookies"][0]["value"] == "browser-token"
+
+
+def test_fastmoss_security_browser_resolve_supports_non_search_original_request(
+    runtime_db_url: str,
+) -> None:
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "verification_request": {
+                    "method": "GET",
+                    "path": "/api/goods/v3/base",
+                    "params": {"product_id": "1732183420263764252"},
+                    "referer": "https://www.fastmoss.com/zh/e-commerce/detail/1732183420263764252",
+                    "region": "US",
+                    "stage": "product.base",
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "mock_fastmoss_security_browser_resolve": {
+                    "response_code": "200",
+                    "ext_is_login": "1",
+                    "cookies": [
+                        {
+                            "name": "fd_tk",
+                            "value": "browser-token",
+                            "domain": ".fastmoss.com",
+                            "path": "/",
+                            "secure": True,
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["verified_path"] == "/api/goods/v3/base"
+    assert result.result["verification"]["verified_path"] == "/api/goods/v3/base"
+    assert result.result["cookie_cache"]["verified_path"] == "/api/goods/v3/base"
+    assert "browser-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+
+def test_fastmoss_security_browser_resolve_preserves_audit_on_security_failure(
+    runtime_db_url: str,
+) -> None:
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "fallback_source_job_id": "seed-job-1",
+                "search_request": {
+                    "keyword": SEARCH_QUERY,
+                    "search_query": SEARCH_QUERY,
+                    "region": "US",
+                    "pagination": {"page": 1, "page_size": 10},
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "mock_fastmoss_security_browser_resolve": {
+                    "response_code": "MSG_SAFE_0001",
+                    "data_id": "299522",
+                    "ext_is_login": "1",
+                    "cookies": [
+                        {
+                            "name": "fd_tk",
+                            "value": "browser-token",
+                            "domain": ".fastmoss.com",
+                            "path": "/",
+                            "secure": True,
+                        }
+                    ],
+                    "slider_resolution": {
+                        "attempted": True,
+                        "resolved": False,
+                        "reason": "slider_popup_still_visible",
+                        "framework_resolver": "SliderCaptchaResolver",
+                        "artifact_refs": [
+                            {
+                                "artifact_key": "slider_captcha_audit",
+                                "local_path": "/tmp/slider_captcha_audit.json",
+                                "mime_type": "application/json",
+                            }
+                        ],
+                        "attempts": [
+                            {
+                                "attempt": 1,
+                                "match_method": "framework_slider_resolver",
+                                "target_x": 136,
+                                "target_y": 42,
+                                "raw_result": {"target": [136, 42, 190, 96]},
+                                "coordinate_mapping": {"scale_x": 0.5, "drag_offset_x": -2},
+                                "drag_distance": 84.5,
+                                "confidence": 0.88,
+                                "artifact_keys": {
+                                    "background": "attempt_1_background",
+                                    "piece": "attempt_1_piece",
+                                    "before_screenshot": "attempt_1_before",
+                                    "after_screenshot": "attempt_1_after",
+                                },
+                            }
+                        ],
+                    },
+                    "slider_captcha_audit_artifact_refs": [
+                        {
+                            "artifact_key": "slider_captcha_audit",
+                            "local_path": "/tmp/slider_captcha_audit.json",
+                            "mime_type": "application/json",
+                        }
+                    ],
+                    "browser_diagnostic_artifact_refs": [
+                        {
+                            "artifact_key": "after_slider_resolution_screenshot",
+                            "local_path": "/tmp/after_slider_resolution.png",
+                            "mime_type": "image/png",
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "fastmoss_security_verification_required"
+    assert result.summary["response_code"] == "MSG_SAFE_0001"
+    assert result.summary["slider_artifact_count"] == 1
+    assert result.summary["browser_diagnostic_artifact_count"] == 1
+    assert result.result["verification"]["data_id"] == "299522"
+    assert result.result["fallback_source_job_id"] == "seed-job-1"
+    assert result.result["browser_cookie_export"]["cookie_count"] == 1
+    assert result.result["browser_cookie_export"]["has_fd_tk"] is True
+    attempt = result.result["slider_resolution"]["attempts"][0]
+    assert attempt["target_x"] == 136
+    assert attempt["coordinate_mapping"]["drag_offset_x"] == -2
+    assert attempt["drag_distance"] == 84.5
+    assert attempt["artifact_keys"]["after_screenshot"] == "attempt_1_after"
+    assert result.result["slider_captcha_audit_artifact_refs"][0]["artifact_key"] == "slider_captcha_audit"
+    assert result.result["browser_diagnostic_artifact_refs"][0]["artifact_key"] == "after_slider_resolution_screenshot"
+    assert "browser-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+
+class _FakeFastMossSliderMouse:
+    def __init__(self, page: "_FakeFastMossSliderPage") -> None:
+        self.page = page
+        self.moves: list[tuple[float, float]] = []
+        self.down_count = 0
+        self.up_count = 0
+
+    def move(self, x: float, y: float) -> None:
+        self.moves.append((x, y))
+
+    def down(self) -> None:
+        self.down_count += 1
+
+    def up(self) -> None:
+        self.up_count += 1
+        if self.page.clear_on_mouse_up:
+            self.page.popup_visible = False
+        else:
+            self.page.loading_reads_remaining = self.page.loading_reads_after_failed_drag
+
+
+class _FakeFastMossSliderLocator:
+    def __init__(self, page: "_FakeFastMossSliderPage", selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_FakeFastMossSliderLocator":
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def is_visible(self, timeout: int | None = None) -> bool:
+        del timeout
+        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_POPUP_SELECTORS:
+            return self.page.popup_visible
+        return self.page.popup_visible
+
+    def wait_for(self, *, state: str, timeout: int) -> None:
+        del timeout
+        if state == "visible" and not self.is_visible():
+            raise TimeoutError(f"{self.selector} is not visible")
+
+    def evaluate(self, script: str) -> dict[str, object]:
+        del script
+        box = self.bounding_box()
+        background_image = "none"
+        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
+            background_image = f"url(data:image/png;base64,{_png_base64(672, 390)})"
+        return {
+            "tag_name": "div",
+            "src": "",
+            "backgroundImage": background_image,
+            "natural_width": box["width"],
+            "natural_height": box["height"],
+            "rect": box,
+        }
+
+    def bounding_box(self, timeout: int | None = None) -> dict[str, float]:
+        del timeout
+        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
+            return {"x": 100.0, "y": 50.0, "width": 340.0, "height": 160.0}
+        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_TARGET_SELECTORS:
+            return {"x": 120.0, "y": 80.0, "width": 50.0, "height": 50.0}
+        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_HANDLE_SELECTORS:
+            return {"x": 90.0, "y": 260.0, "width": 20.0, "height": 20.0}
+        return {"x": 80.0, "y": 40.0, "width": 380.0, "height": 280.0}
+
+    def screenshot(self, timeout: int | None = None) -> bytes:
+        del timeout
+        box = self.bounding_box()
+        return _png_bytes(int(box["width"]), int(box["height"]))
+
+    def click(self, timeout: int | None = None) -> None:
+        del timeout
+        self.page.refresh_count += 1
+
+
+class _FakeFastMossSliderPage:
+    def __init__(self) -> None:
+        self.url = "https://www.fastmoss.com/zh/e-commerce/search?words=water%20bottle"
+        self.popup_visible = True
+        self.clear_on_mouse_up = True
+        self.loading_reads_remaining = 0
+        self.loading_reads_after_failed_drag = 0
+        self.refresh_count = 0
+        self.wait_calls: list[int] = []
+        self.mouse = _FakeFastMossSliderMouse(self)
+
+    def locator(self, selector: str) -> _FakeFastMossSliderLocator:
+        return _FakeFastMossSliderLocator(self, selector)
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_calls.append(timeout_ms)
+
+    def screenshot(self, full_page: bool = False) -> bytes:
+        del full_page
+        return _png_bytes(640, 480)
+
+    def evaluate(self, script: str, arg: object | None = None) -> object:
+        if isinstance(arg, dict) and "loadingSelectors" in arg:
+            if self.loading_reads_remaining > 0:
+                self.loading_reads_remaining -= 1
+                return True
+            return False
+        if "devicePixelRatio" in script:
+            return 1.0
+        if "navigator.userAgent" in script:
+            return "Fake Browser"
+        return {}
+
+    def title(self) -> str:
+        return "FastMoss Search"
+
+
+def test_fastmoss_slider_uses_mixed_css_resolver_and_persists_target_position_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    page = _FakeFastMossSliderPage()
+    captured_provider_config: dict[str, object] = {}
+
+    class _FakeProvider:
+        def match_slider(self, target_image: bytes, background_image: bytes, *, simple_target: bool = False) -> SliderMatchResult:
+            assert target_image.startswith(b"\x89PNG")
+            assert background_image.startswith(b"\x89PNG")
+            assert simple_target is False
+            return SliderMatchResult(
+                target_x=150,
+                target_y=20,
+                confidence=0.91,
+                raw={"target": [150, 20, 190, 60], "confidence": 0.91},
+            )
+
+        def compare_slider(self, target_image: bytes, background_image: bytes) -> SliderMatchResult:
+            raise AssertionError("FastMoss slider should use match mode by default")
+
+    def fake_provider(config: dict[str, object] | None = None) -> _FakeProvider:
+        captured_provider_config.update(config or {})
+        return _FakeProvider()
+
+    monkeypatch.setattr(fastmoss_security_module, "_build_slider_captcha_provider", fake_provider)
+    automation_page = SimpleNamespace(
+        raw_page=page,
+        build_diagnostic_artifacts_payload=lambda **kwargs: {
+            "state_dump": kwargs["state_dump"],
+            "extra": {"page_diagnostics": {"url": page.url}},
+        },
+    )
+
+    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+        page,
+        automation_page=automation_page,
+        raw_page=page,
+        search_url=page.url,
+        max_attempts=1,
+        appear_timeout_ms=1,
+        settle_ms=1,
+        confirm_ms=2000,
+        audit_dir=str(tmp_path),
+        provider_config={"import_onnx_path": "/models/fastmoss-slider.onnx"},
+        resolver_config={"drag_offset_x": -2},
+        selectors={
+            "popup": "#tcaptcha_transform_dy",
+            "background": ".tencent-captcha-dy__verify-bg-img",
+            "piece": ".tencent-captcha-dy__fg-item",
+            "handle": ".tencent-captcha-dy__slider-block",
+            "refresh": ".tencent-captcha-dy__footer-icon--refresh",
+        },
+    )
+
+    assert result["resolved"] is True
+    assert result["framework_resolver"] == "FastMossMixedCssSliderResolver"
+    assert captured_provider_config["import_onnx_path"] == "/models/fastmoss-slider.onnx"
+    attempt = result["attempts"][0]
+    assert attempt["match_method"] == "fastmoss_mixed_css_slider_resolver"
+    assert attempt["simple_target"] is False
+    assert attempt["raw_result"]["target"] == [150, 20, 190, 60]
+    assert attempt["coordinate_mapping"]["drag_offset_x"] == -2
+    assert attempt["coordinate_mapping"]["target_interpretation"] == "target_center_minus_piece_center"
+    assert attempt["post_drag_verify_wait_ms"] == 1
+    assert attempt["confirmation_wait_ms"] == 2000
+    assert result["post_drag_verify_wait_ms"] == 1
+    assert result["confirmation_wait_ms"] == 2000
+    assert result["drag_profile"] == {
+        "steps": fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS,
+        "step_delay_seconds": fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS,
+    }
+    assert fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS <= 36
+    assert fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS <= 0.012
+    assert result["audit"]["config"]["drag_steps"] == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS
+    assert result["audit"]["config"]["simple_target"] is False
+    assert (
+        result["audit"]["config"]["drag_step_delay_seconds"]
+        == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS
+    )
+    assert attempt["artifact_keys"]["target_position_screenshot"] == "slider_attempt_1_target_position_screenshot"
+    assert result["artifact_refs"]
+    assert all(Path(ref["local_path"]).exists() for ref in result["artifact_refs"])
+    target_ref = next(ref for ref in result["artifact_refs"] if ref["artifact_key"] == "slider_attempt_1_target_position_screenshot")
+    assert Path(target_ref["local_path"]).read_bytes().startswith(b"\x89PNG")
+
+
+def test_fastmoss_slider_waits_for_loading_to_finish_before_retry(monkeypatch, tmp_path: Path) -> None:
+    page = _FakeFastMossSliderPage()
+    page.clear_on_mouse_up = False
+    page.loading_reads_after_failed_drag = 2
+
+    class _FakeProvider:
+        def match_slider(self, target_image: bytes, background_image: bytes, *, simple_target: bool = False) -> SliderMatchResult:
+            del target_image, background_image, simple_target
+            return SliderMatchResult(
+                target_x=150,
+                target_y=20,
+                confidence=0.91,
+                raw={"target": [150, 20, 190, 60], "confidence": 0.91},
+            )
+
+        def compare_slider(self, target_image: bytes, background_image: bytes) -> SliderMatchResult:
+            raise AssertionError("FastMoss slider should use match mode by default")
+
+    monkeypatch.setattr(fastmoss_security_module, "_build_slider_captcha_provider", lambda _config=None: _FakeProvider())
+
+    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+        page,
+        automation_page=SimpleNamespace(raw_page=page),
+        raw_page=page,
+        search_url=page.url,
+        max_attempts=2,
+        appear_timeout_ms=1,
+        settle_ms=1,
+        confirm_ms=2000,
+        audit_dir=str(tmp_path),
+        provider_config={},
+        resolver_config={"refresh_wait_ms": 1, "image_timeout_ms": 1_000},
+        selectors={
+            "popup": "#tcaptcha_transform_dy",
+            "background": ".tencent-captcha-dy__verify-bg-img",
+            "piece": ".tencent-captcha-dy__fg-item",
+            "handle": ".tencent-captcha-dy__slider-block",
+            "refresh": ".tencent-captcha-dy__footer-icon--refresh",
+        },
+    )
+
+    assert result["resolved"] is False
+    assert page.refresh_count == 1
+    assert result["attempts"][1]["pre_retry_state"]["loading_visible"] is False
+    assert result["attempts"][1]["pre_retry_state"]["wait_elapsed_ms"] >= 500
+
+
+def test_fastmoss_slider_waits_for_visual_elements_before_framework_resolver(monkeypatch) -> None:
+    page = _FakeFastMossSliderPage()
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        fastmoss_security_module,
+        "_wait_for_fastmoss_slider_state",
+        lambda _page, *, timeout_ms: {"visible": True, "selector": "#tcaptcha_transform_dy"},
+    )
+
+    def fake_wait_for_elements(_page, *, timeout_ms, selector_overrides=None):
+        calls["timeout_ms"] = timeout_ms
+        calls["selector_overrides"] = selector_overrides
+        return object(), ".ready-bg", object(), ".ready-piece", object(), ".ready-handle"
+
+    def fake_framework_resolve(
+        _automation_page,
+        *,
+        page,
+        initial_state,
+        search_url,
+        max_attempts,
+        settle_ms,
+        confirm_ms,
+        audit_dir,
+        provider_config,
+        resolver_config,
+        selectors,
+    ):
+        del page, search_url, max_attempts, settle_ms, confirm_ms, audit_dir, provider_config, resolver_config, selectors
+        assert initial_state["background_selector"] == ".ready-bg"
+        assert initial_state["piece_selector"] == ".ready-piece"
+        assert initial_state["handle_selector"] == ".ready-handle"
+        return {"attempted": True, "resolved": True, "reason": "slider_cleared", "attempts": []}
+
+    monkeypatch.setattr(fastmoss_security_module, "_wait_for_fastmoss_slider_elements", fake_wait_for_elements)
+    monkeypatch.setattr(
+        fastmoss_security_module,
+        "_resolve_fastmoss_slider_with_framework_captcha",
+        fake_framework_resolve,
+    )
+
+    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+        page,
+        automation_page=SimpleNamespace(raw_page=page),
+        raw_page=page,
+        search_url=page.url,
+        max_attempts=1,
+        appear_timeout_ms=1,
+        settle_ms=3000,
+        confirm_ms=2000,
+        selectors={"background": ".ready-bg"},
+    )
+
+    assert result["resolved"] is True
+    assert calls["timeout_ms"] == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS
+    assert calls["selector_overrides"] == {"background": ".ready-bg"}
+
+
+def test_fastmoss_browser_diagnostic_artifacts_write_state_and_screenshot(tmp_path: Path) -> None:
+    page = _FakeFastMossSliderPage()
+
+    refs = fastmoss_security_module._capture_fastmoss_browser_diagnostic_artifacts(
+        page,
+        raw_page=page,
+        audit_dir=str(tmp_path),
+        search_url=page.url,
+        label="after slider resolution",
+        state={"slider_resolution": {"attempts": [{"target_x": 136, "drag_distance": 84.5}]}},
+    )
+
+    state_ref = next(ref for ref in refs if ref["artifact_key"] == "after_slider_resolution_state")
+    screenshot_ref = next(ref for ref in refs if ref["artifact_key"] == "after_slider_resolution_screenshot")
+    state_payload = json.loads(Path(state_ref["local_path"]).read_text(encoding="utf-8"))
+
+    assert Path(screenshot_ref["local_path"]).read_bytes().startswith(b"\x89PNG")
+    assert state_payload["page_title"] == "FastMoss Search"
+    assert state_payload["state"]["slider_resolution"]["attempts"][0]["target_x"] == 136
+    assert state_payload["state"]["slider_resolution"]["attempts"][0]["drag_distance"] == 84.5
 
 
 def test_keyword_search_parameter_mapper_builds_fastmoss_search_payload() -> None:

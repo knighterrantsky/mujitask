@@ -464,7 +464,7 @@ def test_tiktok_product_browser_fetch_resolves_visible_slider_with_framework_cap
     assert page.mouse.down_called is True
     assert page.mouse.up_called is True
     assert page.slider_visible is False
-    assert page.wait_calls[-2:] == [1, product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
+    assert page.wait_calls[-1] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS
     assert page.mouse.moves[-1][0] == pytest.approx(175.0)
 
 
@@ -556,10 +556,10 @@ def test_tiktok_slider_resolution_waits_for_delayed_visible_slider(
     assert result["resolved"] is True
     assert result["reason"] == "slider_cleared"
     assert page.wait_calls[0] > 0
-    assert page.wait_calls[-2:] == [1, product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
+    assert page.wait_calls[-1] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS
 
 
-def test_tiktok_slider_resolution_requires_second_confirmation_after_two_seconds(
+def test_tiktok_slider_resolution_requires_delayed_second_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page = _FakeSliderPage()
@@ -596,9 +596,108 @@ def test_tiktok_slider_resolution_requires_second_confirmation_after_two_seconds
     )
 
     assert result["resolved"] is False
-    assert result["attempts"][0]["confirmation_wait_ms"] == 2000
+    assert result["attempts"][0]["confirmation_wait_ms"] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS
     assert result["attempts"][0]["confirmation_popup_still_visible"] is True
     assert result["attempts"][0]["reason"] == "slider_reappeared_after_confirmation_wait"
+
+
+def test_tiktok_framework_slider_requires_page_state_confirmation_and_humanized_drag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import automation_framework.captcha as captcha_module
+
+    wait_calls: list[int] = []
+    captured: dict[str, object] = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured["provider_config"] = kwargs
+
+    class _FakeAudit:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "attempts": [
+                    {
+                        "attempt_index": 1,
+                        "success": True,
+                        "mode": "match",
+                        "simple_target": True,
+                        "popup_still_visible": False,
+                        "slider_result": {
+                            "target_x": 234,
+                            "target_y": 169,
+                            "confidence": 0.55,
+                            "raw": {"target_x": 234, "target_y": 169},
+                        },
+                        "mapping": {"drag_distance": 101.25},
+                    }
+                ]
+            }
+
+    class _FakeResolver:
+        def __init__(self, *, provider: object, selectors: object, config: object) -> None:
+            captured["provider"] = provider
+            captured["selectors"] = selectors
+            captured["config"] = config
+
+        def resolve(self, automation_page: object) -> SimpleNamespace:
+            captured["automation_page"] = automation_page
+            return SimpleNamespace(
+                success=True,
+                audit=_FakeAudit(),
+                artifacts_payload={},
+            )
+
+    page = SimpleNamespace(wait_for_timeout=lambda timeout_ms: wait_calls.append(timeout_ms))
+    automation_page = object()
+
+    monkeypatch.setattr(captcha_module, "DdddOcrCaptchaProvider", _FakeProvider)
+    monkeypatch.setattr(captcha_module, "SliderCaptchaResolver", _FakeResolver)
+    monkeypatch.setattr(product_page, "_read_tiktok_slider_captcha_state", lambda _page: {"visible": True})
+    monkeypatch.setattr(
+        product_page,
+        "_wait_for_tiktok_slider_post_drag_state",
+        lambda _page, *, timeout_ms: {"visible": False, "wait_elapsed_ms": 1200},
+    )
+
+    result = product_page._resolve_tiktok_slider_with_framework_captcha(
+        automation_page,
+        page=page,
+        product_url="https://www.tiktok.com/view/product/1729492379807814341",
+        max_attempts=1,
+        settle_ms=product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS,
+        confirm_ms=product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS,
+        audit_dir=str(tmp_path),
+        provider_config={"import_onnx_path": "/models/tiktok-slider.onnx"},
+        resolver_config=None,
+        selectors=None,
+        trace_id="trace-1",
+    )
+
+    config = captured["config"]
+    assert getattr(config, "image_timeout_ms") == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_IMAGE_TIMEOUT_MS
+    assert getattr(config, "after_drag_wait_ms") == 0
+    assert getattr(config, "success_timeout_ms") == 0
+    assert getattr(config, "refresh_wait_ms") == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS
+    assert getattr(config, "max_attempts") == 1
+    assert getattr(config, "drag_steps") == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEPS
+    assert (
+        getattr(config, "drag_step_delay_seconds")
+        == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEP_DELAY_SECONDS
+    )
+    assert getattr(config, "simple_target") is product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_SIMPLE_TARGET
+    assert result["resolved"] is False
+    assert result["reason"] == "slider_reappeared_after_confirmation_wait"
+    assert result["post_drag_verify_wait_ms"] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS
+    assert result["confirmation_wait_ms"] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS
+    assert result["drag_profile"]["steps"] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_DRAG_STEPS
+    assert result["attempts"][0]["reason"] == "slider_reappeared_after_confirmation_wait"
+    assert result["attempts"][0]["post_drag_verify_wait_ms"] == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS
+    assert result["attempts"][0]["post_drag_wait_elapsed_ms"] == 1200
+    assert result["attempts"][0]["confirmation_popup_still_visible"] is True
+    assert wait_calls == [product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
 
 
 def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(

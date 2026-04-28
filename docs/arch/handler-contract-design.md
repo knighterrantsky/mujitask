@@ -656,10 +656,18 @@ result 中必须包含:
 - 只能在 request handler 明确返回 fallback 可恢复时派发。
 - 输出必须和 `tiktok_product_request_fetch` 的 normalized product result 同 contract。
 - 后续 `fact_bundle_upsert` 不应关心数据来自 request 还是 browser。
+- TikTok 商品页安全验证滑块必须优先使用 framework v0.3.8 的 `SliderCaptchaResolver`，业务仓库只配置 selector、尝试次数、拖动修正参数和可选 `DdddOcrCaptchaProvider` 模型路径。
+- 默认 selector 为 `#tts_web_captcha_container`、`#captcha-verify-image`、`.captcha_verify_img_slide`、`.secsdk-captcha-drag-icon`、`.secsdk_captcha_refresh`；handler payload 可通过 `slider_captcha_selectors` / `tiktok_slider_captcha_selectors` 覆盖。
+- 当使用 `dddd_trainer` 训练自定义模型时，业务仓库只传 `slider_captcha_provider_config.import_onnx_path` 和 `charsets_path`，不直接依赖训练工具链。
+- browser fallback 结果必须保留 `slider_captcha_resolution` 与 `slider_captcha_audit_artifact_refs`，用于审计 ddddocr 原始坐标、浏览器渲染坐标、缩放换算、拖动距离、前后截图和原始图片 artifact。
+- 验证码等待只在已识别 TikTok 商品页风控信号后发生；正常商品页抓取不得进入滑块等待。
+- `image_timeout_ms` 是元素出现的最大等待，不是固定 sleep；滑动后最多轮询 5 秒验证结果，popup 消失或成功 selector 出现后再延迟 2 秒二次确认。
+- TikTok 商品页默认 `simple_target=false`，以已经验收的 framework `match` 行为为准；若业务 payload 显式覆盖 `simple_target`、`drag_scale` 或 `drag_offset_x`，result 必须保留生效配置和坐标换算证据。
+- 如果页面出现 `Unable to verify. Please try again.` 等失败态文本，或二次确认时 popup 重新出现，本次滑块 attempt 不得标记为 resolved。
 
 ### 6.2.1 `fastmoss_security_browser_resolve`
 
-定位: FastMoss `/api/goods/V2/search` 返回 `MSG_SAFE_0001` 后的浏览器解风控能力。
+定位: FastMoss 任一受控 API 返回 `MSG_SAFE_0001` 后的浏览器解风控能力。该能力按 provider + security resolve 拆分，服务 FastMoss 搜索、商品详情、达人、店铺和视频接口，但不承担 TikTok 商品页 browser fallback。
 
 关键契约:
 
@@ -667,17 +675,39 @@ result 中必须包含:
 | --- | --- |
 | worker | `browser_worker` |
 | runtime table | `task_execution` |
-| input | 原始搜索请求、fallback_source_job_id、FastMoss browser profile / resource_code |
-| output | `/api/goods/V2/search` 验证结果、slider resolution evidence、`fastmoss_session_cookie_cache` 脱敏 metadata |
-| idempotency | request_id + search digest + fastmoss_security_browser_fallback |
+| input | `verification_request` 原始失败 FastMoss API 请求、fallback_source_job_id、FastMoss browser profile / resource_code |
+| output | 原始失败 FastMoss API 请求验证结果、slider resolution evidence、`fastmoss_session_cookie_cache` 脱敏 metadata |
+| idempotency | request_id + original request digest + fastmoss_security_browser_fallback |
 | side effects | browser 解风控、Runtime DB cookie cache 写入 |
 
 约束:
 
-- 只能由 workflow 在 `keyword_seed_import` 返回 `fallback_required` 后派发，API worker 不直接驱动浏览器。
-- 成功判据必须是原始 `/api/goods/V2/search` 不再返回 `MSG_SAFE_0001`；商品详情页不能作为搜索风控解除成功判据。
+- 只能由 workflow 或行级主 job 在 FastMoss API handler 返回 `fallback_required` 后派发，API worker 不直接驱动浏览器。
+- 成功判据必须是原始失败的 FastMoss API 请求不再返回 `MSG_SAFE_0001`。搜索场景的原始请求是 `/api/goods/V2/search`；商品详情页不能作为搜索风控解除成功判据。
 - handler 只持久化 FastMoss cookies，不是 API token；summary/result/log 不得包含 cookie value。
-- fallback 最多一次，失败后由 workflow 终态落 `fastmoss_security_verification_required`。
+- fallback 对同一原始请求最多一次，失败后由 workflow 终态落 `fastmoss_security_verification_required`。
+- FastMoss 和 TikTok 商品页的验证码业务逻辑必须独立：FastMoss handler 只围绕原始 FastMoss API 请求解风控和刷新 FastMoss cookie cache；TikTok handler 只围绕商品详情页 browser fallback 解商品页安全验证。
+- FastMoss 滑块使用独立的 FastMoss/Tencent resolver 逻辑，selector profile 使用 `#tcaptcha_transform_dy`、`.tencent-captcha-dy__verify-bg-img`、`.tencent-captcha-dy__fg-item`、`.tencent-captcha-dy__slider-block`、`.tencent-captcha-dy__footer-icon--refresh`，不得复用 TikTok 商品页 selector 作为成功前提。FastMoss/Tencent 默认取图策略是背景取 CSS `background-image` 原图、拼图取元素截图，默认 `simple_target=false`，距离按目标中心点减当前拼图中心点计算。
+- handler payload 可通过 `fastmoss_slider_captcha_selectors`、`fastmoss_slider_captcha_provider_config`、`fastmoss_slider_captcha_resolver_config` 和 `fastmoss_slider_captcha_audit_dir` 覆盖 selector、`DdddOcrCaptchaProvider` 模型路径、拖动修正参数和审计目录。
+- FastMoss result 中的 `slider_resolution` 必须保留 resolver 名称、ddddocr 原始坐标、坐标换算、拖动距离、二次确认结果和 `slider_captcha_audit_artifact_refs`，用于判断失败原因是识别错误、距离计算错误还是鼠标拖动执行异常。每次 attempt 必须同时保存 `before_screenshot`、`target_position_screenshot` 和 `after_screenshot`；`target_position_screenshot` 在鼠标已移动到计算出的目标终点、`mouse.up()` 释放之前捕获，用于复盘实际落点偏差。
+- FastMoss 验证码等待只在原始 FastMoss API 请求触发 `MSG_SAFE_0001` 且 workflow 已进入 `fastmoss_security_browser_fallback` 后发生；正常 FastMoss API 请求不得进入滑块等待。
+- FastMoss 滑动后同样按“滑动后最多轮询 5 秒验证结果，弹窗消失后延迟 2 秒二次确认”处理；二次确认只证明浏览器弹层稳定消失，最终成功判据仍然必须回到原始失败的 FastMoss API 请求不再返回 `MSG_SAFE_0001`。
+- FastMoss 每次识别前必须确认 Tencent 滑块不处于 loading/verifying 状态、背景图已可用、拼图块和手柄已回到可识别起点；失败重试前必须先等待上一轮 loading 结束，再刷新并进入下一次识别，禁止把 loading/spinner 画面或上一轮残留位置直接送入 ddddocr。
+- FastMoss 默认拖动轨迹不得使用过慢的固定长轨迹；默认 profile 为 36 steps、每步 0.012s，仍允许 payload 通过 `fastmoss_slider_captcha_resolver_config.drag_steps` 和 `drag_step_delay_seconds` 覆盖。
+- `fastmoss_product_fetch`、`fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 遇到 `MSG_SAFE_0001` 时，必须返回 `fallback_required`，并在 result 中给出脱敏 `verification_request.method/path/params/referer/region/stage`；不得把该场景归类为普通 `fastmoss_http_failure`。
+- `verification_request.path` 可以是 `/api/goods/V2/search`、`/api/goods/v3/base`、达人详情、店铺详情或视频详情等 FastMoss 受控 API。browser resolve 只验证该原始失败请求，成功后由原调用方重试原 handler 一次。
+
+### 6.2.2 FastMoss platform session recovery
+
+FastMoss session/cookie 恢复属于 `infrastructure/fastmoss` 平台策略，不属于具体业务 handler。`fastmoss_product_search`、`fastmoss_product_fetch`、`fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 只创建 FastMoss session 并接入统一 cookie cache；不得复制登录刷新、cookie 持久化或单点登录冲突判断。
+
+关键约束:
+
+- `fastmoss_session_cookie_cache` 复用必须检查 `expires_at` 和 `last_auth_failed_at`；已标记 `last_auth_failed_at` 的 cookie 不得继续复用。
+- 任意 FastMoss API 遇到明确 auth 失效时，平台层在账号级 lock 内刷新登录并保存新 cookie；保存成功后清空 `last_auth_failed_at`。
+- 如果 DB 中存在不同 digest 的较新 cookie，平台层可先复用并验证；仍 auth 失败时再登录刷新一次。
+- `MSG_SAFE_0001` 本身是风控，不等同 auth 失效；搜索场景保留一次登录刷新重试，但刷新和持久化必须由 infrastructure 统一入口完成。
+- 刷新后原请求仍 auth 失败，handler 透出 `fastmoss_session_conflict_or_external_login`，不进入 browser fallback，也不无限重试。
 
 ### 6.3 `fastmoss_product_search`
 
@@ -901,6 +931,8 @@ FastMoss raw 字段映射:
 - `MAG_AUTH_3001` 且只返回固定预览时，必须标记 `auth_state.degraded_preview=true`；如果 `session_policy.degraded_preview_allowed=false`，job 应失败为不可交付结果。
 - 登录态搜索必须复用同一个 FastMoss session 翻页；匿名态翻页不可作为正式结果。
 - `order=2,2` 当前按“近 7 天销量倒序”处理，但文档中必须保留这是基于实测推断的说明。
+- 当 `order=2,2` 且存在 `output_conditions.business_conditions.min_day7_sold_count` 时，live 翻页按整页销量阈值提前截断；若当前页所有可解析 `day7_sold_count` 的最大值仍低于阈值，停止后续翻页并返回 `pagination.stop_reason=below_min_day7_sold_count`。
+- `max_candidates=0` 只取消候选数量上限，不取消分页、FastMoss total、空页、无新商品、`below_min_day7_sold_count` 或 `max_pages` 等停止条件。
 
 ### 6.4 `fastmoss_product_fetch`
 
@@ -915,6 +947,11 @@ FastMoss raw 字段映射:
 | output | normalized product facts、shop facts、metrics、raw_response_ref |
 | idempotency | product_id + source endpoint + detail_level |
 | retry | 网络、限流、上游 5xx 可重试 |
+
+风控约束:
+
+- 当 FastMoss 商品详情接口例如 `/api/goods/v3/base` 返回 `MSG_SAFE_0001` 时，handler 返回 `fallback_required`，error_code 固定为 `fastmoss_security_verification_required`，result.reason 固定为 `fastmoss_api_security_verification`。
+- result 必须包含脱敏 `verification_request`，用于 `fastmoss_security_browser_resolve` 在浏览器中围绕原始失败请求解除风控、持久化 `fastmoss_session_cookie_cache`，再由调用方重试 `fastmoss_product_fetch` 一次。
 
 ### 6.5 `fastmoss_creator_fetch` / `fastmoss_shop_fetch` / `fastmoss_video_fetch`
 
@@ -932,6 +969,11 @@ FastMoss raw 字段映射:
 ```
 
 达人同步、竞品表、选品分析可以按需消费这些 facts，再由业务 mapper 决定写哪些关系和投影。
+
+风控约束:
+
+- `fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 与 `fastmoss_product_fetch` 使用同一 FastMoss provider 级风控契约。对应 API 返回 `MSG_SAFE_0001` 时，handler 返回 `fallback_required` 和脱敏 `verification_request`，由 `fastmoss_security_browser_resolve` 验证原始失败的 FastMoss API 请求并刷新 cookie cache。
+- 成功后调用方只能重试原 handler 一次；再次返回 `MSG_SAFE_0001` 时终态错误为 `fastmoss_security_verification_required`。
 
 命名约束:
 
@@ -1325,7 +1367,7 @@ fastmoss_echarts_renderer
 | API | `influencer_creator_sync` | `api_worker` | `api_worker_job` | Business | 达人池同步达人 job；每个 unique 达人 1 个，内部完成达人详情、事实入库、达人池飞书 upsert 和商品终态状态回写 | workflow-influencer-pool-sync-design 11.3 |
 | API | `tiktok_product_request_fetch` | `api_worker` | `api_worker_job` | Capability | TikTok 商品 request-first 采集 | 6.1 |
 | Browser | `tiktok_product_browser_fetch` | `browser_worker` | `task_execution` | Capability | TikTok 商品 request 失败后的浏览器兜底采集 | 6.2 |
-| Browser | `fastmoss_security_browser_resolve` | `browser_worker` | `task_execution` | Capability | FastMoss 搜索接口风控后的浏览器解滑块与 cookie cache 刷新 | 6.2.1 |
+| Browser | `fastmoss_security_browser_resolve` | `browser_worker` | `task_execution` | Capability | FastMoss API 风控后的浏览器解滑块与 cookie cache 刷新 | 6.2.1 |
 | API | `fastmoss_product_search` | `api_worker` | `api_worker_job` | Capability | FastMoss 商品搜索，支持 keyword/filter/condition | 6.3 |
 | API | `fastmoss_product_fetch` | `api_worker` | `api_worker_job` | Capability | FastMoss 商品事实、店铺事实、商品指标采集 | 6.4 |
 | API | `fastmoss_creator_fetch` | `api_worker` | `api_worker_job` | Capability | FastMoss 达人事实和指标采集 | 6.5 |

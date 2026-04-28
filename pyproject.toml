@@ -5,7 +5,7 @@ description = "Business scaffold for building browser automation workflows on to
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "automation-framework[captcha] @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.7",
+  "automation-framework[captcha] @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.8",
   "alembic>=1.14.0",
   "minio>=7.2.18",
   "psycopg[binary]>=3.2.1",

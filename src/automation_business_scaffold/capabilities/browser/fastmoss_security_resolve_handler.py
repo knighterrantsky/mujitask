@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import os
 import base64
+import hashlib
+import json
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 import requests
 from PIL import Image
@@ -45,8 +47,14 @@ FASTMOSS_SECURITY_VERIFICATION_CODES = {"MSG_SAFE_0001"}
 DEFAULT_FASTMOSS_BROWSER_TIMEOUT_MS = 45_000
 DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS = 2_000
 DEFAULT_FASTMOSS_SLIDER_APPEAR_TIMEOUT_MS = 8_000
-DEFAULT_FASTMOSS_SLIDER_SETTLE_MS = 900
+DEFAULT_FASTMOSS_SLIDER_SETTLE_MS = 5_000
+DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS = 12_000
+DEFAULT_FASTMOSS_SLIDER_REFRESH_WAIT_MS = 2_200
+DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS = 36
+DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS = 0.012
 DEFAULT_FASTMOSS_SLIDER_ATTEMPTS = 3
+DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR = "runtime/downloads/fastmoss_slider_captcha_audit"
+DEFAULT_FASTMOSS_SLIDER_POLL_MS = 250
 
 FASTMOSS_SLIDER_POPUP_SELECTORS = (
     "#tcaptcha_transform_dy",
@@ -91,20 +99,39 @@ FASTMOSS_SLIDER_REFRESH_SELECTORS = (
     ".captcha_verify_refresh",
     "[class*='captcha'][class*='refresh']",
 )
+FASTMOSS_SLIDER_LOADING_SELECTORS = (
+    ".tencent-captcha-dy__loading",
+    ".tencent-captcha-dy__spinner",
+    ".tcaptcha-loading",
+    ".tcaptcha-spinner",
+    ".captcha-loading",
+    ".captcha-spinner",
+    "[class*='captcha'][class*='loading']",
+    "[class*='captcha'][class*='spinner']",
+    "[class*='tcaptcha'][class*='loading']",
+    "[class*='tcaptcha'][class*='spinner']",
+    "[class*='loading']",
+    "[class*='spinner']",
+)
 
 
 def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
+    browser_result: dict[str, Any] = {}
+    verified_path = FASTMOSS_PRODUCT_SEARCH_ENDPOINT
     try:
         search_request = _resolve_search_request(payload)
+        verification_request = _resolve_verification_request(payload, search_request=search_request)
+        verified_path = first_non_empty(verification_request.get("path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT)
         fastmoss_settings = _resolve_fastmoss_settings(payload, search_request=search_request)
         inline_result = _inline_browser_result(payload)
         if inline_result:
-            browser_result = _resolve_inline_browser_result(inline_result)
+            browser_result = _resolve_inline_browser_result(inline_result, verified_path=verified_path)
         else:
             browser_result = _resolve_fastmoss_security_with_browser(
                 payload,
                 search_request=search_request,
+                verification_request=verification_request,
                 fastmoss_settings=fastmoss_settings,
             )
 
@@ -114,20 +141,37 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
 
         verification = coerce_mapping(browser_result.get("verification"))
         if verification.get("response_code") in FASTMOSS_SECURITY_VERIFICATION_CODES:
-            raise FastMossHTTPError(
+            exc = FastMossHTTPError(
                 "FastMoss search security verification is still required after browser fallback.",
                 response_code=verification.get("response_code"),
-                payload={"code": verification.get("response_code")},
+                payload={
+                    "code": verification.get("response_code"),
+                    "data": {"id": verification.get("data_id")},
+                    "ext": {"is_login": verification.get("ext_is_login")},
+                },
                 method="GET",
-                path=FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
-                stage="browser_security.verify_search",
+                path=verified_path,
+                stage="browser_security.verify_original_request",
+            )
+            error = build_error(
+                error_type="security_verification",
+                error_code="fastmoss_security_verification_required",
+                message=str(exc),
+                retryable=False,
+                details=_redact_fastmoss_http_error(exc),
+            )
+            return failed_result(
+                context,
+                error=error,
+                summary=_browser_resolve_failure_summary(browser_result, error_code="fastmoss_security_verification_required"),
+                result=_browser_resolve_result_payload(payload, browser_result, resolved=False, error_details=error.details),
             )
 
         cache_status = _save_browser_cookies_to_cache(
             payload,
             fastmoss_settings=fastmoss_settings,
             cookies=cookies,
-            verified_path=FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+            verified_path=verified_path,
         )
     except FastMossHTTPError as exc:
         error_code = (
@@ -145,7 +189,8 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         return failed_result(
             context,
             error=error,
-            summary={"verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT, "resolved": False},
+            summary=_browser_resolve_failure_summary(browser_result, error_code=error_code),
+            result=_browser_resolve_result_payload(payload, browser_result, resolved=False, error_details=error.details),
         )
     except Exception as exc:  # noqa: BLE001
         error = build_error(
@@ -153,19 +198,20 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
             error_code="fastmoss_security_browser_resolve_failed",
             message=str(exc),
             retryable=False,
-            details={"verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT},
+            details={"verified_path": verified_path},
         )
         return failed_result(
             context,
             error=error,
-            summary={"verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT, "resolved": False},
+            summary=_browser_resolve_failure_summary(browser_result, error_code="fastmoss_security_browser_resolve_failed"),
+            result=_browser_resolve_result_payload(payload, browser_result, resolved=False, error_details=error.details),
         )
 
     slider_resolution = _redact_slider_resolution(coerce_mapping(browser_result.get("slider_resolution")))
     verification = coerce_mapping(browser_result.get("verification"))
     summary = {
         "resolved": True,
-        "verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+        "verified_path": verified_path,
         "response_code": first_non_empty(verification.get("response_code"), "200"),
         "cookie_count": int(cache_status.get("cookie_count") or 0),
         "has_fd_tk": bool(cache_status.get("has_fd_tk")),
@@ -174,11 +220,11 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         "slider_resolved": bool(slider_resolution.get("resolved")),
     }
     result = {
-        "verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+        "verified_path": verified_path,
         "verification": compact_dict(
             {
                 "verified": True,
-                "verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+                "verified_path": verified_path,
                 "response_code": first_non_empty(verification.get("response_code"), "200"),
                 "ext_is_login": first_non_empty(verification.get("ext_is_login")),
                 "total": verification.get("total"),
@@ -186,6 +232,8 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         ),
         "cookie_cache": cache_status,
         "slider_resolution": slider_resolution,
+        "slider_captcha_audit_artifact_refs": coerce_mapping_list(browser_result.get("slider_captcha_audit_artifact_refs")),
+        "browser_diagnostic_artifact_refs": coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs")),
         "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
         "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
     }
@@ -200,16 +248,17 @@ def _inline_browser_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _resolve_inline_browser_result(inline_result: Mapping[str, Any]) -> dict[str, Any]:
+def _resolve_inline_browser_result(inline_result: Mapping[str, Any], *, verified_path: str) -> dict[str, Any]:
     response_code = first_non_empty(inline_result.get("response_code"), "200")
     return {
         "cookies": coerce_mapping_list(inline_result.get("cookies"))
         or coerce_mapping_list(inline_result.get("browser_cookies")),
         "verification": {
             "verified": response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES,
-            "verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+            "verified_path": first_non_empty(inline_result.get("verified_path"), verified_path),
             "response_code": response_code,
             "ext_is_login": first_non_empty(inline_result.get("ext_is_login"), "1"),
+            "data_id": first_non_empty(inline_result.get("data_id")),
             "total": inline_result.get("total"),
         },
         "slider_resolution": coerce_mapping(inline_result.get("slider_resolution"))
@@ -219,13 +268,85 @@ def _resolve_inline_browser_result(inline_result: Mapping[str, Any]) -> dict[str
             "reason": first_non_empty(inline_result.get("slider_reason"), "mock_verified"),
             "attempts": [],
         },
+        "slider_captcha_audit_artifact_refs": coerce_mapping_list(inline_result.get("slider_captcha_audit_artifact_refs")),
+        "browser_diagnostic_artifact_refs": coerce_mapping_list(inline_result.get("browser_diagnostic_artifact_refs")),
+        "login_cookie_bootstrap": coerce_mapping(inline_result.get("login_cookie_bootstrap")),
     }
+
+
+def _browser_resolve_failure_summary(browser_result: Mapping[str, Any], *, error_code: str) -> dict[str, Any]:
+    verification = coerce_mapping(browser_result.get("verification"))
+    slider_resolution = _redact_slider_resolution(coerce_mapping(browser_result.get("slider_resolution")))
+    return compact_dict(
+        {
+            "resolved": False,
+            "verified_path": first_non_empty(verification.get("verified_path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT),
+            "response_code": first_non_empty(verification.get("response_code")),
+            "data_id": first_non_empty(verification.get("data_id")),
+            "ext_is_login": first_non_empty(verification.get("ext_is_login")),
+            "error_code": error_code,
+            "slider_attempted": bool(slider_resolution.get("attempted")),
+            "slider_resolved": bool(slider_resolution.get("resolved")),
+            "slider_reason": first_non_empty(slider_resolution.get("reason")),
+            "slider_artifact_count": len(coerce_mapping_list(browser_result.get("slider_captcha_audit_artifact_refs"))),
+            "browser_diagnostic_artifact_count": len(
+                coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs"))
+            ),
+        }
+    )
+
+
+def _browser_resolve_result_payload(
+    payload: Mapping[str, Any],
+    browser_result: Mapping[str, Any],
+    *,
+    resolved: bool,
+    error_details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    verification = coerce_mapping(browser_result.get("verification"))
+    details = coerce_mapping(error_details)
+    cookies = coerce_mapping_list(browser_result.get("cookies"))
+    response_code = first_non_empty(verification.get("response_code"), details.get("response_code"))
+    data_id = first_non_empty(verification.get("data_id"), details.get("data_id"))
+    ext_is_login = first_non_empty(verification.get("ext_is_login"), details.get("ext_is_login"))
+    return compact_dict(
+        {
+            "verified_path": first_non_empty(verification.get("verified_path"), details.get("path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT),
+            "resolved": bool(resolved),
+            "verification": compact_dict(
+                {
+                    "verified": bool(resolved),
+                    "verified_path": first_non_empty(
+                        verification.get("verified_path"),
+                        FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+                    ),
+                    "response_code": response_code,
+                    "data_id": data_id,
+                    "ext_is_login": ext_is_login,
+                    "total": verification.get("total"),
+                    "error_code": first_non_empty(verification.get("error_code"), details.get("error_code")),
+                }
+            ),
+            "error_details": details,
+            "browser_cookie_export": _cookie_snapshot_from_browser_cookies(cookies),
+            "slider_resolution": _redact_slider_resolution(coerce_mapping(browser_result.get("slider_resolution"))),
+            "slider_captcha_audit_artifact_refs": coerce_mapping_list(
+                browser_result.get("slider_captcha_audit_artifact_refs")
+            ),
+            "browser_diagnostic_artifact_refs": coerce_mapping_list(
+                browser_result.get("browser_diagnostic_artifact_refs")
+            ),
+            "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
+            "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
+        }
+    )
 
 
 def _resolve_fastmoss_security_with_browser(
     payload: Mapping[str, Any],
     *,
     search_request: Mapping[str, Any],
+    verification_request: Mapping[str, Any],
     fastmoss_settings: Mapping[str, Any],
 ) -> dict[str, Any]:
     timeout_ms = _positive_int(
@@ -254,8 +375,18 @@ def _resolve_fastmoss_security_with_browser(
     if provider_name and profile_id:
         profile_ref = ""
 
-    search_url = _build_fastmoss_search_page_url(search_request, fastmoss_settings=fastmoss_settings)
+    security_page_url = _build_fastmoss_security_page_url(
+        search_request,
+        verification_request=verification_request,
+        fastmoss_settings=fastmoss_settings,
+    )
     login_cookie_bootstrap = _bootstrap_fastmoss_login_cookies(payload, fastmoss_settings=fastmoss_settings)
+    audit_dir = first_non_empty(
+        payload.get("fastmoss_slider_captcha_audit_dir"),
+        payload.get("slider_captcha_audit_dir"),
+        DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
+    )
+    diagnostic_artifact_refs: list[dict[str, Any]] = []
     with open_automation_page(
         profile_ref=profile_ref,
         workspace_id=_optional_int(
@@ -276,12 +407,24 @@ def _resolve_fastmoss_security_with_browser(
             cookies=coerce_mapping_list(login_cookie_bootstrap.get("cookies")),
             base_url=str(fastmoss_settings["base_url"]),
         )
-        _page_goto(browser_session.page, search_url, timeout_ms=timeout_ms)
+        _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
         _safe_wait_for_timeout(browser_session.page, 1_000)
+        initial_slider_state = _read_fastmoss_slider_state(browser_session.page)
+        diagnostic_artifact_refs.extend(
+            _capture_fastmoss_browser_diagnostic_artifacts(
+                browser_session.page,
+                raw_page=browser_session.raw_page,
+                audit_dir=audit_dir,
+                search_url=security_page_url,
+                label="after_security_page_goto",
+                state={"slider_state": initial_slider_state, "security_page_url": security_page_url},
+            )
+        )
         slider_resolution = _try_resolve_fastmoss_slider_security_check(
             browser_session.page,
+            automation_page=browser_session,
             raw_page=browser_session.raw_page,
-            search_url=search_url,
+            search_url=security_page_url,
             max_attempts=_positive_int(
                 payload.get("fastmoss_slider_max_attempts"),
                 DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
@@ -295,11 +438,34 @@ def _resolve_fastmoss_security_with_browser(
                 payload.get("fastmoss_slider_confirm_ms"),
                 DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS,
             ),
+            audit_dir=audit_dir,
+            provider_config=(
+                coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
+                or coerce_mapping(payload.get("slider_captcha_provider_config"))
+            ),
+            resolver_config=(
+                coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
+                or coerce_mapping(payload.get("slider_captcha_resolver_config"))
+            ),
+            selectors=(
+                coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
+                or coerce_mapping(payload.get("slider_captcha_selectors"))
+            ),
+        )
+        diagnostic_artifact_refs.extend(
+            _capture_fastmoss_browser_diagnostic_artifacts(
+                browser_session.page,
+                raw_page=browser_session.raw_page,
+                audit_dir=audit_dir,
+                search_url=security_page_url,
+                label="after_slider_resolution",
+                state={"slider_resolution": slider_resolution, "security_page_url": security_page_url},
+            )
         )
         cookies = _export_fastmoss_browser_cookies(browser_session.raw_page, base_url=str(fastmoss_settings["base_url"]))
 
-    verification = _verify_original_search_with_cookies(
-        search_request,
+    verification = _verify_original_request_with_cookies_result(
+        verification_request,
         fastmoss_settings=fastmoss_settings,
         cookies=cookies,
     )
@@ -307,6 +473,8 @@ def _resolve_fastmoss_security_with_browser(
         "cookies": cookies,
         "verification": verification,
         "slider_resolution": slider_resolution,
+        "slider_captcha_audit_artifact_refs": coerce_mapping_list(slider_resolution.get("artifact_refs")),
+        "browser_diagnostic_artifact_refs": diagnostic_artifact_refs,
         "login_cookie_bootstrap": {
             key: value
             for key, value in {
@@ -351,6 +519,7 @@ def _bootstrap_fastmoss_login_cookies(
         default_region=region,
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(fastmoss_settings.get("trust_env"), default=False),
     )
     with session:
         if store is not None:
@@ -446,30 +615,33 @@ def _import_fastmoss_browser_cookies(
     return {"status": "imported", "imported_count": len(normalized)}
 
 
-def _verify_original_search_with_cookies(
-    search_request: Mapping[str, Any],
+def _verify_original_request_with_cookies(
+    verification_request: Mapping[str, Any],
     *,
     fastmoss_settings: Mapping[str, Any],
     cookies: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    params = _resolve_original_search_params(search_request, fastmoss_settings=fastmoss_settings)
+    path = first_non_empty(verification_request.get("path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT)
+    params = coerce_mapping(verification_request.get("params"))
+    region = first_non_empty(verification_request.get("region"), fastmoss_settings.get("region"), "US")
     session = FastMossHTTPSession(
         phone=first_non_empty(fastmoss_settings.get("phone")),
         password=first_non_empty(fastmoss_settings.get("password")),
         base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
-        default_region=params["region"],
+        default_region=region,
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(fastmoss_settings.get("trust_env"), default=False),
     )
     with session:
         session.replace_browser_cookies(cookies)
-        raw = session.search_products(
-            params["keyword"],
-            page=params["page"],
-            pagesize=params["page_size"],
-            region=params["region"],
-            order=params["order"],
-            extra_params=params["extra_params"],
+        raw = session.request_json(
+            first_non_empty(verification_request.get("method"), "GET"),
+            path,
+            params=params,
+            referer=first_non_empty(verification_request.get("referer"), _default_referer_for_request(verification_request, fastmoss_settings=fastmoss_settings)),
+            region=region,
+            stage=first_non_empty(verification_request.get("stage"), "browser_security.verify_original_request"),
             check_auth=False,
         )
     data = coerce_mapping(raw.get("data"))
@@ -477,12 +649,41 @@ def _verify_original_search_with_cookies(
     return compact_dict(
         {
             "verified": True,
-            "verified_path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+            "verified_path": path,
             "response_code": first_non_empty(raw.get("code"), "200"),
             "ext_is_login": first_non_empty(ext.get("is_login")),
             "total": data.get("total") or data.get("total_cnt"),
         }
     )
+
+
+def _verify_original_request_with_cookies_result(
+    verification_request: Mapping[str, Any],
+    *,
+    fastmoss_settings: Mapping[str, Any],
+    cookies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return _verify_original_request_with_cookies(
+            verification_request,
+            fastmoss_settings=fastmoss_settings,
+            cookies=cookies,
+        )
+    except FastMossHTTPError as exc:
+        if not _is_fastmoss_security_error(exc):
+            raise
+        details = _redact_fastmoss_http_error(exc)
+        return compact_dict(
+            {
+                "verified": False,
+                "verified_path": first_non_empty(details.get("path"), verification_request.get("path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT),
+                "response_code": first_non_empty(details.get("response_code"), exc.response_code),
+                "error_code": "fastmoss_security_verification_required",
+                "error_type": "security_verification",
+                "data_id": first_non_empty(details.get("data_id")),
+                "ext_is_login": first_non_empty(details.get("ext_is_login")),
+            }
+        )
 
 
 def _save_browser_cookies_to_cache(
@@ -551,8 +752,44 @@ def _resolve_search_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             "extra_params": coerce_mapping(payload.get("extra_params")),
         }
     if not first_non_empty(search_request.get("search_query"), search_request.get("keyword"), search_request.get("words")):
-        raise ValueError("FastMoss browser security resolve requires original search keyword.")
+        if not _resolve_verification_request(payload, search_request=search_request).get("path"):
+            raise ValueError("FastMoss browser security resolve requires original search keyword or verification_request.path.")
     return search_request
+
+
+def _resolve_verification_request(payload: Mapping[str, Any], *, search_request: Mapping[str, Any]) -> dict[str, Any]:
+    verification_request = (
+        coerce_mapping(payload.get("verification_request"))
+        or coerce_mapping(payload.get("fastmoss_original_request"))
+        or coerce_mapping(coerce_mapping(payload.get("security_context")).get("verification_request"))
+    )
+    if verification_request:
+        params = coerce_mapping(verification_request.get("params"))
+        return compact_dict(
+            {
+                "method": first_non_empty(verification_request.get("method"), "GET").upper(),
+                "path": first_non_empty(verification_request.get("path"), FASTMOSS_PRODUCT_SEARCH_ENDPOINT),
+                "params": _redact_replay_params(params),
+                "referer": first_non_empty(verification_request.get("referer")),
+                "region": first_non_empty(verification_request.get("region"), search_request.get("region"), "US"),
+                "stage": first_non_empty(verification_request.get("stage"), "browser_security.verify_original_request"),
+            }
+        )
+    params = _resolve_original_search_params(search_request, fastmoss_settings=coerce_mapping(payload.get("fastmoss")))
+    return {
+        "method": "GET",
+        "path": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
+        "params": {
+            "page": params["page"],
+            "pagesize": params["page_size"],
+            "order": params["order"],
+            "region": params["region"],
+            **({"words": params["keyword"]} if params["keyword"] else {}),
+            **params["extra_params"],
+        },
+        "region": params["region"],
+        "stage": "product.search",
+    }
 
 
 def _resolve_fastmoss_settings(payload: Mapping[str, Any], *, search_request: Mapping[str, Any]) -> dict[str, Any]:
@@ -601,6 +838,19 @@ def _resolve_fastmoss_settings(payload: Mapping[str, Any], *, search_request: Ma
         "execution_control_db_url": _runtime_db_url(payload, fastmoss_settings=settings),
         "cookie_cache_namespace": first_non_empty(settings.get("cookie_cache_namespace")),
         "cookie_cache_ttl_seconds": settings.get("cookie_cache_ttl_seconds"),
+        "trust_env": coerce_bool(
+            first_non_empty(
+                settings.get("trust_env"),
+                settings.get("use_system_proxy"),
+                settings.get("fastmoss_trust_env"),
+                settings.get("fastmoss_use_system_proxy"),
+                payload.get("fastmoss_trust_env"),
+                payload.get("fastmoss_use_system_proxy"),
+                request_payload.get("fastmoss_trust_env"),
+                request_payload.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
         "api_request_delay_min_seconds": first_non_empty(
             settings.get("api_request_delay_min_seconds"),
             payload.get("api_request_delay_min_seconds"),
@@ -655,15 +905,62 @@ def _build_fastmoss_search_page_url(
     return f"{str(fastmoss_settings['base_url']).rstrip('/')}/zh/e-commerce/search?{query}"
 
 
+def _build_fastmoss_security_page_url(
+    search_request: Mapping[str, Any],
+    *,
+    verification_request: Mapping[str, Any],
+    fastmoss_settings: Mapping[str, Any],
+) -> str:
+    referer = first_non_empty(verification_request.get("referer"))
+    if referer:
+        return referer
+    path = first_non_empty(verification_request.get("path"))
+    params = coerce_mapping(verification_request.get("params"))
+    base_url = str(fastmoss_settings["base_url"]).rstrip("/")
+    product_id = first_non_empty(params.get("product_id"), params.get("goods_id"))
+    if product_id or "/api/goods/" in path:
+        return f"{base_url}/zh/e-commerce/detail/{product_id}" if product_id else f"{base_url}/zh/e-commerce/search"
+    uid = first_non_empty(params.get("uid"), params.get("author_uid"), params.get("unique_id"))
+    if uid or "/api/author/" in path:
+        return f"{base_url}/zh/influencer/detail/{uid}" if uid else f"{base_url}/zh/influencer/search"
+    seller_id = first_non_empty(params.get("seller_id"), params.get("shop_id"))
+    if seller_id or "/api/shop/" in path:
+        return f"{base_url}/zh/shop-marketing/detail/{seller_id}" if seller_id else f"{base_url}/zh/shop-marketing"
+    video_id = first_non_empty(params.get("video_id"))
+    if video_id or "/api/video/" in path:
+        return f"{base_url}/zh/media-source/video/{video_id}" if video_id else f"{base_url}/zh/media-source"
+    return _build_fastmoss_search_page_url(search_request, fastmoss_settings=fastmoss_settings)
+
+
+def _default_referer_for_request(
+    verification_request: Mapping[str, Any],
+    *,
+    fastmoss_settings: Mapping[str, Any],
+) -> str:
+    return _build_fastmoss_security_page_url({}, verification_request=verification_request, fastmoss_settings=fastmoss_settings)
+
+
+def _redact_replay_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    replay = dict(params)
+    for key in ("fm-sign", "cnonce", "_time"):
+        replay.pop(key, None)
+    return replay
+
+
 def _try_resolve_fastmoss_slider_security_check(
     page: Any,
     *,
+    automation_page: Any | None = None,
     raw_page: Any | None = None,
     search_url: str,
     max_attempts: int,
     appear_timeout_ms: int,
     settle_ms: int,
     confirm_ms: int,
+    audit_dir: str = DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
+    provider_config: Mapping[str, Any] | None = None,
+    resolver_config: Mapping[str, Any] | None = None,
+    selectors: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if max_attempts <= 0:
         return {"attempted": False, "resolved": False, "reason": "disabled", "attempts": []}
@@ -676,6 +973,990 @@ def _try_resolve_fastmoss_slider_security_check(
             "appear_timeout_ms": max(appear_timeout_ms, 0),
             "attempts": [],
         }
+    (
+        background_locator,
+        background_selector,
+        target_locator,
+        target_selector,
+        handle_locator,
+        handle_selector,
+    ) = _wait_for_fastmoss_slider_elements(
+        page,
+        timeout_ms=max(DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS, appear_timeout_ms),
+        selector_overrides=selectors,
+    )
+    if not (background_locator and target_locator and handle_locator):
+        return {
+            "attempted": True,
+            "resolved": False,
+            "reason": "missing_slider_elements_after_wait",
+            "image_timeout_ms": max(DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS, appear_timeout_ms),
+            "slider_state": state,
+            "selectors": compact_dict(
+                {
+                    "background": background_selector,
+                    "piece": target_selector,
+                    "handle": handle_selector,
+                }
+            ),
+            "attempts": [],
+        }
+    state = {
+        **state,
+        "background_selector": background_selector,
+        "piece_selector": target_selector,
+        "handle_selector": handle_selector,
+    }
+    try:
+        return _resolve_fastmoss_slider_with_framework_captcha(
+            automation_page or raw_page or page,
+            page=page,
+            initial_state=state,
+            search_url=search_url,
+            max_attempts=max_attempts,
+            settle_ms=settle_ms,
+            confirm_ms=confirm_ms,
+            audit_dir=audit_dir,
+            provider_config=provider_config,
+            resolver_config=resolver_config,
+            selectors=selectors,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "attempted": True,
+            "resolved": False,
+            "reason": "framework_slider_resolver_failed",
+            "error": str(exc),
+            "attempts": [],
+        }
+
+
+def _resolve_fastmoss_slider_with_framework_captcha(
+    automation_page: Any,
+    *,
+    page: Any,
+    initial_state: Mapping[str, Any],
+    search_url: str,
+    max_attempts: int,
+    settle_ms: int,
+    confirm_ms: int,
+    audit_dir: str,
+    provider_config: Mapping[str, Any] | None,
+    resolver_config: Mapping[str, Any] | None,
+    selectors: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    del automation_page
+    selector_payload = _resolve_fastmoss_slider_selector_payload(
+        page,
+        initial_state=initial_state,
+        overrides=selectors,
+    )
+    provider = _build_slider_captcha_provider(provider_config)
+    resolver_overrides = dict(resolver_config or {})
+    post_drag_poll_ms = max(int(resolver_overrides.pop("after_drag_wait_ms", settle_ms)), 1)
+    refresh_wait_ms = max(int(resolver_overrides.pop("refresh_wait_ms", DEFAULT_FASTMOSS_SLIDER_REFRESH_WAIT_MS)), 0)
+    image_timeout_ms = max(int(resolver_overrides.pop("image_timeout_ms", DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS)), 1)
+    resolver_overrides.pop("success_timeout_ms", None)
+    resolver_overrides.pop("max_attempts", None)
+    mode = first_non_empty(resolver_overrides.pop("mode", None), "match")
+    simple_target = coerce_bool(resolver_overrides.pop("simple_target", None), default=False)
+    drag_scale = _float_value(resolver_overrides.pop("drag_scale", None), 1.0)
+    drag_offset_x = _float_value(resolver_overrides.pop("drag_offset_x", None), 0.0)
+    drag_steps = _positive_int(resolver_overrides.pop("drag_steps", None), DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS)
+    drag_step_delay_seconds = _non_negative_float(
+        resolver_overrides.pop("drag_step_delay_seconds", None),
+        DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS,
+    )
+    config_payload = {
+        "max_attempts": 1,
+        "image_timeout_ms": image_timeout_ms,
+        "refresh_wait_ms": refresh_wait_ms,
+        "after_drag_wait_ms": 0,
+        "success_timeout_ms": 0,
+        "drag_steps": drag_steps,
+        "drag_step_delay_seconds": drag_step_delay_seconds,
+        "drag_scale": drag_scale,
+        "drag_offset_x": drag_offset_x,
+        "mode": mode,
+        "simple_target": simple_target,
+        "capture_page_screenshots": True,
+        "capture_image_artifacts": True,
+        **resolver_overrides,
+    }
+    artifact_refs: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+    raw_attempts: list[dict[str, Any]] = []
+    audit_payload: dict[str, Any] = {
+        "config": dict(config_payload),
+        "selectors": dict(selector_payload),
+        "success": False,
+        "attempts": raw_attempts,
+    }
+    reason = "slider_popup_still_visible"
+    resolved = False
+    confirmation_wait_ms = max(int(confirm_ms), 1)
+    for attempt_index in range(1, max(int(max_attempts), 1) + 1):
+        pre_retry_state: dict[str, Any] = {}
+        if attempt_index > 1:
+            pre_retry_state = _wait_for_fastmoss_slider_loading_cleared(
+                page,
+                selectors=selector_payload,
+                timeout_ms=image_timeout_ms,
+            )
+            if pre_retry_state.get("loading_visible"):
+                attempts.append(
+                    {
+                        "attempt": attempt_index,
+                        "reason": "slider_loading_not_finished_before_retry",
+                        "pre_retry_state": pre_retry_state,
+                    }
+                )
+                reason = "slider_loading_not_finished_before_retry"
+                break
+            _click_first_visible_locator(page, _selector_candidates(str(selector_payload.get("refresh") or ""), FASTMOSS_SLIDER_REFRESH_SELECTORS))
+            if refresh_wait_ms:
+                _safe_wait_for_timeout(page, refresh_wait_ms)
+        current_audit = _resolve_one_fastmoss_mixed_slider_attempt(
+            page,
+            provider=provider,
+            selectors=selector_payload,
+            config=config_payload,
+            attempt_index=attempt_index,
+        )
+        artifact_refs.extend(
+            _persist_fastmoss_slider_artifacts_payload(
+                current_audit,
+                audit_dir=audit_dir,
+                search_url=f"{search_url}#attempt-{attempt_index}",
+            )
+        )
+        current_raw_attempts = coerce_mapping(current_audit.get("state_dump")).get("attempts")
+        for raw_attempt in current_raw_attempts if isinstance(current_raw_attempts, list) else []:
+            if isinstance(raw_attempt, Mapping):
+                item = dict(raw_attempt)
+                item["attempt_index"] = attempt_index
+                raw_attempts.append(item)
+        current_records = _framework_slider_attempts_from_audit(
+            {"attempts": [raw_attempts[-1]]} if raw_attempts else current_audit,
+            post_drag_verify_wait_ms=post_drag_poll_ms,
+            confirmation_wait_ms=0,
+            confirmation_popup_still_visible=None,
+        )
+        record = current_records[-1] if current_records else {"attempt": attempt_index}
+        record["attempt"] = attempt_index
+        if pre_retry_state:
+            record["pre_retry_state"] = pre_retry_state
+        state = _wait_for_fastmoss_slider_post_drag_state(page, timeout_ms=post_drag_poll_ms)
+        record["post_drag_verify_wait_ms"] = post_drag_poll_ms
+        record["post_drag_wait_elapsed_ms"] = state.get("wait_elapsed_ms")
+        record["popup_still_visible"] = bool(state.get("visible"))
+        if not state.get("visible") or state.get("success"):
+            confirmed_state = _confirm_fastmoss_slider_cleared(page, confirm_ms=confirmation_wait_ms)
+            record.update(confirmed_state)
+            if confirmed_state.get("confirmation_popup_still_visible"):
+                record["reason"] = "slider_reappeared_after_confirmation_wait"
+                attempts.append(record)
+                reason = "slider_reappeared_after_confirmation_wait"
+                continue
+            record["reason"] = "slider_cleared"
+            attempts.append(record)
+            resolved = True
+            reason = "slider_cleared"
+            break
+        record["reason"] = "slider_popup_still_visible"
+        attempts.append(record)
+        reason = "slider_popup_still_visible"
+    audit_payload["success"] = resolved
+    return {
+        "attempted": True,
+        "resolved": resolved,
+        "reason": reason,
+        "search_url": search_url,
+        "attempts": attempts,
+        "framework_resolver": "FastMossMixedCssSliderResolver",
+        "post_drag_verify_wait_ms": post_drag_poll_ms,
+        "confirmation_wait_ms": confirmation_wait_ms,
+        "drag_profile": {
+            "steps": int(drag_steps),
+            "step_delay_seconds": float(drag_step_delay_seconds),
+        },
+        "audit": audit_payload,
+        "artifact_refs": artifact_refs,
+    }
+
+
+def _resolve_one_fastmoss_mixed_slider_attempt(
+    page: Any,
+    *,
+    provider: Any,
+    selectors: Mapping[str, str],
+    config: Mapping[str, Any],
+    attempt_index: int,
+) -> dict[str, Any]:
+    background_selector = first_non_empty(selectors.get("background"))
+    piece_selector = first_non_empty(selectors.get("piece"))
+    handle_selector = first_non_empty(selectors.get("handle"))
+    before_key = f"slider_attempt_{attempt_index}_before_screenshot"
+    target_position_key = f"slider_attempt_{attempt_index}_target_position_screenshot"
+    after_key = f"slider_attempt_{attempt_index}_after_screenshot"
+    background_key = f"slider_attempt_{attempt_index}_background_image"
+    piece_key = f"slider_attempt_{attempt_index}_piece_image"
+    extra: dict[str, Any] = {}
+    raw_attempt: dict[str, Any] = {
+        "attempt_index": attempt_index,
+        "match_method": "fastmoss_mixed_css_slider_resolver",
+        "mode": first_non_empty(config.get("mode"), "match"),
+        "simple_target": coerce_bool(config.get("simple_target"), default=False),
+    }
+    before_screenshot = _capture_page_screenshot_bytes(page)
+    if before_screenshot:
+        extra[before_key] = before_screenshot
+        raw_attempt["before_screenshot_key"] = before_key
+    try:
+        ready_state = _wait_for_fastmoss_slider_ready_for_attempt(
+            page,
+            selectors=selectors,
+            timeout_ms=_positive_int(config.get("image_timeout_ms"), DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS),
+        )
+        raw_attempt["ready_state"] = ready_state
+        if not ready_state.get("ready"):
+            raise RuntimeError(first_non_empty(ready_state.get("reason"), "FastMoss slider is not ready for matching."))
+        background_locator = page.locator(background_selector).first
+        piece_locator = page.locator(piece_selector).first
+        handle_locator = page.locator(handle_selector).first
+        _wait_locator_visible(background_locator, timeout_ms=_positive_int(config.get("image_timeout_ms"), DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS))
+        _wait_locator_visible(piece_locator, timeout_ms=_positive_int(config.get("image_timeout_ms"), DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS))
+        background_image = _fastmoss_background_css_image_bytes(background_locator, page=page, selector=background_selector)
+        piece_image = _locator_screenshot_bytes(piece_locator)
+        background_box = _locator_bounding_box(background_locator)
+        piece_box = _locator_bounding_box(piece_locator)
+        handle_box = _locator_bounding_box(handle_locator)
+        if not (background_image and piece_image and background_box and piece_box and handle_box):
+            raise RuntimeError("FastMoss slider artifacts are incomplete.")
+        background_width, background_height = _image_size(background_image)
+        piece_width, piece_height = _image_size(piece_image)
+        extra[background_key] = background_image
+        extra[piece_key] = piece_image
+        raw_attempt["background"] = {
+            "role": "background",
+            "selector": background_selector,
+            "source": "css_background_image",
+            "image_width": background_width,
+            "image_height": background_height,
+            "rendered_box": background_box,
+            "artifact_key": background_key,
+            "sha256": hashlib.sha256(background_image).hexdigest(),
+        }
+        raw_attempt["piece"] = {
+            "role": "piece",
+            "selector": piece_selector,
+            "source": "locator_screenshot",
+            "image_width": piece_width,
+            "image_height": piece_height,
+            "rendered_box": piece_box,
+            "artifact_key": piece_key,
+            "sha256": hashlib.sha256(piece_image).hexdigest(),
+        }
+        if raw_attempt["mode"] == "comparison":
+            slider_result = provider.compare_slider(piece_image, background_image)
+        else:
+            slider_result = provider.match_slider(
+                piece_image,
+                background_image,
+                simple_target=bool(raw_attempt["simple_target"]),
+            )
+        mapping = _build_fastmoss_mixed_slider_mapping(
+            page,
+            slider_result=slider_result,
+            background_box=background_box,
+            background_image_size=(background_width, background_height),
+            piece_box=piece_box,
+            handle_box=handle_box,
+            drag_scale=_float_value(config.get("drag_scale"), 1.0),
+            drag_offset_x=_float_value(config.get("drag_offset_x"), 0.0),
+        )
+        target_position_screenshot = _drag_fastmoss_slider_handle_with_target_capture(
+            page,
+            mapping=mapping,
+            steps=_positive_int(config.get("drag_steps"), DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS),
+            step_delay_seconds=_non_negative_float(
+                config.get("drag_step_delay_seconds"),
+                DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS,
+            ),
+        )
+        if target_position_screenshot:
+            extra[target_position_key] = target_position_screenshot
+            raw_attempt["target_position_screenshot_key"] = target_position_key
+        raw_attempt["slider_result"] = {
+            "target_x": getattr(slider_result, "target_x", None),
+            "target_y": getattr(slider_result, "target_y", None),
+            "confidence": getattr(slider_result, "confidence", None),
+            "raw": getattr(slider_result, "raw", None),
+        }
+        raw_attempt["mapping"] = mapping
+        raw_attempt["success"] = False
+    except Exception as exc:  # noqa: BLE001
+        raw_attempt["success"] = False
+        raw_attempt["error"] = f"{type(exc).__name__}: {exc}"
+
+    after_screenshot = _capture_page_screenshot_bytes(page)
+    if after_screenshot:
+        extra[after_key] = after_screenshot
+        raw_attempt["after_screenshot_key"] = after_key
+    audit_payload = {
+        "page_url": first_non_empty(getattr(page, "url", "")),
+        "page_title": _page_title(page),
+        "selectors": dict(selectors),
+        "config": dict(config),
+        "success": False,
+        "attempts": [raw_attempt],
+    }
+    extra["slider_captcha_audit"] = audit_payload
+    return {"state_dump": audit_payload, "extra": extra}
+
+
+def _wait_locator_visible(locator: Any, *, timeout_ms: int) -> None:
+    wait_for = getattr(locator, "wait_for", None)
+    if callable(wait_for):
+        wait_for(state="visible", timeout=timeout_ms)
+
+
+def _fastmoss_background_css_image_bytes(locator: Any, *, page: Any, selector: str) -> bytes:
+    resource = _fastmoss_background_css_resource(locator)
+    if not resource and page is not None and selector:
+        resource = _fastmoss_page_background_css_resource(page, selector=selector)
+    return _load_fastmoss_browser_image_resource(resource, page=page)
+
+
+def _fastmoss_background_css_resource(locator: Any) -> str:
+    payload = _locator_image_resource_payload(locator)
+    if not isinstance(payload, Mapping):
+        return ""
+    return _extract_css_url(first_non_empty(payload.get("backgroundImage")))
+
+
+def _fastmoss_page_background_css_resource(page: Any, *, selector: str) -> str:
+    payload = _page_image_resource_payload(page, selector=selector)
+    if not isinstance(payload, Mapping):
+        return ""
+    return _extract_css_url(first_non_empty(payload.get("backgroundImage")))
+
+
+def _load_fastmoss_browser_image_resource(resource: str, *, page: Any) -> bytes:
+    source = first_non_empty(resource)
+    if not source:
+        return b""
+    if source.startswith("data:image/"):
+        try:
+            _prefix, encoded = source.split(",", 1)
+            return base64.b64decode(encoded)
+        except Exception:
+            return b""
+    absolute_url = urljoin(first_non_empty(getattr(page, "url", ""), "https://www.fastmoss.com"), source)
+    try:
+        headers = {
+            "User-Agent": _browser_user_agent(page),
+            "Referer": first_non_empty(getattr(page, "url", ""), "https://www.fastmoss.com"),
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+        response = requests.get(
+            absolute_url,
+            headers=headers,
+            cookies=_browser_cookie_map(page, absolute_url),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return bytes(response.content)
+    except Exception:
+        return b""
+    return b""
+
+
+def _browser_user_agent(page: Any) -> str:
+    evaluate = getattr(page, "evaluate", None)
+    if callable(evaluate):
+        try:
+            return first_non_empty(evaluate("() => navigator.userAgent"), "Mozilla/5.0")
+        except Exception:
+            return "Mozilla/5.0"
+    return "Mozilla/5.0"
+
+
+def _browser_cookie_map(page: Any, url: str) -> dict[str, str]:
+    context = getattr(page, "context", None)
+    cookies = getattr(context, "cookies", None)
+    if not callable(cookies):
+        return {}
+    try:
+        records = cookies(url)
+    except TypeError:
+        records = cookies()
+    except Exception:
+        return {}
+    return {
+        str(record.get("name")): str(record.get("value"))
+        for record in records or []
+        if isinstance(record, Mapping) and first_non_empty(record.get("name"))
+    }
+
+
+def _build_fastmoss_mixed_slider_mapping(
+    page: Any,
+    *,
+    slider_result: Any,
+    background_box: Mapping[str, float],
+    background_image_size: tuple[int, int],
+    piece_box: Mapping[str, float],
+    handle_box: Mapping[str, float],
+    drag_scale: float,
+    drag_offset_x: float,
+) -> dict[str, Any]:
+    image_width = float(background_image_size[0] or 1)
+    rendered_width = float(background_box.get("width") or 0.0)
+    raw_target_x = float(getattr(slider_result, "target_x", 0.0) or 0.0)
+    raw_target_y = float(getattr(slider_result, "target_y", 0.0) or 0.0)
+    css_target_x = (raw_target_x / max(image_width, 1.0)) * rendered_width
+    current_piece_center_x = (
+        float(piece_box.get("x") or 0.0)
+        + (float(piece_box.get("width") or 0.0) / 2)
+        - float(background_box.get("x") or 0.0)
+    )
+    unscaled_drag_distance = css_target_x - current_piece_center_x
+    drag_distance = (unscaled_drag_distance * drag_scale) + drag_offset_x
+    handle_start_x = float(handle_box.get("x") or 0.0) + (float(handle_box.get("width") or 0.0) / 2)
+    handle_start_y = float(handle_box.get("y") or 0.0) + (float(handle_box.get("height") or 0.0) / 2)
+    return {
+        "raw_target_x": raw_target_x,
+        "raw_target_y": raw_target_y,
+        "raw_target_box": _raw_target_box(coerce_mapping(getattr(slider_result, "raw", None)).get("target")),
+        "target_interpretation": "target_center_minus_piece_center",
+        "background_image_width": background_image_size[0],
+        "background_image_height": background_image_size[1],
+        "background_box": dict(background_box),
+        "piece_box": dict(piece_box),
+        "handle_box": dict(handle_box),
+        "css_target_x": css_target_x,
+        "current_piece_center_x": current_piece_center_x,
+        "unscaled_drag_distance": unscaled_drag_distance,
+        "drag_scale": drag_scale,
+        "drag_offset_x": drag_offset_x,
+        "drag_distance": drag_distance,
+        "handle_start_x": handle_start_x,
+        "handle_start_y": handle_start_y,
+        "handle_end_x": handle_start_x + drag_distance,
+        "handle_end_y": handle_start_y,
+        "device_pixel_ratio": _device_pixel_ratio(page),
+    }
+
+
+def _drag_fastmoss_slider_handle_with_target_capture(
+    page: Any,
+    *,
+    mapping: Mapping[str, Any],
+    steps: int,
+    step_delay_seconds: float,
+) -> bytes:
+    mouse = getattr(page, "mouse", None)
+    if mouse is None:
+        raise RuntimeError("FastMoss slider captcha requires page mouse support")
+    start_x = float(mapping.get("handle_start_x") or 0.0)
+    start_y = float(mapping.get("handle_start_y") or 0.0)
+    distance = float(mapping.get("drag_distance") or 0.0)
+    mouse.move(start_x, start_y)
+    _safe_wait_for_timeout(page, 160)
+    mouse.down()
+    _safe_wait_for_timeout(page, 120)
+    effective_steps = max(1, int(steps))
+    for step in range(1, effective_steps + 1):
+        progress = step / effective_steps
+        eased = 1 - ((1 - progress) ** 2.7)
+        y_offset = 0.8 if step % 3 == 0 else -0.5 if step % 3 == 1 else 0.15
+        mouse.move(start_x + (distance * eased), start_y + y_offset)
+        if step_delay_seconds:
+            time.sleep(step_delay_seconds)
+    overshoot = 1.5 if distance >= 0 else -1.5
+    mouse.move(start_x + distance + overshoot, start_y + 0.4)
+    _safe_wait_for_timeout(page, 90)
+    mouse.move(start_x + distance, start_y)
+    _safe_wait_for_timeout(page, 120)
+    target_position_screenshot = _capture_page_screenshot_bytes(page)
+    mouse.up()
+    return target_position_screenshot
+
+
+def _raw_target_box(value: Any) -> list[int] | None:
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return None
+    try:
+        return [int(value[0]), int(value[1]), int(value[2]), int(value[3])]
+    except (TypeError, ValueError):
+        return None
+
+
+def _device_pixel_ratio(page: Any) -> float | None:
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return None
+    try:
+        return float(evaluate("() => window.devicePixelRatio"))
+    except Exception:
+        return None
+
+
+def _resolve_fastmoss_slider_selector_payload(
+    page: Any,
+    *,
+    initial_state: Mapping[str, Any],
+    overrides: Mapping[str, str] | None,
+) -> dict[str, str]:
+    override_payload = {str(key): str(value) for key, value in dict(overrides or {}).items() if str(value).strip()}
+    background_selector = first_non_empty(override_payload.get("background"), initial_state.get("background_selector"))
+    target_selector = first_non_empty(override_payload.get("piece"), initial_state.get("piece_selector"))
+    handle_selector = first_non_empty(override_payload.get("handle"), initial_state.get("handle_selector"))
+    refresh_selector = first_non_empty(override_payload.get("refresh"))
+    if not background_selector:
+        background_locator, background_selector = _first_visible_locator(page, FASTMOSS_SLIDER_BACKGROUND_SELECTORS)
+        del background_locator
+    if not target_selector:
+        target_locator, target_selector = _first_visible_locator(page, FASTMOSS_SLIDER_TARGET_SELECTORS)
+        del target_locator
+    if not handle_selector:
+        handle_locator, handle_selector = _first_visible_locator(page, FASTMOSS_SLIDER_HANDLE_SELECTORS)
+        del handle_locator
+    if not refresh_selector:
+        refresh_locator, refresh_selector = _first_visible_locator(page, FASTMOSS_SLIDER_REFRESH_SELECTORS, timeout_ms=250)
+        del refresh_locator
+    payload = {
+        "popup": first_non_empty(initial_state.get("selector"), "#captcha-verify-container"),
+        "background": background_selector,
+        "piece": target_selector,
+        "handle": handle_selector,
+        "refresh": refresh_selector,
+        **override_payload,
+    }
+    missing = [key for key in ("background", "piece", "handle") if not first_non_empty(payload.get(key))]
+    if missing:
+        raise RuntimeError(f"FastMoss slider selectors missing: {', '.join(missing)}")
+    return {key: value for key, value in payload.items() if first_non_empty(value)}
+
+
+def _framework_slider_attempts_from_audit(
+    audit_payload: Mapping[str, Any],
+    *,
+    post_drag_verify_wait_ms: int,
+    confirmation_wait_ms: int,
+    confirmation_popup_still_visible: bool | None,
+) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    raw_attempts = audit_payload.get("attempts")
+    for item in raw_attempts if isinstance(raw_attempts, list) else []:
+        attempt = item if isinstance(item, Mapping) else {}
+        mapping = attempt.get("mapping") if isinstance(attempt.get("mapping"), Mapping) else {}
+        slider_result = attempt.get("slider_result") if isinstance(attempt.get("slider_result"), Mapping) else {}
+        background = attempt.get("background") if isinstance(attempt.get("background"), Mapping) else {}
+        piece = attempt.get("piece") if isinstance(attempt.get("piece"), Mapping) else {}
+        record = {
+            "attempt": attempt.get("attempt_index"),
+            "reason": "" if attempt.get("success") else first_non_empty(attempt.get("error"), "slider_attempt_failed"),
+            "match_method": first_non_empty(attempt.get("match_method"), "framework_slider_resolver"),
+            "mode": attempt.get("mode"),
+            "simple_target": attempt.get("simple_target"),
+            "target_x": slider_result.get("target_x"),
+            "target_y": slider_result.get("target_y"),
+            "confidence": slider_result.get("confidence"),
+            "raw_result": slider_result.get("raw"),
+            "coordinate_mapping": mapping,
+            "drag_distance": mapping.get("drag_distance"),
+            "ready_state": attempt.get("ready_state") if isinstance(attempt.get("ready_state"), Mapping) else {},
+            "post_drag_verify_wait_ms": post_drag_verify_wait_ms,
+            "popup_still_visible": attempt.get("popup_still_visible"),
+            "selector_success": attempt.get("selector_success"),
+            "artifact_keys": {
+                "background": background.get("artifact_key"),
+                "piece": piece.get("artifact_key"),
+                "before_screenshot": attempt.get("before_screenshot_key"),
+                "target_position_screenshot": attempt.get("target_position_screenshot_key"),
+                "after_screenshot": attempt.get("after_screenshot_key"),
+            },
+        }
+        if attempt.get("success") and confirmation_wait_ms:
+            record["confirmation_wait_ms"] = confirmation_wait_ms
+            record["confirmation_popup_still_visible"] = bool(confirmation_popup_still_visible)
+            if confirmation_popup_still_visible:
+                record["reason"] = "slider_reappeared_after_confirmation_wait"
+        attempts.append(record)
+    return attempts
+
+
+def _wait_for_fastmoss_slider_loading_cleared(
+    page: Any,
+    *,
+    selectors: Mapping[str, str],
+    timeout_ms: int,
+    poll_ms: int = DEFAULT_FASTMOSS_SLIDER_POLL_MS,
+) -> dict[str, Any]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    elapsed_ms = 0
+    last_state: dict[str, Any] = {}
+    while True:
+        state = _read_fastmoss_slider_readiness(page, selectors=selectors)
+        last_state = {**state, "wait_elapsed_ms": elapsed_ms}
+        if not state.get("visible") or not state.get("loading_visible") or elapsed_ms >= effective_timeout_ms:
+            return last_state
+        wait_ms = min(effective_poll_ms, effective_timeout_ms - elapsed_ms)
+        if wait_ms <= 0:
+            return last_state
+        _safe_wait_for_timeout(page, wait_ms)
+        elapsed_ms += wait_ms
+
+
+def _wait_for_fastmoss_slider_ready_for_attempt(
+    page: Any,
+    *,
+    selectors: Mapping[str, str],
+    timeout_ms: int,
+    poll_ms: int = DEFAULT_FASTMOSS_SLIDER_POLL_MS,
+) -> dict[str, Any]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    elapsed_ms = 0
+    last_state: dict[str, Any] = {}
+    while True:
+        state = _read_fastmoss_slider_readiness(page, selectors=selectors)
+        last_state = {**state, "wait_elapsed_ms": elapsed_ms}
+        if state.get("ready") or not state.get("visible") or elapsed_ms >= effective_timeout_ms:
+            return last_state
+        wait_ms = min(effective_poll_ms, effective_timeout_ms - elapsed_ms)
+        if wait_ms <= 0:
+            return last_state
+        _safe_wait_for_timeout(page, wait_ms)
+        elapsed_ms += wait_ms
+
+
+def _read_fastmoss_slider_readiness(page: Any, *, selectors: Mapping[str, str]) -> dict[str, Any]:
+    state = _read_fastmoss_slider_state(page)
+    if not state.get("visible"):
+        return {**state, "ready": False, "reason": "slider_not_visible"}
+
+    background_selector = first_non_empty(selectors.get("background"), state.get("selector"))
+    piece_selector = first_non_empty(selectors.get("piece"))
+    handle_selector = first_non_empty(selectors.get("handle"), state.get("handle_selector"))
+    popup_selector = first_non_empty(selectors.get("popup"), state.get("selector"))
+    loading_visible = _fastmoss_slider_loading_visible(page, popup_selector=popup_selector)
+
+    background_locator, background_found_selector = _first_visible_locator(
+        page,
+        _selector_candidates(background_selector, FASTMOSS_SLIDER_BACKGROUND_SELECTORS),
+        timeout_ms=250,
+    )
+    piece_locator, piece_found_selector = _first_visible_locator(
+        page,
+        _selector_candidates(piece_selector, FASTMOSS_SLIDER_TARGET_SELECTORS),
+        timeout_ms=250,
+    )
+    handle_locator, handle_found_selector = _first_visible_locator(
+        page,
+        _selector_candidates(handle_selector, FASTMOSS_SLIDER_HANDLE_SELECTORS),
+        timeout_ms=250,
+    )
+    background_box = _locator_bounding_box(background_locator) if background_locator else {}
+    piece_box = _locator_bounding_box(piece_locator) if piece_locator else {}
+    handle_box = _locator_bounding_box(handle_locator) if handle_locator else {}
+    background_resource = _fastmoss_background_css_resource(background_locator) if background_locator else ""
+    piece_center_x = _slider_piece_center_x(background_box, piece_box)
+    reset_ready = _fastmoss_slider_piece_reset_ready(background_box, piece_box)
+    ready = bool(
+        background_locator
+        and piece_locator
+        and handle_locator
+        and background_resource
+        and not loading_visible
+        and reset_ready
+    )
+    if ready:
+        reason = "slider_ready"
+    elif loading_visible:
+        reason = "slider_loading"
+    elif not background_locator or not piece_locator or not handle_locator:
+        reason = "missing_slider_elements"
+    elif not background_resource:
+        reason = "background_image_not_ready"
+    elif not reset_ready:
+        reason = "slider_not_reset"
+    else:
+        reason = "slider_not_ready"
+    return {
+        **state,
+        "ready": ready,
+        "reason": reason,
+        "loading_visible": loading_visible,
+        "background_selector": background_found_selector,
+        "piece_selector": piece_found_selector,
+        "handle_selector": handle_found_selector,
+        "background_image_ready": bool(background_resource),
+        "piece_reset_ready": reset_ready,
+        "piece_center_x": piece_center_x,
+        "background_box": background_box,
+        "piece_box": piece_box,
+        "handle_box": handle_box,
+    }
+
+
+def _fastmoss_slider_loading_visible(page: Any, *, popup_selector: str) -> bool:
+    script = """
+    (payload) => {
+      const root = payload.popupSelector ? document.querySelector(payload.popupSelector) : document;
+      if (!root) return false;
+      const selectors = payload.loadingSelectors || [];
+      const visible = (el) => {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && Number(style.opacity || '1') > 0.05
+          && rect.width > 4
+          && rect.height > 4;
+      };
+      for (const selector of selectors) {
+        for (const el of root.querySelectorAll(selector)) {
+          if (visible(el)) return true;
+        }
+      }
+      return /loading|verifying/i.test(root.innerText || '');
+    }
+    """
+    evaluate = getattr(page, "evaluate", None)
+    if callable(evaluate):
+        try:
+            return bool(
+                evaluate(
+                    script,
+                    {
+                        "popupSelector": popup_selector,
+                        "loadingSelectors": list(FASTMOSS_SLIDER_LOADING_SELECTORS),
+                    },
+                )
+            )
+        except TypeError:
+            try:
+                return bool(evaluate(script))
+            except Exception:
+                return False
+        except Exception:
+            return False
+    return False
+
+
+def _slider_piece_center_x(background_box: Mapping[str, Any], piece_box: Mapping[str, Any]) -> float | None:
+    if not background_box or not piece_box:
+        return None
+    return (
+        float(piece_box.get("x") or 0.0)
+        + (float(piece_box.get("width") or 0.0) / 2)
+        - float(background_box.get("x") or 0.0)
+    )
+
+
+def _fastmoss_slider_piece_reset_ready(background_box: Mapping[str, Any], piece_box: Mapping[str, Any]) -> bool:
+    piece_center_x = _slider_piece_center_x(background_box, piece_box)
+    if piece_center_x is None:
+        return False
+    background_width = float(background_box.get("width") or 0.0)
+    piece_width = float(piece_box.get("width") or 0.0)
+    reset_threshold = max(piece_width * 1.6, background_width * 0.35)
+    return piece_center_x <= reset_threshold
+
+
+def _wait_for_fastmoss_slider_post_drag_state(
+    page: Any,
+    *,
+    timeout_ms: int,
+    poll_ms: int = DEFAULT_FASTMOSS_SLIDER_POLL_MS,
+) -> dict[str, Any]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    elapsed_ms = 0
+    last_state: dict[str, Any] = {}
+    while True:
+        state = _read_fastmoss_slider_state(page)
+        last_state = {
+            **state,
+            "wait_elapsed_ms": elapsed_ms,
+        }
+        if not state.get("visible") or state.get("success") or elapsed_ms >= effective_timeout_ms:
+            return last_state
+        wait_ms = min(effective_poll_ms, effective_timeout_ms - elapsed_ms)
+        if wait_ms <= 0:
+            return last_state
+        _safe_wait_for_timeout(page, wait_ms)
+        elapsed_ms += wait_ms
+
+
+def _confirm_fastmoss_slider_cleared(page: Any, *, confirm_ms: int) -> dict[str, Any]:
+    wait_ms = max(int(confirm_ms), 1)
+    _safe_wait_for_timeout(page, wait_ms)
+    confirmed_state = _read_fastmoss_slider_state(page)
+    return {
+        "confirmation_wait_ms": wait_ms,
+        "confirmation_popup_still_visible": bool(confirmed_state.get("visible")),
+    }
+
+
+def _capture_fastmoss_browser_diagnostic_artifacts(
+    page: Any,
+    *,
+    raw_page: Any | None,
+    audit_dir: str,
+    search_url: str,
+    label: str,
+    state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    root = Path(audit_dir or DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR)
+    run_key = hashlib.sha256(search_url.encode("utf-8")).hexdigest()[:16]
+    target_dir = root / run_key / "browser_diagnostics"
+    safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(label)).strip("_") or "browser_diagnostic"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        state_payload = {
+            "label": safe_label,
+            "search_url": search_url,
+            "page_url": first_non_empty(getattr(page, "url", ""), getattr(raw_page, "url", "")),
+            "page_title": _page_title(page) or _page_title(raw_page),
+            "state": _json_safe_value(dict(state)),
+        }
+        refs = [
+            _write_fastmoss_slider_json_file(
+                target_dir / f"{safe_label}_state.json",
+                state_payload,
+                artifact_key=f"{safe_label}_state",
+            )
+        ]
+        screenshot = _capture_page_screenshot_bytes(page) or _capture_page_screenshot_bytes(raw_page)
+        if screenshot:
+            refs.append(
+                _write_fastmoss_slider_binary_file(
+                    target_dir / f"{safe_label}_screenshot",
+                    screenshot,
+                    artifact_key=f"{safe_label}_screenshot",
+                )
+            )
+        else:
+            refs.append(
+                _write_fastmoss_slider_json_file(
+                    target_dir / f"{safe_label}_screenshot_unavailable.json",
+                    {"reason": "page_screenshot_unavailable"},
+                    artifact_key=f"{safe_label}_screenshot_unavailable",
+                )
+            )
+        return refs
+    except Exception as exc:  # noqa: BLE001
+        return [
+            {
+                "artifact_key": f"{safe_label}_diagnostic_capture_failed",
+                "error": str(exc),
+                "mime_type": "application/json",
+            }
+        ]
+
+
+def _capture_page_screenshot_bytes(page: Any | None) -> bytes:
+    if page is None:
+        return b""
+    screenshot = getattr(page, "screenshot", None)
+    if not callable(screenshot):
+        return b""
+    for kwargs in ({"full_page": True, "timeout": 3_000}, {"full_page": True}, {}):
+        try:
+            payload = screenshot(**kwargs)
+        except TypeError:
+            continue
+        except Exception:
+            return b""
+        return payload if isinstance(payload, bytes) else b""
+    return b""
+
+
+def _page_title(page: Any | None) -> str:
+    title = getattr(page, "title", None)
+    if not callable(title):
+        return ""
+    try:
+        return coerce_str(title())
+    except Exception:
+        return ""
+
+
+def _json_safe_value(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return str(value)
+
+
+def _persist_fastmoss_slider_artifacts_payload(
+    artifacts_payload: Mapping[str, Any],
+    *,
+    audit_dir: str,
+    search_url: str,
+) -> list[dict[str, Any]]:
+    root = Path(audit_dir or DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR)
+    run_key = hashlib.sha256(search_url.encode("utf-8")).hexdigest()[:16]
+    target_dir = root / run_key
+    target_dir.mkdir(parents=True, exist_ok=True)
+    refs: list[dict[str, Any]] = []
+    state_dump = artifacts_payload.get("state_dump")
+    if state_dump:
+        refs.append(_write_fastmoss_slider_json_file(target_dir / "slider_captcha_audit.json", state_dump))
+
+    extra = artifacts_payload.get("extra") if isinstance(artifacts_payload.get("extra"), Mapping) else {}
+    for key, value in extra.items():
+        safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(key)).strip("_") or "artifact"
+        if isinstance(value, bytes):
+            refs.append(_write_fastmoss_slider_binary_file(target_dir / f"{safe_key}.bin", value, artifact_key=str(key)))
+        elif key == "slider_captcha_audit":
+            continue
+        elif isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+            refs.append(_write_fastmoss_slider_json_file(target_dir / f"{safe_key}.json", value, artifact_key=str(key)))
+    return refs
+
+
+def _write_fastmoss_slider_json_file(
+    path: Path,
+    value: Any,
+    *,
+    artifact_key: str = "slider_captcha_audit",
+) -> dict[str, Any]:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "artifact_key": artifact_key,
+        "local_path": str(path),
+        "file_name": path.name,
+        "mime_type": "application/json",
+    }
+
+
+def _write_fastmoss_slider_binary_file(path: Path, value: bytes, *, artifact_key: str) -> dict[str, Any]:
+    suffix = ".png" if value.startswith(b"\x89PNG") else ".jpg" if value.startswith(b"\xff\xd8") else ".bin"
+    final_path = path.with_suffix(suffix)
+    final_path.write_bytes(value)
+    return {
+        "artifact_key": artifact_key,
+        "local_path": str(final_path),
+        "file_name": final_path.name,
+        "mime_type": "image/png" if suffix == ".png" else "image/jpeg" if suffix == ".jpg" else "application/octet-stream",
+    }
+
+
+def _legacy_resolve_fastmoss_slider_security_check(
+    page: Any,
+    *,
+    raw_page: Any | None = None,
+    search_url: str,
+    max_attempts: int,
+    settle_ms: int,
+    confirm_ms: int,
+) -> dict[str, Any]:
     try:
         captcha_provider = _build_slider_captcha_provider()
     except Exception as exc:  # noqa: BLE001
@@ -773,13 +2054,22 @@ def _wait_for_fastmoss_slider_state(page: Any, *, timeout_ms: int) -> dict[str, 
         _safe_wait_for_timeout(page, min(500, remaining_ms))
 
 
-def _wait_for_fastmoss_slider_elements(page: Any, *, timeout_ms: int) -> tuple[Any | None, str, Any | None, str, Any | None, str]:
+def _wait_for_fastmoss_slider_elements(
+    page: Any,
+    *,
+    timeout_ms: int,
+    selector_overrides: Mapping[str, str] | None = None,
+) -> tuple[Any | None, str, Any | None, str, Any | None, str]:
+    overrides = {str(key): str(value) for key, value in dict(selector_overrides or {}).items() if str(value).strip()}
+    background_selectors = _selector_candidates(overrides.get("background"), FASTMOSS_SLIDER_BACKGROUND_SELECTORS)
+    target_selectors = _selector_candidates(overrides.get("piece"), FASTMOSS_SLIDER_TARGET_SELECTORS)
+    handle_selectors = _selector_candidates(overrides.get("handle"), FASTMOSS_SLIDER_HANDLE_SELECTORS)
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
     last: tuple[Any | None, str, Any | None, str, Any | None, str] = (None, "", None, "", None, "")
     while True:
-        background_locator, background_selector = _first_visible_locator(page, FASTMOSS_SLIDER_BACKGROUND_SELECTORS)
-        target_locator, target_selector = _first_visible_locator(page, FASTMOSS_SLIDER_TARGET_SELECTORS)
-        handle_locator, handle_selector = _first_visible_locator(page, FASTMOSS_SLIDER_HANDLE_SELECTORS)
+        background_locator, background_selector = _first_visible_locator(page, background_selectors)
+        target_locator, target_selector = _first_visible_locator(page, target_selectors)
+        handle_locator, handle_selector = _first_visible_locator(page, handle_selectors)
         last = (
             background_locator,
             background_selector,
@@ -794,6 +2084,13 @@ def _wait_for_fastmoss_slider_elements(page: Any, *, timeout_ms: int) -> tuple[A
         if remaining_ms <= 0:
             return last
         _safe_wait_for_timeout(page, min(500, remaining_ms))
+
+
+def _selector_candidates(primary: str | None, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = first_non_empty(primary)
+    if not normalized:
+        return fallback
+    return (normalized, *tuple(selector for selector in fallback if selector != normalized))
 
 
 def _read_fastmoss_slider_state(page: Any) -> dict[str, Any]:
@@ -1028,10 +2325,10 @@ def _drag_slider_handle(page: Any, *, handle_box: Mapping[str, float], drag_dist
     mouse.up()
 
 
-def _build_slider_captcha_provider() -> Any:
+def _build_slider_captcha_provider(provider_config: Mapping[str, Any] | None = None) -> Any:
     from automation_framework.captcha import DdddOcrCaptchaProvider
 
-    return DdddOcrCaptchaProvider()
+    return DdddOcrCaptchaProvider(**dict(provider_config or {}))
 
 
 def _page_goto(page: Any, url: str, *, timeout_ms: int) -> None:
@@ -1128,8 +2425,17 @@ def _redact_slider_resolution(slider_resolution: Mapping[str, Any]) -> dict[str,
                     {
                         "attempt": record.get("attempt"),
                         "reason": record.get("reason"),
+                        "match_method": record.get("match_method"),
+                        "mode": record.get("mode"),
+                        "simple_target": record.get("simple_target"),
+                        "target_x": record.get("target_x"),
+                        "target_y": record.get("target_y"),
+                        "raw_result": record.get("raw_result"),
+                        "coordinate_mapping": record.get("coordinate_mapping"),
                         "drag_distance": record.get("drag_distance"),
                         "confidence": record.get("confidence"),
+                        "artifact_keys": record.get("artifact_keys"),
+                        "post_drag_verify_wait_ms": record.get("post_drag_verify_wait_ms"),
                         "confirmation_wait_ms": record.get("confirmation_wait_ms"),
                         "confirmation_popup_still_visible": record.get("confirmation_popup_still_visible"),
                     }
@@ -1141,6 +2447,11 @@ def _redact_slider_resolution(slider_resolution: Mapping[str, Any]) -> dict[str,
             "resolved": bool(slider_resolution.get("resolved")),
             "reason": first_non_empty(slider_resolution.get("reason")),
             "attempts": safe_attempts,
+            "framework_resolver": first_non_empty(slider_resolution.get("framework_resolver")),
+            "post_drag_verify_wait_ms": slider_resolution.get("post_drag_verify_wait_ms"),
+            "confirmation_wait_ms": slider_resolution.get("confirmation_wait_ms"),
+            "drag_profile": coerce_mapping(slider_resolution.get("drag_profile")),
+            "artifact_refs": coerce_mapping_list(slider_resolution.get("artifact_refs")),
         }
     )
 
@@ -1157,6 +2468,9 @@ def _redact_fastmoss_http_error(exc: FastMossHTTPError) -> dict[str, Any]:
             "stage": exc.stage,
             "method": exc.method,
             "path": exc.path,
+            "params": _redact_replay_params(exc.params or {}),
+            "referer": exc.referer,
+            "region": exc.region,
             "data_id": data.get("id"),
             "ext_is_login": ext.get("is_login"),
         }
@@ -1210,6 +2524,13 @@ def _non_negative_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 0 else default
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _optional_int(value: Any) -> int | None:

@@ -34,8 +34,12 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossAuthError,
     FastMossHTTPError,
     FastMossHTTPSession,
+    FastMossSessionConflictError,
 )
-from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import attach_fastmoss_cookie_cache
+from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import (
+    attach_fastmoss_cookie_cache,
+    refresh_fastmoss_session_cookies,
+)
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from collections.abc import Mapping
@@ -95,6 +99,15 @@ def fastmoss_product_search_handler(context: HandlerContext) -> HandlerResult:
         )
         return failed_result(context, error=error, summary={"candidate_count": 0})
     except FastMossHTTPError as exc:
+        if isinstance(exc, FastMossSessionConflictError):
+            error = build_error(
+                error_type="auth_failure",
+                error_code="fastmoss_session_conflict_or_external_login",
+                message=str(exc),
+                retryable=False,
+                details=exc.to_dict(),
+            )
+            return failed_result(context, error=error, summary={"candidate_count": 0})
         if _is_fastmoss_security_verification_error(exc):
             error = build_error(
                 error_type="security_verification",
@@ -286,6 +299,17 @@ def _resolve_fastmoss_search_settings(payload: dict[str, Any]) -> dict[str, Any]
             settings.get("cookie_cache_ttl_seconds"),
             payload.get("fastmoss_cookie_cache_ttl_seconds"),
         ),
+        "trust_env": coerce_bool(
+            first_non_empty(
+                settings.get("trust_env"),
+                settings.get("use_system_proxy"),
+                settings.get("fastmoss_trust_env"),
+                settings.get("fastmoss_use_system_proxy"),
+                payload.get("fastmoss_trust_env"),
+                payload.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
         "api_request_delay_min_seconds": first_non_empty(
             settings.get("api_request_delay_min_seconds"),
             settings.get("request_delay_min_seconds"),
@@ -336,6 +360,7 @@ def _resolve_fastmoss_product_search_pages(
         default_region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(fastmoss_settings.get("trust_env"), default=False),
     )
     with session:
         cookie_cache_status = _attach_fastmoss_cookie_cache_if_configured(
@@ -361,6 +386,8 @@ def _resolve_fastmoss_product_search_pages(
                 session,
                 cookies=cookies,
                 has_credentials=bool(phone and password),
+                fastmoss_settings=fastmoss_settings,
+                query=query,
             ):
                 raise
             raw_pages = _fetch_fastmoss_search_pages(session, query=query)
@@ -380,19 +407,36 @@ def _refresh_fastmoss_session_after_security_check(
     *,
     cookies: list[Mapping[str, Any]],
     has_credentials: bool,
+    fastmoss_settings: Mapping[str, Any],
+    query: Mapping[str, Any],
 ) -> bool:
     """Refresh FastMoss auth material once after a safety challenge response."""
 
-    if has_credentials:
-        session.clear_cookies_for_domain("fastmoss.com")
-        session.login()
-        session.ensure_logged_in()
-        return True
-    if cookies:
-        session.replace_browser_cookies(cookies)
-        session.ensure_logged_in()
-        return True
-    return False
+    if not has_credentials and not cookies:
+        return False
+    db_url = first_non_empty(fastmoss_settings.get("execution_control_db_url"), fastmoss_settings.get("db_url"))
+    account_key = first_non_empty(
+        fastmoss_settings.get("account_key"),
+        fastmoss_settings.get("phone"),
+        fastmoss_settings.get("phone_env"),
+    )
+    store = RuntimeStore(db_url=db_url) if db_url and account_key else None
+    refresh_fastmoss_session_cookies(
+        session,
+        store=store,
+        account_key=first_non_empty(account_key, "default"),
+        region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
+        namespace=first_non_empty(fastmoss_settings.get("cookie_cache_namespace")),
+        enabled=coerce_bool(fastmoss_settings.get("cookie_cache_enabled"), default=True),
+        cookies=cookies,
+        prefer_login=has_credentials,
+        ttl_seconds=_non_negative_float(
+            fastmoss_settings.get("cookie_cache_ttl_seconds"),
+            12 * 60 * 60,
+        ),
+        reason="fastmoss_security_check_login_refresh",
+    )
+    return True
 
 
 def _attach_fastmoss_cookie_cache_if_configured(
@@ -438,6 +482,8 @@ def _fetch_fastmoss_search_pages(
     page = int(query["page"])
     stop_reason = "max_pages"
     page_request_delay_seconds = _non_negative_float(query.get("page_request_delay_seconds"), 0.0)
+    min_day7_sold_count = _fastmoss_min_day7_sold_count(query)
+    stop_on_day7_threshold = _fastmoss_query_uses_day7_desc(query) and min_day7_sold_count is not None
     for _ in range(max(int(query["max_pages"]), 1)):
         if raw_pages and page_request_delay_seconds > 0:
             time.sleep(page_request_delay_seconds)
@@ -470,6 +516,9 @@ def _fetch_fastmoss_search_pages(
         if query["stop_when_no_new_product"] and not new_keys:
             stop_reason = "no_new_product"
             break
+        if stop_on_day7_threshold and _fastmoss_page_below_min_day7_sold_count(rows, min_day7_sold_count):
+            stop_reason = "below_min_day7_sold_count"
+            break
         if int(query["max_candidates"]) > 0 and len(seen_product_keys) >= int(query["max_candidates"]):
             stop_reason = "max_candidates"
             break
@@ -489,6 +538,33 @@ def _fetch_fastmoss_search_pages(
     if raw_pages:
         raw_pages[-1]["stop_reason"] = stop_reason
     return raw_pages
+
+
+def _fastmoss_min_day7_sold_count(query: Mapping[str, Any]) -> int | float | None:
+    output_conditions = coerce_mapping(query.get("output_conditions"))
+    business_conditions = coerce_mapping(output_conditions.get("business_conditions"))
+    threshold = _parse_number(business_conditions.get("min_day7_sold_count"))
+    if threshold is None or threshold <= 0:
+        return None
+    return threshold
+
+
+def _fastmoss_query_uses_day7_desc(query: Mapping[str, Any]) -> bool:
+    return coerce_str(query.get("source_order")) == "2,2"
+
+
+def _fastmoss_page_below_min_day7_sold_count(
+    rows: list[dict[str, Any]],
+    threshold: int | float | None,
+) -> bool:
+    if threshold is None:
+        return False
+    day7_values = [
+        value
+        for value in (_parse_number(row.get("day7_sold_count")) for row in rows)
+        if value is not None
+    ]
+    return bool(day7_values) and max(day7_values) < threshold
 
 
 def _build_fastmoss_product_search_result(
@@ -984,7 +1060,13 @@ def _build_fastmoss_search_pagination(
     has_more = False
     if total > 0:
         has_more = last_page * int(query["page_size"]) < total
-    if stop_reason in {"empty_page", "no_new_product", "degraded_preview", "max_candidates"}:
+    if stop_reason in {
+        "empty_page",
+        "no_new_product",
+        "degraded_preview",
+        "max_candidates",
+        "below_min_day7_sold_count",
+    }:
         has_more = False
     return {
         "page": int(query["page"]),

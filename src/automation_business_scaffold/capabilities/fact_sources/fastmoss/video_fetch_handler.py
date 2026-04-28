@@ -39,6 +39,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
+    attach_fastmoss_cookie_cache_if_configured,
+    fastmoss_security_fallback_required_result,
+    fastmoss_session_conflict_failed_result,
+    fastmoss_settings_from_payload,
+    is_fastmoss_security_verification_error,
+    is_fastmoss_session_conflict_error,
+)
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 
 HANDLER_CODE = "fastmoss_video_fetch"
@@ -109,6 +117,22 @@ def fastmoss_video_fetch_handler(context: HandlerContext) -> HandlerResult:
             summary={"detail_level": detail_level, "video_id": _video_business_key(video_identity)},
         )
     except FastMossHTTPError as exc:
+        if is_fastmoss_session_conflict_error(exc):
+            return fastmoss_session_conflict_failed_result(
+                context,
+                exc=exc,
+                operation="fastmoss_video_fetch",
+                summary={"detail_level": detail_level, "video_id": _video_business_key(video_identity)},
+            )
+        if is_fastmoss_security_verification_error(exc):
+            return fastmoss_security_fallback_required_result(
+                context,
+                exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=fastmoss_settings_from_payload(payload),
+                operation="fastmoss_video_fetch",
+                entity_identity={"video_identity": video_identity},
+            )
         error = build_error(
             error_type="transport_failure",
             error_code="fastmoss_http_failure",
@@ -182,9 +206,12 @@ def _resolve_fastmoss_video_bundle(
     if endpoint_bundle:
         return endpoint_bundle
 
-    fastmoss_settings = coerce_mapping(payload.get("fastmoss"))
+    fastmoss_settings = fastmoss_settings_from_payload(payload)
     video_id = _video_business_key(video_identity)
-    live_fetch = coerce_bool(fastmoss_settings.get("live_fetch"), default=bool(video_id and fastmoss_settings))
+    live_fetch = coerce_bool(
+        fastmoss_settings.get("live_fetch"),
+        default=bool(video_id and fastmoss_settings.get("_has_live_config")),
+    )
     if not live_fetch or not video_id:
         return {}
 
@@ -265,10 +292,24 @@ def _build_fastmoss_session(settings: Mapping[str, Any]) -> FastMossHTTPSession:
         default_region=first_non_empty(settings.get("region"), "US"),
         timeout=float(settings.get("timeout", 30.0) or 30.0),
         request_delay_range=resolve_api_request_delay_range(settings, provider="fastmoss"),
+        trust_env=coerce_bool(
+            first_non_empty(
+                settings.get("trust_env"),
+                settings.get("use_system_proxy"),
+                settings.get("fastmoss_trust_env"),
+                settings.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
     )
 
 
 def _prepare_fastmoss_session(session: FastMossHTTPSession, settings: Mapping[str, Any]) -> None:
+    attach_fastmoss_cookie_cache_if_configured(
+        session,
+        settings=settings,
+        default_region=first_non_empty(settings.get("region"), "US"),
+    )
     cookies = settings.get("browser_cookies")
     if isinstance(cookies, list):
         session.replace_browser_cookies(cookies)

@@ -129,10 +129,16 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "product_id": product_id,
         "artifact_count": len(artifact_refs),
         "media_asset_count": len(coerce_mapping_list(normalized.get("media_assets"))),
+        "slider_captcha_attempted": bool(coerce_mapping(normalized.get("slider_captcha_resolution")).get("attempted")),
+        "slider_captcha_resolved": bool(coerce_mapping(normalized.get("slider_captcha_resolution")).get("resolved")),
     }
     result = {
         "normalized_product_result": normalized,
         "artifact_refs": artifact_refs,
+        "slider_captcha_resolution": coerce_mapping(normalized.get("slider_captcha_resolution")),
+        "slider_captcha_audit_artifact_refs": coerce_mapping_list(
+            normalized.get("slider_captcha_audit_artifact_refs")
+        ),
         "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
     }
     return success_result(context, summary=summary, result=result)
@@ -202,6 +208,22 @@ def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[st
         provider_name=provider_name,
         timeout_ms=timeout_ms,
         capture_page_screenshot=coerce_bool(payload.get("capture_page_screenshot"), default=False),
+        slider_captcha_audit_dir=first_non_empty(
+            payload.get("tiktok_slider_captcha_audit_dir"),
+            payload.get("slider_captcha_audit_dir"),
+        ),
+        slider_captcha_provider_config=(
+            coerce_mapping(payload.get("tiktok_slider_captcha_provider_config"))
+            or coerce_mapping(payload.get("slider_captcha_provider_config"))
+        ),
+        slider_captcha_resolver_config=(
+            coerce_mapping(payload.get("tiktok_slider_captcha_resolver_config"))
+            or coerce_mapping(payload.get("slider_captcha_resolver_config"))
+        ),
+        slider_captcha_selectors=(
+            coerce_mapping(payload.get("tiktok_slider_captcha_selectors"))
+            or coerce_mapping(payload.get("slider_captcha_selectors"))
+        ),
         trace_id=first_non_empty(payload.get("trace_id"), payload.get("request_id")),
     )
     product_payload = product.to_dict()
@@ -212,6 +234,8 @@ def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[st
         "skus": product_payload.get("skus") or [],
         "gallery_images": product_payload.get("gallery_images") or [],
         "sku_images": product_payload.get("sku_images") or [],
+        "slider_captcha_resolution": product_payload.get("slider_captcha_resolution") or {},
+        "slider_captcha_audit_artifact_refs": product_payload.get("slider_captcha_audit_artifact_refs") or [],
     }
 
 

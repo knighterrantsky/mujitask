@@ -28,6 +28,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 from automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler import (
     tiktok_product_browser_fetch_handler,
 )
+from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
+    fastmoss_security_browser_resolve_handler,
+)
 from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
 from automation_business_scaffold.control_plane.supervisor import (
     execution_supervisor as supervisor_runtime,
@@ -277,8 +280,41 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         )
         fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
         step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
+        if fastmoss_result.status == "fallback_required":
+            fallback_result, fallback_supervisor = _run_fastmoss_security_browser_fallback(
+                context,
+                fallback_payload=dict(fastmoss_result.result),
+                request_payload=request_payload,
+                source_record_id=source_record_id,
+                identity=identity,
+                payload=payload,
+            )
+            runtime_evidence["fastmoss_security_browser_fallback"] = fallback_supervisor
+            step_timeline.append(
+                _timeline_entry(
+                    "fastmoss_security_browser_fallback",
+                    fallback_result,
+                    detail={
+                        "execution_mode": fallback_supervisor.get("execution_mode"),
+                        "progress_stage": fallback_supervisor.get("progress_stage"),
+                    },
+                )
+            )
+            if fallback_result.status == "success":
+                retry_context = _child_context(
+                    context,
+                    handler_code="fastmoss_product_fetch",
+                    payload={
+                        **fastmoss_context.payload,
+                        "fastmoss_security_browser_fallback_attempt": 1,
+                        "fallback_source_job_id": fastmoss_context.job_id,
+                    },
+                    step_code="fastmoss_fetch.retry_after_security_browser_fallback",
+                )
+                fastmoss_result = fastmoss_product_fetch_handler(retry_context)
+                step_timeline.append(_timeline_entry("fastmoss_fetch_retry", fastmoss_result))
         fastmoss_payload = dict(fastmoss_result.result)
-        if fastmoss_result.status == "failed":
+        if fastmoss_result.status in {"failed", "fallback_required"}:
             optional_step_failed = True
             warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
 
@@ -492,6 +528,47 @@ def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload:
         mode="child_process",
         timeout_seconds=timeout_seconds,
     )
+
+
+def _run_fastmoss_security_browser_fallback(
+    parent: HandlerContext,
+    *,
+    fallback_payload: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+    source_record_id: str,
+    identity: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> tuple[HandlerResult, dict[str, Any]]:
+    browser_context = _child_context(
+        parent,
+        handler_code="fastmoss_security_browser_resolve",
+        payload={
+            **dict(request_payload),
+            **dict(payload),
+            **dict(fallback_payload),
+            "request_payload": dict(request_payload),
+            "source_record_id": source_record_id,
+            "product_identity": dict(identity),
+            "fallback_source_job_id": first_non_empty(
+                fallback_payload.get("fallback_source_job_id"),
+                parent.job_id,
+            ),
+        },
+        step_code="fastmoss_security_browser_fallback",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        item_code="fastmoss_security_browser_resolve",
+    )
+    outcome = run_supervised_handler(
+        context=browser_context,
+        dispatch=fastmoss_security_browser_resolve_handler,
+        heartbeat_interval_seconds=0.0,
+        callbacks=ExecutionSupervisorCallbacks(
+            on_progress=lambda event: _forward_browser_progress(parent, event),
+        ),
+        child_runner_config=_browser_child_runner_config(payload, request_payload=request_payload),
+    )
+    return outcome.worker_result, outcome.to_dict()
 
 
 def _forward_browser_progress(

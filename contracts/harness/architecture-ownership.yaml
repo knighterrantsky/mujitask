@@ -9,7 +9,7 @@ owners:
       - decide what business targets to collect
       - decide business filtering and continuation strategy
       - decide which projection mapper to use
-      - decide whether a workflow enters fastmoss_security_browser_fallback and whether to retry the original FastMoss search after browser resolution
+      - decide whether a workflow enters fastmoss_security_browser_fallback and whether to retry the original FastMoss handler after browser resolution
     forbidden:
       - own durable fact persistence
       - own MinIO upload implementation
@@ -22,16 +22,18 @@ owners:
     responsibilities:
       - collect raw facts from TikTok/FastMoss or other external sources
       - return normalized raw result envelope
+      - classify FastMoss MSG_SAFE_0001 as fallback_required with a redacted verification_request instead of generic fastmoss_http_failure
     forbidden:
       - decide Feishu business field projection
       - own workflow-level business filtering
+      - duplicate FastMoss session/cookie recovery, login refresh, or external-login conflict policy
 
   browser_security_resolve:
     paths:
       - src/automation_business_scaffold/capabilities/browser/**
     responsibilities:
       - own browser_worker handlers that resolve provider security checks requiring a real browser
-      - implement FastMoss security browser resolve behavior such as replaying the original /api/goods/V2/search request, solving the slider, and verifying MSG_SAFE_0001 is gone
+      - implement FastMoss security browser resolve behavior such as replaying the original failed FastMoss API request, solving the slider, and verifying MSG_SAFE_0001 is gone
       - return only redacted browser fallback evidence and cookie cache metadata
     forbidden:
       - decide keyword candidate filtering or max_candidates behavior
@@ -44,6 +46,7 @@ owners:
       - src/automation_business_scaffold/infrastructure/runtime/**
     responsibilities:
       - own FastMoss cookie cache context, load/save semantics, and redacted cache status
+      - own FastMoss platform session/cookie recovery, login refresh persistence, and external-login conflict classification
       - persist browser-exported FastMoss cookies into fastmoss_session_cookie_cache
       - expose cache metadata such as cookie_count, has_fd_tk, fd_tk_digest, and expires_at without exposing cookie values
     forbidden:
