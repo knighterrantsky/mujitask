@@ -116,6 +116,7 @@ features:
       - tests/test_project_structure_contract.py
       - tests/test_project_architecture_contract.py
       - tests/test_architecture_ownership.py
+      - tests/test_request_pacer_config.py
       - tests/test_handler_registry_contract.py
       - tests/test_workflow_architecture_manifests.py
     source_contracts:
@@ -135,7 +136,7 @@ features:
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/contracts/**
-      - src/automation_business_scaffold/infrastructure/runtime/**
+      - src/automation_business_scaffold/infrastructure/**
       - scripts/dev/**
       - tests/**
     forbidden_paths:
@@ -147,6 +148,7 @@ features:
         - tests/test_project_structure_contract.py
         - tests/test_project_architecture_contract.py
         - tests/test_architecture_ownership.py
+        - tests/test_request_pacer_config.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
         - tests/test_runtime_refresh_current_competitor_table.py
@@ -162,7 +164,7 @@ features:
         - tests/test_outbox_dispatcher_integration.py
         - tests/test_execution_supervisor_runtime.py
       commands:
-        - uv run --extra dev pytest tests/test_system_architecture_contract.py tests/test_runtime_control_plane_contract.py tests/test_project_structure_contract.py tests/test_project_architecture_contract.py tests/test_architecture_ownership.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_system_architecture_contract.py tests/test_runtime_control_plane_contract.py tests/test_project_structure_contract.py tests/test_project_architecture_contract.py tests/test_architecture_ownership.py tests/test_request_pacer_config.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_competitor_row_refresh_handler.py tests/test_runtime_refresh_executor_integration.py
         - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py
         - uv run --extra dev pytest tests/test_runtime_influencer_executor_integration.py tests/test_runtime_sync_tk_influencer_pool.py

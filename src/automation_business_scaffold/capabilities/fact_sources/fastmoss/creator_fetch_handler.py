@@ -31,6 +31,7 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import (
     Mapping,
     Sequence,
@@ -257,6 +258,7 @@ def _resolve_fastmoss_creator_bundle(
             "US",
         ),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
     )
     with session:
         cookies = fastmoss_settings.get("browser_cookies")

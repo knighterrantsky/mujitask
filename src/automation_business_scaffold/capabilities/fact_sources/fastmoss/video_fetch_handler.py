@@ -39,6 +39,7 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 
 HANDLER_CODE = "fastmoss_video_fetch"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
@@ -263,6 +264,7 @@ def _build_fastmoss_session(settings: Mapping[str, Any]) -> FastMossHTTPSession:
         base_url=first_non_empty(settings.get("base_url"), "https://www.fastmoss.com"),
         default_region=first_non_empty(settings.get("region"), "US"),
         timeout=float(settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(settings, provider="fastmoss"),
     )
 
 

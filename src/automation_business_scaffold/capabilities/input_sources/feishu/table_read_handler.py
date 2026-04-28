@@ -33,7 +33,7 @@ def feishu_table_read_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     try:
         target = resolve_read_target(payload)
-        client = build_feishu_client(target)
+        client = build_feishu_client(target, payload)
         field_names = _list_text(payload.get("field_names"))
         read_policy = coerce_mapping(payload.get("read_policy"))
         if coerce_bool(read_policy.get("validate_schema")) or coerce_bool(payload.get("validate_schema")):

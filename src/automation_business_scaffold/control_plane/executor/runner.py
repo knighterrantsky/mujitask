@@ -438,7 +438,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_id=settings.worker_id,
         worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
-        item_codes=("tiktok_product_browser_fetch",),
+        item_codes=("fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"),
     )
     if execution is None:
         return build_idle_payload(

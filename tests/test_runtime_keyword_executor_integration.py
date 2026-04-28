@@ -436,6 +436,24 @@ def test_keyword_executor_integration_happy_path(
     assert status_payload["result"]["stage_summary"]["refresh_competitor_rows"]["total_count"] == 1
 
 
+def test_keyword_executor_passes_zero_candidate_limit_to_seed_import(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert load_workflow_runtime(TASK_CODE) is not None
+    _bind_keyword_api_handlers(monkeypatch, request_mode="success")
+
+    submitted = _submit_keyword_request(runtime_db_url, max_candidates=0)
+    request_id = str(submitted["request_id"])
+
+    seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert seed_wait["request_id"] == request_id
+    seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
+    assert len(seed_jobs) == 1
+    assert seed_jobs[0]["payload"]["search_request"]["limit"] == 0
+    assert seed_jobs[0]["payload"]["search_request"]["output_conditions"]["max_candidates"] == 0
+
+
 def test_keyword_search_seed_e2e_writes_competitor_seed_row(
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,

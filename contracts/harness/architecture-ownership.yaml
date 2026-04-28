@@ -9,6 +9,7 @@ owners:
       - decide what business targets to collect
       - decide business filtering and continuation strategy
       - decide which projection mapper to use
+      - decide whether a workflow enters fastmoss_security_browser_fallback and whether to retry the original FastMoss search after browser resolution
     forbidden:
       - own durable fact persistence
       - own MinIO upload implementation
@@ -24,6 +25,31 @@ owners:
     forbidden:
       - decide Feishu business field projection
       - own workflow-level business filtering
+
+  browser_security_resolve:
+    paths:
+      - src/automation_business_scaffold/capabilities/browser/**
+    responsibilities:
+      - own browser_worker handlers that resolve provider security checks requiring a real browser
+      - implement FastMoss security browser resolve behavior such as replaying the original /api/goods/V2/search request, solving the slider, and verifying MSG_SAFE_0001 is gone
+      - return only redacted browser fallback evidence and cookie cache metadata
+    forbidden:
+      - decide keyword candidate filtering or max_candidates behavior
+      - write Feishu business projections
+      - store raw cookie values in handler summary, logs, or task result
+
+  fastmoss_session_cookie_cache:
+    paths:
+      - src/automation_business_scaffold/infrastructure/fastmoss/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+    responsibilities:
+      - own FastMoss cookie cache context, load/save semantics, and redacted cache status
+      - persist browser-exported FastMoss cookies into fastmoss_session_cookie_cache
+      - expose cache metadata such as cookie_count, has_fd_tk, fd_tk_digest, and expires_at without exposing cookie values
+    forbidden:
+      - decide whether a workflow should enter fastmoss_security_browser_fallback
+      - decide search business filters or Feishu writeback fields
+      - treat cookies as an API token or log cookie values
 
   media_asset_sync:
     paths:
@@ -66,6 +92,19 @@ owners:
       - collect external facts
       - upload media
       - upsert Fact DB
+
+  rate_limit:
+    paths:
+      - src/automation_business_scaffold/infrastructure/rate_limit/**
+      - src/automation_business_scaffold/infrastructure/*/**
+    responsibilities:
+      - own external API request pacing primitives and provider client integration
+      - normalize configurable min/max randomized delay values
+      - emit request pacing evidence without secrets
+    forbidden:
+      - decide business target selection
+      - decide workflow stage transitions
+      - encode provider business field mappings
 
 legacy_reference_only:
   - src/automation_business_scaffold/business/**

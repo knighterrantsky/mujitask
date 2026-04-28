@@ -162,3 +162,33 @@ def test_system_architecture_classifies_capabilities_and_storage() -> None:
     assert missing == [], "capability/storage classification is missing tokens:\n" + "\n".join(
         missing
     )
+
+
+def test_system_architecture_defines_configurable_external_api_pacing() -> None:
+    doc = _read(SYSTEM_ARCH_DOC)
+
+    required_tokens = (
+        "外部 API 节流配置",
+        "`infrastructure/rate_limit/` 是外部 API 请求节流的唯一实现 owner",
+        "默认区间为 `0.5s` 到 `1.0s`",
+        "默认区间必须可配置",
+        "job payload 显式覆盖 > provider 专用环境变量 > 全局环境变量 > 系统默认值",
+        "`MUJITASK_API_REQUEST_MIN_DELAY_SECONDS`",
+        "`MUJITASK_API_REQUEST_MAX_DELAY_SECONDS`",
+        "`MUJITASK_FASTMOSS_API_REQUEST_MIN_DELAY_SECONDS`",
+        "`MUJITASK_FEISHU_API_REQUEST_MIN_DELAY_SECONDS`",
+        "`MUJITASK_TIKTOK_API_REQUEST_MIN_DELAY_SECONDS`",
+        "当前正式 workflow 覆盖范围包括 `refresh_current_competitor_table`、`search_keyword_competitor_products`、`sync_tk_influencer_pool`、`tiktok_fastmoss_product_ingest`",
+        "media 远程素材下载",
+        "飞书附件远程图片下载",
+        "允许不走 request pacing 的路径只限于非外部 API 的本地 IO",
+        "Playwright/CDP 浏览器交互等待",
+        "retry backoff 是错误恢复策略，不替代正常请求 pacing",
+        "provider/resource key",
+        "delay_seconds",
+        "request_started_at",
+        "request_finished_at",
+    )
+
+    missing = [token for token in required_tokens if token not in doc]
+    assert missing == [], "external API pacing design is missing tokens:\n" + "\n".join(missing)

@@ -252,7 +252,9 @@ Feishu 账号配置按以下优先级解析:
 
 ### 3.8 `fastmoss_session_cookie_cache`
 
-FastMoss 登录态运行缓存。它是可再生缓存，不属于事实库。
+FastMoss 登录态运行缓存。它是可再生缓存，不属于事实库。该缓存可由 API 登录刷新流程写入，也可由 FastMoss browser security resolve 流程在真实浏览器完成风控解除后刷新；例如 `fastmoss_security_browser_resolve` 成功验证原始 `/api/goods/V2/search` 不再返回 `MSG_SAFE_0001` 后，应将浏览器导出的 FastMoss cookies 写入本表。
+
+Runtime DB 只记录 cookie cache 元数据审计，不在 summary/log 输出 cookie value。可出现在 result、summary、日志中的字段只限于 `cookie_count`、`has_fd_tk`、`fd_tk_digest`、`expires_at`、`updated_at`、`verified_path` 等脱敏信息；完整 cookie value 只能保存在 `cookies_json`，并按运行缓存处理。
 
 | 字段 | 说明 |
 | --- | --- |

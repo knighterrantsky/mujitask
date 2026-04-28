@@ -657,6 +657,28 @@ result 中必须包含:
 - 输出必须和 `tiktok_product_request_fetch` 的 normalized product result 同 contract。
 - 后续 `fact_bundle_upsert` 不应关心数据来自 request 还是 browser。
 
+### 6.2.1 `fastmoss_security_browser_resolve`
+
+定位: FastMoss `/api/goods/V2/search` 返回 `MSG_SAFE_0001` 后的浏览器解风控能力。
+
+关键契约:
+
+| 项 | 约定 |
+| --- | --- |
+| worker | `browser_worker` |
+| runtime table | `task_execution` |
+| input | 原始搜索请求、fallback_source_job_id、FastMoss browser profile / resource_code |
+| output | `/api/goods/V2/search` 验证结果、slider resolution evidence、`fastmoss_session_cookie_cache` 脱敏 metadata |
+| idempotency | request_id + search digest + fastmoss_security_browser_fallback |
+| side effects | browser 解风控、Runtime DB cookie cache 写入 |
+
+约束:
+
+- 只能由 workflow 在 `keyword_seed_import` 返回 `fallback_required` 后派发，API worker 不直接驱动浏览器。
+- 成功判据必须是原始 `/api/goods/V2/search` 不再返回 `MSG_SAFE_0001`；商品详情页不能作为搜索风控解除成功判据。
+- handler 只持久化 FastMoss cookies，不是 API token；summary/result/log 不得包含 cookie value。
+- fallback 最多一次，失败后由 workflow 终态落 `fastmoss_security_verification_required`。
+
 ### 6.3 `fastmoss_product_search`
 
 定位: FastMoss 商品搜索通用能力，通过 `/api/goods/V2/search` 或后续等价搜索 endpoint，根据 keyword、region、排序、分页、输入 filter 和输出 condition 搜索候选商品。关键词竞品入库只是该 handler 的一个调用场景。
@@ -1303,6 +1325,7 @@ fastmoss_echarts_renderer
 | API | `influencer_creator_sync` | `api_worker` | `api_worker_job` | Business | 达人池同步达人 job；每个 unique 达人 1 个，内部完成达人详情、事实入库、达人池飞书 upsert 和商品终态状态回写 | workflow-influencer-pool-sync-design 11.3 |
 | API | `tiktok_product_request_fetch` | `api_worker` | `api_worker_job` | Capability | TikTok 商品 request-first 采集 | 6.1 |
 | Browser | `tiktok_product_browser_fetch` | `browser_worker` | `task_execution` | Capability | TikTok 商品 request 失败后的浏览器兜底采集 | 6.2 |
+| Browser | `fastmoss_security_browser_resolve` | `browser_worker` | `task_execution` | Capability | FastMoss 搜索接口风控后的浏览器解滑块与 cookie cache 刷新 | 6.2.1 |
 | API | `fastmoss_product_search` | `api_worker` | `api_worker_job` | Capability | FastMoss 商品搜索，支持 keyword/filter/condition | 6.3 |
 | API | `fastmoss_product_fetch` | `api_worker` | `api_worker_job` | Capability | FastMoss 商品事实、店铺事实、商品指标采集 | 6.4 |
 | API | `fastmoss_creator_fetch` | `api_worker` | `api_worker_job` | Capability | FastMoss 达人事实和指标采集 | 6.5 |

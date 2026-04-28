@@ -33,6 +33,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     product_business_key,
     success_result,
 )
+from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 from typing import Any
 
 HANDLER_CODE = "tiktok_product_request_fetch"
@@ -192,7 +193,8 @@ def _fetch_request_payload(
         default=30,
     )
     try:
-        product = fetch_tiktok_product_record(product_url, timeout=timeout_seconds)
+        request_pacer = RequestPacer(resolve_api_request_pacer_config(payload, provider="tiktok"))
+        product = fetch_tiktok_product_record(product_url, timeout=timeout_seconds, request_pacer=request_pacer)
     except TikTokProductUnavailableError as exc:
         return {
             "mode": "success",

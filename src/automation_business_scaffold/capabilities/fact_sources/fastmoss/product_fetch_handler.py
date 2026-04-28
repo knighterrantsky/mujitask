@@ -37,6 +37,7 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import Mapping
 from typing import Any
 
@@ -178,6 +179,7 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
         base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
         default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
     )
     with session:
         cookies = fastmoss_settings.get("browser_cookies")
@@ -244,6 +246,26 @@ def _resolve_fastmoss_product_settings(payload: dict[str, Any]) -> dict[str, Any
         "ensure_logged_in": settings.get("ensure_logged_in", payload.get("ensure_fastmoss_logged_in", None)),
         "window_days": settings.get("window_days", payload.get("fastmoss_window_days", 28)),
         "author_list": settings.get("author_list", payload.get("fastmoss_author_list", True)),
+        "api_request_delay_min_seconds": first_non_empty(
+            settings.get("api_request_delay_min_seconds"),
+            settings.get("request_delay_min_seconds"),
+            payload.get("api_request_delay_min_seconds"),
+        ),
+        "api_request_delay_max_seconds": first_non_empty(
+            settings.get("api_request_delay_max_seconds"),
+            settings.get("request_delay_max_seconds"),
+            payload.get("api_request_delay_max_seconds"),
+        ),
+        "fastmoss_api_request_delay_min_seconds": first_non_empty(
+            settings.get("fastmoss_api_request_delay_min_seconds"),
+            settings.get("fastmoss_request_delay_min_seconds"),
+            payload.get("fastmoss_api_request_delay_min_seconds"),
+        ),
+        "fastmoss_api_request_delay_max_seconds": first_non_empty(
+            settings.get("fastmoss_api_request_delay_max_seconds"),
+            settings.get("fastmoss_request_delay_max_seconds"),
+            payload.get("fastmoss_api_request_delay_max_seconds"),
+        ),
     }
 
 

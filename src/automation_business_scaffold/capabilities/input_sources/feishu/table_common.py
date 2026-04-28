@@ -17,6 +17,7 @@ from automation_business_scaffold.infrastructure.feishu.api import (
     FeishuBitableClient,
     parse_table_url,
 )
+from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 
 
 @dataclass(frozen=True)
@@ -67,8 +68,17 @@ _FEISHU_DATE_FIELD_TYPE = 5
 _FEISHU_MULTI_SELECT_FIELD_TYPE = 4
 
 
-def build_feishu_client(target: FeishuTableTarget) -> FeishuBitableClient:
-    return FeishuBitableClient(target.access_token)
+def build_feishu_client(
+    target: FeishuTableTarget,
+    settings: Mapping[str, Any] | None = None,
+) -> FeishuBitableClient:
+    request_pacer = RequestPacer(resolve_api_request_pacer_config(settings, provider="feishu"))
+    try:
+        return FeishuBitableClient(target.access_token, request_pacer=request_pacer)
+    except TypeError as exc:
+        if "request_pacer" not in str(exc):
+            raise
+        return FeishuBitableClient(target.access_token)
 
 
 def resolve_read_target(payload: Mapping[str, Any]) -> FeishuTableTarget:
@@ -1305,7 +1315,14 @@ def _upload_attachment_item(
         minimum=1,
         maximum=300,
     )
-    response = requests.get(url, timeout=timeout_seconds, headers={"User-Agent": "Mozilla/5.0"})
+    request_pacer = getattr(client, "request_pacer", None)
+    if request_pacer is not None:
+        request_pacer.wait_before_request("feishu:attachment_download")
+    try:
+        response = requests.get(url, timeout=timeout_seconds, headers={"User-Agent": "Mozilla/5.0"})
+    finally:
+        if request_pacer is not None:
+            request_pacer.mark_request_finished("feishu:attachment_download")
     response.raise_for_status()
     if not response.content:
         return ""

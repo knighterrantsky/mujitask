@@ -30,12 +30,14 @@ def test_pyproject_pins_framework_dependency_and_example_files_exist():
     dependencies = pyproject["project"]["dependencies"]
 
     framework_dependencies = [
-        dependency for dependency in dependencies if dependency.startswith("automation-framework @ ")
+        dependency
+        for dependency in dependencies
+        if dependency.startswith(("automation-framework @ ", "automation-framework["))
     ]
 
     assert len(framework_dependencies) == 1
     assert framework_dependencies[0] == (
-        "automation-framework @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.6"
+        "automation-framework[captcha] @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.7"
     )
 
     profiles = json.loads((ROOT / "config" / "browser_profiles.example.json").read_text(encoding="utf-8"))

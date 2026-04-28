@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from io import BytesIO
+from types import SimpleNamespace
+
 import pytest
 
 from automation_business_scaffold.infrastructure.tiktok import product_page
@@ -156,6 +159,50 @@ def test_tiktok_product_request_fetch_live_request_falls_back_only_after_explici
     assert result.result["request_attempt"]["fallback_signal"] is True
 
 
+def test_tiktok_product_request_fetch_passes_configured_request_pacer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch(product_url: str, *, timeout: int = 30, session=None, request_pacer=None):  # noqa: ANN001
+        del product_url, timeout, session
+        captured["pacer_config"] = request_pacer.config
+        return TikTokProductRecord(
+            source_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+            resolved_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+            normalized_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+            product_id="1730964478199763166",
+            title="Candy Boxes",
+            holiday="",
+            price_amount="",
+            price_currency="USD",
+            price_text="",
+            sales_count="",
+            shop_name="Candy Shop",
+            shop_url="",
+            main_image_url="https://cdn.example.com/main.jpg",
+        )
+
+    monkeypatch.setattr(handler_module, "fetch_tiktok_product_record", fake_fetch)
+
+    result = handler_module.tiktok_product_request_fetch_handler(
+        _context(
+            {
+                "product_identity": {
+                    "product_id": "1730964478199763166",
+                    "product_url": "https://www.tiktok.com/shop/pdp/1730964478199763166",
+                },
+                "tiktok_api_request_delay_min_seconds": 0.2,
+                "tiktok_api_request_delay_max_seconds": 0.4,
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert captured["pacer_config"].min_delay_seconds == 0.2
+    assert captured["pacer_config"].max_delay_seconds == 0.4
+
+
 def test_tiktok_product_request_fetch_network_failure_stays_retryable_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,3 +328,300 @@ def test_browser_record_prefers_dom_main_image_over_router_image(monkeypatch: py
     )
 
     assert record.main_image_url == "https://cdn.example.com/first-screen-current-slide.webp"
+
+
+class _FakeSliderMouse:
+    def __init__(self, page: "_FakeSliderPage") -> None:
+        self.page = page
+        self.moves: list[tuple[float, float]] = []
+        self.down_called = False
+        self.up_called = False
+
+    def move(self, x: float, y: float) -> None:
+        self.moves.append((x, y))
+
+    def down(self) -> None:
+        self.down_called = True
+
+    def up(self) -> None:
+        self.up_called = True
+        self.page.slider_visible = False
+
+
+class _FakeSliderLocator:
+    def __init__(self, page: "_FakeSliderPage", selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_FakeSliderLocator":
+        return self
+
+    def is_visible(self, timeout: int | None = None) -> bool:
+        del timeout
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_SUCCESS_SELECTORS:
+            return self.page.slider_success
+        if self.selector in (
+            product_page.TIKTOK_SLIDER_CAPTCHA_POPUP_SELECTORS
+            + product_page.TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS
+            + product_page.TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS
+            + product_page.TIKTOK_SLIDER_CAPTCHA_HANDLE_SELECTORS
+        ):
+            return self.page.slider_visible
+        return False
+
+    def screenshot(self, timeout: int | None = None) -> bytes:
+        del timeout
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS:
+            self.page.background_captured_with_target_hidden = any(
+                selector in product_page.TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS
+                for selector in self.page.hidden_selectors
+            )
+            return b"background-with-target-hidden" if self.page.background_captured_with_target_hidden else b"background"
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS:
+            return b"target"
+        return b"not-a-real-image-but-good-enough-for-unit-tests"
+
+    def bounding_box(self, timeout: int | None = None) -> dict[str, float]:
+        del timeout
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS:
+            return {"x": 100.0, "y": 50.0, "width": 300.0, "height": 150.0}
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS:
+            return {"x": 112.0, "y": 78.0, "width": 40.0, "height": 40.0}
+        if self.selector in product_page.TIKTOK_SLIDER_CAPTCHA_HANDLE_SELECTORS:
+            return {"x": 105.0, "y": 230.0, "width": 20.0, "height": 20.0}
+        return {}
+
+    def click(self, timeout: int | None = None) -> None:
+        del timeout
+        self.page.refresh_clicked = True
+
+    def evaluate(self, script: str, *args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        if 'visibility = "hidden"' in script:
+            self.page.hidden_selectors.add(self.selector)
+            return True
+        if "delete element.dataset.tiktokSliderPreviousVisibility" in script:
+            self.page.hidden_selectors.discard(self.selector)
+            return True
+        return False
+
+
+class _FakeSliderPage:
+    def __init__(self) -> None:
+        self.slider_visible = True
+        self.slider_success = False
+        self.refresh_clicked = False
+        self.background_captured_with_target_hidden = False
+        self.hidden_selectors: set[str] = set()
+        self.wait_calls: list[int] = []
+        self.mouse = _FakeSliderMouse(self)
+
+    def locator(self, selector: str) -> _FakeSliderLocator:
+        return _FakeSliderLocator(self, selector)
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_calls.append(timeout_ms)
+
+
+def test_tiktok_product_browser_fetch_resolves_visible_slider_with_framework_captcha_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakeSliderPage()
+    provider_calls: list[tuple[bytes, bytes, bool]] = []
+
+    class _FakeProvider:
+        def match_slider(
+            self,
+            target_image: bytes,
+            background_image: bytes,
+            *,
+            simple_target: bool = False,
+        ) -> SimpleNamespace:
+            provider_calls.append((target_image, background_image, simple_target))
+            return SimpleNamespace(target_x=72, target_y=12, confidence=0.91)
+
+    monkeypatch.setattr(
+        product_page,
+        "_build_tiktok_slider_captcha_provider",
+        lambda: _FakeProvider(),
+    )
+
+    result = product_page._try_resolve_tiktok_slider_security_check(
+        page,
+        product_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+        max_attempts=1,
+        settle_ms=1,
+    )
+
+    assert result["resolved"] is True
+    assert result["reason"] == "slider_cleared"
+    assert provider_calls and provider_calls[0][2] is False
+    assert provider_calls[0][0] == b"target"
+    assert provider_calls[0][1] == b"background-with-target-hidden"
+    assert page.background_captured_with_target_hidden is True
+    assert page.hidden_selectors == set()
+    assert page.mouse.down_called is True
+    assert page.mouse.up_called is True
+    assert page.slider_visible is False
+    assert page.wait_calls[-2:] == [1, product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
+    assert page.mouse.moves[-1][0] == pytest.approx(175.0)
+
+
+def test_tiktok_slider_gap_detection_prefers_target_component() -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (340, 213), (135, 205, 240))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 150, 339, 212), fill=(60, 70, 40))
+    draw.rectangle((196, 79, 250, 134), fill=(45, 55, 48))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    gap = product_page._detect_tiktok_slider_gap_from_background(buffer.getvalue())
+
+    assert gap["x"] == 196
+    assert gap["width"] == 55
+    assert gap["height"] == 56
+
+
+def test_tiktok_slider_match_prefers_rightmost_ocr_candidate_when_gap_missing() -> None:
+    calls: list[bool] = []
+
+    class _FakeProvider:
+        def match_slider(
+            self,
+            target_image: bytes,
+            background_image: bytes,
+            *,
+            simple_target: bool = False,
+        ) -> SimpleNamespace:
+            del target_image, background_image
+            calls.append(simple_target)
+            return SimpleNamespace(
+                target_x=211 if simple_target else 40,
+                target_y=120,
+                confidence=0.5,
+            )
+
+    slider_match, metadata = product_page._match_tiktok_slider(
+        _FakeProvider(),
+        b"not-an-image",
+        b"not-an-image",
+    )
+
+    assert calls == [False, True]
+    assert slider_match.target_x == 211
+    assert metadata["simple_target"] is True
+
+
+def test_tiktok_slider_resolution_waits_for_delayed_visible_slider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakeSliderPage()
+    page.slider_visible = False
+
+    def fake_wait(timeout_ms: int) -> None:
+        page.wait_calls.append(timeout_ms)
+        if not page.mouse.down_called:
+            page.slider_visible = True
+
+    page.wait_for_timeout = fake_wait  # type: ignore[method-assign]
+
+    class _FakeProvider:
+        def match_slider(
+            self,
+            target_image: bytes,
+            background_image: bytes,
+            *,
+            simple_target: bool = False,
+        ) -> SimpleNamespace:
+            del target_image, background_image, simple_target
+            return SimpleNamespace(target_x=72, target_y=12, confidence=0.91)
+
+    monkeypatch.setattr(
+        product_page,
+        "_build_tiktok_slider_captcha_provider",
+        lambda: _FakeProvider(),
+    )
+
+    result = product_page._try_resolve_tiktok_slider_security_check(
+        page,
+        product_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+        max_attempts=1,
+        appear_timeout_ms=10,
+        settle_ms=1,
+    )
+
+    assert result["resolved"] is True
+    assert result["reason"] == "slider_cleared"
+    assert page.wait_calls[0] > 0
+    assert page.wait_calls[-2:] == [1, product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
+
+
+def test_tiktok_slider_resolution_requires_second_confirmation_after_two_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakeSliderPage()
+
+    def fake_wait(timeout_ms: int) -> None:
+        page.wait_calls.append(timeout_ms)
+        if timeout_ms == product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS:
+            page.slider_visible = True
+
+    page.wait_for_timeout = fake_wait  # type: ignore[method-assign]
+
+    class _FakeProvider:
+        def match_slider(
+            self,
+            target_image: bytes,
+            background_image: bytes,
+            *,
+            simple_target: bool = False,
+        ) -> SimpleNamespace:
+            del target_image, background_image, simple_target
+            return SimpleNamespace(target_x=72, target_y=12, confidence=0.91)
+
+    monkeypatch.setattr(
+        product_page,
+        "_build_tiktok_slider_captcha_provider",
+        lambda: _FakeProvider(),
+    )
+
+    result = product_page._try_resolve_tiktok_slider_security_check(
+        page,
+        product_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+        max_attempts=1,
+        settle_ms=1,
+    )
+
+    assert result["resolved"] is False
+    assert result["attempts"][0]["confirmation_wait_ms"] == 2000
+    assert result["attempts"][0]["confirmation_popup_still_visible"] is True
+    assert result["attempts"][0]["reason"] == "slider_reappeared_after_confirmation_wait"
+
+
+def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_resolve(page: object, *, product_url: str, **kwargs: object) -> dict[str, object]:
+        del page, kwargs
+        captured["product_url"] = product_url
+        return {"attempted": True, "resolved": True, "reason": "slider_cleared", "attempts": [{}]}
+
+    monkeypatch.setattr(product_page, "_try_resolve_tiktok_slider_security_check", fake_resolve)
+
+    resolution = product_page._handle_tiktok_blocked_context(
+        SimpleNamespace(raw_page=object()),
+        SimpleNamespace(
+            page_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+            blocker_type="security_challenge",
+            summary="slide to verify",
+            dom_summary={},
+        ),
+    )
+
+    assert resolution.action == "handled_recheck"
+    assert captured["product_url"] == "https://www.tiktok.com/shop/pdp/1730964478199763166"

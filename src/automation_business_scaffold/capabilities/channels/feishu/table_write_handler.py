@@ -34,7 +34,7 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     try:
         target = resolve_write_target(payload)
-        client = build_feishu_client(target)
+        client = build_feishu_client(target, payload)
         records = map_write_records(payload)
         if not records:
             return skipped_result(

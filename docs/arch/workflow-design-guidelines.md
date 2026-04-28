@@ -239,6 +239,13 @@ Flow = handler 内部复用的业务过程
 - handler 不是天然的一条 job。一个 handler 可以被多个 workflow 复用，也可以在一个更大的业务 job 内部作为处理步骤被复用；是否单独建 job，取决于它是否需要独立生命周期，而不是它是否“恰好是一个现成 handler”。
 - “有几个外部 API 调用”也不是 job 数量设计依据。同一业务实体内严格顺序的多个 API 调用，应优先放在同一个 job 内串行执行，并共享同一重试、审计和幂等边界。
 
+Browser fallback 约束:
+
+- API worker 不直接驱动浏览器；外部 API 风控需要浏览器解决时，必须由 workflow 或行级主 job 派发 `browser_worker` / `task_execution`，并通过 Runtime DB 等待 browser handler 的终态结果。
+- Browser fallback handler 按 provider + 能力目标拆分，不做“万能 fallback handler”。例如 TikTok 商品页浏览器采集属于 `tiktok_product_browser_fetch`，FastMoss 搜索风控解除应由 FastMoss security browser resolve 能力负责。
+- Browser fallback handler 只产出该能力的最小稳定结果，例如 normalized product result、风控解除证明或 cookie cache 元数据；业务过滤、飞书写回、summary 终态判定仍属于 domain workflow / flow / projection。
+- 当浏览器 fallback 用于解除外部 API 风控时，成功判据必须回到原始失败的 API 请求或同等业务能力验证，不能用“同站点任意页面能打开”替代。
+
 ### 3.6.1 统一事实采集与业务投影约束
 
 所有 TikTok / FastMoss / Feishu 业务 workflow 必须把“事实采集”和“业务投影”分开设计。
@@ -531,13 +538,22 @@ API 优先、浏览器兜底的流程必须先实际发起 request，并记录 a
 
 当 workflow 声明某类外部 API 必须串行时，设计文档必须定义该 API 的 queue lane / resource key、FIFO 规则和请求间 delay。
 
+通用节流配置要求:
+
+- 单一业务 job 内所有外部 API request 默认必须通过统一 request pacer，而不是在 flow 中散落固定 `sleep`。
+- 默认随机 pacing 区间是 `0.5s` 到 `1.0s`，并且必须可配置；配置优先级为 job payload 显式覆盖 > provider 专用 runtime/env 配置 > 全局 runtime/env 配置 > 系统默认值。
+- 全局配置键建议为 `api_request_delay_min_seconds`、`api_request_delay_max_seconds`；provider 级配置键建议为 `fastmoss_api_request_delay_min_seconds`、`feishu_api_request_delay_min_seconds`、`tiktok_api_request_delay_min_seconds`、`outbox_api_request_delay_min_seconds` 及对应 max 键。
+- 已迁移到当前 runtime 的 workflow 必须覆盖其 job 内所有外部 HTTP request，包括 FastMoss API、Feishu Bitable/Drive API、TikTok request-first HTTP、outbox webhook / Feishu bot、media 远程素材下载、飞书附件远程图片下载。新增 workflow 如果引入新的外部 provider，必须先接入 `infrastructure/rate_limit/` 或在 contract 中显式声明不适用原因。
+- `0/0` 只表示测试或明确配置下关闭 pacing；生产任务默认不得关闭。
+- retry backoff、queue cooldown 和 request pacing 是三层不同机制: backoff 处理错误重试，cooldown 处理跨 job lane 可用时间，pacing 处理同一 job 内连续外部 request 的风控间隔。
+
 串行 lane 的最低要求:
 
 - 同一 lane 同一时刻最多一个 running job。
 - claim 顺序按 `available_at`、`queue_seq` 或 `created_at` 稳定排序。
 - 每次 request 完成后写入 `next_available_at` 或等价 cooldown 信息。
 - retry job 重新入队时不能插队破坏业务顺序。
-- runtime evidence 能还原 claim order、request start/end time 和 delay。
+- runtime evidence 能还原 claim order、request start/end time、pacing delay 和 cooldown。
 
 ### 4.4 Handler 拆分原则
 

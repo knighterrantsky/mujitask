@@ -9,6 +9,7 @@ import subprocess
 from typing import Any
 
 import requests
+from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
@@ -137,6 +138,8 @@ def outbox_dispatch_handler(context: HandlerContext) -> HandlerResult:
                 },
             )
         try:
+            request_pacer = RequestPacer(resolve_api_request_pacer_config(payload, provider="outbox"))
+            request_pacer.wait_before_request("outbox:webhook")
             response = requests.post(
                 webhook_url,
                 json={"message": message, "payload": coerce_mapping(payload.get("body")) or payload},
@@ -169,6 +172,8 @@ def outbox_dispatch_handler(context: HandlerContext) -> HandlerResult:
                 ),
             )
             return failed_result(context, error=error, summary={"channel_code": channel_code})
+        finally:
+            request_pacer.mark_request_finished("outbox:webhook")
         _report_progress(
             context,
             "dispatch_sent",
@@ -198,7 +203,11 @@ def outbox_dispatch_handler(context: HandlerContext) -> HandlerResult:
                 progress_message="Feishu bot API dispatch simulated in dry-run mode.",
             )
         try:
-            dispatch_result = _dispatch_via_feishu_bot_api(message_text=message, reply_target=reply_target)
+            dispatch_result = _dispatch_via_feishu_bot_api(
+                message_text=message,
+                reply_target=reply_target,
+                request_pacer=RequestPacer(resolve_api_request_pacer_config(payload, provider="feishu")),
+            )
         except OutboxDispatchError as exc:
             return _dispatch_failed_result(
                 context,
@@ -384,7 +393,12 @@ def _parse_reply_target(reply_target: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"to": raw_value}
 
 
-def _dispatch_via_feishu_bot_api(*, message_text: str, reply_target: str) -> dict[str, Any]:
+def _dispatch_via_feishu_bot_api(
+    *,
+    message_text: str,
+    reply_target: str,
+    request_pacer: RequestPacer | None = None,
+) -> dict[str, Any]:
     delivery_context = _parse_reply_target(reply_target)
     channel = coerce_str(delivery_context.get("channel")).strip().lower()
     if channel and channel != "feishu":
@@ -407,6 +421,7 @@ def _dispatch_via_feishu_bot_api(*, message_text: str, reply_target: str) -> dic
             "app_secret": feishu_account["app_secret"],
         },
         error_code="outbox_feishu_token_request_failed",
+        request_pacer=request_pacer,
     )
     token_code = _read_response_code(token_payload)
     if token_code != 0:
@@ -434,6 +449,7 @@ def _dispatch_via_feishu_bot_api(*, message_text: str, reply_target: str) -> dic
         },
         headers={"Authorization": f"Bearer {tenant_access_token}"},
         error_code="outbox_feishu_message_request_failed",
+        request_pacer=request_pacer,
     )
     message_code = _read_response_code(message_payload)
     if message_code != 0:
@@ -697,17 +713,24 @@ def _post_feishu_json(
     *,
     headers: dict[str, str] | None = None,
     error_code: str,
+    request_pacer: RequestPacer | None = None,
 ) -> dict[str, Any]:
     request_headers = {"Content-Type": "application/json; charset=utf-8"}
     if headers:
         request_headers.update(headers)
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            headers=request_headers,
-            timeout=max(float(os.environ.get("FEISHU_BOT_API_TIMEOUT_SECONDS", "15") or 15.0), 1.0),
-        )
+        if request_pacer is not None:
+            request_pacer.wait_before_request("feishu:bot")
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers=request_headers,
+                timeout=max(float(os.environ.get("FEISHU_BOT_API_TIMEOUT_SECONDS", "15") or 15.0), 1.0),
+            )
+        finally:
+            if request_pacer is not None:
+                request_pacer.mark_request_finished("feishu:bot")
         response.raise_for_status()
     except requests.RequestException as exc:
         status_code = _request_status_code(exc)

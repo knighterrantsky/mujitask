@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 
 FASTMOSS_BASE_URL = "https://www.fastmoss.com"
 FASTMOSS_ACCOUNT_CENTER_REFERER = "https://www.fastmoss.com/zh/account/center"
@@ -222,7 +223,7 @@ class FastMossHTTPSession:
         timeout: float = 30.0,
         user_agent: str = FASTMOSS_DEFAULT_USER_AGENT,
         default_region: str = FASTMOSS_DEFAULT_SEARCH_REGION,
-        request_delay_range: tuple[float, float] = (0.0, 0.0),
+        request_delay_range: tuple[float, float] | None = None,
         time_factory: Callable[[], float] = time.time,
         nonce_factory: Callable[[], str] | None = None,
         sleep_factory: Callable[[float], None] = time.sleep,
@@ -233,7 +234,11 @@ class FastMossHTTPSession:
         self.timeout = timeout
         self.user_agent = user_agent
         self.default_region = default_region
-        self.request_delay_range = request_delay_range
+        self.request_delay_range = (
+            resolve_api_request_delay_range(provider="fastmoss")
+            if request_delay_range is None
+            else request_delay_range
+        )
         self._phone = phone
         self._password = password
         self._time_factory = time_factory
@@ -1377,7 +1382,14 @@ class FastMossHTTPSession:
             min_delay, max_delay = max_delay, min_delay
         delay_seconds = random.uniform(min_delay, max_delay)
         if delay_seconds > 0:
+            self._emit_event("request_pacer_sleep", key="fastmoss:http", delay_seconds=delay_seconds)
             self._sleep_factory(delay_seconds)
+        self._emit_event(
+            "request_pacer_ready",
+            key="fastmoss:http",
+            delay_seconds=delay_seconds,
+            request_started_at=self._time_factory(),
+        )
 
     def _emit_event(self, kind: str, **payload: Any) -> None:
         if self._event_callback is None:

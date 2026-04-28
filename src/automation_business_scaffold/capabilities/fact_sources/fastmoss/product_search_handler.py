@@ -35,6 +35,9 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import attach_fastmoss_cookie_cache
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
+from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,7 @@ from typing import Any
 FASTMOSS_PRODUCT_SEARCH_ENDPOINT = "/api/goods/V2/search"
 FASTMOSS_PRODUCT_DETAIL_URL_TEMPLATE = "https://www.fastmoss.com/zh/e-commerce/detail/{product_id}"
 TIKTOK_PRODUCT_URL_TEMPLATE = "https://www.tiktok.com/view/product/{product_id}"
+FASTMOSS_SECURITY_VERIFICATION_CODES = {"MSG_SAFE_0001"}
 
 HANDLER_CODE = "fastmoss_product_search"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
@@ -91,6 +95,15 @@ def fastmoss_product_search_handler(context: HandlerContext) -> HandlerResult:
         )
         return failed_result(context, error=error, summary={"candidate_count": 0})
     except FastMossHTTPError as exc:
+        if _is_fastmoss_security_verification_error(exc):
+            error = build_error(
+                error_type="security_verification",
+                error_code="fastmoss_security_verification_required",
+                message=str(exc),
+                retryable=False,
+                details=exc.to_dict(),
+            )
+            return failed_result(context, error=error, summary={"candidate_count": 0})
         error = build_error(
             error_type="transport_failure",
             error_code="fastmoss_http_failure",
@@ -149,12 +162,14 @@ def _resolve_fastmoss_product_search_query(payload: dict[str, Any]) -> dict[str,
     legacy_condition_context = coerce_mapping(payload.get("condition_context"))
     if legacy_condition_context:
         output_conditions = {**legacy_condition_context, **output_conditions}
-    max_candidates = _positive_int(
-        output_conditions.get("max_candidates"),
-        _positive_int(payload.get("limit"), 20),
+    limit_default = _non_negative_int(payload.get("limit"), 20)
+    raw_max_candidates = output_conditions.get("max_candidates")
+    max_candidates = (
+        limit_default
+        if raw_max_candidates in (None, "")
+        else _non_negative_int(raw_max_candidates, limit_default)
     )
-    if max_candidates > 0:
-        output_conditions["max_candidates"] = max_candidates
+    output_conditions["max_candidates"] = max_candidates
     sales_7d_threshold = _positive_int(payload.get("sales_7d_threshold"), 0)
     if sales_7d_threshold > 0:
         business_conditions = coerce_mapping(output_conditions.get("business_conditions"))
@@ -209,7 +224,7 @@ def _resolve_fastmoss_product_search_query(payload: dict[str, Any]) -> dict[str,
             default=True,
         ),
         "max_candidates": max_candidates,
-        "page_request_delay_seconds": _non_negative_float(payload.get("page_request_delay_seconds"), 1.0),
+        "page_request_delay_seconds": _non_negative_float(payload.get("page_request_delay_seconds"), 0.0),
         "output_conditions": output_conditions,
         "session_policy": session_policy,
         "raw_capture_policy": raw_capture_policy,
@@ -253,6 +268,44 @@ def _resolve_fastmoss_search_settings(payload: dict[str, Any]) -> dict[str, Any]
         "browser_cookies": browser_cookies if isinstance(browser_cookies, list) else [],
         "live_fetch": settings.get("live_fetch", payload.get("fastmoss_live_fetch", True)),
         "ensure_logged_in": settings.get("ensure_logged_in", payload.get("ensure_fastmoss_logged_in", None)),
+        "execution_control_db_url": first_non_empty(
+            settings.get("execution_control_db_url"),
+            settings.get("db_url"),
+            payload.get("execution_control_db_url"),
+            payload.get("db_url"),
+        ),
+        "cookie_cache_namespace": first_non_empty(
+            settings.get("cookie_cache_namespace"),
+            payload.get("fastmoss_cookie_cache_namespace"),
+        ),
+        "cookie_cache_enabled": first_non_empty(
+            settings.get("cookie_cache_enabled"),
+            payload.get("fastmoss_cookie_cache_enabled"),
+        ),
+        "cookie_cache_ttl_seconds": first_non_empty(
+            settings.get("cookie_cache_ttl_seconds"),
+            payload.get("fastmoss_cookie_cache_ttl_seconds"),
+        ),
+        "api_request_delay_min_seconds": first_non_empty(
+            settings.get("api_request_delay_min_seconds"),
+            settings.get("request_delay_min_seconds"),
+            payload.get("api_request_delay_min_seconds"),
+        ),
+        "api_request_delay_max_seconds": first_non_empty(
+            settings.get("api_request_delay_max_seconds"),
+            settings.get("request_delay_max_seconds"),
+            payload.get("api_request_delay_max_seconds"),
+        ),
+        "fastmoss_api_request_delay_min_seconds": first_non_empty(
+            settings.get("fastmoss_api_request_delay_min_seconds"),
+            settings.get("fastmoss_request_delay_min_seconds"),
+            payload.get("fastmoss_api_request_delay_min_seconds"),
+        ),
+        "fastmoss_api_request_delay_max_seconds": first_non_empty(
+            settings.get("fastmoss_api_request_delay_max_seconds"),
+            settings.get("fastmoss_request_delay_max_seconds"),
+            payload.get("fastmoss_api_request_delay_max_seconds"),
+        ),
     }
 
 
@@ -282,8 +335,14 @@ def _resolve_fastmoss_product_search_pages(
         base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
         default_region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
     )
     with session:
+        cookie_cache_status = _attach_fastmoss_cookie_cache_if_configured(
+            session,
+            fastmoss_settings=fastmoss_settings,
+            query=query,
+        )
         if cookies:
             session.replace_browser_cookies(cookies)
         ensure_logged_in = coerce_bool(
@@ -293,7 +352,80 @@ def _resolve_fastmoss_product_search_pages(
         if ensure_logged_in:
             session.ensure_logged_in()
 
-        return _fetch_fastmoss_search_pages(session, query=query), {}, session.cookie_snapshot()
+        try:
+            raw_pages = _fetch_fastmoss_search_pages(session, query=query)
+        except FastMossHTTPError as exc:
+            if not _is_fastmoss_security_verification_error(exc):
+                raise
+            if not _refresh_fastmoss_session_after_security_check(
+                session,
+                cookies=cookies,
+                has_credentials=bool(phone and password),
+            ):
+                raise
+            raw_pages = _fetch_fastmoss_search_pages(session, query=query)
+
+        session_snapshot = session.cookie_snapshot()
+        if cookie_cache_status:
+            session_snapshot["cookie_cache"] = cookie_cache_status
+        return raw_pages, {}, session_snapshot
+
+
+def _is_fastmoss_security_verification_error(exc: FastMossHTTPError) -> bool:
+    return coerce_str(exc.response_code) in FASTMOSS_SECURITY_VERIFICATION_CODES
+
+
+def _refresh_fastmoss_session_after_security_check(
+    session: FastMossHTTPSession,
+    *,
+    cookies: list[Mapping[str, Any]],
+    has_credentials: bool,
+) -> bool:
+    """Refresh FastMoss auth material once after a safety challenge response."""
+
+    if has_credentials:
+        session.clear_cookies_for_domain("fastmoss.com")
+        session.login()
+        session.ensure_logged_in()
+        return True
+    if cookies:
+        session.replace_browser_cookies(cookies)
+        session.ensure_logged_in()
+        return True
+    return False
+
+
+def _attach_fastmoss_cookie_cache_if_configured(
+    session: FastMossHTTPSession,
+    *,
+    fastmoss_settings: Mapping[str, Any],
+    query: Mapping[str, Any],
+) -> dict[str, Any]:
+    db_url = first_non_empty(fastmoss_settings.get("execution_control_db_url"), fastmoss_settings.get("db_url"))
+    account_key = first_non_empty(
+        fastmoss_settings.get("account_key"),
+        fastmoss_settings.get("phone"),
+        fastmoss_settings.get("phone_env"),
+    )
+    if not db_url or not account_key:
+        return {}
+    enabled = coerce_bool(fastmoss_settings.get("cookie_cache_enabled"), default=True)
+    try:
+        store = RuntimeStore(db_url=db_url)
+        return attach_fastmoss_cookie_cache(
+            session,
+            store=store,
+            account_key=account_key,
+            region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
+            namespace=first_non_empty(fastmoss_settings.get("cookie_cache_namespace")),
+            enabled=enabled,
+            ttl_seconds=_non_negative_float(
+                fastmoss_settings.get("cookie_cache_ttl_seconds"),
+                12 * 60 * 60,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": enabled, "status": "unavailable", "reason": str(exc)}
 
 
 def _fetch_fastmoss_search_pages(
@@ -305,7 +437,7 @@ def _fetch_fastmoss_search_pages(
     seen_product_keys: set[str] = set()
     page = int(query["page"])
     stop_reason = "max_pages"
-    page_request_delay_seconds = _non_negative_float(query.get("page_request_delay_seconds"), 1.0)
+    page_request_delay_seconds = _non_negative_float(query.get("page_request_delay_seconds"), 0.0)
     for _ in range(max(int(query["max_pages"]), 1)):
         if raw_pages and page_request_delay_seconds > 0:
             time.sleep(page_request_delay_seconds)
@@ -989,6 +1121,17 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return integer if integer > 0 else default
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    number = _parse_number(value)
+    if number is None:
+        return default
+    try:
+        integer = int(number)
+    except (TypeError, ValueError):
+        return default
+    return integer if integer >= 0 else default
 
 
 def _non_negative_float(value: Any, default: float) -> float:

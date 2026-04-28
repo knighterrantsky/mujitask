@@ -6,8 +6,10 @@ import random
 import re
 import time
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -107,6 +109,11 @@ DEFAULT_TIKTOK_BLOCKER_RETRY_MIN_MS = 180
 DEFAULT_TIKTOK_BLOCKER_RETRY_MAX_MS = 420
 DEFAULT_TIKTOK_BLOCKER_SETTLE_MIN_MS = 280
 DEFAULT_TIKTOK_BLOCKER_SETTLE_MAX_MS = 520
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_MAX_ATTEMPTS = 3
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS = 8000
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS = 1600
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS = 2000
+DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS = 900
 TIKTOK_LOGIN_PROMO_KEYWORDS = (
     "welcome! ready for some savings",
     "exclusive discounts",
@@ -143,6 +150,50 @@ SECURITY_CHECK_HTML_FALLBACK_SIGNALS = (
     "lucifer-captcha",
     "captcha/index",
     "captcha/verify",
+)
+TIKTOK_SLIDER_CAPTCHA_POPUP_SELECTORS = (
+    "#tts_web_captcha_container",
+    "#captcha_container",
+    "#captcha-verify-container",
+    "[id*='captcha'][style*='block']",
+    "[id*='captcha']",
+    "[class*='captcha'][class*='container']",
+    "[class*='captcha'][class*='modal']",
+    "[class*='secsdk-captcha']",
+)
+TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS = (
+    "#captcha-verify-image",
+    ".captcha_verify_img",
+    ".captcha-verify-image",
+    "[class*='captcha_verify_img']:not([class*='slide'])",
+    "[class*='verify-image']:not([class*='slide'])",
+    "[class*='captcha'] img:not([class*='slide'])",
+)
+TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS = (
+    ".captcha_verify_img_slide",
+    ".captcha-verify-image-slide",
+    "[class*='captcha_verify_img_slide']",
+    "[class*='img_slide']",
+    "[class*='slide'][class*='img']",
+)
+TIKTOK_SLIDER_CAPTCHA_HANDLE_SELECTORS = (
+    ".secsdk-captcha-drag-icon",
+    ".captcha_verify_slide--slidebar",
+    "[class*='drag-icon']",
+    "[class*='slidebar']",
+    "[class*='slider'][class*='handle']",
+    "[class*='captcha'] [class*='drag']",
+)
+TIKTOK_SLIDER_CAPTCHA_REFRESH_SELECTORS = (
+    ".secsdk_captcha_refresh",
+    ".captcha_verify_refresh",
+    "[class*='captcha'][class*='refresh']",
+    "[aria-label*='refresh' i]",
+)
+TIKTOK_SLIDER_CAPTCHA_SUCCESS_SELECTORS = (
+    ".verify-success",
+    "[class*='success'][class*='verify']",
+    "[class*='captcha'][class*='success']",
 )
 UNAVAILABLE_PAGE_SIGNALS: tuple[tuple[str, str], ...] = (
     ("product not available in this country or region", "Product not available in this country or region"),
@@ -282,6 +333,7 @@ def fetch_tiktok_product_record_via_browser(
     timeout_ms: int = 30000,
     capture_page_screenshot: bool = True,
     security_check_grace_ms: int = DEFAULT_SECURITY_CHECK_GRACE_MS,
+    slider_captcha_appear_timeout_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS,
     trace_id: str = "",
 ) -> TikTokProductRecord:
     _log_tiktok_fetch_timing(
@@ -316,6 +368,40 @@ def fetch_tiktok_product_record_via_browser(
             trace_id=trace_id,
             phase="login_toast_settled",
         )
+        initial_html = _safe_page_content(page)
+        initial_resolved_url = str(getattr(page, "url", "") or product_url)
+        initial_security_check_message = _detect_browser_security_check(
+            page,
+            html=initial_html,
+            resolved_url=initial_resolved_url,
+            dom_snapshot={},
+        )
+        if initial_security_check_message:
+            slider_resolution = _try_resolve_tiktok_slider_security_check(
+                page,
+                product_url=product_url,
+                appear_timeout_ms=slider_captcha_appear_timeout_ms,
+                trace_id=trace_id,
+            )
+            _log_tiktok_fetch_timing(
+                trace_id=trace_id,
+                phase="security_check_slider_resolution",
+                attempted=bool(slider_resolution.get("attempted")),
+                resolved=bool(slider_resolution.get("resolved")),
+                reason=str(slider_resolution.get("reason", "")).strip(),
+                attempts=len(slider_resolution.get("attempts") or []),
+                **_summarize_tiktok_slider_attempts(slider_resolution),
+            )
+            if not slider_resolution.get("resolved"):
+                initial_html, initial_resolved_url, _initial_dom_snapshot, initial_security_check_message = (
+                    _wait_for_security_check_intervention(
+                        page,
+                        product_url=product_url,
+                        timeout_ms=security_check_grace_ms,
+                    )
+                )
+                if initial_security_check_message:
+                    raise TikTokSecurityCheckError(initial_security_check_message)
         dom_snapshot = _wait_for_product_page_ready(
             page,
             timeout_ms=timeout_ms,
@@ -338,6 +424,37 @@ def fetch_tiktok_product_record_via_browser(
             resolved_url=resolved_url,
             dom_snapshot=dom_snapshot,
         )
+        if security_check_message:
+            slider_resolution = _try_resolve_tiktok_slider_security_check(
+                page,
+                product_url=product_url,
+                appear_timeout_ms=slider_captcha_appear_timeout_ms,
+                trace_id=trace_id,
+            )
+            _log_tiktok_fetch_timing(
+                trace_id=trace_id,
+                phase="security_check_slider_resolution",
+                attempted=bool(slider_resolution.get("attempted")),
+                resolved=bool(slider_resolution.get("resolved")),
+                reason=str(slider_resolution.get("reason", "")).strip(),
+                attempts=len(slider_resolution.get("attempts") or []),
+                **_summarize_tiktok_slider_attempts(slider_resolution),
+            )
+            if slider_resolution.get("resolved"):
+                dom_snapshot = _wait_for_product_page_ready(
+                    page,
+                    timeout_ms=timeout_ms,
+                    source_url=product_url,
+                    trace_id=trace_id,
+                )
+                html = _safe_page_content(page)
+                resolved_url = str(getattr(page, "url", "") or product_url)
+                security_check_message = _detect_browser_security_check(
+                    page,
+                    html=html,
+                    resolved_url=resolved_url,
+                    dom_snapshot=dom_snapshot,
+                )
         if security_check_message:
             html, resolved_url, dom_snapshot, security_check_message = _wait_for_security_check_intervention(
                 page,
@@ -611,6 +728,12 @@ def _wait_for_product_page_ready(
         resolved_url = str(getattr(page, "url", "") or source_url)
         page_html = _safe_page_content(page)
         unavailable_message = _extract_unavailable_message(page_html)
+        security_check_message = _detect_browser_security_check(
+            page,
+            html=page_html,
+            resolved_url=resolved_url,
+            dom_snapshot=latest_snapshot,
+        )
         capture_ready_state = _read_browser_capture_ready_state(
             html=page_html,
             dom_snapshot=latest_snapshot,
@@ -683,6 +806,19 @@ def _wait_for_product_page_ready(
             return {
                 **latest_snapshot,
                 "unavailable_message": unavailable_message,
+            }
+        if security_check_message:
+            if trace_id:
+                _log_tiktok_fetch_timing(
+                    trace_id=trace_id,
+                    phase="product_page_wait_security_check",
+                    poll=poll_count,
+                    elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    security_signal=security_check_message,
+                )
+            return {
+                **latest_snapshot,
+                "security_check_message": security_check_message,
             }
         if capture_ready_state.get("ready"):
             if trace_id:
@@ -1246,10 +1382,18 @@ def _tiktok_blocked_handling() -> BlockedHandlingConfig:
 
 
 def _handle_tiktok_blocked_context(automation_page: Any, event: BlockedContext) -> BlockedResolution:
+    page = getattr(automation_page, "raw_page", None) or getattr(automation_page, "page", None) or automation_page
+    if _is_tiktok_slider_security_blocker(event):
+        slider_resolution = _try_resolve_tiktok_slider_security_check(
+            page,
+            product_url=str(getattr(event, "page_url", "") or getattr(page, "url", "") or ""),
+        )
+        if slider_resolution.get("resolved"):
+            return BlockedResolution.handled_recheck("resolved TikTok product slider security verification")
+
     if not _is_tiktok_login_promo_blocker(event):
         return BlockedResolution.resume_default()
 
-    page = getattr(automation_page, "raw_page", None) or getattr(automation_page, "page", None) or automation_page
     if _dismiss_tiktok_login_promo(page):
         if _tiktok_product_content_is_visible(page):
             return BlockedResolution.force_continue(
@@ -1263,6 +1407,602 @@ def _handle_tiktok_blocked_context(automation_page: Any, event: BlockedContext) 
     if _tiktok_product_content_is_visible(page):
         return BlockedResolution.force_continue("ignored non-blocking TikTok login promo popover")
     return BlockedResolution.resume_default()
+
+
+def _is_tiktok_slider_security_blocker(event: BlockedContext) -> bool:
+    page_url = str(getattr(event, "page_url", "") or "").lower()
+    if "tiktok.com/shop/" not in page_url:
+        return False
+
+    blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
+    if blocker_type == "security_challenge":
+        return True
+
+    candidate_texts = _collect_tiktok_blocked_text_candidates(event)
+    security_signals = SECURITY_CHECK_STRONG_SIGNALS + SECURITY_CHECK_WEAK_SIGNALS + (
+        "secsdk",
+        "slider",
+    )
+    return any(signal in text for text in candidate_texts for signal in security_signals)
+
+
+def _try_resolve_tiktok_slider_security_check(
+    page: Any,
+    *,
+    product_url: str,
+    max_attempts: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_MAX_ATTEMPTS,
+    appear_timeout_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS,
+    settle_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS,
+    confirm_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS,
+    trace_id: str = "",
+) -> dict[str, Any]:
+    effective_max_attempts = max(int(max_attempts), 0)
+    if effective_max_attempts <= 0:
+        return {"attempted": False, "resolved": False, "reason": "disabled", "attempts": []}
+
+    state = _wait_for_tiktok_slider_captcha_state(page, timeout_ms=appear_timeout_ms)
+    if not state.get("visible"):
+        return {"attempted": False, "resolved": False, "reason": "slider_not_visible", "attempts": []}
+
+    try:
+        captcha_provider = _build_tiktok_slider_captcha_provider()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "attempted": True,
+            "resolved": False,
+            "reason": "captcha_provider_unavailable",
+            "error": str(exc),
+            "attempts": [],
+        }
+
+    attempts: list[dict[str, Any]] = []
+    for attempt_index in range(1, effective_max_attempts + 1):
+        attempt: dict[str, Any] = {"attempt": attempt_index}
+        attempts.append(attempt)
+        try:
+            if attempt_index > 1:
+                _click_first_visible_locator(page, TIKTOK_SLIDER_CAPTCHA_REFRESH_SELECTORS)
+                _safe_wait_for_timeout(page, DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS)
+
+            state = _read_tiktok_slider_captcha_state(page)
+            if not state.get("visible"):
+                attempt["resolved_before_drag"] = True
+                _safe_wait_for_timeout(page, max(int(confirm_ms), 1))
+                confirmed_state = _read_tiktok_slider_captcha_state(page)
+                attempt["confirmation_wait_ms"] = max(int(confirm_ms), 1)
+                attempt["confirmation_popup_still_visible"] = bool(confirmed_state.get("visible"))
+                if confirmed_state.get("visible"):
+                    attempt["reason"] = "slider_reappeared_after_confirmation_wait"
+                    continue
+                return {
+                    "attempted": True,
+                    "resolved": True,
+                    "reason": "slider_already_cleared",
+                    "attempts": attempts,
+                }
+
+            background_locator, background_selector = _first_visible_locator(
+                page,
+                TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS,
+            )
+            target_locator, target_selector = _first_visible_locator(
+                page,
+                TIKTOK_SLIDER_CAPTCHA_TARGET_SELECTORS,
+            )
+            handle_locator, handle_selector = _first_visible_locator(
+                page,
+                TIKTOK_SLIDER_CAPTCHA_HANDLE_SELECTORS,
+            )
+            if not (background_locator and target_locator and handle_locator):
+                attempt["reason"] = "missing_slider_elements"
+                continue
+
+            background_box = _locator_bounding_box(background_locator)
+            target_box = _locator_bounding_box(target_locator)
+            handle_box = _locator_bounding_box(handle_locator)
+            target_hidden_for_background = _hide_locator_for_visual_capture(target_locator)
+            try:
+                background_image = _locator_screenshot_bytes(background_locator)
+            finally:
+                if target_hidden_for_background:
+                    _restore_locator_after_visual_capture(target_locator)
+            target_image = _locator_screenshot_bytes(target_locator)
+            if not (background_image and target_image and background_box and handle_box):
+                attempt["reason"] = "missing_slider_artifacts"
+                continue
+
+            slider_match, match_metadata = _match_tiktok_slider(
+                captcha_provider,
+                target_image,
+                background_image,
+            )
+            drag_distance = _calculate_tiktok_slider_drag_distance(
+                slider_match=slider_match,
+                background_image=background_image,
+                background_box=background_box,
+                target_box=target_box,
+                handle_box=handle_box,
+            )
+            attempt.update(
+                {
+                    "background_selector": background_selector,
+                    "target_selector": target_selector,
+                    "handle_selector": handle_selector,
+                    "target_x": int(getattr(slider_match, "target_x", 0)),
+                    "target_y": int(getattr(slider_match, "target_y", 0)),
+                    "confidence": getattr(slider_match, "confidence", None),
+                    **match_metadata,
+                    "drag_distance": round(drag_distance, 2),
+                }
+            )
+            _drag_tiktok_slider_handle(page, handle_box=handle_box, drag_distance=drag_distance)
+            _safe_wait_for_timeout(page, max(int(settle_ms), 1))
+
+            state = _read_tiktok_slider_captcha_state(page)
+            attempt["popup_still_visible"] = bool(state.get("visible"))
+            if not state.get("visible"):
+                _safe_wait_for_timeout(page, max(int(confirm_ms), 1))
+                confirmed_state = _read_tiktok_slider_captcha_state(page)
+                attempt["confirmation_wait_ms"] = max(int(confirm_ms), 1)
+                attempt["confirmation_popup_still_visible"] = bool(confirmed_state.get("visible"))
+                if confirmed_state.get("visible"):
+                    attempt["reason"] = "slider_reappeared_after_confirmation_wait"
+                    continue
+                _log_tiktok_fetch_timing(
+                    trace_id=trace_id,
+                    phase="slider_security_check_resolved",
+                    product_url=product_url,
+                    attempt=attempt_index,
+                    drag_distance=round(drag_distance, 2),
+                )
+                return {
+                    "attempted": True,
+                    "resolved": True,
+                    "reason": "slider_cleared",
+                    "attempts": attempts,
+                }
+        except Exception as exc:  # noqa: BLE001
+            attempt["reason"] = "slider_attempt_failed"
+            attempt["error"] = str(exc)
+
+    return {
+        "attempted": True,
+        "resolved": False,
+        "reason": "slider_popup_still_visible",
+        "attempts": attempts,
+    }
+
+
+def _summarize_tiktok_slider_attempts(slider_resolution: Mapping[str, Any]) -> dict[str, Any]:
+    attempts = slider_resolution.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return {}
+    last_attempt = attempts[-1] if isinstance(attempts[-1], Mapping) else {}
+    reason_counts: dict[str, int] = {}
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping):
+            continue
+        reason = str(attempt.get("reason") or "").strip() or "unknown"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return {
+        "attempt_reasons": ",".join(f"{reason}:{count}" for reason, count in sorted(reason_counts.items())),
+        "last_background_selector": str(last_attempt.get("background_selector") or ""),
+        "last_target_selector": str(last_attempt.get("target_selector") or ""),
+        "last_handle_selector": str(last_attempt.get("handle_selector") or ""),
+        "last_target_x": last_attempt.get("target_x", ""),
+        "last_target_y": last_attempt.get("target_y", ""),
+        "last_confidence": last_attempt.get("confidence", ""),
+        "last_match_method": last_attempt.get("match_method", ""),
+        "last_simple_target": last_attempt.get("simple_target", ""),
+        "last_drag_distance": last_attempt.get("drag_distance", ""),
+        "last_popup_still_visible": last_attempt.get("popup_still_visible", ""),
+        "last_confirmation_popup_still_visible": last_attempt.get("confirmation_popup_still_visible", ""),
+    }
+
+
+def _build_tiktok_slider_captcha_provider() -> Any:
+    from automation_framework.captcha import DdddOcrCaptchaProvider
+
+    return DdddOcrCaptchaProvider()
+
+
+def _match_tiktok_slider(
+    captcha_provider: Any,
+    target_image: bytes,
+    background_image: bytes,
+) -> tuple[Any, dict[str, Any]]:
+    gap = _detect_tiktok_slider_gap_from_background(background_image)
+    if gap:
+        return (
+            SimpleNamespace(
+                target_x=int(gap["x"]),
+                target_y=int(gap["y"]),
+                confidence=1.0,
+                raw={"method": "dark_gap_component", **gap},
+            ),
+            {
+                "match_method": "dark_gap_component",
+                "simple_target": "",
+                "gap_width": gap.get("width", ""),
+                "gap_height": gap.get("height", ""),
+            },
+        )
+
+    matches: list[tuple[Any, dict[str, Any]]] = []
+    errors: list[str] = []
+    for simple_target in (False, True):
+        try:
+            matches.append(
+                (
+                    captcha_provider.match_slider(
+                        target_image,
+                        background_image,
+                        simple_target=simple_target,
+                    ),
+                    {
+                        "match_method": "ddddocr_match_slider_best_of_modes",
+                        "simple_target": simple_target,
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"simple_target={simple_target}: {exc}")
+    if matches:
+        slider_match, metadata = max(
+            matches,
+            key=lambda item: int(getattr(item[0], "target_x", 0)),
+        )
+        if errors:
+            metadata = {**metadata, "match_errors": " | ".join(errors)}
+        return slider_match, metadata
+    raise TikTokProductExtractionError("TikTok slider OCR matching failed: " + " | ".join(errors))
+
+
+def _detect_tiktok_slider_gap_from_background(background_image: bytes) -> dict[str, int]:
+    if not background_image:
+        return {}
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(background_image)).convert("RGB") as image:
+            width, height = int(image.width), int(image.height)
+            raw_pixels = image.tobytes()
+    except Exception:
+        return {}
+
+    if width <= 0 or height <= 0:
+        return {}
+
+    dark_mask = bytearray(
+        1 if (raw_pixels[index] + raw_pixels[index + 1] + raw_pixels[index + 2]) / 3 < 95 else 0
+        for index in range(0, len(raw_pixels), 3)
+    )
+    seen = bytearray(width * height)
+    candidates: list[dict[str, int]] = []
+
+    for index, is_dark in enumerate(dark_mask):
+        if not is_dark or seen[index]:
+            continue
+        stack = [index]
+        seen[index] = 1
+        area = 0
+        min_x = width
+        min_y = height
+        max_x = 0
+        max_y = 0
+        while stack:
+            current = stack.pop()
+            area += 1
+            x = current % width
+            y = current // width
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+            for neighbor_y in range(max(0, y - 1), min(height, y + 2)):
+                row_offset = neighbor_y * width
+                for neighbor_x in range(max(0, x - 1), min(width, x + 2)):
+                    neighbor_index = row_offset + neighbor_x
+                    if seen[neighbor_index] or not dark_mask[neighbor_index]:
+                        continue
+                    seen[neighbor_index] = 1
+                    stack.append(neighbor_index)
+
+        box_width = max_x - min_x + 1
+        box_height = max_y - min_y + 1
+        if not (
+            35 <= box_width <= 100
+            and 30 <= box_height <= 100
+            and area >= 500
+            and min_x > 5
+            and max_x < width - 5
+            and min_y > 5
+            and max_y < height - 5
+        ):
+            continue
+        candidates.append(
+            {
+                "x": min_x,
+                "y": min_y,
+                "width": box_width,
+                "height": box_height,
+                "area": area,
+            }
+        )
+
+    if not candidates:
+        return {}
+    return max(candidates, key=lambda item: item["area"])
+
+
+def _read_tiktok_slider_captcha_state(page: Any) -> dict[str, Any]:
+    success_locator, success_selector = _first_visible_locator(
+        page,
+        TIKTOK_SLIDER_CAPTCHA_SUCCESS_SELECTORS,
+        timeout_ms=250,
+    )
+    popup_locator, popup_selector = _first_visible_locator(
+        page,
+        TIKTOK_SLIDER_CAPTCHA_POPUP_SELECTORS,
+        timeout_ms=250,
+    )
+    if popup_locator:
+        return {
+            "visible": True,
+            "success": bool(success_locator),
+            "selector": popup_selector,
+            "success_selector": success_selector,
+        }
+
+    background_locator, background_selector = _first_visible_locator(
+        page,
+        TIKTOK_SLIDER_CAPTCHA_BACKGROUND_SELECTORS,
+        timeout_ms=250,
+    )
+    handle_locator, handle_selector = _first_visible_locator(
+        page,
+        TIKTOK_SLIDER_CAPTCHA_HANDLE_SELECTORS,
+        timeout_ms=250,
+    )
+    return {
+        "visible": bool(background_locator and handle_locator),
+        "success": bool(success_locator),
+        "selector": background_selector if background_locator else "",
+        "handle_selector": handle_selector if handle_locator else "",
+        "success_selector": success_selector,
+    }
+
+
+def _wait_for_tiktok_slider_captcha_state(
+    page: Any,
+    *,
+    timeout_ms: int = DEFAULT_TIKTOK_SLIDER_CAPTCHA_APPEAR_TIMEOUT_MS,
+    poll_ms: int = DEFAULT_SECURITY_CHECK_POLL_MS,
+) -> dict[str, Any]:
+    effective_timeout_ms = max(int(timeout_ms), 0)
+    effective_poll_ms = max(int(poll_ms), 1)
+    deadline = time.monotonic() + effective_timeout_ms / 1000.0
+
+    while True:
+        state = _read_tiktok_slider_captcha_state(page)
+        if state.get("visible") or time.monotonic() >= deadline:
+            return state
+        _safe_wait_for_timeout(page, min(effective_poll_ms, max(int((deadline - time.monotonic()) * 1000), 0)))
+
+
+def _first_visible_locator(
+    page: Any,
+    selectors: tuple[str, ...],
+    *,
+    timeout_ms: int = 500,
+) -> tuple[Any | None, str]:
+    for selector in selectors:
+        if not selector:
+            continue
+        try:
+            locator = page.locator(selector)
+            target = getattr(locator, "first", locator)
+            if _locator_is_visible(target, timeout_ms=timeout_ms):
+                return target, selector
+        except Exception:
+            continue
+    return None, ""
+
+
+def _locator_is_visible(locator: Any, *, timeout_ms: int = 500) -> bool:
+    is_visible = getattr(locator, "is_visible", None)
+    if not callable(is_visible):
+        return False
+    try:
+        return bool(is_visible(timeout=timeout_ms))
+    except TypeError:
+        try:
+            return bool(is_visible())
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _click_first_visible_locator(page: Any, selectors: tuple[str, ...]) -> bool:
+    locator, _selector = _first_visible_locator(page, selectors, timeout_ms=250)
+    if not locator:
+        return False
+    click = getattr(locator, "click", None)
+    if not callable(click):
+        return False
+    try:
+        click(timeout=1000)
+    except TypeError:
+        click()
+    return True
+
+
+def _locator_screenshot_bytes(locator: Any) -> bytes:
+    screenshot = getattr(locator, "screenshot", None)
+    if not callable(screenshot):
+        return b""
+    try:
+        payload = screenshot(timeout=3000)
+    except TypeError:
+        payload = screenshot()
+    return payload if isinstance(payload, bytes) else b""
+
+
+def _hide_locator_for_visual_capture(locator: Any) -> bool:
+    evaluate = getattr(locator, "evaluate", None)
+    if not callable(evaluate):
+        return False
+    script = """
+    element => {
+      if (!element || !element.style) return false;
+      element.dataset.tiktokSliderPreviousVisibility = element.style.visibility || "";
+      element.style.visibility = "hidden";
+      return true;
+    }
+    """
+    try:
+        return bool(evaluate(script, timeout=1000))
+    except TypeError:
+        try:
+            return bool(evaluate(script))
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _restore_locator_after_visual_capture(locator: Any) -> None:
+    evaluate = getattr(locator, "evaluate", None)
+    if not callable(evaluate):
+        return
+    script = """
+    element => {
+      if (!element || !element.style || !element.dataset) return;
+      element.style.visibility = element.dataset.tiktokSliderPreviousVisibility || "";
+      delete element.dataset.tiktokSliderPreviousVisibility;
+    }
+    """
+    try:
+        evaluate(script, timeout=1000)
+    except TypeError:
+        try:
+            evaluate(script)
+        except Exception:
+            return
+    except Exception:
+        return
+
+
+def _locator_bounding_box(locator: Any) -> dict[str, float]:
+    bounding_box = getattr(locator, "bounding_box", None)
+    if not callable(bounding_box):
+        return {}
+    try:
+        box = bounding_box(timeout=3000)
+    except TypeError:
+        box = bounding_box()
+    if not isinstance(box, Mapping):
+        return {}
+    try:
+        return {
+            "x": float(box.get("x", 0)),
+            "y": float(box.get("y", 0)),
+            "width": float(box.get("width", 0)),
+            "height": float(box.get("height", 0)),
+        }
+    except (TypeError, ValueError):
+        return {}
+
+
+def _calculate_tiktok_slider_drag_distance(
+    *,
+    slider_match: Any,
+    background_image: bytes,
+    background_box: Mapping[str, float],
+    target_box: Mapping[str, float],
+    handle_box: Mapping[str, float],
+) -> float:
+    background_render_width = float(background_box.get("width") or 0)
+    image_width, _image_height = _image_dimensions_from_bytes(background_image)
+    coordinate_scale = background_render_width / image_width if image_width > 0 else 1.0
+    target_left = float(getattr(slider_match, "target_x", 0)) * coordinate_scale
+    raw_match = getattr(slider_match, "raw", None)
+    if isinstance(raw_match, Mapping) and raw_match.get("method") == "dark_gap_component":
+        try:
+            gap_width = float(raw_match.get("width") or 0) * coordinate_scale
+        except (TypeError, ValueError):
+            gap_width = 0.0
+        target_render_width = float(target_box.get("width") or 0) if target_box else 0.0
+        if gap_width > 0 and target_render_width > gap_width:
+            target_left -= (target_render_width - gap_width) / 2
+
+    if target_box:
+        current_left = float(target_box.get("x") or 0) - float(background_box.get("x") or 0)
+    else:
+        current_left = float(handle_box.get("x") or 0) - float(background_box.get("x") or 0)
+    drag_distance = target_left - current_left
+    if abs(drag_distance) < 1:
+        drag_distance = target_left
+    return drag_distance
+
+
+def _image_dimensions_from_bytes(image_bytes: bytes) -> tuple[int, int]:
+    if not image_bytes:
+        return 0, 0
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return 0, 0
+
+
+def _drag_tiktok_slider_handle(
+    page: Any,
+    *,
+    handle_box: Mapping[str, float],
+    drag_distance: float,
+) -> None:
+    mouse = getattr(page, "mouse", None)
+    if mouse is None:
+        raise TikTokProductExtractionError("TikTok slider captcha requires page mouse support")
+
+    start_x = float(handle_box.get("x") or 0) + float(handle_box.get("width") or 0) / 2
+    start_y = float(handle_box.get("y") or 0) + float(handle_box.get("height") or 0) / 2
+    end_x = start_x + drag_distance
+    overshoot = 0.0
+    if abs(drag_distance) >= 80:
+        overshoot = min(max(abs(drag_distance) * 0.025, 2.0), 8.0)
+        overshoot = overshoot if drag_distance >= 0 else -overshoot
+    travel_distance = drag_distance + overshoot
+    steps = max(32, min(56, int(abs(travel_distance) // 5) or 32))
+    step_pause_ms = max(8, min(24, int(900 / steps)))
+
+    mouse.move(start_x, start_y)
+    _safe_wait_for_timeout(page, random.randint(100, 240))
+    mouse.down()
+    _safe_wait_for_timeout(page, random.randint(140, 280))
+    for step in range(1, steps + 1):
+        progress = step / steps
+        if progress < 0.75:
+            eased = 1 - (1 - progress) ** 3
+        else:
+            eased = 0.98 + (progress - 0.75) * 0.08
+        eased = min(eased, 1.0)
+        jitter_x = 0.0 if step == steps else random.uniform(-0.6, 0.6)
+        jitter_y = 0.0 if step == steps else random.uniform(-1.2, 1.2)
+        mouse.move(start_x + travel_distance * eased + jitter_x, start_y + jitter_y)
+        _safe_wait_for_timeout(page, random.randint(max(5, step_pause_ms - 4), step_pause_ms + 8))
+    if overshoot:
+        mouse.move(end_x + overshoot * 0.35, start_y + random.uniform(-0.4, 0.4))
+        _safe_wait_for_timeout(page, random.randint(80, 160))
+        mouse.move(end_x - (1 if drag_distance >= 0 else -1) * random.uniform(0.4, 1.4), start_y)
+        _safe_wait_for_timeout(page, random.randint(70, 140))
+    mouse.move(end_x, start_y)
+    _safe_wait_for_timeout(page, random.randint(120, 260))
+    mouse.up()
 
 
 def _is_tiktok_login_promo_blocker(event: BlockedContext) -> bool:

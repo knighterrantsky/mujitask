@@ -203,7 +203,11 @@ stateDiagram-v2
 flowchart TD
     A["Task: search_keyword_competitor_products"] --> B["submit_keyword_request"]
     B --> C["keyword_seed_import<br/>FastMoss search + seed write"]
-    C --> D["dispatch_row_refresh_jobs"]
+    C --> S{"FastMoss MSG_SAFE_0001?"}
+    S -->|是| R["fastmoss_security_browser_fallback<br/>resolve FastMoss security check"]
+    R --> C2["retry keyword_seed_import<br/>same original search request"]
+    C2 --> D["dispatch_row_refresh_jobs"]
+    S -->|否| D["dispatch_row_refresh_jobs"]
     D --> E["competitor_row_refresh<br/>same row-level pipeline"]
     E --> F["ready_for_summary"]
     F --> G["notification_outbox"]
@@ -215,6 +219,7 @@ flowchart TD
 | --- | --- | --- |
 | `submitted` | 创建顶层 `task_request` | `task_request` |
 | `keyword_seed_import` | 根据结构化关键词/filter 生成 FastMoss 搜索参数，调用通用搜索能力，按返回的 normalized candidates 顺序写入竞品种子行 | `api_worker_job` |
+| `fastmoss_security_browser_fallback` | `keyword_seed_import` 遇到 FastMoss `MSG_SAFE_0001` 且登录刷新重试后仍失败时，派发浏览器解风控任务，成功后重新派发原始搜索请求 | `task_execution` |
 | `dispatch_row_refresh_jobs` | 根据成功 seed rows 创建行级采集 job | `task_request` |
 | `refresh_competitor_rows` | 使用与竞品表刷新一致的 `competitor_row_refresh` 行级 pipeline 补齐详情 | `api_worker_job` / `task_execution` |
 | `ready_for_summary` | 汇总搜索、种子写入、商品采集和详情写回结果，并写通知 outbox | `task_request` / `notification_outbox` |
@@ -224,6 +229,7 @@ flowchart TD
 | Job | item_code / job_code | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
 | 关键词种子入库 | `keyword_seed_import` | `api_worker` | `keyword_seed_import` | `keyword_search_parameter_mapper` -> `fastmoss_product_search` -> candidate iteration -> `feishu_table_write` + `competitor_seed_projection_mapper` |
+| FastMoss 搜索风控解除 | `fastmoss_security_browser_resolve` | `browser_worker` | `fastmoss_security_browser_resolve` | 打开 FastMoss 搜索页，围绕原始 `/api/goods/V2/search` 请求复现风控、解滑块、二次确认、保存 cookie cache |
 | 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | 与竞品表刷新相同的行级 pipeline |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 只由行级 pipeline 在明确需要 fallback 时创建并等待 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
@@ -239,7 +245,13 @@ flowchart TD
 
 `fastmoss_product_search` 的原始响应只作为排障证据保存，不直接进入竞品表 mapper。search 结果已经是 normalized candidates，因此本 workflow 不再单独定义 search result mapper；业务 job 只按返回顺序逐条调用种子写入。种子写入的已存在判断沿用 `competitor_seed_projection_mapper` 输出的 `upsert_key`: 优先使用 `SKU-ID` / `product_id`，缺少 product_id 时才按标准化 `产品链接` 兜底。
 
-`fastmoss_product_search` 真实翻页请求之间默认间隔 1 秒，避免连续请求触发 FastMoss 风控。
+`max_candidates` 默认值为 `20`。当调用方传入 `max_candidates=0` 时，`fastmoss_product_search` 不按候选数截断，只在分页、FastMoss total、空页、无新商品或 `fastmoss_search_max_pages` 等停止条件触发时结束。真实翻页请求之间默认间隔 1 秒，避免连续请求触发 FastMoss 风控。
+
+FastMoss 搜索接口返回 `MSG_SAFE_0001` 时，`fastmoss_product_search` 必须先执行一次现有登录态刷新策略: 清理 FastMoss cookies、重新登录、`ensure_logged_in()`，并重试原始 `/api/goods/V2/search` 请求。如果重试后仍返回 `MSG_SAFE_0001`，`keyword_seed_import` 不应把整个 workflow 直接终止为普通失败，而应返回 `fallback_required`，并保留原始失败请求上下文: method/path、keyword、region、page、pagesize、order、filters、referer、response_code、`data.id` 和 `ext.is_login`。
+
+`fastmoss_security_browser_fallback` 只能围绕原始失败的 FastMoss 搜索请求解除风控。browser worker 必须打开对应 FastMoss 搜索页，在同一登录态下触发同等 `/api/goods/V2/search` 请求；若出现滑块，使用 framework captcha 能力处理，滑块消失后等待 2 秒并再次确认风控容器仍然消失。成功判据是浏览器中原始搜索接口不再返回 `MSG_SAFE_0001`，商品详情页不能作为搜索风控解除成功判据。商品详情页最多用于登录态 warm-up，不能作为本 stage 的验收条件。
+
+FastMoss browser fallback 的持久化对象是 FastMoss cookies，不是 API token。browser handler 成功后只把 FastMoss cookies 写入 `fastmoss_session_cookie_cache`；summary/log 只允许记录 `cookie_count`、`has_fd_tk`、`fd_tk_digest`、`verified_path` 等脱敏元数据，不得输出 cookie value。fallback 成功后，workflow 重新派发 `keyword_seed_import`，使用新的 dedupe suffix，例如 `after-fastmoss-security-browser-fallback`，再由 API handler 加载 cookie cache 并重新请求原始搜索接口。该 FastMoss 搜索风控 fallback 最多执行一次；再次失败时终态错误为 `fastmoss_security_verification_required`。
 
 ### 4.3 进程间调度时序图
 
@@ -252,6 +264,7 @@ sequenceDiagram
     participant Exec as executor_daemon
     participant API as api_worker
     participant Browser as browser_worker
+    participant FastMoss as FastMoss
     participant Feishu as Feishu
     participant Fact as Fact DB
     participant Obj as MinIO
@@ -262,7 +275,19 @@ sequenceDiagram
     Exec->>DB: enqueue api_worker_job(keyword_seed_import)
     API->>DB: claim keyword_seed_import
     API->>DB: map structured filters to FastMoss search parameters
-    API->>DB: call fastmoss_product_search and store normalized candidates
+    API->>FastMoss: call /api/goods/V2/search
+    alt MSG_SAFE_0001 after one login refresh retry
+        API->>DB: mark keyword_seed_import fallback_required with original search request context
+        Exec->>DB: enqueue task_execution(fastmoss_security_browser_resolve)
+        Browser->>DB: claim fastmoss_security_browser_resolve
+        Browser->>FastMoss: open search page and replay original /api/goods/V2/search
+        Browser->>FastMoss: solve slider, wait 2s, verify original search no longer returns MSG_SAFE_0001
+        Browser->>DB: persist cookies to fastmoss_session_cookie_cache
+        Browser->>DB: mark fastmoss_security_browser_resolve success
+        Exec->>DB: enqueue retry keyword_seed_import with original search request
+        API->>FastMoss: retry /api/goods/V2/search with cached cookies
+    end
+    API->>DB: store normalized candidates
     loop each normalized candidate in order
         API->>Feishu: feishu_table_write with competitor_seed_projection_mapper
         API->>DB: record seed write result
@@ -298,7 +323,9 @@ sequenceDiagram
 - `competitor_row_refresh` 内部按固定顺序串行执行 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert、飞书写回。
 - browser fallback 是当前行级 job 派生并等待的子 `task_execution`，不是与当前行并行推进的 sibling job。
 - `competitor_row_refresh` 绑定串行 queue lane，按 `available_at` / `queue_seq` / `created_at` FIFO claim；同一 lane 同一时刻最多一个 running job。
-- TikTok、FastMoss 和飞书外部请求之间必须记录 request start/end、delay / cooldown 和 fallback reason 等 runtime evidence。
+- TikTok、FastMoss 和飞书外部请求之间必须使用统一 request pacing 并记录 request start/end、pacing delay / cooldown 和 fallback reason 等 runtime evidence。默认 pacing 区间为 `0.5s` 到 `1.0s`，可通过全局配置、provider 级配置或 job payload 覆盖。
+- 该流程覆盖的外部 HTTP request 包括 TikTok request-first 商品页请求、FastMoss 搜索/商品/达人接口、Feishu Bitable 读写、Feishu Drive 附件上传、Feishu 附件远程图片下载、media 远程素材下载、最终 outbox webhook / Feishu bot 通知。浏览器 fallback 内部的 Playwright/CDP 等待不属于 API request pacing 范畴，但其前后的 API request 仍必须记录 pacing evidence。
+- 关键词搜索新增的 FastMoss 搜索风控 fallback 只刷新登录态 cookie cache，不改变商品事实、media asset、Fact DB upsert 的 ownership；这些事实采集边界仍以 `contracts/facts/product-fact-collection.yaml` 为准。
 - 父 task 基于所有子 job 状态汇总。
 
 FastMoss 商品详情指标必须按窗口语义映射，不按固定原始字段名猜测。`近90天销量` 来自 `goods.overview` 以 `d_type=90` 调用后的窗口汇总；mapper 优先使用标准化 `sales_90d`，其次使用同一窗口下的 `overview.real_sold_count`、`overview.sold_count`，最后才在 `chart_list` 满 90 天时按 `inc_sold_count` 求和。`raw_api_responses.request_params` 与 `product_metric_snapshots.window_days` 必须记录 `d_type=90`，让后续审计能区分“90 天窗口汇总”和普通累计字段。不满 90 天的 `chart_list` 不能伪装成完整 90 天销量。
