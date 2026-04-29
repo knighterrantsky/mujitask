@@ -74,13 +74,23 @@ GitHub 流程优先读取：
 - release 页面必须正常渲染 Markdown 标题、列表和代码样式。
 - release 页面中不能出现字面量 `\n`。
 
-## 8. 仓库内发布脚本
+## 8. GitLab 流程专用脚本
+
+以下脚本仅用于 GitLab 远端:
 
 - `scripts/release/publish-gitlab-flow.ps1`
 - `scripts/release/publish-gitlab-release.ps1`
 - `scripts/release/release-notes.template.md`
 
-## 9. GitLab 仓库执行要求
+## 9. GitHub 流程说明
+
+GitHub 远端使用 GitHub PR + GitHub Release:
+
+- 创建 PR 并合并到 `main`。
+- 使用 GitHub UI 或 `gh` CLI 创建 release。
+- 当前仓库未提供 GitHub release 自动化脚本时，应使用 GitHub UI 或 `gh release create` 创建 release。
+
+## 10. GitLab 仓库执行要求
 
 - 创建 MR 是必做步骤。
 - 必须在 GitLab 服务器上的 MR 页面或 GitLab 服务端 API 完成合并。
@@ -89,7 +99,7 @@ GitHub 流程优先读取：
 - 如果当前会话缺少 GitLab token，先提示用户输入，再继续后续步骤。
 - 只要用户要求“提交代码并发布”，优先使用 `scripts/release/publish-gitlab-flow.ps1` 走完整链路，而不是只做到提交代码。
 
-## 10. 脚本调用示例
+## 11. GitLab 脚本调用示例
 
 标准调用方式：
 

@@ -11,7 +11,7 @@
 | [business](./business/README.md) | 客户需求、业务规则、飞书表口径、验收口径 | 当前业务事实来源 |
 | [arch](./arch/README.md) | 系统架构、workflow 设计、Runtime/Fact/Storage 设计 | 当前系统设计事实来源 |
 | [domains](./domains/README.md) | 业务域阅读路线和不变量索引 | 路由入口，不承载正文事实 |
-| [dev](./dev/README.md) | 开发规范、项目结构、实现模式、本地调试 | 开发工作流事实来源 |
+| [dev](./dev/README.md) | 开发规范、模块阅读、实现模式、本地调试 | 开发工作流事实来源 |
 | [test](./test/README.md) | 测试策略、验证流程、测试数据 | 测试策略事实来源 |
 | [ops](./ops/README.md) | 部署、运维、验收、回退、runbook | 运维执行事实来源 |
 | [reference](./reference/README.md) | 外部接口、采集口径、研究材料 | 参考资料，不作为当前业务或系统设计事实来源 |

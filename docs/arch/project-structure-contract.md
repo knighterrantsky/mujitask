@@ -18,7 +18,7 @@
 相关事实来源:
 
 - 系统执行链路: [system-architecture-design.md](./system-architecture-design.md)
-- Workflow 设计规则: [workflow-design-guidelines.md](../dev/workflow-design-guidelines.md)
+- Workflow 设计规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - Handler 契约: [handler-contract-design.md](./handler-contract-design.md)
 - 飞书表 Adapter/Projection 契约: [feishu-table-adapter-projection-contract.md](./feishu-table-adapter-projection-contract.md)
 - Runtime 控制面契约: [runtime-control-plane-contract.md](./runtime-control-plane-contract.md)

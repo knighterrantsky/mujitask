@@ -30,7 +30,6 @@
 - 重构治理
 - 架构契约变更
 - 字段 / 状态 / workflow contract 变更
-- legacy reference 查询
 - 部署 / 运维任务
 
 Codex 必须根据仓库内的 contracts 和 tests 自动选择最小上下文。默认先读取 `contracts/harness/code-roadmap.yaml`、相关 contract、当前源码和当前测试；只有任务触发条件需要时，才展开长 business / arch 文档。

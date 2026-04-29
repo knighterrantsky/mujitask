@@ -20,13 +20,7 @@
 
 配置在 `skills/mujitask-tiktok-feishu-sync/skill.local.env`，使用英文 alias 路由表配置，不维护第二套中文 key。完整 URL 由 Base URL + Table ID + View ID 拼出。
 
-核心表:
-
-| 表 | 用途 |
-| --- | --- |
-| TK竞品收集 | 竞品数据主操作表，12 个自动维护字段 |
-| TK选品收集 | 选品数据表，3 个自动维护字段 |
-| TK达人池 | 达人数据，按达人 ID upsert |
+当前 Mujitask 业务会通过飞书 Base 读写若干 TikTok 运营表（例如选品、竞品、达人池等）。具体表结构、字段含义、自动维护字段和验收口径以 `docs/business` 为准。
 
 ## 3. FastMoss 接入
 
@@ -67,14 +61,7 @@ BUSINESS_EXECUTION_CONTROL_DB_URL
 TEST_DATABASE_URL
 ```
 
-关键表:
-
-| 表 | 用途 |
-| --- | --- |
-| `task_request` | 顶层任务请求 |
-| `api_worker_job` | API worker 可 claim 的执行单元 |
-| `task_execution` | 任务执行记录 |
-| `notification_outbox` | 通知发送队列 |
+Postgres 用于 Runtime DB / Fact DB。具体 Runtime 表结构以 `docs/arch/runtime-db-schema-design.md` 为准，Fact DB 表结构以 `docs/arch/fact-db-schema-design.md` 为准。
 
 ## 7. MinIO 接入
 
@@ -87,6 +74,8 @@ BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY
 BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY
 BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET
 ```
+
+具体 Storage 架构和 artifact contract 以 `docs/arch/storage-architecture-design.md` 为准。
 
 ## 8. 安全规则
 

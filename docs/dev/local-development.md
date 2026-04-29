@@ -8,7 +8,7 @@
 
 - Python >= 3.11
 - Git
-- Postgres（本地通过 socket 运行于 `/tmp`）
+- Postgres，本地或远程均可
 - MinIO（可选，推荐用于完整 Runtime 流程）
 - Chromium / Playwright
 - 可访问 FastMoss、TikTok、飞书相关账号和配置
@@ -61,10 +61,16 @@ createdb automation_business_scaffold_test
 alembic upgrade head
 ```
 
-本地 Postgres 通过 socket 连接:
+推荐使用 `scripts/execution_control/executor.local.env` 中的 `BUSINESS_EXECUTION_CONTROL_DB_URL`。本地连接示例:
 
 ```bash
-psql -h /tmp -U happyzhao -d automation_business_scaffold
+psql "postgresql://<user>:<password>@127.0.0.1:5432/automation_business_scaffold"
+```
+
+如果使用 socket 连接:
+
+```bash
+psql -h /tmp -U <postgres_user> -d automation_business_scaffold
 ```
 
 ## 6. 启动本地 Agent API

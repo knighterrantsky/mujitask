@@ -19,7 +19,7 @@
 
 - 项目结构: [project-architecture-contract.md](../arch/project-architecture-contract.md)
 - 当前系统架构: [system-architecture-design.md](../arch/system-architecture-design.md)
-- Workflow 拆分规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
+- Workflow 拆分规则: [workflow-design-guidelines.md](../arch/workflow-design-guidelines.md)
 - Handler contract: [handler-contract-design.md](../arch/handler-contract-design.md)
 
 ## 2. 新 Workflow 固定开发顺序

@@ -28,6 +28,7 @@ business_editable_paths:
   - "docs/arch/**"
   - "docs/domains/**"
   - "docs/dev/**"
+  - "docs/business/**"
   - "contracts/**"
   - "tests/**"
   - "src/automation_business_scaffold/config.py"
@@ -39,8 +40,7 @@ business_editable_paths:
   - "src/automation_business_scaffold/validators/**"
   - "docs/ops/**"
   - "docs/reference/**"
-legacy_reference_paths:
-  - "docs/business/**"
-legacy_reference_rule: "Read-only reference unless explicitly migrating, deleting, or changing customer requirements."
+legacy_reference_paths: []
+legacy_reference_rule: "No legacy reference paths remain. docs/business/** is the current customer requirements and business acceptance source, not legacy reference."
 demo_task_name: "source_to_target_publish_demo"
 demo_workflow_id: "source_to_target_publish_demo_v1"

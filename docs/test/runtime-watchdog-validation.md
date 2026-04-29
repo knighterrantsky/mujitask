@@ -20,12 +20,14 @@ scripts/execution_control/install_launch_agents.sh
 
 Useful manual commands:
 
+实际 plist 名称以 `scripts/execution_control/install_launch_agents.sh` 生成结果为准。
+
 ```bash
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.happyzhao.mujitask.api-worker.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.happyzhao.mujitask.watchdog.plist"
-launchctl kickstart -k "gui/$(id -u)/com.happyzhao.mujitask.api-worker"
-launchctl kickstart -k "gui/$(id -u)/com.happyzhao.mujitask.watchdog"
-launchctl list | grep 'com.happyzhao.mujitask'
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.<user>.mujitask.api-worker.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.<user>.mujitask.watchdog.plist"
+launchctl kickstart -k "gui/$(id -u)/com.<user>.mujitask.api-worker"
+launchctl kickstart -k "gui/$(id -u)/com.<user>.mujitask.watchdog"
+launchctl list | grep 'mujitask'
 ```
 
 The api-worker and browser-runloop plists pass `--supervisor-mode inline`.
