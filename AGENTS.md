@@ -123,7 +123,7 @@ Runtime DB schema、Fact DB schema、workflow contract、handler contract、入�
 - `docs/dev/documentation-change-policy.md`
 - `docs/arch/runtime-db-schema-design.md`
 - `docs/arch/fact-db-schema-design.md`
-- `docs/arch/workflow-design-guidelines.md`
+- `docs/dev/workflow-design-guidelines.md`
 - `docs/arch/handler-contract-design.md`
 - `docs/arch/entry-output-contract-design.md`
 - `contracts/README.md`

@@ -151,7 +151,7 @@ request_id -> task_request -> child jobs -> artifacts -> outbox
 
 ## 7. 与其他架构文档关系
 
-- Task / Workflow / Job 拆分规则见 [workflow-design-guidelines.md](./workflow-design-guidelines.md)。
+- Task / Workflow / Job 拆分规则见 [workflow-design-guidelines.md](../dev/workflow-design-guidelines.md)。
 - Runtime 状态和队列表见 [runtime-db-schema-design.md](./runtime-db-schema-design.md)。
 - Outbox 和整体进程关系见 [system-architecture-design.md](./system-architecture-design.md)。
 - Artifact 输出和 MinIO 规则见 [storage-architecture-design.md](./storage-architecture-design.md)。

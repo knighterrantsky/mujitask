@@ -38,7 +38,9 @@ chore/update-dependencies
 2. 在功能分支完成代码和文档修改
 3. 运行必要测试: `uv run --extra dev pytest`
 4. 提交 commit
-5. 创建 MR（GitLab 项目 ID 11）
+5. 根据当前 origin 远端平台创建 PR / MR:
+   - GitHub 远端: 创建 Pull Request (PR)
+   - GitLab 远端: 创建 Merge Request (MR)
 6. 合并回 `main`
 
 ## 4. Commit Message 建议
@@ -72,5 +74,5 @@ refactor: align tiktok workflow job definitions
 
 - 不在 `main` 直接提交功能代码
 - 先创建功能分支
-- 通过 MR 合并
+- 通过 PR / MR 合并
 - release tag 只能打在合并后的 `main` 最新提交上

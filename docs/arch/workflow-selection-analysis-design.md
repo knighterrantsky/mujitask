@@ -63,7 +63,7 @@ flowchart TD
     M --> N["summary / outbox"]
 ```
 
-Stage 命名遵循 [workflow-design-guidelines.md](./workflow-design-guidelines.md): stage code 只表达业务阶段，adapter/mapper 放在 Job / Handler / Flow 映射中。
+Stage 命名遵循 [workflow-design-guidelines.md](../dev/workflow-design-guidelines.md): stage code 只表达业务阶段，adapter/mapper 放在 Job / Handler / Flow 映射中。
 
 ## 4. Stage 设计
 
