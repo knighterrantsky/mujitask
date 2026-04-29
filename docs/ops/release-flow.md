@@ -97,7 +97,7 @@ GitHub 远端使用 GitHub PR + GitHub Release:
 - MR 合并到 `main` 后才能打正式 tag。
 - Release 必须在 `main` 最新提交上创建。
 - 如果当前会话缺少 GitLab token，先提示用户输入，再继续后续步骤。
-- 只要用户要求”提交代码并发布”，优先使用 `scripts/release/publish-gitlab-flow.ps1` 走完整链路，而不是只做到提交代码。
+- 只要用户要求“提交代码并发布”，优先使用 `scripts/release/publish-gitlab-flow.ps1` 走完整链路，而不是只做到提交代码。
 
 ## 11. GitLab 脚本调用示例
 
