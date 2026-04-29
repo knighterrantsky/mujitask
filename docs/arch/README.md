@@ -26,6 +26,7 @@
 - [系统架构设计](./system-architecture-design.md)
 - [项目架构契约](./project-architecture-contract.md)
 - [项目结构与命名契约](./project-structure-contract.md)
+- [Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [模块实现所有权契约](./module-ownership-contract.md)
 - [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)

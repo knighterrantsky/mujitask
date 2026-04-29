@@ -12,8 +12,7 @@ canonical_runtime_owners:
   - src/automation_business_scaffold/contracts/**
   - contracts/**
 
-legacy_reference_only:
-  - docs/business/**
+legacy_reference_only: []
 
 features:
   - feature_code: harness_completion_claim_gate

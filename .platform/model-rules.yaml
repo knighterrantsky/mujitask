@@ -20,6 +20,7 @@ change_modes:
       - "docs/arch/**"
       - "docs/domains/**"
       - "docs/dev/**"
+      - "docs/business/**"
       - "contracts/**"
       - "tests/**"
       - "src/automation_business_scaffold/config.py"
@@ -39,10 +40,9 @@ change_modes:
       - "tests/test_agent.py"
       - "tests/test_framework_dependency.py"
   legacy_reference:
-    description: "Read-only reference mode for old business implementation and original business requirements."
-    readable:
-      - "docs/business/**"
-    rule: "Read-only reference unless the user explicitly asks for legacy cleanup or customer requirement changes."
+    description: "Read-only reference mode for historical reference materials. docs/business/** is the current customer requirements source, not legacy reference."
+    readable: []
+    rule: "No active legacy reference paths. docs/business/** is the current customer requirements and business acceptance source."
   platform_upgrade:
     description: "Only use when updating framework dependency metadata or platform-managed shell files."
 framework_rules:

@@ -38,7 +38,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [workflow-implementation-patterns.md](./workflow-implementation-patterns.md) | 新增 workflow 的代码结构、设计模式、依赖方向和测试模式 |
-| [workflow-design-guidelines.md](./workflow-design-guidelines.md) | 新增 workflow 的拆分规范、stage/job 颗粒度约束 |
+| [workflow-design-guidelines.md](./workflow-design-guidelines.md) | 跳转到 arch 中的 Workflow 设计与拆分规范；dev 目录不承载 workflow contract 事实 |
 
 ### 开发工具与配置
 
