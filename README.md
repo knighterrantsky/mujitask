@@ -246,7 +246,7 @@ automation-business-scaffold-run run \
 
 - `.platform/` 是平台管理规则，普通业务开发不直接修改。
 - `AGENTS.md` 是仓库级协作规则，只有明确的仓库治理变更才修改。
-- `docs/dev/rewrite-state.yaml` 定义当前重构阶段和 canonical owner；根目录短 Prompt 的上下文路由见 `contracts/codex/task-routing.yaml`。
+- 上下文路由见 `contracts/codex/task-routing.yaml`。
 - framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
 ## 8. 配置边界

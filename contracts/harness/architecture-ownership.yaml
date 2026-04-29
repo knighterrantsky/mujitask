@@ -1,5 +1,5 @@
 schema_version: 1
-current_phase: domains_runtime_rewrite
+current_phase: stable
 
 owners:
   business_flow:

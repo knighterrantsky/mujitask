@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [项目架构契约](./project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
+本文定义每类模块必须”拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [项目架构契约](./project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
 
 本文解决五类反复混淆的问题:
 

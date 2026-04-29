@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文约束“新增 workflow 或新业务流程”时的代码实现模式。它不是迁移 checklist；迁移旧代码见 [real-migration-checklist.md](./real-migration-checklist.md)。
+本文约束”新增 workflow 或新业务流程”时的代码实现模式。
 
 本文目标:
 

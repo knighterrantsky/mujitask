@@ -3,7 +3,7 @@ contract_type: codex_root_task_routing
 default_mode: bounded_task
 
 default_context:
-  - docs/dev/rewrite-state.yaml
+  - docs/arch/system-architecture-design.md
   - contracts/codex/task-routing.yaml
   - docs/arch/project-structure-contract.md
 
@@ -29,7 +29,7 @@ routing:
     mode: domain_runtime_change
     domain: tiktok
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/tk-influencer-pool/README.md
       - docs/arch/project-structure-contract.md
       - contracts/workflow/sync_tk_influencer_pool.yaml
@@ -54,7 +54,7 @@ routing:
     mode: domain_runtime_change
     domain: tiktok
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/tk-competitor/README.md
       - docs/arch/project-structure-contract.md
       - contracts/fields/feishu-tk-competitor.yaml
@@ -81,7 +81,7 @@ routing:
     mode: domain_runtime_change
     domain: tiktok
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/product-fact-ingest/README.md
       - docs/arch/project-structure-contract.md
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
@@ -106,7 +106,7 @@ routing:
     mode: governance_change
     default_context:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - contracts/codex/task-routing.yaml
       - docs/arch/project-structure-contract.md
       - docs/dev/documentation-change-policy.md

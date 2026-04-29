@@ -16,7 +16,6 @@
 相关文档:
 
 - [系统架构设计](./system-architecture-design.md)
-- [四个 Workflow 重设计评审](./workflow-redesign-review.md)
 - [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
 - [Fact DB Schema 设计](./fact-db-schema-design.md)

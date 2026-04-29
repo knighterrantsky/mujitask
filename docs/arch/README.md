@@ -23,10 +23,8 @@
 
 ## 架构总览
 
-- [重构验收契约](./rewrite-acceptance-contract.md)
 - [系统架构设计](./system-architecture-design.md)
 - [项目架构契约](./project-architecture-contract.md)
-- [真实迁移 Checklist](./real-migration-checklist.md)
 - [Workflow 实现模式规范](./workflow-implementation-patterns.md)
 - [项目结构与命名契约](./project-structure-contract.md)
 - [模块实现所有权契约](./module-ownership-contract.md)
@@ -40,11 +38,9 @@
 - [Storage 架构设计](./storage-architecture-design.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
 - [Fact DB Schema 设计](./fact-db-schema-design.md)
-- [迁移状态](./migration-state.md)
 
 ## 业务流程设计
 
-- [四个 Workflow 重设计评审](./workflow-redesign-review.md)
 - [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 - [竞品表 Workflow 设计](./workflow-competitor-table-design.md)

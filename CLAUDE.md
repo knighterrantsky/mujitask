@@ -116,6 +116,7 @@ TikTok request fetch → [browser fallback if needed] → media sync → FastMos
 
 ## Conventions
 
+- Use `git switch` to create and switch branches, not `git checkout`. Example: `git switch -c codex/new-feature`
 - Handler registration uses `@handler_registry.register("handler_code")` — check `capabilities/contracts/handler/allowlist.py` for the registry
 - Workflow stages advance via `advance_stage(store, request, workflow, stage_code)` pattern returning `{"action": "advance", "next_stage": "..."}` or `{"action": "waiting"}`
 - Feishu writeback uses `projection_mapper` codes like `competitor_table_projection_mapper`, `competitor_seed_projection_mapper`, `selection_table_projection_mapper`

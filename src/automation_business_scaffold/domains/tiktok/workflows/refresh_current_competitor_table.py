@@ -162,7 +162,7 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
         error_contract=STANDARD_ERROR_CONTRACT,
         notes=(
             "Task submission itself is handled by task_request creation; the internal entry stage starts at read_competitor_rows.",
-            "This definition follows the cross-workflow stage mapping in workflow-redesign-review.md.",
+            "This definition follows the cross-workflow stage mapping established in the architecture design.",
         ),
     )
 

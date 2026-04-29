@@ -33,11 +33,11 @@
 - legacy reference 查询
 - 部署 / 运维任务
 
-Codex 必须根据仓库内的 rewrite state、code roadmap、contracts 和 tests 自动选择最小上下文。默认先读取 `docs/dev/rewrite-state.yaml`、`contracts/harness/code-roadmap.yaml`、相关 contract、当前源码和当前测试；只有任务触发条件需要时，才展开长 business / arch 文档。
+Codex 必须根据仓库内的 contracts 和 tests 自动选择最小上下文。默认先读取 `contracts/harness/code-roadmap.yaml`、相关 contract、当前源码和当前测试；只有任务触发条件需要时，才展开长 business / arch 文档。
 
-## Rewrite Source Of Truth
+## Architecture Owners
 
-当前重构阶段以 `docs/dev/rewrite-state.yaml` 为准。
+当前项目采用分层架构，代码归属如下：
 
 - `src/automation_business_scaffold/domains/**` 是新业务实现 owner。
 - `src/automation_business_scaffold/capabilities/**` 是通用 handler 能力 owner。
