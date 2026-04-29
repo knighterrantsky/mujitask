@@ -260,7 +260,15 @@ BROWSER_HANDLER_CONTRACTS = MappingProxyType(
             purpose="Fetch TikTok product data via browser fallback after request path failure.",
             contract_reference="docs/arch/handler-contract-design.md#62-tiktok_product_browser_fetch",
             side_effects=("browser.fetch", "artifact.write"),
-        )
+        ),
+        "fastmoss_security_browser_resolve": _contract(
+            handler_code="fastmoss_security_browser_resolve",
+            worker_type="browser_worker",
+            runtime_table="task_execution",
+            purpose="Resolve FastMoss search security verification in a real browser and refresh the cookie cache.",
+            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词竞品入库-keyword_seed_import",
+            side_effects=("browser.security_resolve", "fastmoss.cookie_cache.write"),
+        ),
     }
 )
 

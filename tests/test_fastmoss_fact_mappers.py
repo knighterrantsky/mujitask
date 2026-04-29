@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
     map_fastmoss_author_video_list,
     map_fastmoss_goods_author,
@@ -20,6 +22,10 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import Fa
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+
+product_fetch_module = importlib.import_module(
+    "automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler"
+)
 
 
 def _handler_context(handler_code: str, payload: dict) -> HandlerContext:
@@ -144,6 +150,88 @@ def test_fastmoss_product_fetch_maps_window_overview_sales_to_sales_90d():
     }
 
 
+def test_fastmoss_product_fetch_live_fetch_collects_7_28_90_overview_windows(monkeypatch):
+    class FakeSession:
+        overview_calls: list[int] = []
+        sku_calls: list[int] = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def replace_browser_cookies(self, _cookies):
+            return None
+
+        def get_product_base(self, product_id):
+            return {"data": {"product": {"product_id": product_id, "title": "Windowed Product"}}}
+
+        def get_product_overview(self, product_id, *, d_type):
+            self.overview_calls.append(int(d_type))
+            return {
+                "data": {
+                    "product_id": product_id,
+                    "d_type": int(d_type),
+                    "overview": {
+                        "real_sold_count": int(d_type) * 10,
+                        "sold_count": int(d_type) * 11,
+                        "price": "$9.99",
+                    },
+                    "chart_list": [{"dt": "2026-04-25", "inc_sold_count": int(d_type)}],
+                }
+            }
+
+        def get_product_skus(self, product_id, *, d_type):
+            self.sku_calls.append(int(d_type))
+            return {"data": {"product_id": product_id, "d_type": int(d_type), "sku_list": []}}
+
+        def get_product_sku_distribution(self, product_id, *, d_type):
+            return {"data": {"product_id": product_id, "d_type": int(d_type), "sku_list": []}}
+
+        def cookie_snapshot(self):
+            return {"cookie_count": 1}
+
+    monkeypatch.setattr(product_fetch_module, "FastMossHTTPSession", FakeSession)
+
+    result = product_fetch_module.fastmoss_product_fetch_handler(
+        _handler_context(
+            "fastmoss_product_fetch",
+            {
+                "product_identity": {"product_id": "1732183618577011482"},
+                "fastmoss": {"live_fetch": True},
+                "fastmoss_overview_window_days": [7, 28, 90],
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert FakeSession.overview_calls == [7, 28, 90]
+    assert FakeSession.sku_calls == [28]
+    overview = result.result["metrics_snapshot"]["overview"]
+    assert result.result["metrics_snapshot"]["window_days"] == [7, 28, 90]
+    assert overview["sales_7d"] == "70"
+    assert overview["sales_28d"] == "280"
+    assert overview["sales_90d"] == "900"
+    raw_overview_params = [
+        item["request_params"]
+        for item in result.result["product_fact_bundle"]["raw_api_responses"]
+        if item["source_endpoint"] == "goods.overview"
+    ]
+    assert raw_overview_params == [
+        {"product_id": "1732183618577011482", "d_type": 7},
+        {"product_id": "1732183618577011482", "d_type": 28},
+        {"product_id": "1732183618577011482", "d_type": 90},
+    ]
+    assert [
+        item["window_days"]
+        for item in result.result["product_fact_bundle"]["product_metric_snapshots"]
+    ] == [7, 28, 90]
+
+
 def test_fastmoss_product_fetch_resolves_credentials_from_env_markers(monkeypatch):
     monkeypatch.setenv("PYTEST_FASTMOSS_PHONE", "18000000000")
     monkeypatch.setenv("PYTEST_FASTMOSS_PASSWORD", "secret")
@@ -160,6 +248,30 @@ def test_fastmoss_product_fetch_resolves_credentials_from_env_markers(monkeypatc
 
     assert settings["phone"] == "18000000000"
     assert settings["password"] == "secret"
+    assert settings["window_days"] == 90
+    assert settings["overview_window_days"] == [90]
+
+
+def test_fastmoss_product_fetch_settings_accepts_comma_separated_overview_windows():
+    settings = _resolve_fastmoss_product_settings(
+        {
+            "fastmoss_overview_window_days": "7,28,90",
+        }
+    )
+
+    assert settings["overview_window_days"] == [7, 28, 90]
+    assert settings["window_days"] == 90
+    assert settings["sku_window_days"] == 28
+
+
+def test_fastmoss_product_fetch_direct_window_days_overrides_default_28():
+    settings = _resolve_fastmoss_product_settings(
+        {
+            "fastmoss_window_days": 90,
+        }
+    )
+
+    assert settings["overview_window_days"] == [90]
     assert settings["window_days"] == 90
 
 

@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 import requests
+from automation_business_scaffold.infrastructure.rate_limit import (
+    RequestPacer,
+    resolve_api_request_pacer_config,
+)
 
 BASE_URL = "https://base-api.feishu.cn/open-apis/bitable/v1"
 DRIVE_URL = "https://base-api.feishu.cn/open-apis/drive/v1"
@@ -56,10 +60,17 @@ def parse_table_url(table_url: str) -> Dict[str, str]:
 
 
 class FeishuBitableClient:
-    def __init__(self, access_token: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        timeout: int = 30,
+        *,
+        request_pacer: RequestPacer | None = None,
+    ) -> None:
         self.access_token = access_token
         self.timeout = timeout
         self.session = requests.Session()
+        self.request_pacer = request_pacer or RequestPacer(resolve_api_request_pacer_config(provider="feishu"))
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -77,14 +88,19 @@ class FeishuBitableClient:
     ) -> Dict[str, Any]:
         url = f"{BASE_URL}{path}"
         for attempt in range(retries):
-            response = self.session.request(
-                method=method,
-                url=url,
-                headers=self._headers(),
-                params=params,
-                json=payload,
-                timeout=self.timeout,
-            )
+            pacer_key = "feishu:bitable"
+            self.request_pacer.wait_before_request(pacer_key)
+            try:
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    headers=self._headers(),
+                    params=params,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            finally:
+                self.request_pacer.mark_request_finished(pacer_key)
 
             if response.status_code == 429 or response.status_code >= 500:
                 time.sleep(2 ** attempt)
@@ -277,13 +293,18 @@ class FeishuBitableClient:
 
         for attempt in range(3):
             try:
-                response = self.session.post(
-                    url,
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    timeout=60,
-                )
+                pacer_key = "feishu:drive"
+                self.request_pacer.wait_before_request(pacer_key)
+                try:
+                    response = self.session.post(
+                        url,
+                        headers=headers,
+                        data=data,
+                        files=files,
+                        timeout=60,
+                    )
+                finally:
+                    self.request_pacer.mark_request_finished(pacer_key)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                 if attempt < 2:
                     time.sleep(2 ** attempt)

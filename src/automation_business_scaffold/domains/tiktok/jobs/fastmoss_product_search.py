@@ -17,7 +17,7 @@ FASTMOSS_PRODUCT_SEARCH_JOB = JobDefinition(
         "fastmoss_product_search_payload",
         required_field("search_query", "Keyword or normalized product search query.", type_hint="str"),
         optional_field("filters", "Normalized FastMoss search filters.", type_hint="dict[str, Any]"),
-        optional_field("limit", "Requested maximum candidate count.", type_hint="int"),
+        optional_field("limit", "Requested maximum candidate count; 0 means unlimited until pagination stops.", type_hint="int"),
         optional_field("condition_context", "Output condition context consumed by executor.", type_hint="dict[str, Any]"),
     ),
     result_contract=contract(

@@ -36,10 +36,11 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
         business_conditions.setdefault("min_day7_sold_count", sales_7d_threshold)
         output_conditions["business_conditions"] = business_conditions
 
-    max_candidates = _positive_int(
+    max_candidates = _non_negative_int(
         _first_text(explicit.get("max_candidates"), payload.get("max_candidates"), output_conditions.get("max_candidates")),
         20,
     )
+    output_conditions["max_candidates"] = max_candidates
     search_request = {
         **explicit,
         "stage_code": "keyword_seed_import",
@@ -75,7 +76,7 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
             }
         ),
         "raw_capture_policy": dict(_mapping(explicit.get("raw_capture_policy")) or {"store_raw_response": True}),
-        "page_request_delay_seconds": _non_negative_float(payload.get("fastmoss_page_request_delay_seconds"), 1.0),
+        "page_request_delay_seconds": _non_negative_float(payload.get("fastmoss_page_request_delay_seconds"), 0.0),
         "search_digest": _first_text(payload.get("search_digest"), _search_digest(search_query=search_query, filters=filters)),
     }
     for key, value in payload.items():
@@ -101,6 +102,14 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _positive_int(value: Any, default: int) -> int:

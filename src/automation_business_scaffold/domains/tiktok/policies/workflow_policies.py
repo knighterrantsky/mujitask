@@ -88,6 +88,13 @@ def table_workflow_timeout_rules(*, include_browser: bool) -> tuple[TimeoutRule,
     ]
     if include_browser:
         rules.append(TimeoutRule("tiktok_product_browser_fetch", 900, "Browser fallback timeout."))
+        rules.append(
+            TimeoutRule(
+                "fastmoss_security_browser_resolve",
+                900,
+                "FastMoss search security browser fallback timeout.",
+            )
+        )
     return tuple(rules)
 
 

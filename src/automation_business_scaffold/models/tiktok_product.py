@@ -33,6 +33,8 @@ class TikTokProductRecord:
     product_page_screenshot_local_path: str = ""
     product_page_screenshot_file_name: str = ""
     product_page_screenshot_mime_type: str = ""
+    slider_captcha_resolution: dict[str, Any] = field(default_factory=dict)
+    slider_captcha_audit_artifact_refs: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +68,8 @@ class TikTokProductRecord:
             product_page_screenshot_local_path=str(data.get("product_page_screenshot_local_path", "")),
             product_page_screenshot_file_name=str(data.get("product_page_screenshot_file_name", "")),
             product_page_screenshot_mime_type=str(data.get("product_page_screenshot_mime_type", "")),
+            slider_captcha_resolution=dict(data.get("slider_captcha_resolution") or {}),
+            slider_captcha_audit_artifact_refs=_list_of_dicts(data.get("slider_captcha_audit_artifact_refs")),
         )
 
 

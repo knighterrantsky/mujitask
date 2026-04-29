@@ -35,6 +35,7 @@ OFFICIAL_JOB_CODES = (
     "tiktok_product_request_fetch",
     "tiktok_product_browser_fetch",
     "fastmoss_product_search",
+    "fastmoss_security_browser_resolve",
     "fastmoss_product_fetch",
     "fastmoss_creator_fetch",
     "media_asset_sync",

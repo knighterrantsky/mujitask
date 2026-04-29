@@ -182,6 +182,8 @@ def _build_tiktok_normalized_product_result(
         "media_assets": media_assets,
         "fact_bundle": fact_bundle,
         "artifact_refs": coerce_mapping_list(raw.get("artifact_refs")),
+        "slider_captcha_resolution": coerce_mapping(raw.get("slider_captcha_resolution")),
+        "slider_captcha_audit_artifact_refs": coerce_mapping_list(raw.get("slider_captcha_audit_artifact_refs")),
         "logical_fields": compact_dict(
             {
                 "title": product.get("title"),

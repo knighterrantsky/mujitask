@@ -239,6 +239,45 @@ Flow = handler 内部复用的业务过程
 - handler 不是天然的一条 job。一个 handler 可以被多个 workflow 复用，也可以在一个更大的业务 job 内部作为处理步骤被复用；是否单独建 job，取决于它是否需要独立生命周期，而不是它是否“恰好是一个现成 handler”。
 - “有几个外部 API 调用”也不是 job 数量设计依据。同一业务实体内严格顺序的多个 API 调用，应优先放在同一个 job 内串行执行，并共享同一重试、审计和幂等边界。
 
+Browser fallback 约束:
+
+- API worker 不直接驱动浏览器；外部 API 风控需要浏览器解决时，必须由 workflow 或行级主 job 派发 `browser_worker` / `task_execution`，并通过 Runtime DB 等待 browser handler 的终态结果。
+- Browser fallback handler 按 provider + 能力目标拆分，不做“万能 fallback handler”。例如 TikTok 商品页浏览器采集属于 `tiktok_product_browser_fetch`；FastMoss API 风控解除属于 `fastmoss_security_browser_resolve`，它只在 FastMoss provider 内复用，围绕原始失败的 FastMoss API 请求验证和刷新 cookie cache。
+- Browser fallback handler 只产出该能力的最小稳定结果，例如 normalized product result、风控解除证明或 cookie cache 元数据；业务过滤、飞书写回、summary 终态判定仍属于 domain workflow / flow / projection。
+- 当浏览器 fallback 用于解除外部 API 风控时，成功判据必须回到原始失败的 API 请求或同等业务能力验证，不能用“同站点任意页面能打开”替代。
+
+#### Browser 安全验证码策略
+
+验证码等待只在已识别风控信号后发生。正常商品页抓取、正常 FastMoss API 请求、正常 browser 页面打开不得进入滑块等待，也不得因为配置了 slider resolver 就预先等待验证码元素。
+
+安全验证码 handler 的通用处理顺序是:
+
+1. 先识别 provider + 能力目标对应的风控信号，例如 TikTok 商品页 security check popup，或 FastMoss 原始 API 返回 `MSG_SAFE_0001` 后由 browser 复现的验证码弹层。
+2. 只有风控信号成立后，才等待验证码背景图、拼图块、拖动手柄等元素。`image_timeout_ms` 是元素出现的最大等待，不是固定 sleep；元素提前可用时必须立即进入识别。
+3. 滑动释放后不得只做固定长 sleep。目标策略是滑动后最多轮询 5 秒验证结果，轮询对象包括 popup 是否消失、成功 selector 是否出现、失败态文本是否出现、验证码是否刷新或重新出现。
+4. 当 popup 消失或成功 selector 出现后，弹窗消失后延迟 2 秒二次确认；二次确认仍然消失才视为当前滑块成功。
+5. 如果二次确认时 popup 重新出现，或页面出现 `Unable to verify. Please try again.` 等失败态文本，本次 attempt 视为失败，允许按 handler 的 max attempts 和 refresh 策略继续。
+6. 所有等待时间都是风控处理阶段的局部 timeout / polling window，不是正常采集链路的固定成本。
+
+provider 策略必须独立:
+
+- TikTok 商品页默认使用 TikTok 商品页 selector: `#tts_web_captcha_container`、`#captcha-verify-image`、`.captcha_verify_img_slide`、`.secsdk-captcha-drag-icon`、`.secsdk_captcha_refresh`。TikTok 商品页默认 `simple_target=false`，优先沿用已验收的 framework slider match 行为。
+- FastMoss API 风控默认使用 FastMoss/Tencent selector profile，例如 `#tcaptcha_transform_dy`、`.tencent-captcha-dy__verify-bg-img`、`.tencent-captcha-dy__fg-item`、`.tencent-captcha-dy__slider-block`、`.tencent-captcha-dy__footer-icon--refresh`。`fastmoss_product_search`、`fastmoss_product_fetch`、`fastmoss_creator_fetch`、`fastmoss_shop_fetch`、`fastmoss_video_fetch` 遇到 `MSG_SAFE_0001` 时都必须提供 `verification_request`，由 browser worker 验证原始失败的 FastMoss API 请求。
+- FastMoss 与 TikTok 商品页验证码逻辑独立，可以共用 framework `SliderCaptchaResolver` 和 `DdddOcrCaptchaProvider`，但不得共用业务 handler、成功判据、cookie/token 持久化策略或 selector 成功前提。
+
+FastMoss platform session recovery:
+
+- FastMoss session/cookie 恢复属于 `infrastructure/fastmoss`，不是具体业务 workflow 或 handler 的职责。
+- FastMoss cookie cache 复用必须检查 `expires_at` 和 `last_auth_failed_at`；已 auth failed 的 cookie 不得复用。
+- 明确 auth 失效时由平台层在账号级 lock 内重新登录并保存 `fastmoss_session_cookie_cache`；保存成功清空 `last_auth_failed_at`。
+- 刷新后仍 auth 失败时返回 `fastmoss_session_conflict_or_external_login`，按单点登录或外部登录冲突处理。
+
+审计证据必须足够区分三类失败:
+
+- 识别错误: 记录 ddddocr 原始坐标、`raw_result`、confidence、背景图和拼图块 artifact。
+- 坐标换算错误: 记录浏览器渲染 box、图片原始尺寸、缩放后的目标点、当前拼图中心点和拖动距离。
+- 鼠标执行或页面验证失败: 记录拖动 profile、前后截图、目标位置截图、滑动后轮询结果、失败态文本、二次确认结果和最终 popup 状态。目标位置截图必须在鼠标移动到计算出的终点且释放之前捕获，用于复盘实际落点是否偏离缺口。
+
 ### 3.6.1 统一事实采集与业务投影约束
 
 所有 TikTok / FastMoss / Feishu 业务 workflow 必须把“事实采集”和“业务投影”分开设计。
@@ -531,13 +570,22 @@ API 优先、浏览器兜底的流程必须先实际发起 request，并记录 a
 
 当 workflow 声明某类外部 API 必须串行时，设计文档必须定义该 API 的 queue lane / resource key、FIFO 规则和请求间 delay。
 
+通用节流配置要求:
+
+- 单一业务 job 内所有外部 API request 默认必须通过统一 request pacer，而不是在 flow 中散落固定 `sleep`。
+- 默认随机 pacing 区间是 `0.5s` 到 `1.0s`，并且必须可配置；配置优先级为 job payload 显式覆盖 > provider 专用 runtime/env 配置 > 全局 runtime/env 配置 > 系统默认值。
+- 全局配置键建议为 `api_request_delay_min_seconds`、`api_request_delay_max_seconds`；provider 级配置键建议为 `fastmoss_api_request_delay_min_seconds`、`feishu_api_request_delay_min_seconds`、`tiktok_api_request_delay_min_seconds`、`outbox_api_request_delay_min_seconds` 及对应 max 键。
+- 已迁移到当前 runtime 的 workflow 必须覆盖其 job 内所有外部 HTTP request，包括 FastMoss API、Feishu Bitable/Drive API、TikTok request-first HTTP、outbox webhook / Feishu bot、media 远程素材下载、飞书附件远程图片下载。新增 workflow 如果引入新的外部 provider，必须先接入 `infrastructure/rate_limit/` 或在 contract 中显式声明不适用原因。
+- `0/0` 只表示测试或明确配置下关闭 pacing；生产任务默认不得关闭。
+- retry backoff、queue cooldown 和 request pacing 是三层不同机制: backoff 处理错误重试，cooldown 处理跨 job lane 可用时间，pacing 处理同一 job 内连续外部 request 的风控间隔。
+
 串行 lane 的最低要求:
 
 - 同一 lane 同一时刻最多一个 running job。
 - claim 顺序按 `available_at`、`queue_seq` 或 `created_at` 稳定排序。
 - 每次 request 完成后写入 `next_available_at` 或等价 cooldown 信息。
 - retry job 重新入队时不能插队破坏业务顺序。
-- runtime evidence 能还原 claim order、request start/end time 和 delay。
+- runtime evidence 能还原 claim order、request start/end time、pacing delay 和 cooldown。
 
 ### 4.4 Handler 拆分原则
 

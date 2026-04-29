@@ -146,7 +146,10 @@ scripts/
 | 数据库 | Runtime DB、Fact DB、业务索引库 | `capabilities/persistence/database/`、`infrastructure/stores/` | `domains/{domain}/policies/` 定义 key 和幂等语义 |
 | 文件存储 | MinIO、S3、本地 object store | `capabilities/persistence/object_storage/`、`infrastructure/stores/` | `domains/{domain}/projections/` 只引用 artifact，不直连 store |
 | 消息通道 | 飞书、钉钉、Discord、邮件、Webhook | `capabilities/channels/{channel}/` | `domains/{domain}/projections/` 定义消息内容 |
+| 外部 API 节流 | FastMoss、Feishu、TikTok request、Webhook 的 request pacing | `infrastructure/rate_limit/` + provider client | `domains/{domain}/policies/` 只声明业务允许的覆盖范围 |
 | Agent runtime | OpenClaw、Hermes、用户 agent workspace | `skills/{skill_code}/` | skill 只保留入口说明和固定输入配置 |
+
+外部 API 节流是基础设施能力，不是 workflow 局部 helper。系统默认对同一业务 job 内同一 provider/resource key 的连续 request 应用可配置随机 pacing，默认区间为 `0.5s` 到 `1.0s`。默认值必须能通过 runtime config / env 覆盖: 全局键使用 `api_request_delay_min_seconds`、`api_request_delay_max_seconds` 或 `MUJITASK_API_REQUEST_MIN_DELAY_SECONDS`、`MUJITASK_API_REQUEST_MAX_DELAY_SECONDS`；provider 级覆盖使用 `fastmoss_api_request_delay_min_seconds`、`feishu_api_request_delay_min_seconds`、`tiktok_api_request_delay_min_seconds` 等同名 max 配置。业务 payload 可以显式收紧或放宽，但必须保留在 job result / runtime evidence 中。
 
 ## 6. Workflow 开发契约
 

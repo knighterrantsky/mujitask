@@ -31,6 +31,7 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     sync_artifact_specs,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     deferred_reuse_assets: list[tuple[dict[str, Any], str]] = []
     warnings: list[str] = []
     fact_store = _create_fact_store(payload, warnings=warnings)
+    request_pacer = RequestPacer(resolve_api_request_pacer_config(payload, provider="media"))
 
     for index, asset in enumerate(asset_refs):
         normalized_asset = _normalize_media_asset(asset, fallback_product_id=payload.get("product_id"))
@@ -109,6 +111,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     payload=payload,
                     artifact_root=artifact_root,
                     index=index,
+                    request_pacer=request_pacer,
                 )
                 downloaded_path = Path(coerce_str(downloaded_asset.get("local_path"))).expanduser()
                 _append_artifact_spec(
@@ -398,6 +401,7 @@ def _download_referenced_asset(
     payload: dict[str, Any],
     artifact_root: Path,
     index: int,
+    request_pacer: RequestPacer,
 ) -> dict[str, Any]:
     source_url = coerce_str(asset.get("source_url"))
     timeout_seconds = _coerce_int(
@@ -405,9 +409,13 @@ def _download_referenced_asset(
         default=30,
     )
     request = Request(source_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - URLs come from trusted workflow fetches.
-        content = response.read()
-        content_type = coerce_str(response.headers.get("Content-Type"))
+    request_pacer.wait_before_request("media:download")
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - URLs come from trusted workflow fetches.
+            content = response.read()
+            content_type = coerce_str(response.headers.get("Content-Type"))
+    finally:
+        request_pacer.mark_request_finished("media:download")
     if not content:
         raise ValueError("downloaded asset is empty")
 

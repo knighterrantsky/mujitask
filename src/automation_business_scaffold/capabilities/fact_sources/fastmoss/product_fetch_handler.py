@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
@@ -37,6 +36,15 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
+    attach_fastmoss_cookie_cache_if_configured,
+    fastmoss_security_fallback_required_result,
+    fastmoss_session_conflict_failed_result,
+    fastmoss_settings_from_payload,
+    is_fastmoss_security_verification_error,
+    is_fastmoss_session_conflict_error,
+)
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import Mapping
 from typing import Any
 
@@ -101,6 +109,22 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
             summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
         )
     except FastMossHTTPError as exc:
+        if is_fastmoss_session_conflict_error(exc):
+            return fastmoss_session_conflict_failed_result(
+                context,
+                exc=exc,
+                operation="fastmoss_product_fetch",
+                summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
+            )
+        if is_fastmoss_security_verification_error(exc):
+            return fastmoss_security_fallback_required_result(
+                context,
+                exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=_resolve_fastmoss_product_settings(payload),
+                operation="fastmoss_product_fetch",
+                entity_identity={"product_identity": identity},
+            )
         error = build_error(
             error_type="transport_failure",
             error_code="fastmoss_http_failure",
@@ -168,7 +192,10 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
             return candidate
 
     fastmoss_settings = _resolve_fastmoss_product_settings(payload)
-    live_fetch = coerce_bool(fastmoss_settings.get("live_fetch"), default=bool(product_id and fastmoss_settings))
+    live_fetch = coerce_bool(
+        fastmoss_settings.get("live_fetch"),
+        default=bool(product_id and fastmoss_settings.get("_has_live_config")),
+    )
     if not live_fetch or not product_id:
         return {}
 
@@ -178,21 +205,52 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
         base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
         default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
         timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
+        trust_env=coerce_bool(
+            first_non_empty(
+                fastmoss_settings.get("trust_env"),
+                fastmoss_settings.get("use_system_proxy"),
+                fastmoss_settings.get("fastmoss_trust_env"),
+                fastmoss_settings.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
     )
     with session:
+        attach_fastmoss_cookie_cache_if_configured(
+            session,
+            settings=fastmoss_settings,
+            default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
+        )
         cookies = fastmoss_settings.get("browser_cookies")
         if isinstance(cookies, list):
             session.replace_browser_cookies(cookies)
         if coerce_bool(fastmoss_settings.get("ensure_logged_in"), default=bool(cookies or fastmoss_settings.get("phone"))):
             session.ensure_logged_in()
-        d_type = int(fastmoss_settings.get("window_days", 28) or 28)
+        base = session.get_product_base(product_id)
+        overview_window_days = _coerce_window_days(fastmoss_settings.get("overview_window_days"), default=[28])
+        sku_window_days = _coerce_positive_int(fastmoss_settings.get("sku_window_days"), default=28)
+        primary_window_days = _coerce_positive_int(fastmoss_settings.get("window_days"), default=overview_window_days[-1])
+        overviews = [
+            _with_fastmoss_window(session.get_product_overview(product_id, d_type=d_type), d_type=d_type)
+            for d_type in overview_window_days
+        ]
+        primary_overview = next(
+            (
+                overview
+                for overview in overviews
+                if _coerce_positive_int(extract_fastmoss_data(overview).get("d_type"), default=0) == primary_window_days
+            ),
+            overviews[-1] if overviews else {},
+        )
         bundle = {
-            "base": session.get_product_base(product_id),
-            "overview": _with_fastmoss_window(session.get_product_overview(product_id, d_type=d_type), d_type=d_type),
-            "skus": _with_fastmoss_window(session.get_product_skus(product_id, d_type=d_type), d_type=d_type),
+            "base": base,
+            "overview": primary_overview,
+            "overviews": overviews,
+            "skus": _with_fastmoss_window(session.get_product_skus(product_id, d_type=sku_window_days), d_type=sku_window_days),
             "sku_distribution": _with_fastmoss_window(
-                session.get_product_sku_distribution(product_id, d_type=d_type),
-                d_type=d_type,
+                session.get_product_sku_distribution(product_id, d_type=sku_window_days),
+                d_type=sku_window_days,
             ),
             "session_snapshot": session.cookie_snapshot(),
         }
@@ -211,47 +269,77 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
 
 
 def _resolve_fastmoss_product_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    settings = coerce_mapping(payload.get("fastmoss"))
-    phone_env = first_non_empty(
-        settings.get("phone_env"),
-        settings.get("fastmoss_phone_env"),
-        payload.get("fastmoss_phone_env"),
-    )
-    password_env = first_non_empty(
-        settings.get("password_env"),
-        settings.get("fastmoss_password_env"),
-        payload.get("fastmoss_password_env"),
-    )
-    browser_cookies = settings.get("browser_cookies", payload.get("browser_cookies"))
-    return {
-        "phone": first_non_empty(
-            settings.get("phone"),
-            payload.get("fastmoss_phone"),
-            _env_value(phone_env),
+    settings = fastmoss_settings_from_payload(payload, defaults={"author_list": True})
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    overview_window_days = _coerce_window_days(
+        _first_present(
+            payload.get("fastmoss_overview_window_days"),
+            request_payload.get("fastmoss_overview_window_days"),
+            settings.get("overview_window_days"),
+            settings.get("fastmoss_overview_window_days"),
+            payload.get("fastmoss_window_days"),
+            request_payload.get("fastmoss_window_days"),
+            settings.get("window_days"),
         ),
-        "password": first_non_empty(
-            settings.get("password"),
-            payload.get("fastmoss_password"),
-            _env_value(password_env),
+        default=[28],
+    )
+    settings["overview_window_days"] = overview_window_days
+    settings["window_days"] = _coerce_positive_int(
+        _first_present(
+            payload.get("fastmoss_window_days"),
+            request_payload.get("fastmoss_window_days"),
+            settings.get("window_days"),
+            overview_window_days[-1],
         ),
-        "phone_env": phone_env,
-        "password_env": password_env,
-        "base_url": first_non_empty(settings.get("base_url"), payload.get("fastmoss_base_url"), "https://www.fastmoss.com"),
-        "region": first_non_empty(settings.get("region"), payload.get("region"), "US"),
-        "timeout": settings.get("timeout", payload.get("fastmoss_timeout", 30.0)),
-        "browser_cookies": browser_cookies if isinstance(browser_cookies, list) else [],
-        "live_fetch": settings.get("live_fetch", payload.get("fastmoss_live_fetch", True)),
-        "ensure_logged_in": settings.get("ensure_logged_in", payload.get("ensure_fastmoss_logged_in", None)),
-        "window_days": settings.get("window_days", payload.get("fastmoss_window_days", 28)),
-        "author_list": settings.get("author_list", payload.get("fastmoss_author_list", True)),
-    }
+        default=overview_window_days[-1],
+    )
+    settings["sku_window_days"] = _coerce_positive_int(
+        _first_present(
+            payload.get("fastmoss_sku_window_days"),
+            request_payload.get("fastmoss_sku_window_days"),
+            settings.get("sku_window_days"),
+            settings.get("fastmoss_sku_window_days"),
+            28,
+        ),
+        default=28,
+    )
+    settings["author_list"] = first_non_empty(
+        settings.get("author_list"),
+        payload.get("fastmoss_author_list"),
+        request_payload.get("fastmoss_author_list"),
+        True,
+    )
+    browser_cookies = settings.get("browser_cookies")
+    settings["browser_cookies"] = browser_cookies if isinstance(browser_cookies, list) else []
+    return settings
 
 
-def _env_value(env_name: str) -> str:
-    name = coerce_str(env_name)
-    if not name:
-        return ""
-    return coerce_str(os.environ.get(name))
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in ("", None, [], {}):
+            return value
+    return ""
+
+
+def _coerce_window_days(value: Any, *, default: list[int]) -> list[int]:
+    if value in ("", None, [], {}):
+        return list(default)
+    if isinstance(value, str):
+        raw_values: list[Any] = re.split(r"[,/\s]+", value.strip())
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+
+    days: list[int] = []
+    for raw in raw_values:
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0 and parsed not in days:
+            days.append(parsed)
+    return days or list(default)
 
 
 def _product_fetch_includes_related_creators(payload: Mapping[str, Any], *, detail_level: str) -> bool:
@@ -262,7 +350,7 @@ def _product_fetch_includes_related_creators(payload: Mapping[str, Any], *, deta
 def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
     fact_bundle = new_fact_bundle()
     base = coerce_mapping(raw_bundle.get("base"))
-    overview = coerce_mapping(raw_bundle.get("overview"))
+    overviews = _fastmoss_overview_payloads(raw_bundle)
     skus = coerce_mapping(raw_bundle.get("skus"))
     related_creators = coerce_mapping(raw_bundle.get("related_creators")) or coerce_mapping(raw_bundle.get("authors"))
     videos = coerce_mapping(raw_bundle.get("videos"))
@@ -279,7 +367,7 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
                 "status_code": 200,
             }
         )
-    if overview:
+    for overview in overviews:
         fact_bundle = merge_fact_bundles(fact_bundle, map_fastmoss_goods_overview(overview, product_id=product_id))
         overview_data = extract_fastmoss_data(overview)
         fact_bundle["raw_api_responses"].append(
@@ -426,17 +514,40 @@ def _fastmoss_creator_profile_url(uid: Any, unique_id: Any = "") -> str:
 
 
 def _build_fastmoss_metrics_snapshot(raw_bundle: dict[str, Any], *, product_id: str) -> dict[str, Any]:
-    overview = extract_fastmoss_data(coerce_mapping(raw_bundle.get("overview")))
-    overview_metrics = _windowed_overview_metrics(overview)
+    overviews = _fastmoss_overview_payloads(raw_bundle)
+    overview_metrics: dict[str, Any] = {}
+    window_days: list[int] = []
+    chart_points_by_window: dict[str, int] = {}
+    primary_overview: dict[str, Any] = {}
+    for overview_payload in overviews:
+        overview = extract_fastmoss_data(overview_payload)
+        primary_overview = overview
+        current_window_days = _coerce_positive_int(overview.get("d_type"), default=0)
+        if current_window_days > 0 and current_window_days not in window_days:
+            window_days.append(current_window_days)
+        if current_window_days > 0:
+            chart_points_by_window[str(current_window_days)] = len(coerce_mapping_list(overview.get("chart_list")))
+        overview_metrics.update(_windowed_overview_metrics(overview))
     return compact_dict(
         {
             "product_id": product_id,
-            "window_days": overview.get("d_type"),
+            "window_days": window_days[0] if len(window_days) == 1 else window_days,
             "overview": overview_metrics,
-            "chart_points": len(coerce_mapping_list(overview.get("chart_list"))),
+            "chart_points": len(coerce_mapping_list(primary_overview.get("chart_list"))),
+            "chart_points_by_window": chart_points_by_window,
             "session_snapshot": coerce_mapping(raw_bundle.get("session_snapshot")),
         }
     )
+
+
+def _fastmoss_overview_payloads(raw_bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    overviews = raw_bundle.get("overviews")
+    if isinstance(overviews, Mapping):
+        return [dict(item) for item in overviews.values() if isinstance(item, Mapping)]
+    if isinstance(overviews, list):
+        return [dict(item) for item in overviews if isinstance(item, Mapping)]
+    overview = coerce_mapping(raw_bundle.get("overview"))
+    return [overview] if overview else []
 
 
 def _metric_fields(*payloads: Mapping[str, Any]) -> dict[str, Any]:
@@ -614,7 +725,7 @@ def _build_fastmoss_sku_metric_snapshots(
 
 def _with_fastmoss_window(payload: Mapping[str, Any], *, d_type: int | str) -> dict[str, Any]:
     result = dict(payload)
-    result.setdefault("d_type", d_type)
+    result["d_type"] = d_type
     return result
 
 

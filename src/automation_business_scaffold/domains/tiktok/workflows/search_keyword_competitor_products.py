@@ -5,6 +5,7 @@ from automation_framework.runtime import WorkflowSpec
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
     COMPETITOR_ROW_REFRESH_JOB,
+    FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
     KEYWORD_SEED_IMPORT_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
     TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
@@ -42,7 +43,11 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
             required_field("search_query", "Keyword or normalized search query.", type_hint="str"),
             optional_field("filters", "FastMoss search filters.", type_hint="dict[str, Any]"),
             optional_field("output_conditions", "Candidate filtering and dedupe policy.", type_hint="dict[str, Any]"),
-            optional_field("max_candidates", "Upper bound for candidates to process.", type_hint="int"),
+            optional_field(
+                "max_candidates",
+                "Upper bound for candidates to process; 0 means unlimited until pagination stops.",
+                type_hint="int",
+            ),
             optional_field("seed_table_ref", "Target TK competitor table reference.", type_hint="str"),
             optional_field("reply_target", "Reply target used by the final outbox.", type_hint="str"),
         ),
@@ -59,6 +64,20 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
                         flow_code="keyword_seed_import_flow",
                         mapper_code="competitor_seed_projection_mapper",
                         result_consumer="seed contexts and per-SKU import results",
+                    ),
+                ),
+            ),
+            StageDefinition(
+                stage_code="fastmoss_security_browser_fallback",
+                description="Resolve FastMoss MSG_SAFE_0001 for the original search request in browser.",
+                execution_mode="worker_jobs",
+                enter_condition="keyword seed import returned fallback_required for MSG_SAFE_0001",
+                exit_condition="FastMoss search security browser resolve execution is terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="fastmoss_security_browser_resolve",
+                        flow_code="fastmoss_security_browser_resolve",
+                        result_consumer="cookie cache metadata and original search verification evidence",
                     ),
                 ),
             ),
@@ -101,6 +120,7 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
         ),
         job_defs=(
             KEYWORD_SEED_IMPORT_JOB,
+            FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
             COMPETITOR_ROW_REFRESH_JOB,
             TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
@@ -108,8 +128,18 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
         transitions=(
             TransitionDefinition(
                 from_stage_code="keyword_seed_import",
+                to_stage_code="fastmoss_security_browser_fallback",
+                condition="keyword seed import returned fallback_required for FastMoss MSG_SAFE_0001 and fallback has not been attempted",
+            ),
+            TransitionDefinition(
+                from_stage_code="fastmoss_security_browser_fallback",
+                to_stage_code="keyword_seed_import",
+                condition="browser resolved FastMoss search security verification and refreshed cookie cache",
+            ),
+            TransitionDefinition(
+                from_stage_code="keyword_seed_import",
                 to_stage_code="dispatch_row_refresh_jobs",
-                condition="keyword seed import job is terminal",
+                condition="keyword seed import job is terminal without FastMoss security fallback requirement",
             ),
             TransitionDefinition(
                 from_stage_code="dispatch_row_refresh_jobs",

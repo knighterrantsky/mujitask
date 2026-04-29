@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any, Mapping
 
-from automation_business_scaffold.contracts.handler.shared import merge_fact_bundles
+from automation_business_scaffold.contracts.handler.shared import coerce_mapping, merge_fact_bundles
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     KEYWORD_TASK_CODE,
 )
@@ -70,6 +70,29 @@ FASTMOSS_PRODUCT_PASSTHROUGH_KEYS = (
     "product_fact_bundle",
     "required",
 )
+RUNTIME_DB_PASSTHROUGH_KEYS = (
+    "execution_control_db_url",
+    "db_url",
+)
+FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
+    "browser_profile_ref",
+    "browser_profile_id",
+    "browser_provider_name",
+    "browser_workspace_id",
+    "browser_headless",
+    "browser_force_open",
+    "browser_timeout_ms",
+    "fastmoss_browser_profile_ref",
+    "fastmoss_browser_profile_id",
+    "fastmoss_browser_provider_name",
+    "fastmoss_browser_workspace_id",
+    "fastmoss_browser_timeout_ms",
+    "fastmoss_slider_max_attempts",
+    "fastmoss_slider_appear_timeout_ms",
+    "fastmoss_slider_settle_ms",
+    "fastmoss_slider_confirm_ms",
+    "mock_fastmoss_security_browser_resolve",
+)
 FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
     "db_url",
     "fact_db_url",
@@ -105,6 +128,8 @@ def advance_stage(
         raise ValueError(f"Unsupported task_code for keyword runtime: {request.task_code}")
     if stage_code == "keyword_seed_import":
         return _advance_keyword_seed_import(store=store, request=request, workflow=workflow)
+    if stage_code == "fastmoss_security_browser_fallback":
+        return _advance_fastmoss_security_browser_fallback(store=store, request=request, workflow=workflow)
     if stage_code == "dispatch_row_refresh_jobs":
         return _advance_dispatch_row_refresh_jobs(store=store, request=request, workflow=workflow)
     if stage_code == "refresh_competitor_rows":
@@ -133,14 +158,15 @@ def finalize_request(
     row_results = [_build_row_result(store=store, request_id=request.request_id, candidate_context=row) for row in candidate_contexts]
     child_records = _all_child_records(store=store, request_id=request.request_id)
     child_outcome = summarize_child_outcomes(child_records, optional_codes=OPTIONAL_FINAL_STATUS_CODES)
+    explicit_final_status = str((force_result or {}).get("final_status") or "")
     computed_status = compute_final_status(
         workflow.summary_policy,
         child_records=child_records,
         optional_codes=OPTIONAL_FINAL_STATUS_CODES,
-        explicit_status=str((force_result or {}).get("final_status") or ""),
+        explicit_status=explicit_final_status,
     )
     final_status = _derive_final_status(row_results=row_results, fallback_status=computed_status)
-    if not row_results and int(child_outcome["failed_count"]) == 0:
+    if not explicit_final_status and not row_results and int(child_outcome["failed_count"]) == 0:
         final_status = "success"
     warnings = list(dict.fromkeys(_collect_warnings(row_results)))
     search_query = _first_text(request.payload.get("search_query"), request.payload.get("search_keyword"), request.payload.get("keyword"))
@@ -323,8 +349,51 @@ def _advance_keyword_seed_import(
     stage_code = "keyword_seed_import"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
     job_def = workflow.require_job("keyword_seed_import")
-    if not jobs:
-        search_request = keyword_search_parameter_mapper(request.payload)
+    if _any_api_jobs_active(jobs):
+        return _waiting(stage_code=stage_code, message="Waiting for keyword seed import to finish.")
+
+    retry_after_fastmoss_browser = False
+    latest_import_job = _latest_job(jobs, job_code="keyword_seed_import") if jobs else None
+    if latest_import_job and extract_handler_result_status(latest_import_job) == "fallback_required":
+        if _keyword_seed_import_retry_after_fastmoss_browser_exists(jobs):
+            return _finalize_fastmoss_security_required(
+                latest_import_job,
+                details={"reason": "retry_after_browser_fallback_still_requires_security_verification"},
+            )
+        fallback_cursor = _fastmoss_security_browser_fallback_cursor(store=store, request_id=request.request_id)
+        if fallback_cursor.get("status") == "success":
+            retry_after_fastmoss_browser = True
+        elif fallback_cursor.get("status") in {"failed", "partial_success"}:
+            return _finalize_fastmoss_security_required(latest_import_job, details={"reason": "browser_fallback_failed"})
+        elif _fastmoss_security_browser_fallback_attempted(store=store, request_id=request.request_id):
+            return _finalize_fastmoss_security_required(latest_import_job, details={"reason": "browser_fallback_attempted"})
+        else:
+            fallback_payload = _fastmoss_security_fallback_payload_from_job(latest_import_job)
+            _update_request_cursor(
+                store=store,
+                request=request,
+                stage_code=stage_code,
+                payload={
+                    "fallback_required": True,
+                    "fallback_reason": "fastmoss_search_security_verification",
+                    "fastmoss_security_fallback": fallback_payload,
+                },
+            )
+            return {
+                "action": "advance",
+                "next_stage": "fastmoss_security_browser_fallback",
+                "details": {
+                    "fallback_required": True,
+                    "fallback_reason": "fastmoss_search_security_verification",
+                },
+            }
+
+    if not jobs or retry_after_fastmoss_browser:
+        search_request = _keyword_seed_import_search_request(
+            request.payload,
+            latest_import_job=latest_import_job,
+            retry_after_fastmoss_browser=retry_after_fastmoss_browser,
+        )
         search_query = str(search_request.get("search_query") or "")
         fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
         if fastmoss_settings:
@@ -341,8 +410,15 @@ def _advance_keyword_seed_import(
                 "write_mode": "insert_if_absent",
                 "mapper_code": "competitor_seed_projection_mapper",
             },
-            **_payload_subset(request.payload, ("table_refs", "access_token", "access_token_env", "validate_schema")),
+            **_payload_subset(
+                request.payload,
+                ("table_refs", "access_token", "access_token_env", "validate_schema")
+                + RUNTIME_DB_PASSTHROUGH_KEYS,
+            ),
         }
+        if retry_after_fastmoss_browser:
+            payload["fastmoss_security_browser_fallback_attempt"] = 1
+            payload["fallback_source_job_id"] = str((latest_import_job or {}).get("job_id") or "")
         keys = render_job_keys(
             job_def,
             request.payload,
@@ -353,6 +429,9 @@ def _advance_keyword_seed_import(
             stage_code=stage_code,
             job_code=job_def.job_code,
         )
+        dedupe_key = keys["dedupe_key"]
+        if retry_after_fastmoss_browser:
+            dedupe_key = f"{dedupe_key}:after-fastmoss-security-browser-fallback"
         dispatch = store.enqueue_api_worker_jobs(
             request_id=request.request_id,
             task_code=request.task_code,
@@ -360,7 +439,7 @@ def _advance_keyword_seed_import(
             jobs=[
                 {
                     "business_key": keys["business_key"],
-                    "dedupe_key": keys["dedupe_key"],
+                    "dedupe_key": dedupe_key,
                     "payload": payload,
                     "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
                 }
@@ -371,10 +450,8 @@ def _advance_keyword_seed_import(
             message="Enqueued keyword seed import.",
             details={"dispatch_payload": {"keyword_seed_import": dispatch}},
         )
-    if _any_api_jobs_active(jobs):
-        return _waiting(stage_code=stage_code, message="Waiting for keyword seed import to finish.")
 
-    import_job = _latest_job(jobs, job_code="keyword_seed_import")
+    import_job = latest_import_job
     payload = extract_effective_result_payload(import_job)
     candidates = [dict(item) for item in payload.get("normalized_candidates", []) if isinstance(item, Mapping)]
     seeds = [dict(item) for item in payload.get("seed_contexts", []) if isinstance(item, Mapping)]
@@ -405,6 +482,122 @@ def _advance_keyword_seed_import(
         "details": {
             "candidate_total_count": len(candidates),
             "seed_total_count": len(seeds),
+        },
+    }
+
+
+def _advance_fastmoss_security_browser_fallback(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+) -> dict[str, Any]:
+    stage_code = "fastmoss_security_browser_fallback"
+    executions = _browser_executions_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
+    if not executions:
+        import_job = _latest_job(
+            _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code="keyword_seed_import"),
+            job_code="keyword_seed_import",
+        )
+        if not import_job or extract_handler_result_status(import_job) != "fallback_required":
+            return {"action": "advance", "next_stage": "keyword_seed_import", "details": {"fallback_candidate_count": 0}}
+
+        fallback_payload = _fastmoss_security_fallback_payload_from_job(import_job)
+        job_def = workflow.require_job("fastmoss_security_browser_resolve")
+        payload = {
+            **_payload_subset(request.payload, FASTMOSS_BROWSER_PASSTHROUGH_KEYS + RUNTIME_DB_PASSTHROUGH_KEYS),
+            "stage_code": stage_code,
+            "search_query": str(fallback_payload.get("search_query") or request.payload.get("search_query") or ""),
+            "search_digest": str(fallback_payload.get("search_digest") or (import_job.get("payload") or {}).get("search_digest") or ""),
+            "search_request": dict(fallback_payload.get("search_request") or {}),
+            "security_context": dict(fallback_payload.get("security_context") or {}),
+            "fallback_source_job_id": str(import_job.get("job_id") or ""),
+            "request_payload": dict(request.payload or {}),
+        }
+        fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
+        if fastmoss_settings:
+            payload["fastmoss"] = fastmoss_settings
+        keys = render_job_keys(
+            job_def,
+            request.payload,
+            fallback_payload,
+            payload,
+            request_id=request.request_id,
+            task_code=request.task_code,
+            workflow_code=workflow.workflow_code,
+            stage_code=stage_code,
+            item_code=job_def.job_code,
+        )
+        dispatch = store.enqueue_task_executions(
+            request_id=request.request_id,
+            item_code=job_def.job_code,
+            workflow_code=workflow.workflow_code,
+            items=[
+                {
+                    "business_key": keys["business_key"],
+                    "dedupe_key": build_stage_local_dedupe_key(
+                        keys["dedupe_key"],
+                        job_def.job_code,
+                        stage_scope=stage_code,
+                    ),
+                    "resource_code": _fastmoss_browser_resource_code(payload),
+                    "payload": payload,
+                    "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
+                }
+            ],
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "status": "pending",
+                "browser_dispatch": dispatch,
+                "fallback_source_job_id": str(import_job.get("job_id") or ""),
+                "search_request": dict(fallback_payload.get("search_request") or {}),
+            },
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Enqueued FastMoss security browser fallback.",
+            details={"created_count": int(dispatch["created_count"])},
+        )
+    if _any_browser_executions_active(executions):
+        return _waiting(stage_code=stage_code, message="Waiting for FastMoss security browser fallback to finish.")
+
+    execution = executions[-1]
+    handler_status = extract_handler_result_status(execution)
+    if handler_status == "success":
+        execution_payload = extract_effective_result_payload(execution)
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "status": "success",
+                "verified_path": str(execution_payload.get("verified_path") or "/api/goods/V2/search"),
+                "cookie_cache": dict(execution_payload.get("cookie_cache") or {}),
+                "fallback_source_job_id": str((execution.payload or {}).get("fallback_source_job_id") or ""),
+            },
+        )
+        return {
+            "action": "advance",
+            "next_stage": "keyword_seed_import",
+            "details": {"fastmoss_security_browser_fallback": "success"},
+        }
+
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={"status": "failed", "execution_count": len(executions)},
+    )
+    return {
+        "action": "finalize",
+        "final_status": "failed",
+        "details": {
+            "error_code": "fastmoss_security_verification_required",
+            "reason": "fastmoss_security_browser_fallback_failed",
         },
     }
 
@@ -533,10 +726,11 @@ def _advance_search_product_candidates(
             business_conditions = dict(output_conditions.get("business_conditions") or {})
             business_conditions.setdefault("min_day7_sold_count", sales_7d_threshold)
             output_conditions["business_conditions"] = business_conditions
-        max_candidates = _positive_int_param(
-            request.payload.get("max_candidates") or output_conditions.get("max_candidates"),
-            20,
-        )
+        raw_max_candidates = request.payload.get("max_candidates")
+        if raw_max_candidates in (None, ""):
+            raw_max_candidates = output_conditions.get("max_candidates")
+        max_candidates = _non_negative_int_param(raw_max_candidates, 20)
+        output_conditions["max_candidates"] = max_candidates
         payload = {
             "stage_code": stage_code,
             "search_mode": "keyword",
@@ -646,6 +840,11 @@ def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str,
         ("region", "region"),
         ("fastmoss_timeout", "timeout"),
         ("browser_cookies", "browser_cookies"),
+        ("execution_control_db_url", "execution_control_db_url"),
+        ("db_url", "db_url"),
+        ("fastmoss_cookie_cache_namespace", "cookie_cache_namespace"),
+        ("fastmoss_cookie_cache_enabled", "cookie_cache_enabled"),
+        ("fastmoss_cookie_cache_ttl_seconds", "cookie_cache_ttl_seconds"),
     ):
         value = request_payload.get(source_key)
         if value not in (None, "", [], {}):
@@ -655,12 +854,108 @@ def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str,
     return {key: value for key, value in settings.items() if value not in (None, "", [], {})}
 
 
+def _keyword_seed_import_search_request(
+    request_payload: Mapping[str, Any],
+    *,
+    latest_import_job: Mapping[str, Any] | None,
+    retry_after_fastmoss_browser: bool,
+) -> dict[str, Any]:
+    previous_payload = coerce_mapping((latest_import_job or {}).get("payload"))
+    previous_search_request = coerce_mapping(previous_payload.get("search_request"))
+    search_request = dict(previous_search_request) if retry_after_fastmoss_browser and previous_search_request else keyword_search_parameter_mapper(request_payload)
+    for key in RUNTIME_DB_PASSTHROUGH_KEYS:
+        if request_payload.get(key) not in (None, ""):
+            search_request[key] = request_payload.get(key)
+    if retry_after_fastmoss_browser:
+        search_request["fastmoss_security_browser_fallback_attempt"] = 1
+    return search_request
+
+
+def _keyword_seed_import_retry_after_fastmoss_browser_exists(jobs: list[dict[str, Any]]) -> bool:
+    return any(
+        int(coerce_mapping(job.get("payload")).get("fastmoss_security_browser_fallback_attempt") or 0) > 0
+        for job in jobs
+    )
+
+
+def _fastmoss_security_browser_fallback_cursor(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
+    request = store.load_task_request(request_id=request_id)
+    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
+    return dict(stage_results.get("fastmoss_security_browser_fallback") or {})
+
+
+def _fastmoss_security_browser_fallback_attempted(*, store: RuntimeStore, request_id: str) -> bool:
+    if _fastmoss_security_browser_fallback_cursor(store=store, request_id=request_id):
+        return True
+    return bool(
+        _browser_executions_for_stage(
+            store=store,
+            request_id=request_id,
+            stage_code="fastmoss_security_browser_fallback",
+        )
+    )
+
+
+def _fastmoss_security_fallback_payload_from_job(import_job: Mapping[str, Any]) -> dict[str, Any]:
+    job_payload = coerce_mapping(import_job.get("payload"))
+    result_payload = extract_effective_result_payload(import_job)
+    search_request = coerce_mapping(job_payload.get("search_request")) or coerce_mapping(result_payload.get("search_request"))
+    security_context = coerce_mapping(result_payload.get("security_context"))
+    return {
+        "search_query": _first_text(
+            search_request.get("search_query"),
+            search_request.get("keyword"),
+            job_payload.get("search_query"),
+        ),
+        "search_digest": _first_text(job_payload.get("search_digest"), search_request.get("search_digest")),
+        "search_request": search_request,
+        "security_context": security_context,
+        "fallback_source_job_id": _first_text(result_payload.get("fallback_source_job_id"), import_job.get("job_id")),
+    }
+
+
+def _finalize_fastmoss_security_required(
+    import_job: Mapping[str, Any],
+    *,
+    details: Mapping[str, Any],
+) -> dict[str, Any]:
+    result_payload = extract_effective_result_payload(import_job)
+    return {
+        "action": "finalize",
+        "final_status": "failed",
+        "details": {
+            "error_code": "fastmoss_security_verification_required",
+            "fallback_required": True,
+            "fallback_reason": "fastmoss_search_security_verification",
+            "security_context": dict(result_payload.get("security_context") or {}),
+            **dict(details),
+        },
+    }
+
+
+def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
+    return _first_text(
+        payload.get("fastmoss_browser_profile_ref"),
+        payload.get("browser_profile_ref"),
+        payload.get("profile_ref"),
+        "fastmoss:browser",
+    )
+
+
 def _positive_int_param(value: Any, default: int) -> int:
     try:
         parsed = int(float(str(value).strip()))
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _non_negative_int_param(value: Any, default: int) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _bool_param(value: Any, default: bool) -> bool:

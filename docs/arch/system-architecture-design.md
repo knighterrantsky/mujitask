@@ -273,6 +273,18 @@ flowchart TD
     ArtifactIndex --> Obj
 ```
 
+外部 API 节流配置:
+
+- `infrastructure/rate_limit/` 是外部 API 请求节流的唯一实现 owner，负责 `RequestPacer`、随机 delay 计算、provider 级配置解析和 request start/end evidence 事件；业务 flow 不直接用裸 `time.sleep()` 表达通用风控节流。
+- 默认策略是单一业务 job 内对同一 provider/resource key 的连续外部 API request 之间应用随机 pacing，默认区间为 `0.5s` 到 `1.0s`。
+- 默认区间必须可配置，配置来源按 runtime config 优先级收敛: job payload 显式覆盖 > provider 专用环境变量 > 全局环境变量 > 系统默认值。建议命名为 `api_request_delay_min_seconds`、`api_request_delay_max_seconds`，环境变量为 `MUJITASK_API_REQUEST_MIN_DELAY_SECONDS`、`MUJITASK_API_REQUEST_MAX_DELAY_SECONDS`，provider 级覆盖为 `MUJITASK_FASTMOSS_API_REQUEST_MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS`、`MUJITASK_FEISHU_API_REQUEST_MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS`、`MUJITASK_TIKTOK_API_REQUEST_MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS`。
+- provider 专用 client 负责接入统一 pacer: FastMoss HTTP session、Feishu Bitable/Drive client、TikTok request-first HTTP fetch、outbox webhook/Feishu bot request 都必须通过同一节流能力或显式声明不适用。
+- 当前正式 workflow 覆盖范围包括 `refresh_current_competitor_table`、`search_keyword_competitor_products`、`sync_tk_influencer_pool`、`tiktok_fastmoss_product_ingest`。这些 workflow 中的 FastMoss API、Feishu Bitable/Drive API、TikTok request-first HTTP、outbox webhook / Feishu bot、media 远程素材下载、飞书附件远程图片下载都必须走统一 request pacing。
+- 允许不走 request pacing 的路径只限于非外部 API 的本地 IO、Runtime DB / Fact DB / Object Store SDK 内部重试、Playwright/CDP 浏览器交互等待、测试 fake client 兼容分支，以及明确声明 `0/0` 的测试配置。
+- 配置值必须归一化: 小于 `0` 视为 `0`，`max < min` 时交换，`0/0` 表示本地测试或明确配置下关闭 pacing；生产配置不应关闭。
+- retry backoff 是错误恢复策略，不替代正常请求 pacing；一次请求因 429/5xx 重试时，重试前仍应保留 retry backoff，下一次独立 request 前仍应经过 pacer。
+- runtime evidence 至少记录 provider/resource key、delay_seconds、request_started_at、request_finished_at；不记录 token、cookie、payload secret。
+
 数据落点:
 
 | 落点 | 保存内容 | 不保存内容 |
