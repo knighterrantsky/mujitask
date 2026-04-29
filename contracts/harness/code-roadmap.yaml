@@ -1,8 +1,7 @@
 schema_version: 1
-current_phase: domains_runtime_rewrite
+current_phase: stable
 
 source_of_truth:
-  rewrite_state: docs/dev/rewrite-state.yaml
   project_structure: docs/arch/project-structure-contract.md
   completion_gate: scripts/harness/claim_done.py
 
@@ -21,7 +20,7 @@ features:
     status: complete
     default_context:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - contracts/README.md
       - contracts/harness/code-roadmap.yaml
       - scripts/harness/claim_done.py
@@ -29,18 +28,17 @@ features:
       - tests/test_completion_claim_gate.py
     source_contracts:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - contracts/harness/code-roadmap.yaml
     allowed_paths:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - contracts/README.md
       - contracts/harness/**
       - scripts/harness/**
       - tests/test_harness_code_roadmap.py
       - tests/test_completion_claim_gate.py
       - tests/test_project_structure_contract.py
-      - tests/test_rewrite_contract.py
     forbidden_paths:
       - src/automation_business_scaffold/domains/**
       - src/automation_business_scaffold/capabilities/**
@@ -62,7 +60,7 @@ features:
     requires_architecture_delta_gate: true
     default_context:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - contracts/harness/code-roadmap.yaml
       - contracts/harness/architecture-ownership.yaml
       - contracts/facts/product-fact-collection.yaml
@@ -98,7 +96,7 @@ features:
     requires_architecture_delta_gate: true
     default_context:
       - AGENTS.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/arch/system-architecture-design.md
       - docs/arch/project-architecture-contract.md
       - docs/arch/project-structure-contract.md
@@ -178,7 +176,7 @@ features:
     status: complete
     feature_area: runtime_control_plane
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/arch/runtime-control-plane-contract.md
       - docs/arch/runtime-db-schema-design.md
       - docs/arch/project-structure-contract.md
@@ -190,7 +188,7 @@ features:
     source_contracts:
       - docs/arch/runtime-control-plane-contract.md
       - docs/arch/runtime-db-schema-design.md
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
     allowed_paths:
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/apps/daemons/**
@@ -214,7 +212,7 @@ features:
   - feature_code: tk_competitor_refresh
     status: complete
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/tk-competitor/README.md
       - contracts/fields/feishu-tk-competitor.yaml
       - contracts/states/tk-competitor-product-status.yaml
@@ -248,7 +246,7 @@ features:
   - feature_code: tk_influencer_pool_sync
     status: complete
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/tk-influencer-pool/README.md
       - contracts/fields/feishu-tk-influencer-pool.yaml
       - contracts/states/tk-competitor-influencer-search-status.yaml
@@ -281,7 +279,7 @@ features:
   - feature_code: tk_keyword_competitor_search
     status: complete
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/business/requirements/search-keyword-competitor-products.md
       - docs/arch/workflow-competitor-table-design.md
       - contracts/fields/feishu-tk-competitor.yaml
@@ -319,7 +317,7 @@ features:
   - feature_code: tiktok_fastmoss_product_ingest
     status: complete
     default_context:
-      - docs/dev/rewrite-state.yaml
+      - docs/arch/system-architecture-design.md
       - docs/domains/product-fact-ingest/README.md
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
       - contracts/fields/feishu-tk-selection.yaml

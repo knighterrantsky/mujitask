@@ -23,16 +23,12 @@
 
 ## 架构总览
 
-- [重构验收契约](./rewrite-acceptance-contract.md)
 - [系统架构设计](./system-architecture-design.md)
 - [项目架构契约](./project-architecture-contract.md)
-- [真实迁移 Checklist](./real-migration-checklist.md)
-- [Workflow 实现模式规范](./workflow-implementation-patterns.md)
 - [项目结构与命名契约](./project-structure-contract.md)
 - [模块实现所有权契约](./module-ownership-contract.md)
 - [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)
 - [Runtime 控制面契约](./runtime-control-plane-contract.md)
-- [新增 Workflow 设计与拆分规范](./workflow-design-guidelines.md)
 - [Handler Contract 摘要](./handler-contract-summary.md)
 - [Handler Contract 设计](./handler-contract-design.md)
 - [入口与输出契约设计](./entry-output-contract-design.md)
@@ -40,11 +36,9 @@
 - [Storage 架构设计](./storage-architecture-design.md)
 - [Runtime DB Schema 设计](./runtime-db-schema-design.md)
 - [Fact DB Schema 设计](./fact-db-schema-design.md)
-- [迁移状态](./migration-state.md)
 
 ## 业务流程设计
 
-- [四个 Workflow 重设计评审](./workflow-redesign-review.md)
 - [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 - [竞品表 Workflow 设计](./workflow-competitor-table-design.md)
@@ -67,10 +61,9 @@
 - `Handler`: 处理某类 Job 的代码入口。
 - `Flow`: Handler 内部复用的业务实现过程。
 - `Runtime Control Plane`: RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 等运行控制入口和恢复机制。
-- `Project Architecture`: 后续重构和新增业务的项目目录、模块归属和开发拆分契约。
-- `Real Migration`: 将旧实现所有权迁移到项目目录，禁止 facade/shim/re-export 的迁移模式。
-- `Implementation Pattern`: 新 workflow 开发时每类文件的固定职责、依赖方向和测试模式。
-- `Module Ownership`: mapper/projection、capability handler、registry、common、`__init__.py` 和 legacy 路径的实现归属边界。
+- `Project Architecture`: 项目目录、模块归属和开发拆分契约，见 [project-architecture-contract.md](./project-architecture-contract.md)。
+- `Implementation Pattern`: 新 workflow 开发时每类文件的固定职责、依赖方向和测试模式，见 [../dev/workflow-implementation-patterns.md](../dev/workflow-implementation-patterns.md)。
+- `Module Ownership`: mapper/projection、capability handler、registry、common 的实现归属边界，见 [module-ownership-contract.md](./module-ownership-contract.md)。
 - `Feishu Adapter/Projection Contract`: 飞书表读写中 source adapter 和 projection mapper 的字段策略、输入输出和禁止事项。
 
 ## 已删除的历史来源

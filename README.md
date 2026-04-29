@@ -246,7 +246,7 @@ automation-business-scaffold-run run \
 
 - `.platform/` 是平台管理规则，普通业务开发不直接修改。
 - `AGENTS.md` 是仓库级协作规则，只有明确的仓库治理变更才修改。
-- `docs/dev/rewrite-state.yaml` 定义当前重构阶段和 canonical owner；根目录短 Prompt 的上下文路由见 `contracts/codex/task-routing.yaml`。
+- 上下文路由见 `contracts/codex/task-routing.yaml`。
 - framework 的接口和 contract 以 `automation-framework` 自身文档为准，本仓库不再复制或维护这部分说明。
 
 ## 8. 配置边界
@@ -301,7 +301,7 @@ automation-business-scaffold-run run \
 - 不允许生产任务消费路径自动 `CREATE TABLE`、`ALTER TABLE` 或 `DROP TABLE`。
 - workflow / handler payload/result/error contract 需要保持兼容；破坏性变更要通过 `contract_revision`、adapter、migration 或清理旧 job 处理，不能把 `v1` / `v2` 写进稳定 code 名称。
 
-详细规则见 [docs/arch/project-architecture-contract.md](./docs/arch/project-architecture-contract.md)、[docs/arch/project-structure-contract.md](./docs/arch/project-structure-contract.md)、[docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/arch/workflow-design-guidelines.md](./docs/arch/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
+详细规则见 [docs/arch/project-architecture-contract.md](./docs/arch/project-architecture-contract.md)、[docs/arch/project-structure-contract.md](./docs/arch/project-structure-contract.md)、[docs/dev/documentation-change-policy.md](./docs/dev/documentation-change-policy.md)、[docs/dev/workflow-design-guidelines.md](./docs/dev/workflow-design-guidelines.md)、[docs/arch/runtime-db-schema-design.md](./docs/arch/runtime-db-schema-design.md)、[docs/arch/fact-db-schema-design.md](./docs/arch/fact-db-schema-design.md) 和 [docs/arch/handler-contract-design.md](./docs/arch/handler-contract-design.md)。
 
 ## 9. 验证
 

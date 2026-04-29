@@ -11,7 +11,8 @@
 | [business](./business/README.md) | 客户需求、业务规则、飞书表口径、验收口径 | 当前业务事实来源 |
 | [arch](./arch/README.md) | 系统架构、workflow 设计、Runtime/Fact/Storage 设计 | 当前系统设计事实来源 |
 | [domains](./domains/README.md) | 业务域阅读路线和不变量索引 | 路由入口，不承载正文事实 |
-| [dev](./dev/README.md) | 本地开发、调试、代码维护、skill 集成 | 开发工作流事实来源 |
+| [dev](./dev/README.md) | 开发规范、项目结构、实现模式、本地调试 | 开发工作流事实来源 |
+| [test](./test/README.md) | 测试策略、验证流程、测试数据 | 测试策略事实来源 |
 | [ops](./ops/README.md) | 部署、运维、验收、回退、runbook | 运维执行事实来源 |
 | [reference](./reference/README.md) | 外部接口、采集口径、研究材料 | 参考资料，不作为当前业务或系统设计事实来源 |
 | [../contracts](../contracts/README.md) | 字段、状态、workflow 机器契约 | 可索引、可校验的契约事实 |
@@ -25,9 +26,10 @@
 4. 当前系统架构和 workflow 设计: [arch/README.md](./arch/README.md)
 5. 字段、状态、workflow 机器契约: [../contracts/README.md](../contracts/README.md)
 6. 本地开发、调试和 skill 集成: [dev/README.md](./dev/README.md)
-7. 运维部署和回退材料: [ops/README.md](./ops/README.md)
-8. FastMoss / TikTok 等外部接口参考: [reference/README.md](./reference/README.md)
-9. framework 接口和 contract: 直接查看 `automation-framework` 对应版本文档。
+7. 测试策略和验证流程: [test/README.md](./test/README.md)
+8. 运维部署和回退材料: [ops/README.md](./ops/README.md)
+9. FastMoss / TikTok 等外部接口参考: [reference/README.md](./reference/README.md)
+10. framework 接口和 contract: 直接查看 `automation-framework` 对应版本文档。
 
 ## README 使用原则
 

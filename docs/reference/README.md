@@ -22,6 +22,7 @@
 | [fastmoss-known-interfaces.md](./fastmoss-known-interfaces.md) | FastMoss 已知接口研究 |
 | [fastmoss-four-entities-interface-design.md](./fastmoss-four-entities-interface-design.md) | FastMoss 四主体接口与关系参考；事实库正式设计以 [../arch/fact-db-schema-design.md](../arch/fact-db-schema-design.md) 为准 |
 | [fastmoss-visualization-analysis.md](./fastmoss-visualization-analysis.md) | FastMoss 图表、接口和字段映射分析 |
+| [third-party-services.md](./third-party-services.md) | 飞书、FastMoss、TikTok、OpenClaw、Postgres、MinIO 等外部服务接入说明 |
 
 ## 当前状态
 

@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文约束“新增 workflow 或新业务流程”时的代码实现模式。它不是迁移 checklist；迁移旧代码见 [real-migration-checklist.md](./real-migration-checklist.md)。
+本文约束”新增 workflow 或新业务流程”时的代码实现模式。
 
 本文目标:
 
@@ -17,10 +17,10 @@
 
 相关文档:
 
-- 项目结构: [project-architecture-contract.md](./project-architecture-contract.md)
-- 当前系统架构: [system-architecture-design.md](./system-architecture-design.md)
+- 项目结构: [project-architecture-contract.md](../arch/project-architecture-contract.md)
+- 当前系统架构: [system-architecture-design.md](../arch/system-architecture-design.md)
 - Workflow 拆分规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
-- Handler contract: [handler-contract-design.md](./handler-contract-design.md)
+- Handler contract: [handler-contract-design.md](../arch/handler-contract-design.md)
 
 ## 2. 新 Workflow 固定开发顺序
 
@@ -179,6 +179,7 @@ domains/{domain}/workflows/{workflow_code}.py
 - 写 Feishu 字段。
 - 写 FastMoss / TikTok 采集逻辑。
 - 把 stage 顺序写进 code 名称，例如 `stage1`、`v2`。
+- 文件超过 300 行。超过时说明字段解释、异常修补或业务筛选逻辑正在渗入 workflow 定义，应把可复用 rule builder、stage 模式、summary/idempotency/timeout/watchdog 规则下沉到 `contracts/workflow` 或 `domains/{domain}/policies`，让 workflow 保持"装配"而非"包办"。
 
 ### 4.4 Job Contract Pattern
 

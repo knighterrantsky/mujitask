@@ -2,19 +2,20 @@
 
 更新时间: 2026-04-24
 
-本目录用于承载开发、调试、集成、本地验证和代码维护相关文档。
+本目录用于承载开发规范、实现模式、调试、集成、本地验证和代码维护相关文档。
 
 ## 事实来源边界
 
-`docs/dev` 是开发工作流、调试方法、集成说明和代码维护约定的事实来源。
+`docs/dev` 是开发实践指南、代码实现模式和开发工作流的事实来源。它回答"怎么开发、怎么跑、怎么测"。
+
+系统架构契约（项目结构、模块归属等受控契约）见 [../arch/README.md](../arch/README.md)。
 
 它不作为客户需求、系统架构、部署运维或外部接口研究的事实来源:
 
 - 客户需求和业务验收口径见 [../business/README.md](../business/README.md)。
 - 系统架构、workflow、Runtime DB、Fact DB 和 Storage 设计见 [../arch/README.md](../arch/README.md)。
-- 后续重构和新增业务的项目工程组织方式见 [../arch/project-architecture-contract.md](../arch/project-architecture-contract.md)。
-- 工程结构、文件命名和代码定位契约见 [../arch/project-structure-contract.md](../arch/project-structure-contract.md)。
-- RPC/CLI/daemon/config/watchdog/supervisor/reconciler 的运行控制面契约见 [../arch/runtime-control-plane-contract.md](../arch/runtime-control-plane-contract.md)。
+- 项目结构、命名和模块归属契约见 [../arch/project-structure-contract.md](../arch/project-structure-contract.md)。
+- 测试策略和验证流程见 [../test/README.md](../test/README.md)。
 - 部署、验收、回退和 runbook 见 [../ops/README.md](../ops/README.md)。
 - 外部接口、页面研究和字段样例见 [../reference/README.md](../reference/README.md)。
 
@@ -22,14 +23,30 @@
 
 ## 文档
 
+### 开发实践指南
+
 | 文档 | 说明 |
 | --- | --- |
-| [documentation-change-policy.md](./documentation-change-policy.md) | 代码实现时哪些文档可同步修改、哪些需要确认、哪些不应修改 |
-| [openclaw-skills.md](./openclaw-skills.md) | OpenClaw skill 的开发集成边界、入口脚本和调试口径 |
+| [code-style.md](./code-style.md) | 代码风格、命名规则、分层边界和提交前检查 |
+| [git-workflow.md](./git-workflow.md) | 日常开发分支命名、提交规范和合并流程 |
+| [local-development.md](./local-development.md) | 本机环境搭建、本地启动、测试运行和常见问题排障 |
+| [module-guide.md](./module-guide.md) | 模块阅读指南：从功能需求快速定位对应代码 |
+| [dependencies.md](./dependencies.md) | Python 依赖、外部运行依赖和升级规则 |
+
+### 实现模式与规范
+
+| 文档 | 说明 |
+| --- | --- |
+| [workflow-implementation-patterns.md](./workflow-implementation-patterns.md) | 新增 workflow 的代码结构、设计模式、依赖方向和测试模式 |
+| [workflow-design-guidelines.md](./workflow-design-guidelines.md) | 新增 workflow 的拆分规范、stage/job 颗粒度约束 |
+
+### 开发工具与配置
+
+| 文档 | 说明 |
+| --- | --- |
 | [project-configuration.md](./project-configuration.md) | 项目级 `.env` / `executor.local.env` / `skill.local.env` 的自动加载规则和优先级 |
-| [rewrite-state.yaml](./rewrite-state.yaml) | 当前重构阶段、canonical owner、legacy reference 和必须保持绿色的检查 |
-| [rewrite-development-plan.md](./rewrite-development-plan.md) | 本轮重构的依赖关系、开发顺序、subagent 并行拆分和 worktree 计划 |
-| [worktree-parallel-development-handoff.md](./worktree-parallel-development-handoff.md) | 当前 checkpoint 之后的 worktree 并行开发分工、边界、建议测试和开工提示词 |
+| [openclaw-skills.md](./openclaw-skills.md) | OpenClaw skill 的开发集成边界、入口脚本和调试口径 |
+| [documentation-change-policy.md](./documentation-change-policy.md) | 代码实现时哪些文档可同步修改、哪些需要确认、哪些不应修改 |
 
 ## 维护规则
 

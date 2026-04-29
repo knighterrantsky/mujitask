@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-本文定义每类模块必须“拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [项目架构契约](./project-architecture-contract.md)、[Workflow 实现模式规范](./workflow-implementation-patterns.md)、[真实迁移 Checklist](./real-migration-checklist.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
+本文定义每类模块必须”拥有”哪些实现，以及哪些模块只能登记、声明或组合，不能替别人承载实现。它补充 [项目架构契约](./project-architecture-contract.md)、[Workflow 实现模式规范](../dev/workflow-implementation-patterns.md)、[项目结构与命名契约](./project-structure-contract.md) 和 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)。
 
 本文解决五类反复混淆的问题:
 
@@ -241,6 +241,7 @@ common 模块只承载小型、稳定、无业务归属的工具。
 | `__init__.py` 导出面 | 包级导出替代真实模块导入 | 显式导入具体文件 |
 | registry 分支实现 | registry 根据 code 写业务分支和转换逻辑 | registry 只查找拥有实现的 callable |
 | legacy 主路径兼容 | 旧路径转发目标实现后仍被 runtime 使用 | runtime registry 和测试改到目标路径 |
+| infrastructure 吸业务语义 | 把业务筛选、字段映射、写回投影、终态判断放进 `infrastructure/` | 业务逻辑落在 domain mapper/projection/policy，infrastructure 只做 transport/client/store |
 
 ## 10. 评审 Checklist
 

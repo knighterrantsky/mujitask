@@ -21,15 +21,45 @@
 - [../reference/README.md](../reference/README.md)
 - [../../contracts/README.md](../../contracts/README.md)
 
-## 2. 快速决策表
+## 2. 文档归类约定
+
+新增或调整文档时，按以下原则判断文档属于哪个目录：
+
+| 文档内容 | 归属目录 | 判断依据 |
+| --- | --- | --- |
+| 系统如何分层、组件如何交互、数据如何建模 | `docs/arch/` | 描述系统是什么、边界在哪 |
+| 模块目录职责、文件命名规则、实现所有权边界 | `docs/arch/` | 受控结构契约，变更需同步架构测试 |
+| 代码风格、命名规范、分支流程、提交前检查 | `docs/dev/` | 开发者日常遵守的操作规则 |
+| 环境搭建、本地启动、测试运行、常见排障 | `docs/dev/` | 开发者操作手册 |
+| 新增 workflow 的实现模式、拆分规范、测试模式 | `docs/dev/` | 告诉开发者怎么写代码 |
+| 依赖说明、模块阅读指南 | `docs/dev/` | 帮助开发者理解代码布局 |
+| 测试策略、验证流程、测试用例说明 | `docs/test/` | 告诉开发者怎么验证 |
+| 部署流程、发布说明、回退方案、runbook | `docs/ops/` | 告诉运维怎么上线和维护 |
+| 客户需求、业务规则、验收口径 | `docs/business/` | 描述要做什么 |
+| 飞书/FastMoss/TikTok/Postgres/MinIO 等外部服务接入信息 | `docs/reference/` | 外部系统参考资料，不是系统设计事实 |
+
+关键区分：
+
+- **arch vs dev**：arch 回答"系统长什么样、边界在哪"，dev 回答"怎么开发、怎么跑、怎么测"。受控结构契约（项目结构、模块归属）放 arch；日常实践指南放 dev。
+- **dev vs ops**：dev 回答"开发时怎么做"，ops 回答"上线后怎么维护"。
+- **reference vs arch**：reference 是外部系统的原始信息，arch 是本系统的设计决策。不要因为某个外部接口很重要就把它放进 arch。
+- **test vs dev**：test 描述验证策略和测试流程，dev 描述开发实践。测试代码本身在 `tests/` 目录，test 文档只做策略和索引。
+
+原则：
+
+1. 先判断文档回答什么问题，再决定放哪个目录。
+2. 受控契约（schema、handler contract、结构契约）放 arch；实践指南放 dev。
+3. 一份文档只属于一个目录。如果需要跨目录引用，用链接而非复制。
+4. 各目录 README 的"事实来源边界"是最终仲裁。
+
+## 3. 快速决策表
 
 | 文档/路径 | 默认规则 | 说明 |
 | --- | --- | --- |
 | `.platform/**` | 不直接修改 | platform-managed；需要 platform upgrade 口径 |
 | `AGENTS.md` | 不直接修改 | 仓库级 agent 规则；普通业务实现不要改 |
 | `docs/arch/project-architecture-contract.md` | 受控修改 | 项目工程组织方式、模块归属和 workflow 开发拆分；变更必须同步项目架构测试 |
-| `docs/arch/real-migration-checklist.md` | 受控修改 | 真实迁移验收 checklist；变更必须同步 migration 静态检查 |
-| `docs/arch/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
+| `docs/dev/workflow-implementation-patterns.md` | 受控修改 | 新 workflow 代码结构、设计模式、依赖方向和测试模式；变更必须同步实现模式测试 |
 | `docs/arch/project-structure-contract.md` | 受控修改 | 工程结构、文件命名、代码定位规则；变更必须同步结构测试 |
 | `docs/arch/module-ownership-contract.md` | 受控修改 | mapper/projection、capability handler、`__init__.py`、legacy、registry/common 的实现所有权边界；变更必须同步所有权静态检查 |
 | `docs/arch/runtime-control-plane-contract.md` | 受控修改 | RPC/CLI/daemon/config/watchdog/supervisor/reconciler/outbox 控制面；变更必须同步控制面结构测试 |
@@ -75,7 +105,7 @@
 
 | 代码变更 | 应更新文档 |
 | --- | --- |
-| 新增/修改 workflow、stage、job、handler | `workflow-*.md`、`workflow-redesign-review.md`、`handler-contract-design.md` |
+| 新增/修改 workflow、stage、job、handler | `workflow-*.md`、`handler-contract-design.md` |
 | 修改 executor / worker / outbox / watchdog 架构 | `system-architecture-design.md` |
 | 修改 Runtime 表、状态机、lease、retry、watchdog 字段 | `runtime-db-schema-design.md` |
 | 修改 Fact DB 表、upsert、事实/关系/观测边界 | `fact-db-schema-design.md` |
@@ -101,7 +131,6 @@
 | Handler contract | `handler-contract-design.md` | 必须说明 payload/result/error 是否兼容；破坏性变更要通过 `contract_revision`、migration、adapter 或新语义 handler 处理 |
 | 入口/输出 contract | `entry-output-contract-design.md` | 必须说明调用方、返回结构、错误结构和兼容窗口 |
 | 项目架构 contract | `project-architecture-contract.md` | 必须说明项目目录、系统元素归属、workflow 开发拆分和测试护栏 |
-| 真实迁移 checklist | `real-migration-checklist.md` | 必须说明迁移模式、分层迁移完成标准、禁止模式、静态验收和行为验收 |
 | Workflow 实现模式 contract | `workflow-implementation-patterns.md` | 必须说明 task/workflow/job/mapper/policy/projection/capability/outbox 的实现模式和依赖方向 |
 | 项目结构与命名 contract | `project-structure-contract.md` | 必须说明目录职责、文件命名、定位路径和测试护栏 |
 | 模块实现所有权 contract | `module-ownership-contract.md` | 必须说明 domain mapper/projection、capability handler、`__init__.py`、legacy business 路径、registry/common 的真实实现归属和禁止模式 |
@@ -124,7 +153,7 @@
 - 修改项目目录层级、系统元素归属或 workflow 开发拆分规则。
 - 修改真实迁移完成标准或 scaffold / real_migration 判定。
 - 修改新 workflow 的文件模式、依赖方向或测试模式。
-- 修改 `domains/**`、`capabilities/**`、`contracts/**`、`control_plane/**` 或 `business/**/achieve` 的职责边界。
+- 修改 `domains/**`、`capabilities/**`、`contracts/**` 或 `control_plane/**` 的职责边界。
 - 修改 domain mapper/projection、capability handler、`__init__.py`、legacy business 路径、registry 或 common 模块的实现所有权边界。
 - 放宽或取消 thin wrapper、显式 re-export、handler-to-handler 实现复用、一文件多 handler 或 `_implementations` 聚合实现作为 runtime 主路径的禁止规则。
 - 修改 RPC Agent Service、Task Request Entry、Daemon Entry、Project Configuration、Execution Supervisor、Reconciler、Watchdog 或 Outbox Dispatcher 的归属和入口命令。

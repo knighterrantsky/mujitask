@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
 MANIFEST_ROOT = PACKAGE_ROOT / "contracts" / "workflow"
 DOMAIN_ROOT = PACKAGE_ROOT / "domains"
-WORKFLOW_PATTERN_DOC = REPO_ROOT / "docs" / "arch" / "workflow-implementation-patterns.md"
+WORKFLOW_PATTERN_DOC = REPO_ROOT / "docs" / "dev" / "workflow-implementation-patterns.md"
 PROJECT_ARCH_DOC = REPO_ROOT / "docs" / "arch" / "project-architecture-contract.md"
 
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$")

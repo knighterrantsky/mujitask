@@ -11,8 +11,7 @@
 
 普通实现 / 修复默认只读:
 
-1. [../../dev/rewrite-state.yaml](../../dev/rewrite-state.yaml)
-2. [../../arch/project-structure-contract.md](../../arch/project-structure-contract.md)
+1. [../../arch/project-structure-contract.md](../../arch/project-structure-contract.md)
 3. [../../../contracts/codex/task-routing.yaml](../../../contracts/codex/task-routing.yaml)
 4. [../../../contracts/workflow/tiktok_fastmoss_product_ingest.yaml](../../../contracts/workflow/tiktok_fastmoss_product_ingest.yaml)
 5. 当前相关源码和测试。

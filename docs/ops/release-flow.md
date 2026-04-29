@@ -37,7 +37,7 @@
 
 - 不要直接在 `main` 上提交功能代码。
 - 默认使用新分支承载当前改动。
-- 分支命名优先使用 `codex/<topic>`。
+- 分支命名按类型：`feature/<topic>`、`fix/<topic>`、`docs/<topic>`、`refactor/<topic>`、`chore/<topic>`。
 
 ## 5. Token 规则
 

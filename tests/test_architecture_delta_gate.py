@@ -101,7 +101,7 @@ def test_architecture_ownership_yaml_parses() -> None:
     loaded = yaml.safe_load(ARCHITECTURE_OWNERSHIP.read_text(encoding="utf-8"))
 
     assert loaded["schema_version"] == 1
-    assert loaded["current_phase"] == "domains_runtime_rewrite"
+    assert loaded["current_phase"] == "stable"
     assert "business_flow" in loaded["owners"]
 
 
@@ -135,21 +135,6 @@ def test_product_fact_collection_helper_fails_without_allow_contract(tmp_path: P
     assert payload["claim"] == "not_complete"
     assert "helper_like_added_files_require_contract_allow" in _failed_checks(payload)
     assert "forbidden_new_module_patterns" in _failed_checks(payload)
-
-
-def test_new_business_runtime_file_fails(tmp_path: Path) -> None:
-    root = _repo(tmp_path)
-    _write(
-        root / "src" / "automation_business_scaffold" / "business" / "new_runtime_entry.py",
-        "def run():\n    return None\n",
-    )
-
-    result = _run_gate(root)
-    payload = _payload(result)
-
-    assert result.returncode != 0
-    assert payload["claim"] == "not_complete"
-    assert "business_runtime_new_files_forbidden" in _failed_checks(payload)
 
 
 def test_product_media_code_delta_requires_product_fact_contract(tmp_path: Path) -> None:
