@@ -725,7 +725,7 @@ def _build_fastmoss_sku_metric_snapshots(
 
 def _with_fastmoss_window(payload: Mapping[str, Any], *, d_type: int | str) -> dict[str, Any]:
     result = dict(payload)
-    result.setdefault("d_type", d_type)
+    result["d_type"] = d_type
     return result
 
 
