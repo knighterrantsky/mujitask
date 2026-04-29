@@ -236,7 +236,9 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         "product_sku_image",
     ]
     assert fact_payloads[0]["request_payload"]["execution_control_db_url"] == "postgresql+psycopg://runtime"
+    assert fastmoss_payloads[0]["fastmoss_overview_window_days"] == [7, 28, 90]
     assert str(fastmoss_payloads[0]["fastmoss_window_days"]) == "90"
+    assert str(fastmoss_payloads[0]["fastmoss_sku_window_days"]) == "28"
     assert [asset["media_role"] for asset in fact_payloads[0]["fact_bundle"]["media_assets"]] == [
         "product_main_image",
         "product_sku_image",

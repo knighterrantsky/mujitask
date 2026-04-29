@@ -448,19 +448,17 @@ author 全量分页
 
 ```text
 TikTok PDP HTML
+FastMoss overview d_type=7
 FastMoss overview d_type=28
+FastMoss overview d_type=90
 FastMoss productSku，按需要
 ```
 
-可选：
+窗口用途：
 
-```text
-FastMoss overview d_type=90
-```
-
-用途：
-
-- 新商品首次入库时做 90 天回填。
+- `d_type=7` 用于近 7 天销量字段和短周期校验。
+- `d_type=28` 用于常规商品概览、趋势和结构数据。
+- `d_type=90` 用于新商品首次入库时做 90 天回填，补齐近 90 天销量字段。
 - 不建议之后每天抓 `d_type=90`。
 
 ### 7.6 `daily_distribution_job`

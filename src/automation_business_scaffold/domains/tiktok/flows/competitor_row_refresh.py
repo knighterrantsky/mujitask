@@ -270,10 +270,20 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 "product_identity": identity,
                 "source_context": source_context,
                 "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
+                "fastmoss_overview_window_days": _first_present(
+                    payload.get("fastmoss_overview_window_days"),
+                    request_payload.get("fastmoss_overview_window_days"),
+                    [7, 28, 90],
+                ),
                 "fastmoss_window_days": first_non_empty(
                     payload.get("fastmoss_window_days"),
                     request_payload.get("fastmoss_window_days"),
                     90,
+                ),
+                "fastmoss_sku_window_days": first_non_empty(
+                    payload.get("fastmoss_sku_window_days"),
+                    request_payload.get("fastmoss_sku_window_days"),
+                    28,
                 ),
             },
             step_code="fastmoss_fetch",

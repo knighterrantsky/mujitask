@@ -948,6 +948,12 @@ FastMoss raw 字段映射:
 | idempotency | product_id + source endpoint + detail_level |
 | retry | 网络、限流、上游 5xx 可重试 |
 
+窗口约束:
+
+- `fastmoss_product_fetch` 支持一次 handler 调用采集多个 `goods.overview` 窗口；`fastmoss_overview_window_days` / `fastmoss_window_days` 可指定 `7,28,90` 或数组形式。
+- 多窗口采集时，handler 必须为每个 `goods.overview` response 写入 `raw_api_responses.request_params.d_type`，并为每个窗口写入 `product_metric_snapshots.window_days`。
+- SKU / 分布类补充数据默认仍按 `d_type=28` 抓取，除非调用方显式传入 `fastmoss_sku_window_days`。
+
 风控约束:
 
 - 当 FastMoss 商品详情接口例如 `/api/goods/v3/base` 返回 `MSG_SAFE_0001` 时，handler 返回 `fallback_required`，error_code 固定为 `fastmoss_security_verification_required`，result.reason 固定为 `fastmoss_api_security_verification`。

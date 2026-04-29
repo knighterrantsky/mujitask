@@ -353,7 +353,7 @@ sequenceDiagram
 - 关键词搜索新增的 FastMoss 搜索风控 fallback 只刷新登录态 cookie cache，不改变商品事实、media asset、Fact DB upsert 的 ownership；这些事实采集边界仍以 `contracts/facts/product-fact-collection.yaml` 为准。
 - 父 task 基于所有子 job 状态汇总。
 
-FastMoss 商品详情指标必须按窗口语义映射，不按固定原始字段名猜测。`近90天销量` 来自 `goods.overview` 以 `d_type=90` 调用后的窗口汇总；mapper 优先使用标准化 `sales_90d`，其次使用同一窗口下的 `overview.real_sold_count`、`overview.sold_count`，最后才在 `chart_list` 满 90 天时按 `inc_sold_count` 求和。`raw_api_responses.request_params` 与 `product_metric_snapshots.window_days` 必须记录 `d_type=90`，让后续审计能区分“90 天窗口汇总”和普通累计字段。不满 90 天的 `chart_list` 不能伪装成完整 90 天销量。
+FastMoss 商品详情指标必须按窗口语义映射，不按固定原始字段名猜测。`competitor_row_refresh` 对新入库/关键词写入的商品默认请求 `goods.overview` 的 `d_type=7`、`d_type=28`、`d_type=90` 三个窗口，其中 `d_type=28` 继续用于常规商品概览、趋势和结构数据，`d_type=90` 用于补齐 `近90天销量`。`近90天销量` 来自 `goods.overview` 以 `d_type=90` 调用后的窗口汇总；mapper 优先使用标准化 `sales_90d`，其次使用同一窗口下的 `overview.real_sold_count`、`overview.sold_count`，最后才在 `chart_list` 满 90 天时按 `inc_sold_count` 求和。`raw_api_responses.request_params` 与 `product_metric_snapshots.window_days` 必须记录对应窗口，让后续审计能区分“7/28/90 天窗口汇总”和普通累计字段。不满 90 天的 `chart_list` 不能伪装成完整 90 天销量。
 
 这样可以做到:
 
