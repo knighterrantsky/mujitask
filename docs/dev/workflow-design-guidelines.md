@@ -11,9 +11,9 @@
 | 内容 | 放置位置 |
 | --- | --- |
 | 通用拆分原则、workflow 必填内容、job 颗粒度约束 | 本文 |
-| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [system-architecture-design.md](./system-architecture-design.md) |
-| Runtime 表、状态机、claim/lease/retry/watchdog 字段 | [runtime-db-schema-design.md](./runtime-db-schema-design.md) |
-| Fact 表、ERD、upsert/idempotency 规则 | [fact-db-schema-design.md](./fact-db-schema-design.md) |
+| 系统整体角色、executor/worker/supervisor/watchdog 边界 | [system-architecture-design.md](../arch/system-architecture-design.md) |
+| Runtime 表、状态机、claim/lease/retry/watchdog 字段 | [runtime-db-schema-design.md](../arch/runtime-db-schema-design.md) |
+| Fact 表、ERD、upsert/idempotency 规则 | [fact-db-schema-design.md](../arch/fact-db-schema-design.md) |
 | 某一个具体业务流程 | `workflow-<business-name>-design.md` |
 
 核心约束:
@@ -343,7 +343,7 @@ FastMoss platform session recovery:
 - 具体业务字段集合不能散落在 handler、registry、submit helper 或 `common` 文件里；若出现这种情况，应视为设计违规并纳入重构项。
 - Stage 名称不能使用 adapter 名称代替业务阶段，但 Stage 文档必须写明该阶段调用了哪个 adapter / mapper。
 
-字段级详细契约可引用 [飞书表 Adapter 与 Projection Mapper 契约](./feishu-table-adapter-projection-contract.md)，workflow 文档不需要逐字段重复所有细节，但必须明确本流程依赖的业务规则归属。
+字段级详细契约可引用 [飞书表 Adapter 与 Projection Mapper 契约](../arch/feishu-table-adapter-projection-contract.md)，workflow 文档不需要逐字段重复所有细节，但必须明确本流程依赖的业务规则归属。
 
 ### 3.6.3 Workflow 中的 Adapter 使用规范
 

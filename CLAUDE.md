@@ -116,7 +116,7 @@ TikTok request fetch → [browser fallback if needed] → media sync → FastMos
 
 ## Conventions
 
-- Use `git switch` to create and switch branches, not `git checkout`. Example: `git switch -c codex/new-feature`
+- Use `git switch` to create and switch branches, not `git checkout`. Example: `git switch -c feature/new-feature`
 - Handler registration uses `@handler_registry.register("handler_code")` — check `capabilities/contracts/handler/allowlist.py` for the registry
 - Workflow stages advance via `advance_stage(store, request, workflow, stage_code)` pattern returning `{"action": "advance", "next_stage": "..."}` or `{"action": "waiting"}`
 - Feishu writeback uses `projection_mapper` codes like `competitor_table_projection_mapper`, `competitor_seed_projection_mapper`, `selection_table_projection_mapper`
@@ -136,7 +136,7 @@ Features are defined in `contracts/harness/code-roadmap.yaml`. Without a passing
 
 ## Release flow
 
-1. Feature branch: `codex/<topic>`
+1. Feature branch: `feature/<topic>` (or `fix/`, `docs/`, `refactor/`, `chore/` as appropriate)
 2. Merge to `main` via MR
 3. Tag on `main`: `git tag -a v3.3.X`
 4. Create GitLab release via API (`/api/v4/projects/11/releases`)

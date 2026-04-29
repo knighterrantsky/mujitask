@@ -18,11 +18,11 @@
 相关事实来源:
 
 - 系统执行链路: [system-architecture-design.md](./system-architecture-design.md)
-- Workflow 设计规则: [workflow-design-guidelines.md](./workflow-design-guidelines.md)
+- Workflow 设计规则: [workflow-design-guidelines.md](../dev/workflow-design-guidelines.md)
 - Handler 契约: [handler-contract-design.md](./handler-contract-design.md)
 - 飞书表 Adapter/Projection 契约: [feishu-table-adapter-projection-contract.md](./feishu-table-adapter-projection-contract.md)
 - Runtime 控制面契约: [runtime-control-plane-contract.md](./runtime-control-plane-contract.md)
-- 文档修改治理: [../dev/documentation-change-policy.md](../dev/documentation-change-policy.md)
+- 文档修改治理: [documentation-change-policy.md](../dev/documentation-change-policy.md)
 
 ## 2. 快速定位路径
 
@@ -146,10 +146,12 @@ skills/{skill_code}/
 | `capabilities/channels/` | Feishu/outbox/Discord/Dingding 等输出通道 handler | workflow summary 生成逻辑 |
 | `capabilities/persistence/` | Fact DB/Object Store 等持久化 handler | 业务字段语义 |
 | `control_plane/` | task request 生命周期、executor/worker claim、Execution Supervisor、Reconciler、Watchdog、outbox、runtime config | 飞书字段映射、TikTok/FastMoss 业务策略、业务专用 daemon |
-| `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | task/workflow/handler 业务语义 |
-| `models/` | 跨层使用的数据模型 | 外部 API 调用流程 |
+| `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | 业务筛选、字段映射、写回投影、终态判断等业务语义 |
+| `models/` | 跨层使用的数据模型 | 外部 API 调用流程、业务专用模型（业务模型归 domain） |
 | `validators/` | 输入和业务数据校验 | runtime 编排 |
 | `acceptance/` | 验收比较、runtime projection、测试投影工具 | runtime 主路径依赖 |
+
+新增逻辑优先落入 `domains/`、`capabilities/`、`control_plane/`、`contracts/` 和 `infrastructure/` client/store 等职责明确的 owner，而不是继续往 `models/`、`validators/` 这类泛化目录堆放。`models/` 只放跨层共享的数据模型，域内模型随 domain 定义；`validators/` 只放通用校验函数；`infrastructure/` 是技术驱动层，不能承载业务筛选、字段映射、投影和终态判断。
 
 ## 5. 命名契约
 

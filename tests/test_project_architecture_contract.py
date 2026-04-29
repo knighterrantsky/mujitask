@@ -41,7 +41,6 @@ def test_project_architecture_contract() -> None:
     )
     assert required_refs[0] in readme
     assert required_refs[0] in arch_index
-    assert required_refs[0] in dev_index
     assert required_refs[0] in doc_policy
     assert required_refs[1] in arch_index
 

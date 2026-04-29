@@ -11,8 +11,7 @@
 
 普通实现 / 修复默认只读:
 
-1. [../../dev/rewrite-state.yaml](../../dev/rewrite-state.yaml)
-2. [../../arch/project-structure-contract.md](../../arch/project-structure-contract.md)
+1. [../../arch/project-structure-contract.md](../../arch/project-structure-contract.md)
 3. [../../../contracts/codex/task-routing.yaml](../../../contracts/codex/task-routing.yaml)
 4. [../../../contracts/fields/feishu-tk-competitor.yaml](../../../contracts/fields/feishu-tk-competitor.yaml)
 5. [../../../contracts/fields/feishu-tk-influencer-pool.yaml](../../../contracts/fields/feishu-tk-influencer-pool.yaml)
@@ -23,7 +22,7 @@
 ## 条件展开
 
 - 修改客户需求、验收口径或字段业务含义时，才读 `docs/business/**`。
-- 修改架构边界、Runtime contract、迁移状态或目录归属时，才读 `docs/arch/**` 长文档。
+- 修改架构边界、Runtime contract 或目录归属时，才读 `docs/arch/**` 长文档。
 - 修改字段语义、upsert key、状态枚举或 W 单位展示时，必须同步读写 `contracts/fields/**` 或 `contracts/states/**`。
 - 旧行为可参考 git history；legacy `business/` 目录已删除。
 

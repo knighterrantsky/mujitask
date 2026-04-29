@@ -24,7 +24,6 @@ def test_runtime_control_plane_contract_is_indexed() -> None:
     required_ref = "runtime-control-plane-contract.md"
     assert required_ref in readme
     assert required_ref in arch_index
-    assert required_ref in dev_index
     assert required_ref in project_structure
     assert required_ref in doc_policy
 

@@ -56,7 +56,7 @@ def test_fastmoss_search_security_browser_fallback_design_contract_is_documented
         [
             _read_repo_text("docs/arch/workflow-competitor-table-design.md"),
             _read_repo_text("contracts/workflow/search_keyword_competitor_products.yaml"),
-            _read_repo_text("docs/arch/workflow-design-guidelines.md"),
+            _read_repo_text("docs/dev/workflow-design-guidelines.md"),
             _read_repo_text("docs/arch/runtime-db-schema-design.md"),
             _read_repo_text("contracts/harness/architecture-ownership.yaml"),
         ]
@@ -94,7 +94,7 @@ def test_security_captcha_handling_strategy_is_documented() -> None:
         [
             _read_repo_text("docs/business/requirements/search-keyword-competitor-products.md"),
             _read_repo_text("docs/arch/workflow-competitor-table-design.md"),
-            _read_repo_text("docs/arch/workflow-design-guidelines.md"),
+            _read_repo_text("docs/dev/workflow-design-guidelines.md"),
             _read_repo_text("docs/arch/handler-contract-design.md"),
             _read_repo_text("contracts/workflow/search_keyword_competitor_products.yaml"),
         ]
