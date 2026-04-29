@@ -21,6 +21,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [test-structure-guidelines.md](./test-structure-guidelines.md) | 测试目录结构、命名规范、marker 规则和旧测试迁移策略 |
 | [runtime-watchdog-validation.md](./runtime-watchdog-validation.md) | Watchdog 运行时验证流程：claim、超时检测、原子标记、进程终止、自动重启 |
 
 ## 测试运行
@@ -39,13 +40,14 @@ uv run --extra dev pytest tests/test_fastmoss_fact_mappers.py::test_map_fastmoss
 bash scripts/execution_control/run_local_postgres_tests.sh
 ```
 
+测试组织规范见 [test-structure-guidelines.md](./test-structure-guidelines.md)。当前旧测试仍可能保留在 `tests/` 根目录；新增测试应优先按新规范放置。
+
 ## 测试分类
 
-| 类别 | 位置 | 说明 |
-| --- | --- | --- |
-| 架构/契约测试 | `tests/test_*contract*.py`, `tests/test_architecture*.py` | 校验项目结构、模块归属、handler registry、workflow manifest |
-| Handler 单元测试 | `tests/test_*handler*.py` | 单个 capability handler 的输入/输出/错误分类 |
-| Workflow 集成测试 | `tests/test_runtime_*.py` | Runtime DB 支持的 workflow 执行链路 |
-| Mapper/Projection 测试 | `tests/test_*mapper*.py`, `tests/test_*projection*.py` | 业务对象转换和飞书字段投影 |
-| Control Plane 测试 | `tests/test_*supervisor*.py`, `tests/test_*watchdog*.py`, `tests/test_outbox*.py` | Supervisor、Watchdog、Outbox 的行为验证 |
-| E2E 测试 | `tests/test_*e2e*.py` | 端到端业务流程，需要真实外部服务凭证 |
+| 类别 | 推荐位置 | 旧文件模式 | 说明 |
+| --- | --- | --- | --- |
+| 架构/契约测试 | `tests/contract/` | `tests/test_*contract*.py`, `tests/test_architecture*.py` | 校验项目结构、模块归属、handler registry、workflow manifest |
+| Handler / Mapper / Projection 单元测试 | `tests/unit/` | `tests/test_*handler*.py`, `tests/test_*mapper*.py`, `tests/test_*projection*.py` | 单个 owner 的输入/输出/错误分类 |
+| Workflow / Runtime 集成测试 | `tests/integration/` | `tests/test_runtime_*.py`, `tests/test_*integration*.py` | Runtime DB 支持的 workflow 执行链路 |
+| Control Plane 测试 | `tests/unit/control_plane/` 或 `tests/integration/runtime/` | `tests/test_*supervisor*.py`, `tests/test_*watchdog*.py`, `tests/test_outbox*.py` | Supervisor、Watchdog、Outbox 的行为验证 |
+| E2E 测试 | `tests/e2e/` | `tests/test_*e2e*.py` | 端到端业务流程，需要真实外部服务凭证 |
