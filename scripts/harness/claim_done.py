@@ -105,7 +105,6 @@ def _requires_architecture_delta_gate(feature: dict[str, Any]) -> bool:
         "src/automation_business_scaffold/domains/",
         "src/automation_business_scaffold/capabilities/",
         "src/automation_business_scaffold/control_plane/",
-        "src/automation_business_scaffold/business/",
     )
     allowed_paths = _as_list(feature.get("allowed_paths"))
     return any(path.startswith(implementation_prefixes) for path in allowed_paths)

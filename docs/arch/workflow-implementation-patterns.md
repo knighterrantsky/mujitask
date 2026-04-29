@@ -439,7 +439,7 @@ from automation_business_scaffold.domains.tiktok.workflows.refresh_current_compe
 from automation_business_scaffold.capabilities.input_sources.feishu.table_read_handler import ...
 ```
 
-禁止为了测试方便导入旧 `business/**` 主路径。
+禁止为了测试方便导入旧 legacy 主路径。
 
 ## 9. Code Review Checklist
 

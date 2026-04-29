@@ -24,11 +24,7 @@
 - 设计新实现时核对输入 / 输出 / 状态流转
 - 编写对比测试和验收脚本
 
-黄金基准目录:
-
-- `src/automation_business_scaffold/business/flows/achieve/`
-- `src/automation_business_scaffold/business/tasks/achieve/`
-- `src/automation_business_scaffold/business/workflows/achieve/`
+黄金基准目录 (已完成迁移，legacy `business/` 目录已删除):
 
 ## 3. 硬约束
 

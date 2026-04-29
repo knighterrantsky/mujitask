@@ -18,7 +18,7 @@
   - `src/automation_business_scaffold/capabilities/**` 是通用 handler 能力 owner。
   - `src/automation_business_scaffold/control_plane/**` 是 runtime 控制面 owner。
   - `contracts/**` 和 `src/automation_business_scaffold/contracts/**` 是机器契约 owner。
-  - `src/automation_business_scaffold/business/**` 只作为 legacy / achieve reference，重构完成后删除或归档。
+  - Legacy `business/` 目录已完成迁移并删除。
 
 相关文档:
 
@@ -30,7 +30,7 @@
 
 ## 2. 当前依赖事实
 
-当前仓库里，真正卡住重构顺序的不是业务逻辑，而是入口层对旧 `business` 目录的历史硬依赖。新实现 owner 已经切到 `domains/**`、`capabilities/**` 和 `control_plane/**`；旧 `business/**` 只作为迁移参考。
+当前仓库里，真正卡住重构顺序的不是业务逻辑，而是入口层对旧 `business` 目录的历史硬依赖。新实现 owner 已经切到 `domains/**`、`capabilities/**` 和 `control_plane/**`；legacy `business/` 目录已完成迁移并删除。
 
 ### 2.1 基础入口依赖
 

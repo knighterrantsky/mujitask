@@ -55,7 +55,7 @@
 - Runtime DB 作为可靠队列和状态事实来源是必要的。
 - 四个 workflow 的业务颗粒度基本正确。
 - 当前代码实现仍偏“集中 flow 分支路由”，不是完全业务无关 worker + handler registry。
-- `src/automation_business_scaffold/domains/tiktok/workflows/*.py` 是当前正式 workflow 定义落点；`business/**` 仅作为 legacy reference。
+- `src/automation_business_scaffold/domains/tiktok/workflows/*.py` 是当前正式 workflow 定义落点。
 - 后续应引入内部 `WorkflowDefinition`，把 stage、job、transition、summary policy 作为架构事实来源。
 
 ## 3. 统一执行链路

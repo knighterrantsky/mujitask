@@ -29,8 +29,6 @@ CUSTOM_LOGIC_KINDS = ("mappers", "policies", "projections")
 FORBIDDEN_REAL_IMPLEMENTATION_FRAGMENTS = (
     "from .implementations import",
     "from ..implementations import",
-    "from automation_business_scaffold.business.",
-    "import automation_business_scaffold.business.",
     "sys.modules[__name__]",
     "capabilities/_implementations",
 )

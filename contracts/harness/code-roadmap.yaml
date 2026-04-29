@@ -14,7 +14,6 @@ canonical_runtime_owners:
   - contracts/**
 
 legacy_reference_only:
-  - src/automation_business_scaffold/business/**
   - docs/business/**
 
 features:
@@ -43,7 +42,6 @@ features:
       - tests/test_project_structure_contract.py
       - tests/test_rewrite_contract.py
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
       - src/automation_business_scaffold/domains/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
@@ -84,7 +82,6 @@ features:
       - src/automation_business_scaffold/domains/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_architecture_delta_gate.py
@@ -140,7 +137,6 @@ features:
       - scripts/dev/**
       - tests/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_system_architecture_contract.py
@@ -202,7 +198,6 @@ features:
       - tests/**
       - contracts/harness/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
       - docs/business/**
     done_gate:
       tests:
@@ -238,7 +233,6 @@ features:
       - contracts/**
       - tests/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_runtime_refresh_current_competitor_table.py
@@ -248,7 +242,7 @@ features:
         - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_runtime_refresh_executor_integration.py tests/test_competitor_row_refresh_handler.py
     completion_rules:
       - Must preserve field/status/workflow contracts.
-      - Must not use business/** as new implementation owner.
+      - Must not add deprecated owners as new implementation owner.
       - Do not claim complete until claim_done.py returns no failed_checks.
 
   - feature_code: tk_influencer_pool_sync
@@ -272,7 +266,6 @@ features:
       - contracts/**
       - tests/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_runtime_sync_tk_influencer_pool.py
@@ -282,7 +275,7 @@ features:
         - uv run --extra dev pytest tests/test_runtime_sync_tk_influencer_pool.py tests/test_runtime_influencer_executor_integration.py tests/test_runtime_influencer_business_e2e.py
     completion_rules:
       - Must preserve influencer field/state/workflow contracts.
-      - Must not add dedicated business runtime tables or business/** owners.
+      - Must not add dedicated business runtime tables or deprecated owners.
       - Do not claim complete until claim_done.py returns no failed_checks.
 
   - feature_code: tk_keyword_competitor_search
@@ -309,7 +302,6 @@ features:
       - docs/arch/**
       - tests/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_runtime_search_keyword_competitor_products.py
@@ -346,7 +338,6 @@ features:
       - contracts/**
       - tests/**
     forbidden_paths:
-      - src/automation_business_scaffold/business/**
     done_gate:
       tests:
         - tests/test_tiktok_fastmoss_product_ingest.py

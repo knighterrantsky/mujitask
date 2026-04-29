@@ -116,7 +116,7 @@ flowchart TD
 | Infrastructure | `infrastructure/feishu/`、`infrastructure/fastmoss/`、`infrastructure/runtime/`、`infrastructure/facts/`、`infrastructure/artifacts/`、`infrastructure/browser/`、`infrastructure/rate_limit/` | 外部 client、Runtime Store、Fact Store、Object Store、browser bridge、限速 | task_code/workflow_code/job_code 业务决策 |
 | Deployment / Configuration | `.env.example`、`scripts/execution_control/`、`scripts/deploy/`、`config/deployment/`、`config/browser_profiles.example.json`、`skill.local.env.example` | 项目配置、runtime 配置、agent 配置、launchd/deploy/dev/ops 脚本 | secret 真值、Python 业务实现、handler 逻辑 |
 
-`src/automation_business_scaffold/business/**` 只作为 legacy reference；正式 runtime 主路径必须落在上表列出的项目层。
+正式 runtime 主路径必须落在上表列出的项目层。Legacy `business/` 目录已删除。
 
 ## 4. 业务进入系统后的标准拆分
 

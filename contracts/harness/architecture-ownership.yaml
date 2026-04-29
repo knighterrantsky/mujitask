@@ -110,5 +110,4 @@ owners:
       - encode provider business field mappings
 
 legacy_reference_only:
-  - src/automation_business_scaffold/business/**
   - docs/business/**

@@ -207,7 +207,6 @@ def test_real_migration_contract() -> None:
         "capabilities/_implementations/*.py",
         "不能只 `from .implementations import xxx_handler`",
         "domains/{domain}/**",
-        "不能只 re-export `business/**`",
         "旧代码只作为功能验证参考",
         "跑通旧测试",
         "不是 `real_migration` 完成标准",
@@ -255,7 +254,6 @@ def test_project_capability_files_must_own_real_implementations() -> None:
         "from .implementations import",
         "from ..implementations import",
         "from automation_business_scaffold.capabilities._implementations",
-        "from automation_business_scaffold.business.handlers",
         "sys.modules[__name__]",
     )
 
@@ -351,9 +349,6 @@ def test_tiktok_domain_files_must_not_reexport_business_modules() -> None:
         if path.name != "__init__.py"
     ]
     forbidden_fragments = (
-        "from automation_business_scaffold.business import",
-        "from automation_business_scaffold.business.",
-        "import automation_business_scaffold.business.",
         "facade",
         "re-export",
         "reexport",

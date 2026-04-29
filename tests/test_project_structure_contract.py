@@ -73,7 +73,6 @@ def test_project_structure_contract_freezes_core_boundaries() -> None:
         "capabilities/fact_sources/",
         "capabilities/channels/",
         "control_plane/",
-        "business/**/achieve/",
         "`SKILL.md`、入口脚本、`skill.local.env.example`",
         "`JOB_CODE`、`HANDLER_CODE`、`JOB_DEFINITION`",
         "`HANDLER_CODE`、`CONTRACT`",

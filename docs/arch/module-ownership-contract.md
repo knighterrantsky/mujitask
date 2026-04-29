@@ -147,13 +147,7 @@ from automation_business_scaffold.domains.tiktok.mappers import map_competitor_r
 
 ## 6. Legacy Business 路径边界
 
-legacy business 路径包括但不限于:
-
-```text
-src/automation_business_scaffold/business/**
-```
-
-迁移前，legacy 路径可以作为当前实现事实存在。迁移任务开始后，必须声明是 `scaffold` 还是 `real_migration`。
+Legacy `business/` 目录已完成迁移并删除。迁移任务开始后，必须声明是 `scaffold` 还是 `real_migration`。
 
 `scaffold` 允许:
 

@@ -43,9 +43,6 @@ Codex 必须根据仓库内的 rewrite state、code roadmap、contracts 和 test
 - `src/automation_business_scaffold/capabilities/**` 是通用 handler 能力 owner。
 - `src/automation_business_scaffold/control_plane/**` 是 runtime 控制面 owner。
 - `contracts/**` 是字段、状态、workflow 和 Codex 路由的机器契约 owner。
-- `src/automation_business_scaffold/business/**` 是 legacy reference / achieve reference。
-- 普通实现不得在 `business/**` 新增 runtime 主路径。
-- 允许读取 `business/**` 理解旧行为，但新实现必须落到 `domains/**`、`capabilities/**`、`control_plane/**` 或 `contracts/**`。
 
 ## Change Boundaries
 

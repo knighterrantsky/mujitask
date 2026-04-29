@@ -22,7 +22,7 @@
 - 修改正式客户需求或验收口径时，才读 `docs/business/**`。
 - 修改 Fact DB、Storage、browser fallback 或 workflow 架构边界时，才读对应 `docs/arch/**` 长文档。
 - 修改字段、状态或 workflow 机器事实时，必须同步读写 `contracts/**`。
-- 排查旧行为时，可以读取 `src/automation_business_scaffold/business/**`，但不能把它作为新实现 owner。
+- 旧行为可参考 git history；legacy `business/` 目录已删除。
 
 ## 本域不可破坏的不变量
 
@@ -30,5 +30,5 @@
 - TikTok 商品数据采集优先走 request/API 路径。
 - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景。
 - `tiktok_fastmoss_product_ingest` 当前不是已沉淀的正式客户流程需求；不要从设计文档反推业务验收。
-- 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`、`capabilities/**` 或 `control_plane/**`，`business/**` 只是 legacy reference。
+- 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`、`capabilities/**` 或 `control_plane/**`，legacy `business/` 目录已删除。
 - 完成本任务后遵守 `AGENTS.md` 的 Stop Protocol，不输出无关下一步建议。

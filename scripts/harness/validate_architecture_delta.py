@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ARCHITECTURE_OWNERSHIP = "contracts/harness/architecture-ownership.yaml"
 PRODUCT_FACT_COLLECTION = "contracts/facts/product-fact-collection.yaml"
 IMPLEMENTATION_PREFIX = "src/automation_business_scaffold/"
-BUSINESS_RUNTIME_PREFIX = "src/automation_business_scaffold/business/"
 
 HELPER_LIKE_TOKENS = (
     "helper",
@@ -338,16 +337,6 @@ def validate(repo_root: Path) -> tuple[dict[str, Any], int]:
         _record(failed, "forbidden_new_module_patterns", ", ".join(forbidden_new_modules))
     else:
         _record(passed, "forbidden_new_module_patterns", f"{len(forbidden_patterns)} patterns")
-
-    business_runtime_new = [
-        change.path
-        for change in changes
-        if change.added and change.path.startswith(BUSINESS_RUNTIME_PREFIX)
-    ]
-    if business_runtime_new:
-        _record(failed, "business_runtime_new_files_forbidden", ", ".join(business_runtime_new))
-    else:
-        _record(passed, "business_runtime_new_files_forbidden", "no new business/** files")
 
     product_fact_signal_paths = [
         path for path, text in changed_texts.items() if _has_product_fact_signal(path, text)

@@ -279,8 +279,8 @@ src/{project}/capabilities/channels/discord/
 
 - `capabilities/**/{capability}_handler.py` 必须拥有该 capability 的 handler 实现，文件内应出现主要 `def` / `class` / helper 逻辑；不能只 `from .implementations import xxx_handler`。
 - 禁止新增或保留 `capabilities/_implementations/*.py` 作为大杂烩实现归属；大文件只能作为迁移前参考，不允许成为 runtime import 主路径。
-- `business/handlers/**` 旧路径不能继续导入 `.implementations` 或正式 capability 作为主路径；完成迁移后应删除旧路径，或仅保留不被 runtime registry 引用的迁移说明。
-- `domains/{domain}/**` 必须拥有业务 task、workflow、job、mapper、projection、policy 的实现；不能只 re-export `business/**`。
+- 完成迁移后旧路径应删除，或仅保留不被 runtime registry 引用的迁移说明。
+- `domains/{domain}/**` 必须拥有业务 task、workflow、job、mapper、projection、policy 的实现。
 - 根包 daemon alias 只能作为单次提交内的临时过渡；完成 `real_migration` 时 console script 和根包入口应直接指向 `apps/**`。
 - Monkeypatch、旧 import、旧测试不作为保留兼容层的理由；旧测试应迁移到正式 import，旧代码只作为功能验证参考。
 - “跑通旧测试”不是 `real_migration` 完成标准；完成标准是静态归属、runtime import 主路径和行为对照同时满足。

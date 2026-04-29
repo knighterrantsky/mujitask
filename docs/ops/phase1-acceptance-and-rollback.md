@@ -63,7 +63,7 @@ Phase 1 历史交付口径包含 3 类要求：
 
 - 控制面代码
   - `src/automation_business_scaffold/infrastructure/runtime/runtime_store.py`
-  - `src/automation_business_scaffold/business/flows/refresh_current_competitor_table_flow.py`
+  - `src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py`
   - `src/automation_business_scaffold/executor_daemon.py`
 - 数据库迁移
   - [alembic.ini](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic.ini:1)
