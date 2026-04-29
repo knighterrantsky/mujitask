@@ -168,9 +168,8 @@ def _check_reexports_and_thin_wrappers(src_root: Path) -> list[Finding]:
         tree = _parse_python(path)
         if tree is None:
             continue
-        is_business = _is_under_business(path, src_root)
         is_owner_file = _is_ownership_checked_path(path, src_root)
-        if not is_business and not is_owner_file:
+        if not is_owner_file:
             continue
         imported_names = _top_level_imported_names(tree)
         all_names = _literal_all_names(tree)
@@ -184,15 +183,6 @@ def _check_reexports_and_thin_wrappers(src_root: Path) -> list[Finding]:
                     message=f"__all__ explicitly re-exports imported owner names: {', '.join(reexported_names)}.",
                 )
             )
-            if is_business:
-                findings.append(
-                    Finding(
-                        check="business_no_legacy_reexports",
-                        path=path,
-                        line=_line_for_all(tree),
-                        message="business/** is a legacy path and must not preserve ownership by re-exporting imported names.",
-                    )
-                )
         if _is_reexport_only_module(tree):
             findings.append(
                 Finding(
@@ -201,14 +191,6 @@ def _check_reexports_and_thin_wrappers(src_root: Path) -> list[Finding]:
                     message="module contains only imports, __all__, constants, and/or a docstring; move callers to the owner module.",
                 )
             )
-            if is_business:
-                findings.append(
-                    Finding(
-                        check="business_no_legacy_reexports",
-                        path=path,
-                        message="business/** re-export shim is forbidden even when __all__ is empty.",
-                    )
-                )
         if is_owner_file:
             findings.extend(_check_thin_wrappers(path, tree, imported_names))
     return findings
@@ -455,14 +437,6 @@ def _resolve_import_from(current_module: str, module: str | None, level: int) ->
 
 def _is_public(name: str) -> bool:
     return not name.startswith("_")
-
-
-def _is_under_business(path: Path, src_root: Path) -> bool:
-    try:
-        relative = path.relative_to(src_root)
-    except ValueError:
-        return False
-    return bool(relative.parts) and relative.parts[0] == "business"
 
 
 def _is_ownership_checked_path(path: Path, src_root: Path) -> bool:

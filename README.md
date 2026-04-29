@@ -233,7 +233,6 @@ automation-business-scaffold-run run \
 | `src/automation_business_scaffold/capabilities/` | 通用 handler 能力；承载 Feishu、TikTok、FastMoss、media、Fact DB、outbox 等外部能力入口 |
 | `src/automation_business_scaffold/control_plane/` | Runtime 控制面；承载 executor、supervisor、reconciler、watchdog、outbox 和 runtime config |
 | `src/automation_business_scaffold/contracts/` | 代码包内 handler/runtime/workflow contract model 与实现侧 manifest |
-| `src/automation_business_scaffold/business/` | legacy / achieve reference；允许读取理解旧行为，普通新实现不得落回该目录 |
 | `src/automation_business_scaffold/infrastructure/` | 飞书、FastMoss、Runtime Store、Fact Store、Artifact Store 等基础设施 |
 | `src/automation_business_scaffold/models/` | 运行时和业务模型 |
 | `src/automation_business_scaffold/validators/` | 业务参数校验 |

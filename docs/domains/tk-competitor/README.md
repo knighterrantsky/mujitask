@@ -25,7 +25,7 @@
 - 修改客户需求、验收口径或字段业务含义时，才读 `docs/business/**`。
 - 修改架构边界、Runtime contract 或目录归属时，才读 `docs/arch/**` 长文档。
 - 修改字段语义、pending 判断或状态枚举时，必须同步读写 `contracts/fields/**` 或 `contracts/states/**`。
-- 排查旧行为时，可以读取 `src/automation_business_scaffold/business/**`，但不能把它作为新实现 owner。
+- 旧行为可参考 git history；legacy `business/` 目录已删除。
 
 ## 本域不可破坏的不变量
 
@@ -34,5 +34,5 @@
 - `前台截图` / `Fastmoss截图` 当前不采集、不写回、不参与 pending 判断。
 - 一条候选飞书记录最多创建一个 `competitor_row_refresh` 主 job。
 - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于行级主 job 内部步骤，不能按 API 调用粒度拆成 sibling jobs。
-- 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`，`business/**` 只是 legacy reference。
+- 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`，legacy `business/` 目录已删除。
 - 完成本任务后遵守 `AGENTS.md` 的 Stop Protocol，不输出无关下一步建议。

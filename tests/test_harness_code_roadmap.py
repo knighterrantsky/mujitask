@@ -82,4 +82,4 @@ def test_domains_are_canonical_runtime_owner() -> None:
 def test_business_is_legacy_reference_only() -> None:
     roadmap = _load_roadmap()
     legacy_paths = roadmap["legacy_reference_only"]
-    assert "src/automation_business_scaffold/business/**" in legacy_paths
+    assert "docs/business/**" in legacy_paths

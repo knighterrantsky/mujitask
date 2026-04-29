@@ -41,13 +41,6 @@ def test_checker_catches_reexports_thin_wrappers_and_domain_owner_shims(tmp_path
     package = root / "src" / "automation_business_scaffold"
     _write(package / "owner.py", "def run(value):\n    return value\n")
     _write(
-        package / "business" / "legacy.py",
-        "from automation_business_scaffold.owner import run\n\n"
-        "__all__ = ['run']\n\n"
-        "def execute(value):\n"
-        "    return run(value)\n",
-    )
-    _write(
         package / "domains" / "sample" / "mappers" / "legacy_mapper.py",
         "from automation_business_scaffold.owner import run\n\n__all__ = ['run']\n",
     )
@@ -60,7 +53,6 @@ def test_checker_catches_reexports_thin_wrappers_and_domain_owner_shims(tmp_path
 
     checks = _checks_for(root)
 
-    assert "business_no_legacy_reexports" in checks
     assert "domain_owner_files_are_not_reexport_only" in checks
     assert "no_explicit_reexports" in checks
     assert "no_reexport_only_modules" in checks

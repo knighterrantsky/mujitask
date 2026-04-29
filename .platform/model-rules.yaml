@@ -34,7 +34,6 @@ change_modes:
     must_not_edit:
       - ".platform/**"
       - "AGENTS.md"
-      - "src/automation_business_scaffold/business/**"
       - "src/automation_business_scaffold/agent.py"
       - "src/automation_business_scaffold/registry.py"
       - "tests/test_agent.py"
@@ -42,7 +41,6 @@ change_modes:
   legacy_reference:
     description: "Read-only reference mode for old business implementation and original business requirements."
     readable:
-      - "src/automation_business_scaffold/business/**"
       - "docs/business/**"
     rule: "Read-only reference unless the user explicitly asks for legacy cleanup or customer requirement changes."
   platform_upgrade:

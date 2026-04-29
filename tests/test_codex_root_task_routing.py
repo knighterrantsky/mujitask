@@ -32,7 +32,6 @@ def test_agents_md_declares_root_conversational_mode_and_stop_protocol() -> None
         "contracts/codex/task-routing.yaml",
         "## Rewrite Source Of Truth",
         "src/automation_business_scaffold/domains/**",
-        "src/automation_business_scaffold/business/**",
         "## Stop Protocol",
         "默认所有实现、修复、重构和治理任务都是 bounded task",
     )
@@ -49,7 +48,6 @@ def test_rewrite_state_declares_current_runtime_owners() -> None:
     assert owners["domain_business_logic"] == "src/automation_business_scaffold/domains/**"
     assert owners["reusable_capabilities"] == "src/automation_business_scaffold/capabilities/**"
     assert owners["runtime_control_plane"] == "src/automation_business_scaffold/control_plane/**"
-    assert "src/automation_business_scaffold/business/**" in state["legacy_reference"]["paths"]
     assert "no new business runtime owner files" in state["must_remain_green"]
 
 
@@ -98,8 +96,5 @@ def test_platform_rules_prefer_domains_and_treat_business_as_legacy_reference() 
     assert "src/automation_business_scaffold/capabilities/**" in may_edit
     assert "src/automation_business_scaffold/control_plane/**" in may_edit
     assert "contracts/**" in may_edit
-    assert "src/automation_business_scaffold/business/**" in must_not_edit
-
     legacy_reference = rules["change_modes"]["legacy_reference"]
-    assert "src/automation_business_scaffold/business/**" in legacy_reference["readable"]
     assert "docs/business/**" in legacy_reference["readable"]

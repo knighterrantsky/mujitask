@@ -38,14 +38,11 @@ routing:
       - src/automation_business_scaffold/domains/tiktok/
       - tests/
     avoid_by_default:
-      - src/automation_business_scaffold/business/
       - docs/business/
       - docs/arch/workflow-influencer-pool-sync-design.md
     allowed_when:
       docs/business/: "Only read or edit when changing customer requirements, acceptance criteria, or field business meaning."
       docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
-      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
-
   - route_id: tk_competitor_runtime
     match:
       keywords:
@@ -67,14 +64,11 @@ routing:
       - src/automation_business_scaffold/domains/tiktok/
       - tests/
     avoid_by_default:
-      - src/automation_business_scaffold/business/
       - docs/business/
       - docs/arch/workflow-competitor-table-design.md
     allowed_when:
       docs/business/: "Only read or edit when changing customer requirements, acceptance criteria, or field business meaning."
       docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
-      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
-
   - route_id: product_fact_ingest_runtime
     match:
       keywords:
@@ -95,14 +89,11 @@ routing:
       - src/automation_business_scaffold/capabilities/
       - tests/
     avoid_by_default:
-      - src/automation_business_scaffold/business/
       - docs/business/
       - docs/arch/workflow-selection-analysis-design.md
     allowed_when:
       docs/business/: "Only read or edit when formal customer requirements are being added or changed."
       docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."
-      src/automation_business_scaffold/business/: "Read-only legacy reference unless explicitly migrating or deleting legacy material."
-
   - route_id: architecture_governance
     match:
       keywords:
@@ -121,6 +112,4 @@ routing:
       - docs/dev/documentation-change-policy.md
       - tests/
     avoid_by_default:
-      - src/automation_business_scaffold/business/
     allowed_when:
-      src/automation_business_scaffold/business/: "Read-only reference unless explicitly cleaning legacy ownership."

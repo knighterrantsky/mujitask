@@ -108,7 +108,7 @@
 完成标准:
 
 - domain 文件内有真实 `def` / `class` / `JOB_DEFINITION` / workflow definition。
-- domain 不 re-export `business/**`。
+- domain 不 re-export deprecated 路径。
 - domain 不直接调用 infrastructure client。
 - domain 通过 job contract 绑定 capability handler。
 
@@ -183,7 +183,7 @@
 
 - `docs/**` 中描述历史问题。
 - `tests/**` 中明确的迁移违规测试 fixture。
-- `business/**` 自身在清理前可以作为旧路径，但不得被目标主路径 import。
+- Legacy `business/` 目录已删除，不得被目标主路径 import。
 
 ## 6. 行为验收规则
 

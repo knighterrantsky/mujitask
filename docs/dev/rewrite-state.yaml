@@ -10,8 +10,6 @@ canonical_runtime_owners:
   machine_contracts: "contracts/**"
 
 legacy_reference_only:
-  - path: "src/automation_business_scaffold/business/**"
-    rule: "Legacy/reference implementation only; current new business implementation belongs in domains/** and this path can be deleted after rewrite."
   - path: "docs/business/**"
     rule: "Business requirements and acceptance reference only; not a default implementation owner."
 

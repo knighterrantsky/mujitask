@@ -12,7 +12,6 @@ import tomllib
 
 PROJECT_PACKAGE = "automation_business_scaffold"
 MAIN_PATH_DIRS = ("apps", "control_plane", "domains", "capabilities", "contracts")
-FORBIDDEN_BUSINESS_PREFIX = f"{PROJECT_PACKAGE}.business"
 LEGACY_ROOT_ENTRYPOINT_MODULES = frozenset(
     {
         f"{PROJECT_PACKAGE}.agent",
@@ -82,7 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     findings.extend(_check_no_empty_non_init_main_modules(src_root))
     findings.extend(_check_no_capabilities_implementations(src_root))
     findings.extend(_check_no_legacy_domain_aggregates(src_root))
-    findings.extend(_check_main_path_does_not_import_business_runtime(src_root))
     findings.extend(_check_legacy_root_entrypoints(repo_root, pyproject_path))
 
     findings.sort(key=lambda finding: finding.sort_key(repo_root))
@@ -300,64 +298,11 @@ def _check_no_legacy_domain_aggregates(src_root: Path) -> list[Finding]:
     return findings
 
 
-def _check_main_path_does_not_import_business_runtime(src_root: Path) -> list[Finding]:
-    findings: list[Finding] = []
-    for path in _iter_main_path_files(src_root):
-        tree = _parse_python(path)
-        if tree is None:
-            continue
-        current_module = _module_name_for_path(path, src_root)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if _is_forbidden_business_import(alias.name):
-                        findings.append(
-                            Finding(
-                                check="main_path_no_business_runtime_imports",
-                                path=path,
-                                line=node.lineno,
-                                message=(
-                                    f"runtime main path imports old business runtime "
-                                    f"{alias.name!r}."
-                                ),
-                            )
-                        )
-            elif isinstance(node, ast.ImportFrom):
-                module_name = _resolve_import_from(current_module, node.module, node.level)
-                imported_names = tuple(alias.name for alias in node.names)
-                candidates = (module_name,) + tuple(
-                    f"{module_name}.{name}" for name in imported_names if module_name
-                )
-                forbidden = next(
-                    (candidate for candidate in candidates if _is_forbidden_business_import(candidate)),
-                    "",
-                )
-                if forbidden:
-                    findings.append(
-                        Finding(
-                            check="main_path_no_business_runtime_imports",
-                            path=path,
-                            line=node.lineno,
-                            message=(
-                                f"runtime main path imports old business runtime "
-                                f"{forbidden!r}."
-                            ),
-                        )
-                    )
-    return findings
-
-
 def _iter_main_path_files(src_root: Path) -> list[Path]:
     files: list[Path] = []
     for dirname in MAIN_PATH_DIRS:
         files.extend(_iter_python_files(src_root / dirname))
     return sorted(set(files))
-
-
-def _is_forbidden_business_import(module_name: str) -> bool:
-    return module_name == FORBIDDEN_BUSINESS_PREFIX or module_name.startswith(
-        f"{FORBIDDEN_BUSINESS_PREFIX}."
-    )
 
 
 def _module_name_for_path(path: Path, src_root: Path) -> str:

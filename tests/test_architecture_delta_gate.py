@@ -44,7 +44,7 @@ def _minimal_architecture_contract() -> str:
             "schema_version": 1,
             "current_phase": "domains_runtime_rewrite",
             "owners": {},
-            "legacy_reference_only": ["src/automation_business_scaffold/business/**"],
+            "legacy_reference_only": ["docs/business/**"],
         },
         allow_unicode=True,
         sort_keys=False,

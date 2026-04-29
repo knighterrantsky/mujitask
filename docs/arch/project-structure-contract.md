@@ -146,7 +146,6 @@ skills/{skill_code}/
 | `capabilities/channels/` | Feishu/outbox/Discord/Dingding 等输出通道 handler | workflow summary 生成逻辑 |
 | `capabilities/persistence/` | Fact DB/Object Store 等持久化 handler | 业务字段语义 |
 | `control_plane/` | task request 生命周期、executor/worker claim、Execution Supervisor、Reconciler、Watchdog、outbox、runtime config | 飞书字段映射、TikTok/FastMoss 业务策略、业务专用 daemon |
-| `business/**/achieve/` | 旧业务实现参考和行为对照素材，不允许作为 runtime 主路径 | 新实现、shim、re-export、daemon/worker 主入口 |
 | `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | task/workflow/handler 业务语义 |
 | `models/` | 跨层使用的数据模型 | 外部 API 调用流程 |
 | `validators/` | 输入和业务数据校验 | runtime 编排 |

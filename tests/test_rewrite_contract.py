@@ -144,7 +144,7 @@ def test_domain_runtime_code_must_not_import_achieve() -> None:
     )
 
 
-def test_no_new_business_runtime_owner_files() -> None:
+def test_no_legacy_business_runtime_owner_files() -> None:
     violating = _business_non_reference_runtime_files()
-    message = "business/** is legacy reference; new runtime owner files belong in domains/**:\n"
-    assert violating == [], message + "\n".join(str(path.relative_to(REPO_ROOT)) for path in violating)
+    assert violating == [], "legacy business/** directory has been removed; no files should remain"
+

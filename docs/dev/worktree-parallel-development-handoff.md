@@ -125,11 +125,10 @@ risks / follow-ups:
 
 ### 5.2 负责范围
 
-优先负责以下文件:
+优先负责以下文件 (legacy `business/` 目录已删除，对应实现已迁移至 `domains/`):
 
-- `src/automation_business_scaffold/business/workflow_defs/execution_helpers.py`
-- `src/automation_business_scaffold/business/flows/runtime_refresh_current_competitor_table.py`
-- `src/automation_business_scaffold/business/flows/runtime_search_keyword_competitor_products.py`
+- `src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py`
+- `src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products.py`
 - 相关测试:
   - `tests/test_runtime_refresh_current_competitor_table.py`
   - `tests/test_runtime_search_keyword_competitor_products.py`
@@ -211,12 +210,9 @@ uv run --extra dev pytest -q \
 优先负责以下文件:
 
 - `src/automation_business_scaffold/outbox_dispatcher.py`
-- `src/automation_business_scaffold/business/handlers/outbox/__init__.py`
-- `src/automation_business_scaffold/business/handlers/outbox/registry.py`
-- `src/automation_business_scaffold/business/handlers/outbox/implementations.py`
+- `src/automation_business_scaffold/capabilities/channels/outbox/` (已从 legacy `business/handlers/outbox/` 迁移)
 - 如确有必要，可触达:
-  - `src/automation_business_scaffold/business/flows/runtime_orchestrator.py`
-  - `src/automation_business_scaffold/business/flows/execution_supervisor.py`
+  - `src/automation_business_scaffold/control_plane/executor/` (已从 legacy `business/flows/` 迁移)
 - 相关测试:
   - `tests/test_execution_supervisor_runtime.py`
   - `tests/test_runtime_lifecycle.py`
@@ -288,7 +284,7 @@ uv run --extra dev pytest -q \
 优先负责以下文件:
 
 - `src/automation_business_scaffold/watchdog_scanner.py`
-- `src/automation_business_scaffold/business/flows/watchdog_scanner.py`
+- `src/automation_business_scaffold/control_plane/watchdog/` (已从 legacy `business/flows/` 迁移)
 - `src/automation_business_scaffold/infrastructure/runtime/runtime_store.py`
 - 相关测试:
   - `tests/test_watchdog_scanner.py`
