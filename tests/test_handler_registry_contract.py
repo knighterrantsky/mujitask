@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_BY_WORKER = {
     "api": {
         "competitor_row_refresh",
+        "selection_row_refresh",
         "keyword_seed_import",
         "feishu_table_read",
         "feishu_table_write",

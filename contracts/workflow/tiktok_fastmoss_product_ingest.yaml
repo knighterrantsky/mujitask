@@ -5,9 +5,9 @@ domain: product_fact_ingest
 task_code: tiktok_fastmoss_product_ingest
 status: complete
 
-business_requirement: null
-business_requirement_note: 当前已有系统入口和设计文档，但尚未沉淀为正式客户流程需求
-architecture_design: docs/arch/workflow-selection-analysis-design.md
+business_requirement: docs/business/requirements/tk-selection-collection-expand.md
+business_requirement_note: TK 选品表自动采集扩展 — 17 个自动维护字段，行级 pipeline 模型
+architecture_design: docs/arch/workflow-selection-table-expand-design.md
 implementation_manifest: src/automation_business_scaffold/contracts/workflow/tiktok_fastmoss_product_ingest.yaml
 field_contracts:
   - contracts/fields/feishu-tk-selection.yaml
@@ -21,34 +21,21 @@ stages:
   - stage_code: read_selection_rows
     handler_code: feishu_table_read
     source_adapter: selection_table_source_adapter
-    purpose: TK selection table mode 下读取来源记录和写回上下文
-  - stage_code: collect_product_data
-    handler_code: tiktok_product_request_fetch
-    purpose: 优先通过 request/API 采集 TikTok 商品事实
-  - stage_code: collect_fastmoss_product_data
-    handler_code: fastmoss_product_fetch
-    purpose: 获取 FastMoss 商品、店铺、指标和关联信息
-  - stage_code: browser_fallback
-    handler_code: tiktok_product_browser_fetch
-    purpose: request 失效、关键字段缺失或风控阻断时才派发浏览器兜底
-  - stage_code: sync_media
-    handler_code: media_asset_sync
-    purpose: 同步图片、封面、头像等媒体资产
-  - stage_code: persist_facts
-    handler_code: fact_bundle_upsert
-    purpose: 写商品、店铺、达人、视频、媒体引用、关系和观测
-  - stage_code: writeback_selection_rows
-    handler_code: feishu_table_write
-    projection_mapper: selection_table_projection_mapper
-    purpose: 有来源飞书记录且需要写回时投影到 TK选品收集
+    purpose: TK selection table 模式下读取候选行，scan missing_auto_fields 与 URL 校验
+  - stage_code: dispatch_selection_row_refresh
+    handler_code: selection_row_refresh
+    purpose: 为每条候选行创建一个 selection_row_refresh 行级 pipeline job
+  - stage_code: collect_selection_rows
+    handler_code: selection_row_refresh
+    purpose: 等待所有 selection_row_refresh 行级 job 终态并回收结果
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总 result 并写 outbox
 
 protected_invariants:
   - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据
-  - TikTok 商品数据采集优先走 request/API 路径
-  - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景；request 已明确不可售时直接产出不可售终态，不进入 browser fallback
-  - 不从该设计文档反推正式客户需求和验收口径
+  - 行级 pipeline 内部串行：URL 校验 → TikTok request → media sync → FastMoss fetch → fact upsert → 飞书 17 字段写回
+  - Browser 只作为 fallback，用于 request 失效或风控阻断；request 已明确不可售时直接产出不可售终态
+  - 17 个自动维护字段统一采用 fill_missing_only 策略，不覆盖已有值；商品ID/商品链接 始终刷新
 
 known_architecture_gaps: []

@@ -35,6 +35,11 @@ from automation_business_scaffold.control_plane.supervisor.child_runner import C
 from automation_business_scaffold.control_plane.supervisor import (
     execution_supervisor as supervisor_runtime,
 )
+from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer import (
+    DEFAULT_FASTMOSS_VISUALIZATION_CHARTS,
+    FastMossVisualizationRenderer,
+    FastMossVisualizationRenderError,
+)
 
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
@@ -45,38 +50,29 @@ run_supervised_handler = supervisor_runtime.run_supervised_handler
 ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
 
-def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
+def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
     source_context = _source_context(payload)
     source_record_id = first_non_empty(payload.get("source_record_id"), source_context.get("source_record_id"))
     source_table_ref = first_non_empty(
+        payload.get("target_table_ref"),
         payload.get("source_table_ref"),
+        request_payload.get("target_table_ref"),
         request_payload.get("source_table_ref"),
         payload.get("table_url"),
         request_payload.get("table_url"),
     )
     business_key = first_non_empty(payload.get("business_key"), product_business_key(identity), source_record_id)
 
-    if not source_record_id:
-        return failed_result(
-            context,
-            error=build_error(
-                error_type="invalid_input",
-                error_code="competitor_row_missing_source_record_id",
-                message="Competitor row refresh requires source_record_id.",
-                retryable=False,
-                details={"product_identity": identity},
-            ),
-        )
     if not business_key:
         return failed_result(
             context,
             error=build_error(
                 error_type="invalid_input",
-                error_code="competitor_row_missing_business_key",
-                message="Competitor row refresh requires a stable product business key.",
+                error_code="selection_row_missing_business_key",
+                message="Selection row refresh requires a stable product business key.",
                 retryable=False,
                 details={"source_record_id": source_record_id, "product_identity": identity},
             ),
@@ -91,7 +87,7 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     }
     step_timeline: list[dict[str, Any]] = []
 
-    _emit_progress(context, "competitor_row_refresh.started", details={"source_record_id": source_record_id})
+    _emit_progress(context, "selection_row_refresh.started", details={"source_record_id": source_record_id})
 
     tiktok_context = _child_context(
         context,
@@ -125,17 +121,26 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     if tiktok_result.status == "failed":
         error_code = tiktok_result.error.error_code if tiktok_result.error else ""
         if error_code in {"url_invalid_domain", "url_invalid_no_product_id"}:
-            return _url_invalid_pipeline_result(
+            url_invalid_result = _url_invalid_pipeline_result(
                 context,
                 identity=identity,
                 source_record_id=source_record_id,
                 business_key=business_key,
                 step_timeline=step_timeline,
                 runtime_evidence=runtime_evidence,
-                source_context=source_context,
-                request_payload=request_payload,
-                payload=payload,
+                reason="url_invalid",
             )
+            if source_table_ref:
+                _writeback_url_invalid_status(
+                    context,
+                    source_record_id=source_record_id,
+                    business_key=business_key,
+                    identity=identity,
+                    request_payload=request_payload,
+                    payload=payload,
+                    source_table_ref=source_table_ref,
+                )
+            return url_invalid_result
         return _failed_pipeline_result(
             context,
             identity=identity,
@@ -146,6 +151,28 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             error=tiktok_result.error,
             runtime_evidence=runtime_evidence,
         )
+
+    if tiktok_result.status == "url_invalid":
+        url_invalid_result = _url_invalid_pipeline_result(
+            context,
+            identity=identity,
+            source_record_id=source_record_id,
+            business_key=business_key,
+            step_timeline=step_timeline,
+            runtime_evidence=runtime_evidence,
+            reason="url_invalid",
+        )
+        if source_table_ref:
+            _writeback_url_invalid_status(
+                context,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                identity=identity,
+                request_payload=request_payload,
+                payload=payload,
+                source_table_ref=source_table_ref,
+            )
+        return url_invalid_result
 
     effective_tiktok_payload = dict(tiktok_payload)
     browser_result: HandlerResult | None = None
@@ -221,8 +248,8 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             failed_step="tiktok_request",
             error=build_error(
                 error_type="request_failure",
-                error_code="competitor_row_missing_tiktok_result",
-                message="Competitor row refresh did not obtain a normalized TikTok product result.",
+                error_code="selection_row_missing_tiktok_result",
+                message="Selection row refresh did not obtain a normalized TikTok product result.",
                 retryable=True,
             ),
             runtime_evidence=runtime_evidence,
@@ -384,92 +411,91 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
         )
 
-    if not source_table_ref:
-        return _failed_pipeline_result(
-            context,
-            identity=identity,
-            source_record_id=source_record_id,
-            business_key=business_key,
-            step_timeline=step_timeline,
-            failed_step="feishu_writeback",
-            error=build_error(
-                error_type="invalid_input",
-                error_code="competitor_row_missing_source_table_ref",
-                message="Competitor row refresh requires source_table_ref for Feishu writeback.",
-                retryable=False,
-                details={"source_record_id": source_record_id},
-            ),
-            runtime_evidence=runtime_evidence,
-            normalized_product_result=normalized_product_result,
-            product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
-            fact_upsert=fact_result.result,
+    projection_fields: dict[str, Any] = {}
+    write_result = success_result(context, result={})
+    if source_table_ref:
+        chart_image_paths = _render_selection_charts(
+            context=context,
+            product_id=first_non_empty(identity.get("product_id"), business_key),
+            fact_bundle=fact_bundle,
+            fastmoss_payload=fastmoss_payload,
         )
+        if chart_image_paths:
+            step_timeline.append(
+                _timeline_entry(
+                    "chart_render",
+                    success_result(context, result={"chart_image_paths": chart_image_paths}),
+                )
+            )
 
-    projection_fields = _build_competitor_projection_fields(
-        source_context=source_context,
-        normalized_product_result=normalized_product_result,
-        fastmoss_result=fastmoss_payload,
-        media_result=media_result_payload,
-    )
-    projection_record = compact_dict(
-        {
-            "source_record_id": source_record_id,
-            "business_entity_key": business_key,
-            "product_id": first_non_empty(
-                normalized_product_result.get("product_id"),
-                coerce_mapping(normalized_product_result.get("product")).get("product_id"),
-                identity.get("product_id"),
-            ),
-            "product_url": first_non_empty(
-                coerce_mapping(normalized_product_result.get("product")).get("normalized_url"),
-                coerce_mapping(normalized_product_result.get("product")).get("product_url"),
-                normalized_product_result.get("normalized_product_url"),
-                identity.get("normalized_product_url"),
-                identity.get("product_url"),
-            ),
-            "projection_fields": projection_fields,
-            "source_fields": _source_fields(source_context),
-            "source_context": source_context,
-        }
-    )
-    write_context = _child_context(
-        context,
-        handler_code="feishu_table_write",
-        payload={
-            **request_payload,
-            **payload,
-            **build_projection_write_payload(
-                stage_code=context.stage_code or "collect_product_data",
-                request_id=context.request_id,
-                target_table_ref=source_table_ref,
-                records=[projection_record],
-                mapper_code="competitor_table_projection_mapper",
-                write_mode="upsert",
-                request_payload=request_payload,
-                source_record_id=source_record_id,
-                business_entity_key=business_key,
-            ),
-            "request_payload": request_payload,
-        },
-        step_code="feishu_writeback",
-    )
-    write_result = feishu_table_write_handler(write_context)
-    step_timeline.append(_timeline_entry("feishu_writeback", write_result))
-    if write_result.status == "failed":
-        return _failed_pipeline_result(
-            context,
-            identity=identity,
-            source_record_id=source_record_id,
-            business_key=business_key,
-            step_timeline=step_timeline,
-            failed_step="feishu_writeback",
-            error=write_result.error,
-            runtime_evidence=runtime_evidence,
+        projection_fields = _build_selection_projection_fields(
+            source_context=source_context,
             normalized_product_result=normalized_product_result,
-            product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
-            fact_upsert=fact_result.result,
-            writeback_projection={"fields": projection_fields},
+            fastmoss_result=fastmoss_payload,
+            media_result=media_result_payload,
+            chart_image_paths=chart_image_paths,
         )
+        projection_record = compact_dict(
+            {
+                "source_record_id": source_record_id,
+                "business_entity_key": business_key,
+                "product_id": first_non_empty(
+                    normalized_product_result.get("product_id"),
+                    coerce_mapping(normalized_product_result.get("product")).get("product_id"),
+                    identity.get("product_id"),
+                ),
+                "product_url": first_non_empty(
+                    coerce_mapping(normalized_product_result.get("product")).get("normalized_url"),
+                    coerce_mapping(normalized_product_result.get("product")).get("product_url"),
+                    normalized_product_result.get("normalized_product_url"),
+                    identity.get("normalized_product_url"),
+                    identity.get("product_url"),
+                ),
+                "projection_fields": projection_fields,
+                "source_fields": _source_fields(source_context),
+                "source_context": source_context,
+            }
+        )
+        write_context = _child_context(
+            context,
+            handler_code="feishu_table_write",
+            payload={
+                **request_payload,
+                **payload,
+                **build_projection_write_payload(
+                    stage_code=context.stage_code or "collect_product_data",
+                    request_id=context.request_id,
+                    target_table_ref=source_table_ref,
+                    records=[projection_record],
+                    mapper_code="selection_table_projection_mapper",
+                    write_mode="fill_missing_only",
+                    request_payload=request_payload,
+                    source_record_id=source_record_id,
+                    business_entity_key=business_key,
+                ),
+                "request_payload": request_payload,
+            },
+            step_code="feishu_writeback",
+        )
+        write_result = feishu_table_write_handler(write_context)
+        step_timeline.append(_timeline_entry("feishu_writeback", write_result))
+        if write_result.status == "failed":
+            return _failed_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                failed_step="feishu_writeback",
+                error=write_result.error,
+                runtime_evidence=runtime_evidence,
+                normalized_product_result=normalized_product_result,
+                product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
+                fact_upsert=fact_result.result,
+                writeback_projection={"fields": projection_fields},
+            )
+    else:
+        step_timeline.append(_skipped_timeline_entry("feishu_writeback", reason="no_target_table_ref"))
 
     product_fact_bundle = dict(fact_bundle)
     product_fact_bundle["product_id"] = first_non_empty(
@@ -639,77 +665,6 @@ def _skipped_timeline_entry(step: str, *, reason: str) -> dict[str, Any]:
     }
 
 
-def _url_invalid_pipeline_result(
-    context: HandlerContext,
-    *,
-    identity: Mapping[str, Any],
-    source_record_id: str,
-    business_key: str,
-    step_timeline: list[dict[str, Any]],
-    runtime_evidence: Mapping[str, Any],
-    source_context: Mapping[str, Any],
-    request_payload: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> HandlerResult:
-    projection_fields = {"商品状态": "链接不可访问"}
-    projection_record = compact_dict(
-        {
-            "source_record_id": source_record_id,
-            "business_entity_key": business_key,
-            "product_id": first_non_empty(identity.get("product_id")),
-            "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
-            "projection_fields": projection_fields,
-            "source_context": source_context,
-        }
-    )
-    write_context = _child_context(
-        context,
-        handler_code="feishu_table_write",
-        payload={
-            **request_payload,
-            **payload,
-            **build_projection_write_payload(
-                stage_code=context.stage_code or "collect_competitor_rows",
-                request_id=context.request_id,
-                target_table_ref=first_non_empty(
-                    payload.get("source_table_ref"),
-                    request_payload.get("source_table_ref"),
-                    payload.get("target_table_ref"),
-                    request_payload.get("target_table_ref"),
-                ),
-                records=[projection_record],
-                mapper_code="competitor_table_projection_mapper",
-                write_mode="fill_missing_only",
-                request_payload=dict(request_payload),
-                source_record_id=source_record_id,
-                business_entity_key=business_key,
-            ),
-            "request_payload": dict(request_payload),
-        },
-        step_code="feishu_writeback_url_invalid",
-    )
-    feishu_table_write_handler(write_context)
-    return success_result(
-        context,
-        summary={
-            "source_record_id": source_record_id,
-            "product_business_key": business_key,
-            "row_status": "url_invalid",
-        },
-        result=compact_dict(
-            {
-                "source_record_id": source_record_id,
-                "business_entity_key": business_key,
-                "row_status": "url_invalid",
-                "product_identity": dict(identity),
-                "step_timeline": step_timeline,
-                "runtime_evidence": dict(runtime_evidence),
-                "writeback_projection": {"fields": projection_fields},
-            }
-        ),
-    )
-
-
 def _failed_pipeline_result(
     context: HandlerContext,
     *,
@@ -727,8 +682,8 @@ def _failed_pipeline_result(
 ) -> HandlerResult:
     handler_error = error if hasattr(error, "error_code") else build_error(
         error_type="internal",
-        error_code="competitor_row_refresh_failed",
-        message=str(error or "Competitor row refresh failed."),
+        error_code="selection_row_refresh_failed",
+        message=str(error or "Selection row refresh failed."),
         retryable=True,
     )
     return failed_result(
@@ -756,6 +711,80 @@ def _failed_pipeline_result(
             }
         ),
     )
+
+
+def _url_invalid_pipeline_result(
+    context: HandlerContext,
+    *,
+    identity: Mapping[str, Any],
+    source_record_id: str,
+    business_key: str,
+    step_timeline: list[dict[str, Any]],
+    runtime_evidence: Mapping[str, Any],
+    reason: str,
+) -> HandlerResult:
+    return success_result(
+        context,
+        summary={
+            "source_record_id": source_record_id,
+            "product_business_key": business_key,
+            "row_status": reason,
+        },
+        result=compact_dict(
+            {
+                "source_record_id": source_record_id,
+                "business_entity_key": business_key,
+                "row_status": reason,
+                "product_identity": dict(identity),
+                "step_timeline": step_timeline,
+                "runtime_evidence": dict(runtime_evidence),
+                "writeback_projection": {"fields": {"商品状态": "链接不可访问"}},
+            }
+        ),
+    )
+
+
+def _writeback_url_invalid_status(
+    context: HandlerContext,
+    *,
+    source_record_id: str,
+    business_key: str,
+    identity: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    source_table_ref: str,
+) -> None:
+    projection_record = compact_dict(
+        {
+            "source_record_id": source_record_id,
+            "business_entity_key": business_key,
+            "product_id": first_non_empty(identity.get("product_id")),
+            "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+            "projection_fields": {"商品状态": "链接不可访问"},
+        }
+    )
+    write_context = _child_context(
+        context,
+        handler_code="feishu_table_write",
+        payload={
+            **dict(request_payload),
+            **dict(payload),
+            **build_projection_write_payload(
+                stage_code=context.stage_code or "collect_selection_rows",
+                request_id=context.request_id,
+                target_table_ref=source_table_ref,
+                records=[projection_record],
+                mapper_code="selection_table_projection_mapper",
+                write_mode="fill_missing_only",
+                request_payload=dict(request_payload),
+                source_record_id=source_record_id,
+                business_entity_key=business_key,
+            ),
+            "request_payload": dict(request_payload),
+        },
+        step_code="feishu_writeback_url_invalid",
+    )
+    feishu_table_write_handler(write_context)
 
 
 def _request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -831,57 +860,201 @@ def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[di
     return assets
 
 
-def _build_competitor_projection_fields(
+def _render_selection_charts(
+    *,
+    context: HandlerContext,
+    product_id: str,
+    fact_bundle: Mapping[str, Any],
+    fastmoss_payload: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    overview_payload = _extract_raw_api_payload(fact_bundle, "goods.overview", d_type=28)
+    if not overview_payload:
+        overview_payload = _extract_raw_api_payload(fact_bundle, "goods.overview")
+    product_sku_payload = _extract_raw_api_payload(fact_bundle, "goods.skus")
+    if not overview_payload and not product_sku_payload:
+        overview_payload = _extract_raw_api_payload(fastmoss_payload, "goods.overview", d_type=28)
+        if not overview_payload:
+            overview_payload = _extract_raw_api_payload(fastmoss_payload, "goods.overview")
+        product_sku_payload = _extract_raw_api_payload(fastmoss_payload, "goods.skus")
+
+    if not overview_payload:
+        return {}
+
+    sku_distribution_payload = _extract_raw_api_payload(fact_bundle, "goods.sku_distribution")
+    if not sku_distribution_payload:
+        sku_distribution_payload = _extract_raw_api_payload(fastmoss_payload, "goods.sku_distribution")
+    sku_payload = dict(product_sku_payload if isinstance(product_sku_payload, Mapping) else {})
+    if isinstance(sku_distribution_payload, Mapping):
+        sku_payload.update({k: v for k, v in sku_distribution_payload.items() if k not in sku_payload})
+    try:
+        renderer = FastMossVisualizationRenderer()
+        result = renderer.render_product_charts(
+            product_id=product_id,
+            overview_payload=overview_payload,
+            product_sku_payload=sku_payload,
+            charts=DEFAULT_FASTMOSS_VISUALIZATION_CHARTS,
+        )
+    except (FastMossVisualizationRenderError, ValueError, TypeError) as exc:
+        _emit_progress(context, "chart_render.failed", message=str(exc))
+        return {}
+
+    chart_map: dict[str, list[dict[str, Any]]] = {}
+    for chart_name, file_path in result.files.items():
+        if not file_path.exists():
+            continue
+        key = _CHART_NAME_TO_FIELD.get(chart_name)
+        if not key:
+            continue
+        chart_map[key] = [
+            {
+                "local_path": str(file_path.resolve()),
+                "file_name": f"{chart_name}.png",
+                "mime_type": "image/png",
+            }
+        ]
+    return chart_map
+
+
+def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_type: int | None = None) -> dict[str, Any]:
+    raw_responses = payload.get("raw_api_responses")
+    if isinstance(raw_responses, list):
+        for item in raw_responses:
+            if isinstance(item, Mapping) and str(item.get("source_endpoint") or "") == endpoint:
+                response_payload = item.get("response_payload")
+                if not isinstance(response_payload, Mapping):
+                    continue
+                if d_type is not None:
+                    request_params = item.get("request_params")
+                    if isinstance(request_params, Mapping) and int(request_params.get("d_type") or 0) != d_type:
+                        continue
+                return dict(response_payload)
+    return {}
+
+
+def _extract_parent_sku_image(fact_bundle: Mapping[str, Any]) -> str:
+    raw_responses = fact_bundle.get("raw_api_responses")
+    if not isinstance(raw_responses, list):
+        return ""
+    for item in raw_responses:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("source_endpoint") or "") == "goods.skus":
+            rp = item.get("response_payload")
+            if not isinstance(rp, Mapping):
+                continue
+            # Try sku_detail first (older API structure)
+            sku_detail = rp.get("sku_detail")
+            if isinstance(sku_detail, list) and sku_detail:
+                sale_prop_values = sku_detail[0].get("sale_prop_values") if isinstance(sku_detail[0], Mapping) else None
+                if isinstance(sale_prop_values, list) and sale_prop_values:
+                    for prop in sale_prop_values:
+                        if isinstance(prop, Mapping):
+                            image = first_non_empty(prop.get("image"))
+                            if image:
+                                return image
+            # Try sku_list/list (current API structure)
+            sku_list = rp.get("sku_list") or rp.get("list")
+            if isinstance(sku_list, list) and sku_list:
+                for sku_row in sku_list:
+                    if not isinstance(sku_row, Mapping):
+                        continue
+                    # Check sku_sale_props for image
+                    sale_props = sku_row.get("sku_sale_props") or sku_row.get("props")
+                    if isinstance(sale_props, list):
+                        for prop in sale_props:
+                            if isinstance(prop, Mapping):
+                                image = first_non_empty(prop.get("image"), prop.get("img"), prop.get("image_url"))
+                                if image:
+                                    return image
+                    # Check direct image fields on the SKU row
+                    image = first_non_empty(sku_row.get("image"), sku_row.get("img"), sku_row.get("image_url"), sku_row.get("cover"))
+                    if image:
+                        return image
+    return ""
+
+
+_CHART_NAME_TO_FIELD: dict[str, str] = {
+    "marketing_strategy": "distribution_chart",
+    "overview_trend": "trend_chart",
+    "sku_analysis": "sku_chart",
+}
+
+
+
+def _build_selection_projection_fields(
     *,
     source_context: Mapping[str, Any],
     normalized_product_result: Mapping[str, Any],
     fastmoss_result: Mapping[str, Any],
     media_result: Mapping[str, Any],
+    chart_image_paths: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     product = coerce_mapping(normalized_product_result.get("product"))
     logical_fields = coerce_mapping(normalized_product_result.get("logical_fields"))
     fastmoss_bundle = coerce_mapping(fastmoss_result.get("product_fact_bundle"))
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
-    daily_metrics = fastmoss_bundle.get("product_daily_metrics") if isinstance(fastmoss_bundle.get("product_daily_metrics"), list) else []
+    product_skus = fastmoss_bundle.get("product_skus") if isinstance(fastmoss_bundle.get("product_skus"), list) else []
     main_image = _first_present(
         _first_media_asset_ref(media_result),
         _first_media_asset_ref(normalized_product_result),
         logical_fields.get("main_image_url"),
     )
+    gallery_images = logical_fields.get("gallery_images")
+    if isinstance(gallery_images, list):
+        gallery_images = [item for item in gallery_images if item not in ("", None)]
+    if not gallery_images:
+        gallery_images = ""
+    parent_spec = ""
+    parent_image = ""
+    if product_skus:
+        first_sku = coerce_mapping(product_skus[0])
+        parent_spec = first_non_empty(first_sku.get("spec_name"), first_sku.get("sku_name"))
+        sku_media = first_sku.get("media_assets") if isinstance(first_sku.get("media_assets"), list) else []
+        if sku_media:
+            first_media = coerce_mapping(sku_media[0])
+            parent_image = _first_present(
+                first_media.get("source_url"),
+                first_media.get("url"),
+                first_media.get("file_token"),
+            )
+        if not parent_image:
+            parent_image = _extract_parent_sku_image(fastmoss_bundle)
 
-    fields = {
-        "SKU-ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),
-        "产品链接": first_non_empty(product.get("normalized_url"), product.get("product_url"), normalized_product_result.get("normalized_product_url")),
-        "图片": main_image,
-        "标题": first_non_empty(logical_fields.get("title"), product.get("title")),
-        "节日": first_non_empty(logical_fields.get("holiday"), product.get("holiday")),
-        "卖家": first_non_empty(logical_fields.get("shop_name"), product.get("seller_name"), product.get("shop_name")),
-        "价格": _price_number_text(
+    chart_images = dict(chart_image_paths or {})
+    review_count = _number_value(logical_fields.get("review_count"))
+    rating = _number_value(logical_fields.get("rating_score"), logical_fields.get("rating"))
+    price_value = _number_value(
+        logical_fields.get("price_text"),
+        product.get("price_text"),
+        _price_number_text(
             logical_fields.get("price_text"),
             product.get("price_text"),
-            product.get("price_amount"),
             overview_metrics.get("front_price"),
             overview_metrics.get("real_price"),
             overview_metrics.get("price"),
         ),
-        "Fastmoss价格": _price_number_text(
-            overview_metrics.get("fastmoss_price"),
-            overview_metrics.get("real_price"),
-            overview_metrics.get("price"),
-        ),
-        "昨日销量": first_non_empty(
-            _metric_text(overview_metrics, "yday_sold_count", "yesterday_sold_count", "day1_sold_count"),
-            _daily_sales_text(daily_metrics, window_days=1),
-        ),
-        "近7天销量": first_non_empty(
-            _metric_text(overview_metrics, "day7_sold_count", "sales_7d", "day7_sales", "sold_count_7d"),
-            _daily_sales_text(daily_metrics, window_days=7),
-        ),
-        "近90天销量": first_non_empty(
-            _metric_text(overview_metrics, "day90_sold_count", "sales_90d", "day90_sales", "sold_count_90d"),
-            _daily_sales_text(daily_metrics, window_days=90),
-        ),
+    )
+    total_sales = _number_value(
+        _metric_text(overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count"),
+    )
+    fields = {
+        "商品ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),
+        "商品链接": first_non_empty(product.get("normalized_url"), product.get("product_url"), normalized_product_result.get("normalized_product_url")),
+        "店铺名称": first_non_empty(logical_fields.get("shop_name"), product.get("shop_name")),
+        "商品标题": first_non_empty(logical_fields.get("title"), product.get("title")),
+        "商品当前价格": price_value if price_value is not None else "",
+        "商品评论数": review_count if review_count is not None else "",
+        "商品评分": rating if rating is not None else "",
+        "商品描述": first_non_empty(logical_fields.get("description")),
+        "商品主图": main_image,
+        "商品侧边栏图片": gallery_images,
+        "今年总销量": total_sales if total_sales is not None else "",
+        "出单种类占比截图": chart_images.get("distribution_chart") or [],
+        "今年总销量趋势截图": chart_images.get("trend_chart") or [],
+        "SKU销量占比分析": chart_images.get("sku_chart") or [],
+        "父体规格": parent_spec,
+        "父体图片": parent_image,
     }
     if _is_unavailable_product_result(normalized_product_result):
         fields["商品状态"] = "已下架/区域不可售"
@@ -1026,4 +1199,4 @@ def _optional_float(value: str) -> float | None:
         return None
 
 
-__all__ = ["run_competitor_row_refresh_flow"]
+__all__ = ["run_selection_row_refresh_flow"]

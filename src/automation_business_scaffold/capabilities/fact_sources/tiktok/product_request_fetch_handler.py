@@ -36,6 +36,14 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 from typing import Any
 
+_TIKTOK_SHOP_DOMAINS = (
+    "tiktok.com",
+    "www.tiktok.com",
+    "us.tiktok.com",
+    "uk.tiktok.com",
+)
+_INVALID_URL_ERROR_CODES = frozenset({"url_invalid_domain", "url_invalid_no_product_id"})
+
 HANDLER_CODE = "tiktok_product_request_fetch"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
@@ -67,6 +75,10 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
             detail_message="TikTok request-first path requested browser fallback.",
             request_attempt={"attempted": False, "request_source": "forced_by_payload"},
         )
+
+    url_validation_error = _validate_product_url(identity)
+    if url_validation_error:
+        return _url_invalid_result(context, identity=identity, error_code=url_validation_error)
 
     normalized = coerce_mapping(payload.get("normalized_product_result"))
     request_attempt: dict[str, Any] = {
@@ -554,6 +566,59 @@ def _normalize_tiktok_media_assets(raw_payload: dict[str, Any], *, product: dict
             )
         )
     return media_assets
+
+
+def _validate_product_url(identity: dict[str, Any]) -> str:
+    product_url = first_non_empty(
+        identity.get("normalized_product_url"),
+        identity.get("product_url"),
+    )
+    if not product_url:
+        product_id = first_non_empty(identity.get("product_id"))
+        if not product_id:
+            return "url_invalid_no_product_id"
+        return ""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(product_url)
+    except Exception:
+        return "url_invalid_domain"
+    hostname = (parsed.hostname or "").lower()
+    if hostname and hostname not in _TIKTOK_SHOP_DOMAINS and not hostname.endswith(".tiktok.com"):
+        return "url_invalid_domain"
+    product_id = extract_product_id(product_url)
+    if not product_id:
+        return "url_invalid_no_product_id"
+    return ""
+
+
+def _url_invalid_result(
+    context: HandlerContext,
+    *,
+    identity: dict[str, Any],
+    error_code: str,
+) -> HandlerResult:
+    error = build_error(
+        error_type="url_invalid",
+        error_code=error_code,
+        message=f"TikTok product URL validation failed: {error_code}",
+        retryable=False,
+        details={"product_identity": identity},
+    )
+    return failed_result(
+        context,
+        error=error,
+        summary={"collection_path": "request", "product_business_key": product_business_key(identity)},
+        result={
+            "request_attempt": {
+                "attempted": False,
+                "request_source": "url_validation",
+                "fallback_signal": False,
+                "fallback_reason": "",
+            },
+        },
+    )
 
 
 def _browser_fallback_result(

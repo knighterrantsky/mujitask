@@ -10,6 +10,28 @@ _PRODUCT_ID_PATTERNS = (
     re.compile(r"\b(\d{8,})\b"),
 )
 
+AUTO_MAINTAINED_FIELDS = (
+    "商品ID",
+    "商品链接",
+    "记录日期",
+    "店铺名称",
+    "商品标题",
+    "商品当前价格",
+    "商品评论数",
+    "商品评分",
+    "商品描述",
+    "商品主图",
+    "商品侧边栏图片",
+    "今年总销量",
+    "出单种类占比截图",
+    "今年总销量趋势截图",
+    "SKU销量占比分析",
+    "父体规格",
+    "父体图片",
+)
+
+SKIP_STATUSES = ("已下架/区域不可售", "链接不可访问")
+
 
 def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
     selection_record_id = _text(payload.get("selection_record_id"))
@@ -23,16 +45,35 @@ def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[st
     snapshot_enabled = bool(_mapping(payload.get("snapshot_policy")).get("store_raw_rows"))
     source_rows: list[dict[str, Any]] = []
     dropped_empty = 0
+    skipped_status = 0
+    skipped_all_filled = 0
 
     for row in raw_rows:
         record_id = _text(row.get("record_id"))
         if selection_record_id and record_id != selection_record_id:
             continue
         fields = _mapping(row.get("fields"))
+
+        product_status = _field_text(fields, "商品状态", "product_status")
+        if product_status in SKIP_STATUSES:
+            skipped_status += 1
+            continue
+
         identity = _product_identity_from_fields(fields)
         if not identity:
             dropped_empty += 1
             continue
+
+        product_url = _text(identity.get("product_url"))
+        product_id = _text(identity.get("product_id"))
+        if not product_url and not product_id:
+            dropped_empty += 1
+            continue
+
+        if not _has_missing_auto_fields(fields):
+            skipped_all_filled += 1
+            continue
+
         if target_identity and not _identity_matches(identity, target_identity):
             continue
         source_rows.append(
@@ -40,7 +81,7 @@ def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[st
                 row,
                 payload,
                 identity=identity,
-                business_fields={"product_status": _field_text(fields, "商品状态", "product_status")},
+                business_fields={"product_status": product_status},
                 snapshot_enabled=snapshot_enabled,
             )
         )
@@ -49,7 +90,11 @@ def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[st
         source_rows,
         input_count=len(raw_rows),
         adapter_code="selection_table_source_adapter",
-        extra_summary={"dropped_empty_count": dropped_empty},
+        extra_summary={
+            "dropped_empty_count": dropped_empty,
+            "skipped_status_count": skipped_status,
+            "skipped_all_filled_count": skipped_all_filled,
+        },
     )
 
 
@@ -139,6 +184,17 @@ def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
     request_id = _first_non_empty(payload.get("request_id"), payload.get("stage_code"), "request")
     safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "-", _text(key) or "row").strip("-") or "row"
     return f"artifact://{namespace}/{request_id}/{safe_key}.json"
+
+
+def _has_missing_auto_fields(fields: Mapping[str, Any]) -> bool:
+    for field_name in AUTO_MAINTAINED_FIELDS:
+        if field_name in ("商品ID", "商品链接", "记录日期"):
+            continue
+        value = fields.get(field_name)
+        text = _text_value(value)
+        if not text:
+            return True
+    return False
 
 
 def _product_identity_from_fields(fields: Mapping[str, Any]) -> dict[str, Any]:

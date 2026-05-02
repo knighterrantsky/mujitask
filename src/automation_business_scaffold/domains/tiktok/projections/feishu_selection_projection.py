@@ -36,15 +36,29 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
     return _compact(item)
 
 
+_SKIP_WRITE_IF_EMPTY = frozenset({"记录日期", "商品状态"})
+
+
 def _map_selection_table_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     product_identity = _mapping(payload.get("product_identity")) or _mapping(record.get("product_identity"))
     product_id = _first_non_empty(record.get("product_id"), product_identity.get("product_id"))
     product_url = _normalize_product_url(_first_non_empty(record.get("product_url"), product_identity.get("normalized_product_url"), product_identity.get("product_url")))
-    fields = {
-        "商品ID": product_id,
-        "商品链接": _link_value(product_url),
-        "记录日期": date.today().isoformat(),
-    }
+
+    projection_fields = _mapping(record.get("projection_fields"))
+    if projection_fields:
+        existing_fields = _mapping(record.get("source_fields"))
+        fields = _select_missing_selection_fields(
+            projection_fields,
+            existing_fields=existing_fields,
+            product_id=product_id,
+            product_url=product_url,
+        )
+    else:
+        fields = {
+            "商品ID": product_id,
+            "商品链接": _link_value(product_url),
+            "记录日期": date.today().isoformat(),
+        }
     return _normalize_write_record(
         {
             "op": "update" if _text(record.get("source_record_id")) else "upsert",
@@ -56,6 +70,47 @@ def _map_selection_table_record(record: Mapping[str, Any], payload: Mapping[str,
         },
         payload,
     )
+
+
+def _select_missing_selection_fields(
+    projection_fields: Mapping[str, Any],
+    *,
+    existing_fields: Mapping[str, Any],
+    product_id: str,
+    product_url: str,
+) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    has_content_update = False
+    for field_name, value in projection_fields.items():
+        if field_name in _SKIP_WRITE_IF_EMPTY:
+            continue
+        if field_name == "商品ID":
+            selected["商品ID"] = product_id or value
+            continue
+        if field_name == "商品链接":
+            selected["商品链接"] = _link_value(product_url) if product_url else _link_value(_text_value(value))
+            continue
+        if not _field_has_value(value):
+            continue
+        if _field_has_value(existing_fields.get(field_name)):
+            continue
+        selected[field_name] = value
+        has_content_update = True
+    if has_content_update:
+        selected["记录日期"] = projection_fields.get("记录日期") or date.today().isoformat()
+    return selected
+
+
+def _field_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, list):
+        return bool(value)
+    return True
 
 
 def _selection_writeback_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -1114,6 +1114,10 @@ def _fastmoss_sku_reference_keys(row: Mapping[str, Any]) -> list[str]:
     for prop in _list_of_mappings(row.get("sku_sale_props") or row.get("props")):
         prop_name = _first_non_empty(prop.get("prop_name"), prop.get("name"))
         prop_value = _first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
+        # prop_value_id is TikTok's internal numeric ID for the spec value (matches sku_property_key on the TikTok side).
+        prop_value_id = _first_non_empty(prop.get("prop_value_id"), prop.get("value_id"))
+        if prop_value_id:
+            keys.append(prop_value_id)
         if prop_value:
             keys.append(prop_value)
         if prop_name and prop_value:

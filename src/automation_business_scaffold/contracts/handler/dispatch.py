@@ -67,6 +67,10 @@ _API_HANDLER_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler",
         "fact_bundle_upsert_handler",
     ),
+    "selection_row_refresh": (
+        "automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh",
+        "selection_row_refresh_handler",
+    ),
 }
 
 

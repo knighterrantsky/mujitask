@@ -211,6 +211,11 @@ def _build_tiktok_normalized_product_result(
                 "comment_count": product_facts.get("comment_count"),
                 "gallery_images": gallery_images,
                 "sku_images": sku_images,
+                "description": first_non_empty(
+                    product_payload.get("description"),
+                    product_payload.get("product_description"),
+                    raw.get("description"),
+                ),
             }
         ),
     }

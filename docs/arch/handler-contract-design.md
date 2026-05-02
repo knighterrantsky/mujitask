@@ -1380,6 +1380,7 @@ fastmoss_echarts_renderer
 | API | `fastmoss_video_fetch` | `api_worker` | `api_worker_job` | Capability | FastMoss 视频事实和指标采集 | 6.5 |
 | API | `media_asset_sync` | `api_worker` | `api_worker_job` | Capability | 图片、头像、封面等媒体资产同步到对象存储和事实索引 | 6.6 |
 | API | `fact_bundle_upsert` | `api_worker` | `api_worker_job` | Capability | normalized entities / relations / observations 统一写入 Fact DB | 6.7 |
+| API | `selection_row_refresh` | `api_worker` | `api_worker_job` | Business | TK 选品表行级 pipeline 主 job；每条候选行 1 个，内部串行完成 TikTok 采集 → 媒体同步 → FastMoss 采集 → Fact DB upsert → 飞书 17 字段写回 | workflow-selection-table-expand-design 4 |
 | Outbox | `outbox_dispatch` | `outbox_dispatcher` | `notification_outbox` | System | 发送最终通知和任务摘要，不参与业务事实采集 | 当前系统架构 / outbox |
 
 #### 9.1.1 `outbox_dispatch` Channel Contract
