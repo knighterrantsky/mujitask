@@ -16,6 +16,10 @@ required_pipeline_roles:
   - fact_bundle_upsert
 
 business_job_usage:
+  tiktok_fastmoss_product_ingest:
+    - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request/browser fallback, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
+    - fact_bundle_upsert must receive fact_db_url from explicit request payload or the configured Runtime/Fact DB environment; missing configuration is the only allowed dry-run path.
+    - writeback_enabled only controls Feishu projection writes and must not disable product fact collection or Fact DB persistence.
   sync_tk_influencer_pool:
     - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.
     - influencer_creator_sync may call fact_bundle_upsert and media_asset_sync internally for one unique creator; product media facts still follow the same object storage materialization rules.

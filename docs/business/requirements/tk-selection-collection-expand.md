@@ -28,8 +28,8 @@
 4. URL 格式不正确时，回写 `商品状态` 为"链接不可访问"
 5. 商品已下架/区域不可售时，按已有逻辑回写 `商品状态`
 6. 采集完成后，将空字段补齐；已有值的字段不覆盖
-7. 图表类字段（出单种类占比截图、销量趋势截图、SKU 销量占比分析）在飞书写回前按需渲染为 PNG 写入飞书单元格，DB/MinIO 不落存储，只保存元数据供后续重新渲染
-8. 父体规格、父体图片成对出现，有则写入、无则跳过
+7. 图表类字段（出单种类占比图、销量趋势图、SKU 销量占比图）在飞书写回前按需渲染为 PNG 写入飞书单元格，DB/MinIO 不落存储，只保存元数据供后续重新渲染
+8. 父体规格、父体图片只来源于 FastMoss SKU 分析中的有效 `best_sku`；规格可单独写入，图片仅在能匹配到该 `best_sku` 对应图片时写入
 9. `文本`、`关键词`、`差评整理` 不纳入自动维护范围
 
 ## 3. 信息采集与回写逻辑
@@ -84,16 +84,18 @@
 | 字段名 | 数据来源 | 写入策略 |
 | --- | --- | --- |
 | `今年总销量` | FastMoss `overview.sales_28d` | `fill_missing_only` |
-| `出单种类占比截图` | FastMoss 分布快照元数据 → 写回前渲染 PNG | `fill_missing_only` |
-| `今年总销量趋势截图` | FastMoss 每日指标元数据 → 写回前渲染 PNG | `fill_missing_only` |
-| `SKU销量占比分析` | FastMoss SKU 指标快照元数据 → 写回前渲染 PNG | `fill_missing_only` |
-| `父体规格` | FastMoss SKU API `spec_name` | `fill_missing_only`（有则写，无则跳过） |
-| `父体图片` | FastMoss SKU API SKU 图片 | `fill_missing_only`（有则写，无则跳过） |
+| `出单种类占比图` | FastMoss 分布快照元数据 → 写回前渲染 PNG | `fill_missing_only` |
+| `销量趋势图` | FastMoss 每日指标元数据 → 写回前渲染 PNG | `fill_missing_only` |
+| `SKU销量占比图` | FastMoss SKU 分析快照元数据；仅在存在有效 `best_sku` 时渲染 PNG | `fill_missing_only` |
+| `父体规格` | FastMoss SKU 分析 `best_sku.sku_value` | `fill_missing_only`（有效 `best_sku` 有规格值则写，无则跳过） |
+| `父体图片` | 有效 `best_sku` 对应 SKU 的 `sku_sale_props.image` 或同一规格值绑定图片 | `fill_missing_only`（能匹配到图片则写，无则跳过） |
 
 说明：
 
 - `今年总销量` 字段名不变，实际写入近 28 天销量数据
-- 父体规格与父体图片成对出现，有则写、无则跳过，不阻塞
+- 有效 `best_sku` 定义为 `sku_value` 有业务值且 `sold_count > 0`；`Default`、`默认`、`Specification`、空值、单 SKU 或第一条 SKU 都不能作为父体字段兜底来源。
+- 没有有效 `best_sku` 时，跳过 `SKU销量占比图`、`父体规格`、`父体图片`，不阻塞其他字段。
+- `父体规格` 可在图片缺失时单独写入；`父体图片` 只在能通过 `sku_id` 或 `prop_value_id` 匹配到该 `best_sku` 对应图片时写入。
 - 三个截图/图表字段：DB 只存元数据（分布快照、每日指标、SKU 指标），写回飞书前按需渲染为 PNG，不入 MinIO
 
 ### 3.4 不纳入自动维护的字段（共 4 个）
@@ -113,13 +115,13 @@
 4. `记录日期` 只在本次确实产生至少一个字段写入时才刷新
 5. FastMoss 采集失败时，TikTok 侧 8 个字段仍正常写回
 6. TikTok 采集 + 浏览器兜底均失败时，不执行写回
-7. 父体规格/图片无数据、图表渲染失败等非关键字段失败不阻塞其余字段
+7. 无有效 `best_sku`、父体图片无法匹配、图表渲染失败等非关键字段失败不阻塞其余字段
 
 ### 3.6 图表渲染（不入 DB / MinIO）
 
-1. `出单种类占比截图`：从 Fact DB 中读取 `product_distribution_snapshots` 元数据，写回前渲染为 PNG，插入飞书单元格
-2. `今年总销量趋势截图`：从 Fact DB 中读取 `product_daily_metrics` 元数据，写回前渲染为趋势图 PNG，插入飞书单元格
-3. `SKU销量占比分析`：从 Fact DB 中读取 `product_sku_metric_snapshots` 元数据，写回前渲染为结构化图表 PNG，插入飞书单元格
+1. `出单种类占比图`：从 Fact DB 中读取 `product_distribution_snapshots` 元数据，写回前渲染为 PNG，插入飞书单元格
+2. `销量趋势图`：从 Fact DB 中读取 `product_daily_metrics` 元数据，写回前渲染为趋势图 PNG，插入飞书单元格
+3. `SKU销量占比图`：从 Fact DB 中读取 `product_sku_metric_snapshots` 元数据，写回前渲染为结构化图表 PNG，插入飞书单元格
 4. 渲染产物不入 DB、不入 MinIO，DB 只保留元数据，可随时按需重新渲染
 5. 渲染失败跳过对应字段，不阻塞
 
@@ -145,7 +147,7 @@
 4. 商品已下架/区域不可售 → 回写 `商品状态=已下架/区域不可售`，跳过
 5. 有效商品采集完成后，所有空白自动维护字段被正确填入
 6. 已有值的字段不被覆盖（`商品ID`、`商品链接` 除外）
-7. 父体规格/图片无数据 → 跳过不报错
+7. 无有效 `best_sku` 或父体图片无法匹配 → 跳过对应字段不报错
 8. FastMoss 采集失败 → TikTok 侧字段仍正常写回
 9. 图表渲染失败 → 对应截图字段跳过不阻塞
 10. 本次无实际字段写入 → `记录日期` 不刷新

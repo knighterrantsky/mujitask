@@ -130,7 +130,7 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 runtime_evidence=runtime_evidence,
                 reason="url_invalid",
             )
-            if source_table_ref:
+            if source_table_ref and _writeback_enabled(request_payload, payload):
                 _writeback_url_invalid_status(
                     context,
                     source_record_id=source_record_id,
@@ -140,6 +140,8 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                     payload=payload,
                     source_table_ref=source_table_ref,
                 )
+            elif source_table_ref:
+                step_timeline.append(_skipped_timeline_entry("feishu_writeback_url_invalid", reason="writeback_disabled"))
             return url_invalid_result
         return _failed_pipeline_result(
             context,
@@ -162,7 +164,7 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             runtime_evidence=runtime_evidence,
             reason="url_invalid",
         )
-        if source_table_ref:
+        if source_table_ref and _writeback_enabled(request_payload, payload):
             _writeback_url_invalid_status(
                 context,
                 source_record_id=source_record_id,
@@ -172,6 +174,8 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 payload=payload,
                 source_table_ref=source_table_ref,
             )
+        elif source_table_ref:
+            step_timeline.append(_skipped_timeline_entry("feishu_writeback_url_invalid", reason="writeback_disabled"))
         return url_invalid_result
 
     effective_tiktok_payload = dict(tiktok_payload)
@@ -413,7 +417,7 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
 
     projection_fields: dict[str, Any] = {}
     write_result = success_result(context, result={})
-    if source_table_ref:
+    if source_table_ref and _writeback_enabled(request_payload, payload):
         chart_image_paths = _render_selection_charts(
             context=context,
             product_id=first_non_empty(identity.get("product_id"), business_key),
@@ -495,7 +499,8 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 writeback_projection={"fields": projection_fields},
             )
     else:
-        step_timeline.append(_skipped_timeline_entry("feishu_writeback", reason="no_target_table_ref"))
+        reason = "writeback_disabled" if source_table_ref else "no_target_table_ref"
+        step_timeline.append(_skipped_timeline_entry("feishu_writeback", reason=reason))
 
     product_fact_bundle = dict(fact_bundle)
     product_fact_bundle["product_id"] = first_non_empty(
@@ -794,6 +799,13 @@ def _request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(payload)
 
 
+def _writeback_enabled(*sources: Mapping[str, Any]) -> bool:
+    for source in sources:
+        if "writeback_enabled" in source:
+            return coerce_bool(source.get("writeback_enabled"), default=True)
+    return True
+
+
 def _source_context(payload: Mapping[str, Any]) -> dict[str, Any]:
     source_context = coerce_mapping(payload.get("source_context"))
     if source_context:
@@ -886,6 +898,7 @@ def _render_selection_charts(
     sku_payload = dict(product_sku_payload if isinstance(product_sku_payload, Mapping) else {})
     if isinstance(sku_distribution_payload, Mapping):
         sku_payload.update({k: v for k, v in sku_distribution_payload.items() if k not in sku_payload})
+
     try:
         renderer = FastMossVisualizationRenderer()
         result = renderer.render_product_charts(
@@ -931,46 +944,189 @@ def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_typ
     return {}
 
 
-def _extract_parent_sku_image(fact_bundle: Mapping[str, Any]) -> str:
-    raw_responses = fact_bundle.get("raw_api_responses")
-    if not isinstance(raw_responses, list):
-        return ""
-    for item in raw_responses:
-        if not isinstance(item, Mapping):
+def _sku_analysis_payload(fastmoss_bundle: Mapping[str, Any]) -> dict[str, Any]:
+    sku_payload = _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.skus"))
+    sku_distribution_payload = _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.sku_distribution"))
+    merged = dict(sku_payload)
+    merged.update({key: value for key, value in sku_distribution_payload.items() if key not in merged})
+    return merged
+
+
+def _unwrap_fastmoss_data(payload: Mapping[str, Any]) -> dict[str, Any]:
+    data = payload.get("data")
+    return dict(data) if isinstance(data, Mapping) else dict(payload)
+
+
+_DEFAULT_PARENT_SPEC_VALUES = {"default", "默认", "specification"}
+
+
+def _effective_best_sku(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> dict[str, Any]:
+    best_sku = coerce_mapping(raw_sku_payload.get("best_sku"))
+    sku_value = _normalized_parent_spec_value(best_sku.get("sku_value"))
+    sold_count = _number_value(best_sku.get("sold_count"))
+    if not sku_value or sku_value.lower() in _DEFAULT_PARENT_SPEC_VALUES:
+        return {}
+    if sold_count is None or sold_count <= 0:
+        return {}
+    if not _has_multiple_meaningful_sku_values(raw_sku_payload, product_skus):
+        return {}
+    return best_sku
+
+
+def _has_multiple_meaningful_sku_values(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> bool:
+    values: set[str] = set()
+    source_rows = _sku_source_rows(raw_sku_payload, product_skus)
+    row_ids = {
+        _normalized_lookup_value(first_non_empty(row.get("sku_id"), row.get("id")))
+        for row in source_rows
+        if _normalized_lookup_value(first_non_empty(row.get("sku_id"), row.get("id")))
+    }
+    if len(row_ids) > 1 or not row_ids:
+        for row in source_rows:
+            normalized = _normalized_parent_spec_value(_sku_row_primary_spec_value(row)).lower()
+            if normalized and normalized not in _DEFAULT_PARENT_SPEC_VALUES:
+                values.add(normalized)
+    for bucket_name in ("sku_units_sold", "sku_stock", "sku_gmv"):
+        bucket = raw_sku_payload.get(bucket_name)
+        if not isinstance(bucket, Mapping):
             continue
-        if str(item.get("source_endpoint") or "") == "goods.skus":
-            rp = item.get("response_payload")
-            if not isinstance(rp, Mapping):
+        for distribution in bucket.values():
+            distribution_map = coerce_mapping(distribution)
+            rows = distribution_map.get("list")
+            if not isinstance(rows, list):
                 continue
-            # Try sku_detail first (older API structure)
-            sku_detail = rp.get("sku_detail")
-            if isinstance(sku_detail, list) and sku_detail:
-                sale_prop_values = sku_detail[0].get("sale_prop_values") if isinstance(sku_detail[0], Mapping) else None
-                if isinstance(sale_prop_values, list) and sale_prop_values:
-                    for prop in sale_prop_values:
-                        if isinstance(prop, Mapping):
-                            image = first_non_empty(prop.get("image"))
-                            if image:
-                                return image
-            # Try sku_list/list (current API structure)
-            sku_list = rp.get("sku_list") or rp.get("list")
-            if isinstance(sku_list, list) and sku_list:
-                for sku_row in sku_list:
-                    if not isinstance(sku_row, Mapping):
-                        continue
-                    # Check sku_sale_props for image
-                    sale_props = sku_row.get("sku_sale_props") or sku_row.get("props")
-                    if isinstance(sale_props, list):
-                        for prop in sale_props:
-                            if isinstance(prop, Mapping):
-                                image = first_non_empty(prop.get("image"), prop.get("img"), prop.get("image_url"))
-                                if image:
-                                    return image
-                    # Check direct image fields on the SKU row
-                    image = first_non_empty(sku_row.get("image"), sku_row.get("img"), sku_row.get("image_url"), sku_row.get("cover"))
-                    if image:
-                        return image
+            for row in rows:
+                row_map = coerce_mapping(row)
+                normalized = _normalized_parent_spec_value(row_map.get("source")).lower()
+                if normalized and normalized not in _DEFAULT_PARENT_SPEC_VALUES and normalized != "other":
+                    values.add(normalized)
+    return len(values) > 1
+
+
+def _parent_spec_and_image_from_best_sku(
+    *,
+    raw_sku_payload: Mapping[str, Any],
+    product_skus: list[Any],
+    best_sku: Mapping[str, Any],
+) -> tuple[str, Any]:
+    parent_spec = _normalized_parent_spec_value(best_sku.get("sku_value"))
+    if not parent_spec:
+        return "", ""
+    rows = _sku_source_rows(raw_sku_payload, product_skus)
+    best_row = _find_best_sku_row(best_sku, rows)
+    parent_image = _sku_row_image(best_row)
+    if parent_image:
+        return parent_spec, parent_image
+    sku_id = first_non_empty(best_sku.get("sku_id"), best_row.get("sku_id"), best_row.get("id"))
+    if sku_id:
+        for row in rows:
+            if first_non_empty(row.get("sku_id"), row.get("id")) == sku_id:
+                parent_image = _sku_row_image(row)
+                if parent_image:
+                    return parent_spec, parent_image
+    prop_value_id = first_non_empty(best_sku.get("prop_value_id"), _sku_row_prop_value_id(best_row))
+    if prop_value_id:
+        for row in rows:
+            if _sku_row_prop_value_id(row) == prop_value_id:
+                parent_image = _sku_row_image(row)
+                if parent_image:
+                    return parent_spec, parent_image
+    return parent_spec, ""
+
+
+def _sku_source_rows(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key in ("sku_list", "list"):
+        value = raw_sku_payload.get(key)
+        if isinstance(value, list):
+            rows.extend(dict(item) for item in value if isinstance(item, Mapping))
+    rows.extend(dict(item) for item in product_skus if isinstance(item, Mapping))
+    return rows
+
+
+def _find_best_sku_row(best_sku: Mapping[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    best_value = _normalized_lookup_value(best_sku.get("sku_value"))
+    best_sku_id = _normalized_lookup_value(best_sku.get("sku_id"))
+    best_prop_value_id = _normalized_lookup_value(best_sku.get("prop_value_id"))
+    for row in rows:
+        if best_sku_id and _normalized_lookup_value(first_non_empty(row.get("sku_id"), row.get("id"))) == best_sku_id:
+            return row
+    for row in rows:
+        if best_prop_value_id and _normalized_lookup_value(_sku_row_prop_value_id(row)) == best_prop_value_id:
+            return row
+    for row in rows:
+        if best_value and any(_normalized_lookup_value(value) == best_value for value in _sku_row_spec_values(row)):
+            return row
+    return {}
+
+
+def _sku_row_spec_values(row: Mapping[str, Any]) -> list[str]:
+    values = [
+        first_non_empty(row.get("spec_name")),
+        first_non_empty(row.get("sku_name"), row.get("name")),
+    ]
+    for prop in _sku_row_sale_props(row):
+        prop_value = first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
+        if prop_value:
+            values.append(prop_value)
+        prop_name = first_non_empty(prop.get("prop_name"), prop.get("name"))
+        if prop_name and prop_value:
+            values.extend([f"{prop_name}: {prop_value}", f"{prop_name}:{prop_value}"])
+    return [value for value in values if value]
+
+
+def _sku_row_primary_spec_value(row: Mapping[str, Any]) -> str:
+    for value in (
+        first_non_empty(row.get("spec_name")),
+        first_non_empty(row.get("sku_name"), row.get("name")),
+    ):
+        normalized = _normalized_parent_spec_value(value)
+        if normalized:
+            return normalized
+    for prop in _sku_row_sale_props(row):
+        prop_value = _normalized_parent_spec_value(
+            first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
+        )
+        if prop_value:
+            return prop_value
     return ""
+
+
+def _sku_row_sale_props(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    props = row.get("sku_sale_props") or row.get("props")
+    if not isinstance(props, list):
+        return []
+    return [dict(prop) for prop in props if isinstance(prop, Mapping)]
+
+
+def _sku_row_prop_value_id(row: Mapping[str, Any]) -> str:
+    for prop in _sku_row_sale_props(row):
+        prop_value_id = first_non_empty(prop.get("prop_value_id"), prop.get("value_id"), prop.get("sku_property_key"))
+        if prop_value_id:
+            return prop_value_id
+    return first_non_empty(row.get("prop_value_id"), row.get("sku_property_key"), row.get("value_id"))
+
+
+def _sku_row_image(row: Mapping[str, Any]) -> Any:
+    sku_media = row.get("media_assets") if isinstance(row.get("media_assets"), list) else []
+    for media in sku_media:
+        media_map = coerce_mapping(media)
+        image = _first_present(media_map.get("source_url"), media_map.get("url"), media_map.get("file_token"))
+        if image:
+            return image
+    for prop in _sku_row_sale_props(row):
+        image = _first_present(prop.get("image"), prop.get("img"), prop.get("image_url"), prop.get("source_url"))
+        if image:
+            return image
+    return _first_present(row.get("image"), row.get("img"), row.get("image_url"), row.get("cover"))
+
+
+def _normalized_parent_spec_value(value: Any) -> str:
+    return re.sub(r"\s+", " ", first_non_empty(value)).strip()
+
+
+def _normalized_lookup_value(value: Any) -> str:
+    return _normalized_parent_spec_value(value).lower()
 
 
 _CHART_NAME_TO_FIELD: dict[str, str] = {
@@ -1007,21 +1163,18 @@ def _build_selection_projection_fields(
         gallery_images = ""
     parent_spec = ""
     parent_image = ""
-    if product_skus:
-        first_sku = coerce_mapping(product_skus[0])
-        parent_spec = first_non_empty(first_sku.get("spec_name"), first_sku.get("sku_name"))
-        sku_media = first_sku.get("media_assets") if isinstance(first_sku.get("media_assets"), list) else []
-        if sku_media:
-            first_media = coerce_mapping(sku_media[0])
-            parent_image = _first_present(
-                first_media.get("source_url"),
-                first_media.get("url"),
-                first_media.get("file_token"),
-            )
-        if not parent_image:
-            parent_image = _extract_parent_sku_image(fastmoss_bundle)
+    sku_raw_payload = _sku_analysis_payload(fastmoss_bundle)
+    best_sku = _effective_best_sku(sku_raw_payload, product_skus)
+    if best_sku:
+        parent_spec, parent_image = _parent_spec_and_image_from_best_sku(
+            raw_sku_payload=sku_raw_payload,
+            product_skus=product_skus,
+            best_sku=best_sku,
+        )
 
     chart_images = dict(chart_image_paths or {})
+    if not best_sku:
+        chart_images.pop("sku_chart", None)
     review_count = _number_value(logical_fields.get("review_count"))
     rating = _number_value(logical_fields.get("rating_score"), logical_fields.get("rating"))
     price_value = _number_value(
@@ -1050,9 +1203,9 @@ def _build_selection_projection_fields(
         "商品主图": main_image,
         "商品侧边栏图片": gallery_images,
         "今年总销量": total_sales if total_sales is not None else "",
-        "出单种类占比截图": chart_images.get("distribution_chart") or [],
-        "今年总销量趋势截图": chart_images.get("trend_chart") or [],
-        "SKU销量占比分析": chart_images.get("sku_chart") or [],
+        "出单种类占比图": chart_images.get("distribution_chart") or [],
+        "销量趋势图": chart_images.get("trend_chart") or [],
+        "SKU销量占比图": chart_images.get("sku_chart") or [],
         "父体规格": parent_spec,
         "父体图片": parent_image,
     }

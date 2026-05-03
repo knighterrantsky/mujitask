@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -252,6 +253,7 @@ def _advance_dispatch_selection_row_refresh(
         }
 
     candidate_rows = _resolve_candidate_rows(store, request=request, request_payload=request_payload)
+    candidate_rows = _limit_candidate_rows(candidate_rows, request_payload=request_payload)
     if not candidate_rows:
         return {
             "action": "advance",
@@ -567,11 +569,38 @@ def _selection_mode_enabled(request_payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _limit_candidate_rows(
+    rows: list[dict[str, Any]],
+    *,
+    request_payload: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    limit = _candidate_row_limit(request_payload)
+    if limit <= 0:
+        return rows
+    return rows[:limit]
+
+
+def _candidate_row_limit(request_payload: Mapping[str, Any]) -> int:
+    for key in ("selection_limit", "selection_max_rows", "max_selection_rows", "max_rows"):
+        raw_value = request_payload.get(key)
+        if raw_value in (None, ""):
+            continue
+        try:
+            return max(int(raw_value), 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 def _fact_db_url_from_request(request_payload: Mapping[str, Any]) -> str:
     return _first_non_empty(
         request_payload.get("fact_db_url"),
         request_payload.get("execution_control_fact_db_url"),
         request_payload.get("db_url"),
+        request_payload.get("execution_control_db_url"),
+        os.environ.get("TK_FACT_DB_URL", ""),
+        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", ""),
+        os.environ.get("EXECUTION_CONTROL_DB_URL", ""),
     )
 
 

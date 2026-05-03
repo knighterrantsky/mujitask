@@ -96,9 +96,9 @@ def test_tiktok_fastmoss_product_ingest_submit_then_executor_once_dispatches_req
 
     assert step["request_id"] == request_id
     assert step["request_status"] == "waiting_children"
-    assert step["current_stage"] == "collect_product_data"
+    assert step["current_stage"] == "collect_selection_rows"
     job_codes = {job["job_code"] for job in step["api_worker_jobs"]}
-    assert {"tiktok_product_request_fetch", "fastmoss_product_fetch"} <= job_codes
+    assert job_codes == {"selection_row_refresh"}
 
 
 def test_tiktok_fastmoss_product_ingest_status_round_trip_returns_current_request_state(

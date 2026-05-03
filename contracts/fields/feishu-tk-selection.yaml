@@ -35,9 +35,9 @@ auto_maintained_fields:
   - 商品主图
   - 商品侧边栏图片
   - 今年总销量
-  - 出单种类占比截图
-  - 今年总销量趋势截图
-  - SKU销量占比分析
+  - 出单种类占比图
+  - 销量趋势图
+  - SKU销量占比图
   - 父体规格
   - 父体图片
 
@@ -161,13 +161,13 @@ fields:
     source_of_truth: tiktok_logical_fields.gallery_images
     write_target: feishu.TK选品收集.商品侧边栏图片
 
-  - display_name: 出单种类占比截图
+  - display_name: 出单种类占比图
     canonical_name: order_type_ratio_screenshot
     role: research_material
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: fact_db.product_distribution_snapshots|rendered_chart_png
-    write_target: feishu.TK选品收集.出单种类占比截图
+    write_target: feishu.TK选品收集.出单种类占比图
 
   - display_name: 今年总销量
     canonical_name: current_year_sales
@@ -177,28 +177,28 @@ fields:
     source_of_truth: fastmoss_overview.sales_28d
     write_target: feishu.TK选品收集.今年总销量
 
-  - display_name: 今年总销量趋势截图
+  - display_name: 销量趋势图
     canonical_name: current_year_sales_trend_screenshot
     role: research_material
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: fact_db.product_daily_metrics|rendered_chart_png
-    write_target: feishu.TK选品收集.今年总销量趋势截图
+    write_target: feishu.TK选品收集.销量趋势图
 
-  - display_name: SKU销量占比分析
+  - display_name: SKU销量占比图
     canonical_name: sku_sales_ratio_analysis
     role: research_material
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: fact_db.product_sku_metric_snapshots|rendered_chart_png
-    write_target: feishu.TK选品收集.SKU销量占比分析
+    write_target: feishu.TK选品收集.SKU销量占比图
 
   - display_name: 父体规格
     canonical_name: parent_sku_spec
     role: research_material
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: fastmoss_sku.spec_name
+    source_of_truth: fastmoss_sku_analysis.best_sku.sku_value
     write_target: feishu.TK选品收集.父体规格
 
   - display_name: 父体图片
@@ -206,7 +206,7 @@ fields:
     role: research_material
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: fastmoss_sku.sku_sale_props.image
+    source_of_truth: fastmoss_sku_analysis.best_sku -> sku_sale_props.image
     write_target: feishu.TK选品收集.父体图片
 
   - display_name: 差评整理

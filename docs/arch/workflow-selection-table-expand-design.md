@@ -292,13 +292,22 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 **绑定结果**：通过 `sku_id` 精确匹配（如 `1732355931814793657`），或通过 `prop_value_id = sku_property_key` 匹配（如 `7630828784765421326`），可将 FastMoss 的可读规格名（"Golden - 12 Pack"）绑定到 TikTok 的规格图片。FastMoss 的 `sku_name`/`spec_name` 可覆盖 TikTok 的 `sku_name`（TikTok 侧为内部编码如 "03-9307"）。
 
-### 8.4 绑定策略优先级
+### 8.4 best_sku 父体字段绑定策略
 
-```
-1. sku_id 精确匹配（最优，两平台一致）
-2. prop_value_id = sku_property_key 匹配（规格值维度）
-3. sku_name / spec_name 文本匹配（兜底，不可靠）
-```
+`父体规格`、`父体图片` 的唯一业务来源是 FastMoss SKU 分析中的有效 `best_sku`，不得从 `product_skus[0]`、单 SKU、`Default`、`默认`、`Specification`、空 SKU 或任意第一条 SKU 兜底生成。
+
+有效 `best_sku` 必须同时满足：
+
+1. `best_sku.sku_value` 有业务值，且不属于 `Default`、`默认`、`Specification` 等无区分度规格值。
+2. `best_sku.sold_count > 0`。
+
+父体图片匹配优先级：
+
+1. 以 `best_sku` 描述的主销规格值作为入口。
+2. 在 FastMoss SKU row 中查找同一主销 SKU。
+3. 优先用 `sku_id` 精确匹配。
+4. 其次用 `prop_value_id = sku_property_key` 匹配规格值维度图片。
+5. 无匹配则跳过 `父体图片`，但可保留已确认的 `父体规格`。
 
 当前 `tk_fact_ingestion_service._match_fastmoss_sku_reference` 仅使用 `sku_id`、`sku_name`、`prop_value`、`prop_name: prop_value` 作为匹配键，**未包含 `prop_value_id`**。需补充此键以支持规格值维度的绑定。
 
@@ -336,9 +345,9 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 **必须同时调用两个接口**：v3 获取 `sku_sale_props`（含 `prop_value_id` 绑定键），旧版获取 `best_sku`（含销量分布）。
 
-### 8.7 空 best_sku 处理（销量为 0）
+### 8.7 无有效 best_sku 处理
 
-当商品无销量时，FastMoss 返回的 `best_sku` 字段存在但值为空：
+当商品无销量或没有有效主销规格时，FastMoss 返回的 `best_sku` 字段可能存在但值为空：
 
 ```json
 {
@@ -352,12 +361,12 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 实测 13 个产品中 5 个存在此情况（均为新上架或零销量商品）。
 
-**业务规则**：`best_sku.sku_name` 为空时，跳过以下字段写回：
-- `SKU销量占比分析`（图表渲染）
-- `父体规格`（需要 best_sku 的 spec_name）
+**业务规则**：只有 `best_sku.sku_value` 有业务值且 `best_sku.sold_count > 0` 时，才允许生成以下字段：
+- `SKU销量占比图`（图表渲染）
+- `父体规格`（来自 `best_sku.sku_value`）
 - `父体图片`（需要 best_sku 的 prop_value_id 绑定图片）
 
-**推断**：只要 `best_sku.sold_count > 0`，上述三个字段的数据源均可用（`prop_value_id` 全量存在，图片绑定键不缺）。
+`Default`、`默认`、`Specification`、空 SKU、单 SKU 或第一条 SKU 不视为有效父体规格来源。没有有效 `best_sku` 时，三者均跳过；有有效 `best_sku` 但图片无法通过 `sku_id` 或 `prop_value_id` 匹配时，只跳过 `父体图片`。
 
 ### 8.8 Fact DB 持久化配置
 
@@ -407,7 +416,8 @@ stateDiagram-v2
 | Fact DB upsert 失败 | 行级 job 标记 `failed`，可重试 |
 | 飞书写回失败 | 行级 job 标记 `failed`，可重试 |
 | 图表渲染失败 | 对应截图字段跳过，不阻塞其他字段 |
-| best_sku 为空（销量为 0） | 跳过 `SKU销量占比分析`、`父体规格`、`父体图片` 三个字段，其余字段正常写回 |
+| best_sku 不存在、销量为 0、规格值为空或为 `Default`/`默认`/`Specification` | 跳过 `SKU销量占比图`、`父体规格`、`父体图片` 三个字段，其余字段正常写回 |
+| best_sku 有效但无法匹配 SKU 图片 | 写入 `父体规格`，跳过 `父体图片`，其余字段正常写回 |
 
 ## 11. 源码变更清单
 

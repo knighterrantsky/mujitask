@@ -66,40 +66,27 @@ def _payload_contains_product_ref(payload: dict[str, object]) -> bool:
 def _bind_api_handlers_for_success(monkeypatch: pytest.MonkeyPatch) -> None:
     registry = build_api_handler_registry()
 
-    def fake_tiktok_request_fetch(context: HandlerContext) -> HandlerResult:
+    def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
         progress_callback = context.metadata.get("progress_callback")
         if callable(progress_callback):
-            progress_callback("tiktok_request_fetch", message="request-first product fetch")
+            progress_callback("selection_row_refresh", message="selection row refreshed")
         return HandlerResult.success(
             context,
-            summary={"transport": "request"},
+            summary={
+                "source_record_id": str(context.payload.get("source_record_id") or ""),
+                "product_business_key": DIRECT_PRODUCT_ID,
+                "row_status": "success",
+                "browser_fallback_used": False,
+            },
             result={
-                "normalized_product_result": {
-                    "product_id": DIRECT_PRODUCT_ID,
-                    "product_url": DIRECT_PRODUCT_URL,
-                    "source": "request",
-                    "media_assets": [],
-                }
+                "source_record_id": str(context.payload.get("source_record_id") or ""),
+                "business_entity_key": DIRECT_PRODUCT_ID,
+                "row_status": "success",
+                "runtime_evidence": {"browser_fallback_used": False},
             },
         )
 
-    def fake_fastmoss_product_fetch(context: HandlerContext) -> HandlerResult:
-        progress_callback = context.metadata.get("progress_callback")
-        if callable(progress_callback):
-            progress_callback("fastmoss_product_fetch", message="fastmoss product fetch")
-        return HandlerResult.success(
-            context,
-            summary={"transport": "fastmoss"},
-            result={
-                "product_fact_bundle": {
-                    "product_id": DIRECT_PRODUCT_ID,
-                    "gmv_currency": "USD",
-                }
-            },
-        )
-
-    register_api_handler(registry, "tiktok_product_request_fetch", fake_tiktok_request_fetch)
-    register_api_handler(registry, "fastmoss_product_fetch", fake_fastmoss_product_fetch)
+    register_api_handler(registry, "selection_row_refresh", fake_selection_row_refresh)
     monkeypatch.setattr(runtime_orchestrator, "build_api_handler_registry", lambda: registry, raising=False)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
@@ -107,48 +94,27 @@ def _bind_api_handlers_for_success(monkeypatch: pytest.MonkeyPatch) -> None:
 def _bind_api_handlers_for_browser_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     registry = build_api_handler_registry()
 
-    def fake_tiktok_request_fetch(context: HandlerContext) -> HandlerResult:
+    def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
         progress_callback = context.metadata.get("progress_callback")
         if callable(progress_callback):
-            progress_callback("tiktok_request_fetch", message="request path blocked")
-        error = HandlerError(
-            error_type="transport",
-            error_code="tiktok_request_blocked",
-            message="request path requires browser fallback",
-            retryable=False,
-            fallback_allowed=True,
-            fallback_reason="request_blocked",
-        )
-        return HandlerResult.fallback_required(
-            context,
-            error=error,
-            summary={"transport": "request"},
-            result={
-                "fallback_required": True,
-                "fallback_reason": "request_blocked",
-                "fallback_source_job_id": context.job_id,
-            },
-            next_action=HandlerNextAction(
-                type="browser_fallback",
-                payload={
-                    "product_identity": {"product_id": DIRECT_PRODUCT_ID, "product_url": DIRECT_PRODUCT_URL},
-                    "fallback_source_job_id": context.job_id,
-                },
-            ),
-        )
-
-    def fake_fastmoss_product_fetch(context: HandlerContext) -> HandlerResult:
-        progress_callback = context.metadata.get("progress_callback")
-        if callable(progress_callback):
-            progress_callback("fastmoss_product_fetch", message="fastmoss product fetch")
+            progress_callback("selection_row_refresh", message="browser fallback collected product")
         return HandlerResult.success(
             context,
-            summary={"transport": "fastmoss"},
-            result={"product_fact_bundle": {"product_id": DIRECT_PRODUCT_ID}},
+            summary={
+                "source_record_id": str(context.payload.get("source_record_id") or ""),
+                "product_business_key": DIRECT_PRODUCT_ID,
+                "row_status": "success",
+                "browser_fallback_used": True,
+            },
+            result={
+                "source_record_id": str(context.payload.get("source_record_id") or ""),
+                "business_entity_key": DIRECT_PRODUCT_ID,
+                "row_status": "success",
+                "runtime_evidence": {"browser_fallback_used": True},
+            },
         )
 
-    register_api_handler(registry, "tiktok_product_request_fetch", fake_tiktok_request_fetch)
-    register_api_handler(registry, "fastmoss_product_fetch", fake_fastmoss_product_fetch)
+    register_api_handler(registry, "selection_row_refresh", fake_selection_row_refresh)
     monkeypatch.setattr(runtime_orchestrator, "build_api_handler_registry", lambda: registry, raising=False)
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
@@ -185,17 +151,14 @@ def test_phase2_submit_then_executor_dispatches_direct_ingest_jobs(runtime_db_ur
 
     assert payload["request_id"] == request_id
     assert payload["request_status"] == "waiting_children"
-    assert payload["current_stage"] == "collect_product_data"
+    assert payload["current_stage"] == "collect_selection_rows"
     job_codes = {job["job_code"] for job in payload["api_worker_jobs"]}
-    assert {"tiktok_product_request_fetch", "fastmoss_product_fetch"} <= job_codes
+    assert job_codes == {"selection_row_refresh"}
     assert "feishu_table_read" not in job_codes
 
-    request_fetch_job = next(
-        job for job in payload["api_worker_jobs"] if job["job_code"] == "tiktok_product_request_fetch"
-    )
-    fastmoss_job = next(job for job in payload["api_worker_jobs"] if job["job_code"] == "fastmoss_product_fetch")
-    assert _payload_contains_product_ref(request_fetch_job["payload"])
-    assert _payload_contains_product_ref(fastmoss_job["payload"])
+    row_job = next(job for job in payload["api_worker_jobs"] if job["job_code"] == "selection_row_refresh")
+    assert _payload_contains_product_ref(row_job["payload"])
+    assert row_job["payload"]["stage_code"] == "collect_selection_rows"
 
 
 def test_phase2_api_worker_once_dispatches_registry_and_persists_results(
@@ -208,12 +171,9 @@ def test_phase2_api_worker_once_dispatches_registry_and_persists_results(
     _bind_api_handlers_for_success(monkeypatch)
 
     first_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    second_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
 
     assert first_job["request_id"] == request_id
-    assert second_job["request_id"] == request_id
     assert first_job["supervisor"]["worker_type"] == "api_worker"
-    assert second_job["supervisor"]["worker_type"] == "api_worker"
 
     status_payload = runtime_orchestrator.get_task_request_status(
         "tiktok_fastmoss_product_ingest",
@@ -221,16 +181,10 @@ def test_phase2_api_worker_once_dispatches_registry_and_persists_results(
     )
     jobs_by_code = {job["job_code"]: job for job in status_payload["api_worker_jobs"]}
 
-    assert jobs_by_code["tiktok_product_request_fetch"]["status"] == "success"
-    assert jobs_by_code["tiktok_product_request_fetch"]["result"]["normalized_product_result"]["product_id"] == (
-        DIRECT_PRODUCT_ID
-    )
-    assert jobs_by_code["tiktok_product_request_fetch"]["summary"]["progress_stage"] == "tiktok_request_fetch"
-    assert jobs_by_code["tiktok_product_request_fetch"]["result"]["supervisor"]["progress_stage"] == (
-        "tiktok_request_fetch"
-    )
-    assert jobs_by_code["fastmoss_product_fetch"]["status"] == "success"
-    assert jobs_by_code["fastmoss_product_fetch"]["result"]["product_fact_bundle"]["product_id"] == DIRECT_PRODUCT_ID
+    assert jobs_by_code["selection_row_refresh"]["status"] == "success"
+    assert jobs_by_code["selection_row_refresh"]["result"]["handler_result"]["result"]["row_status"] == "success"
+    assert jobs_by_code["selection_row_refresh"]["summary"]["progress_stage"] == "selection_row_refresh"
+    assert jobs_by_code["selection_row_refresh"]["result"]["supervisor"]["progress_stage"] == "selection_row_refresh"
 
 
 def test_phase2_browser_fallback_path_from_request_handler(
@@ -241,31 +195,20 @@ def test_phase2_browser_fallback_path_from_request_handler(
     request_id = str(submitted["request_id"])
     runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     _bind_api_handlers_for_browser_fallback(monkeypatch)
-    _bind_browser_fallback_handler(monkeypatch)
 
-    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     reconcile = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
 
-    browser_items = [item for item in reconcile["executions"] if item["item_code"] == "tiktok_product_browser_fetch"]
     assert reconcile["request_id"] == request_id
-    assert browser_items, "executor should enqueue a browser fallback execution for request-path fallback"
-
-    browser_payload = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
-
-    assert browser_payload["request_id"] == request_id
-    assert browser_payload["supervisor"]["worker_type"] == "browser_worker"
-    assert browser_payload["supervisor"]["progress_stage"] == "browser_fallback_collected"
+    assert reconcile["request_status"] == "success"
+    assert reconcile["current_stage"] == "completed"
     refreshed = runtime_orchestrator.get_task_request_status(
         "tiktok_fastmoss_product_ingest",
         _runtime_params(runtime_db_url, control_action="status", request_id=request_id),
     )
-    browser_execution = next(
-        item for item in refreshed["executions"] if item["item_code"] == "tiktok_product_browser_fetch"
-    )
-    assert browser_execution["status"] == "success"
-    assert browser_execution["result"]["normalized_product_result"]["source"] == "browser"
-    assert browser_execution["result"]["supervisor"]["progress_stage"] == "browser_fallback_collected"
+    row_job = next(item for item in refreshed["api_worker_jobs"] if item["job_code"] == "selection_row_refresh")
+    assert row_job["status"] == "success"
+    assert row_job["result"]["handler_result"]["summary"]["browser_fallback_used"] is True
 
 
 def test_phase2_final_executor_once_summarizes_and_creates_notification_outbox(runtime_db_url: str) -> None:
@@ -275,21 +218,21 @@ def test_phase2_final_executor_once_summarizes_and_creates_notification_outbox(r
     store.update_task_request(
         request_id=request_id,
         status="waiting_children",
-        current_stage="persist_facts",
+        current_stage="collect_selection_rows",
     )
     enqueue = store.enqueue_api_worker_jobs(
         request_id=request_id,
         task_code="tiktok_fastmoss_product_ingest",
-        job_code="fact_bundle_upsert",
+        job_code="selection_row_refresh",
         jobs=[
             {
                 "business_key": DIRECT_PRODUCT_ID,
-                "dedupe_key": f"{request_id}:fact_bundle_upsert:{DIRECT_PRODUCT_ID}",
+                "dedupe_key": f"{request_id}:collect_selection_rows:{DIRECT_PRODUCT_ID}",
                 "payload": {
                     "request_id": request_id,
                     "task_code": "tiktok_fastmoss_product_ingest",
                     "workflow_code": "tiktok_fastmoss_product_ingest",
-                    "stage_code": "persist_facts",
+                    "stage_code": "collect_selection_rows",
                     "product_identity": {"product_id": DIRECT_PRODUCT_ID},
                 },
             }
@@ -303,9 +246,15 @@ def test_phase2_final_executor_once_summarizes_and_creates_notification_outbox(r
         run_id=claimed["run_id"],
         summary={"total": 1, "counts": {"success": 1}},
         result={
-            "final_status": "success",
-            "normalized_product_result": {"product_id": DIRECT_PRODUCT_ID},
-            "product_fact_bundle": {"product_id": DIRECT_PRODUCT_ID},
+            "handler_result": {
+                "status": "success",
+                "summary": {
+                    "source_record_id": "",
+                    "product_business_key": DIRECT_PRODUCT_ID,
+                    "row_status": "success",
+                },
+                "result": {"row_status": "success"},
+            },
         },
     )
     store.update_task_request(
