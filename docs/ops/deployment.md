@@ -225,7 +225,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 ### 8.0 macOS 一键部署
 
 当前标准交付先收窄为 `macOS + launchd + Homebrew 本机 Postgres/MinIO`。
-运行前需要 Homebrew 已安装；`deploy.sh` 会安装缺失的 `postgresql@17` / `minio` formula，`preflight.sh` 会提前检查端口和必填配置。
+运行前需要 Homebrew 已安装；`deploy.sh` 会安装缺失的 `postgresql@17` / `minio` / `node` formula，`preflight.sh` 会提前检查端口、Node.js/npm 和必填配置。
 现场实施必须显式设定两个目录：
 
 - `MUJITASK_INSTALL_DIR`：项目安装路径，例如 `$HOME/apps/mujitask`
@@ -246,8 +246,8 @@ bash scripts/deploy/macos/deploy.sh
 
 关键文件：
 
-- `scripts/deploy/macos/preflight.sh`：检查 macOS、Homebrew、launchd、端口、必填配置、Chrome 提示。
-- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装项目依赖、安装并启动本机 Postgres/MinIO、写入运行配置、安装 skill bundle、安装 launchd 并执行 smoke check。
+- `scripts/deploy/macos/preflight.sh`：检查 macOS、Homebrew、launchd、端口、Node.js/npm、必填配置、Chrome 提示。
+- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装 Python 与 Node.js 运行依赖、安装并启动本机 Postgres/MinIO、写入运行配置、安装 skill bundle、安装 launchd 并执行 smoke check。
 - `scripts/deploy/macos/deploy.local.env.example`：一键部署配置模板。
 
 这条路径用于“用户机器依赖不确定”的默认交付；如果目标环境使用已有 Postgres/MinIO，可以在 `deploy.local.env` 中改为 `MUJITASK_RUNTIME_MODE=external` 并提供对应连接配置。

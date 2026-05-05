@@ -717,7 +717,7 @@ src/automation_business_scaffold/infrastructure/fastmoss/visualization_renderer.
 - 输入：`/api/goods/v3/overview` 的 `data` payload（`overview_payload`）、`/api/goods/v3/productSku` 的 `data` payload（`product_sku_payload`）。
 - 输出：最多三张 PNG，命名固定为 `marketing_strategy.png`、`overview_trend.png`、`sku_analysis.png`。
 - 渲染：Python 类负责接口校验、manifest 生成、错误处理；内置 Node.js renderer 负责 `ECharts SVG SSR → sharp → PNG`。
-- 依赖：Node.js + `RENDERER_PACKAGE_JSON` 指向的 `echarts`、`sharp`。
+- 依赖：Node.js + 项目根目录 `package.json` / `package-lock.json` 声明的 `echarts`、`sharp`；部署脚本和 smoke check 必须安装并验证这两个运行时依赖。
 
 ### 12.2 三张图的渲染条件（与 FastMoss 页面保持一致）
 
@@ -728,6 +728,8 @@ src/automation_business_scaffold/infrastructure/fastmoss/visualization_renderer.
 | `sku_analysis.png` | SKU销量占比图 | `sku_units_sold[propKey]` 非空 → 渲染成交占比；`sku_stock[propKey]` 非空 → 渲染库存占比 | 选品表写回口径要求先存在有效 `best_sku`；无有效 `best_sku` 时不写入该图 |
 
 注意：FastMoss 页面在 `sku_units_sold` 为空（零销量）时，左侧成交占比区域留空，右侧库存占比仍可能正常渲染。但 `TK选品收集` 的 `SKU销量占比图`、`父体规格`、`父体图片` 统一以有效 `best_sku` 为业务门槛；无有效 `best_sku` 时不写入这三项。
+
+写回门禁：`出单种类占比图`、`销量趋势图` 是选品补全写回的必填图表。renderer 依赖不可用、FastMoss overview payload 缺失或 PNG 生成失败时，本行写回任务失败，不继续写入半截字段。
 
 ### 12.3 父体规格 / 父体图片的写入条件
 

@@ -49,6 +49,13 @@ tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_requ
 run_supervised_handler = supervisor_runtime.run_supervised_handler
 ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
+_SELECTION_REQUIRED_WRITEBACK_FIELDS = (
+    "商品主图",
+    "商品侧边栏图片",
+    "出单种类占比图",
+    "销量趋势图",
+)
+
 
 def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
@@ -418,12 +425,41 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     projection_fields: dict[str, Any] = {}
     write_result = success_result(context, result={})
     if source_table_ref and _writeback_enabled(request_payload, payload):
-        chart_image_paths = _render_selection_charts(
-            context=context,
-            product_id=first_non_empty(identity.get("product_id"), business_key),
-            fact_bundle=fact_bundle,
-            fastmoss_payload=fastmoss_payload,
-        )
+        try:
+            chart_image_paths = _render_selection_charts(
+                context=context,
+                product_id=first_non_empty(identity.get("product_id"), business_key),
+                fact_bundle=fact_bundle,
+                fastmoss_payload=fastmoss_payload,
+                strict=True,
+            )
+        except (FastMossVisualizationRenderError, ValueError, TypeError) as exc:
+            chart_error = build_error(
+                error_type="runtime_dependency",
+                error_code="fastmoss_chart_render_failed",
+                message=str(exc),
+                retryable=True,
+                details={
+                    "required_fields": [
+                        "出单种类占比图",
+                        "销量趋势图",
+                    ],
+                },
+            )
+            step_timeline.append(_timeline_entry("chart_render", failed_result(context, error=chart_error)))
+            return _failed_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                failed_step="chart_render",
+                error=chart_error,
+                runtime_evidence=runtime_evidence,
+                normalized_product_result=normalized_product_result,
+                product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
+                fact_upsert=fact_result.result,
+            )
         if chart_image_paths:
             step_timeline.append(
                 _timeline_entry(
@@ -439,6 +475,45 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             media_result=media_result_payload,
             chart_image_paths=chart_image_paths,
         )
+        missing_required_fields = _missing_required_selection_writeback_fields(
+            source_context=source_context,
+            projection_fields=projection_fields,
+        )
+        if missing_required_fields:
+            validation_error = build_error(
+                error_type="invalid_output",
+                error_code="selection_writeback_required_fields_missing",
+                message=(
+                    "Selection row writeback is missing required fields before Feishu write: "
+                    + ", ".join(missing_required_fields)
+                ),
+                retryable=True,
+                details={
+                    "missing_required_fields": missing_required_fields,
+                    "required_fields": list(_SELECTION_REQUIRED_WRITEBACK_FIELDS),
+                },
+            )
+            step_timeline.append(
+                _timeline_entry(
+                    "writeback_required_fields",
+                    failed_result(context, error=validation_error),
+                    detail={"missing_required_fields": missing_required_fields},
+                )
+            )
+            return _failed_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                failed_step="writeback_required_fields",
+                error=validation_error,
+                runtime_evidence=runtime_evidence,
+                normalized_product_result=normalized_product_result,
+                product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
+                fact_upsert=fact_result.result,
+                writeback_projection={"fields": projection_fields},
+            )
         projection_record = compact_dict(
             {
                 "source_record_id": source_record_id,
@@ -878,6 +953,7 @@ def _render_selection_charts(
     product_id: str,
     fact_bundle: Mapping[str, Any],
     fastmoss_payload: Mapping[str, Any],
+    strict: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     overview_payload = _extract_raw_api_payload(fact_bundle, "goods.overview", d_type=28)
     if not overview_payload:
@@ -890,6 +966,10 @@ def _render_selection_charts(
         product_sku_payload = _extract_raw_api_payload(fastmoss_payload, "goods.skus")
 
     if not overview_payload:
+        if strict:
+            raise FastMossVisualizationRenderError(
+                "FastMoss overview payload is required to render required writeback charts."
+            )
         return {}
 
     sku_distribution_payload = _extract_raw_api_payload(fact_bundle, "goods.sku_distribution")
@@ -909,6 +989,8 @@ def _render_selection_charts(
         )
     except (FastMossVisualizationRenderError, ValueError, TypeError) as exc:
         _emit_progress(context, "chart_render.failed", message=str(exc))
+        if strict:
+            raise
         return {}
 
     chart_map: dict[str, list[dict[str, Any]]] = {}
@@ -926,6 +1008,34 @@ def _render_selection_charts(
             }
         ]
     return chart_map
+
+
+def _missing_required_selection_writeback_fields(
+    *,
+    source_context: Mapping[str, Any],
+    projection_fields: Mapping[str, Any],
+) -> list[str]:
+    source_fields = _source_fields(source_context)
+    missing: list[str] = []
+    for field_name in _SELECTION_REQUIRED_WRITEBACK_FIELDS:
+        if _has_writeback_value(source_fields.get(field_name)):
+            continue
+        if _has_writeback_value(projection_fields.get(field_name)):
+            continue
+        missing.append(field_name)
+    return missing
+
+
+def _has_writeback_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, list):
+        return bool(value)
+    return True
 
 
 def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_type: int | None = None) -> dict[str, Any]:

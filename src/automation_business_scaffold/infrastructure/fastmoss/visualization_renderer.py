@@ -14,9 +14,11 @@ DEFAULT_FASTMOSS_VISUALIZATION_CHARTS = (
     "overview_trend",
     "sku_analysis",
 )
-DEFAULT_FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON = (
-    "/tmp/mujitask-echarts-renderer/package.json"
+FASTMOSS_VISUALIZATION_RENDERER_NODE_PACKAGES = (
+    "echarts",
+    "sharp",
 )
+DEFAULT_FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON = ""
 
 
 class FastMossVisualizationRenderError(RuntimeError):
@@ -68,10 +70,66 @@ class FastMossVisualizationRenderer:
             renderer_package_json,
             os.environ.get("FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON"),
             os.environ.get("RENDERER_PACKAGE_JSON"),
-            DEFAULT_FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON,
+            _default_renderer_package_json(),
         )
         self.timeout_seconds = float(timeout_seconds)
         self._command_runner = command_runner or subprocess.run
+
+    def validate_runtime_dependencies(self) -> dict[str, Any]:
+        """Validate the Node.js renderer and its project-level dependencies."""
+        if not self.renderer_script_path.exists():
+            raise FastMossVisualizationRenderError(
+                f"FastMoss visualization renderer script was not found: {self.renderer_script_path}"
+            )
+        if not self.renderer_package_json:
+            raise FastMossVisualizationRenderError(
+                "FastMoss visualization renderer package.json was not found. "
+                "Run npm install in the project root before starting writeback workers."
+            )
+        package_json_path = Path(self.renderer_package_json)
+        if not package_json_path.exists():
+            raise FastMossVisualizationRenderError(
+                "FastMoss visualization renderer package.json was not found: "
+                f"{package_json_path}"
+            )
+
+        env = dict(os.environ)
+        env["RENDERER_PACKAGE_JSON"] = str(package_json_path)
+        command = [
+            self.node_binary,
+            "-e",
+            _NODE_DEPENDENCY_CHECK_SCRIPT,
+            json.dumps(FASTMOSS_VISUALIZATION_RENDERER_NODE_PACKAGES),
+        ]
+        try:
+            completed = self._command_runner(
+                command,
+                cwd=str(package_json_path.parent),
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=min(self.timeout_seconds, 20.0),
+            )
+        except FileNotFoundError as exc:
+            raise FastMossVisualizationRenderError(
+                f"Node binary was not found for FastMoss visualization rendering: {self.node_binary}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise FastMossVisualizationRenderError(
+                "FastMoss visualization renderer dependency check timed out."
+            ) from exc
+        if completed.returncode != 0:
+            raise FastMossVisualizationRenderError(
+                "FastMoss visualization renderer dependencies are not installed: "
+                f"{_trim_process_output(completed.stderr) or _trim_process_output(completed.stdout)}"
+            )
+        return {
+            "node_binary": self.node_binary,
+            "renderer_script_path": str(self.renderer_script_path),
+            "renderer_package_json": str(package_json_path),
+            "dependencies": _safe_json_stdout(completed.stdout),
+        }
 
     def render_product_charts(
         self,
@@ -292,6 +350,28 @@ def _as_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _default_renderer_package_json() -> str:
+    start = Path(__file__).resolve()
+    for directory in (start.parent, *start.parents):
+        candidate = directory / "package.json"
+        if _package_json_declares_renderer_dependencies(candidate):
+            return str(candidate)
+    return DEFAULT_FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON
+
+
+def _package_json_declares_renderer_dependencies(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    dependencies = _as_mapping(payload.get("dependencies"))
+    return all(package_name in dependencies for package_name in FASTMOSS_VISUALIZATION_RENDERER_NODE_PACKAGES)
+
+
 def _first_non_empty(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -314,3 +394,17 @@ def _safe_json_stdout(stdout: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"text": _trim_process_output(text)}
     return payload if isinstance(payload, dict) else {"value": payload}
+
+
+_NODE_DEPENDENCY_CHECK_SCRIPT = r"""
+const { createRequire } = require("node:module");
+const packageJson = process.env.RENDERER_PACKAGE_JSON;
+const requiredPackages = JSON.parse(process.argv[1] || "[]");
+const requireFromProject = createRequire(packageJson);
+const versions = {};
+for (const packageName of requiredPackages) {
+  versions[packageName] = requireFromProject(`${packageName}/package.json`).version;
+  requireFromProject(packageName);
+}
+console.log(JSON.stringify({ ok: true, versions }));
+"""

@@ -117,6 +117,117 @@ def test_selection_row_refresh_url_invalid_writeback_disabled_skips_status_write
     )
 
 
+def test_selection_row_refresh_fails_before_write_when_required_chart_render_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"feishu_write": 0}
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "normalized_product_result": {
+                    "product_id": PRODUCT_ID,
+                    "normalized_product_url": PRODUCT_URL,
+                    "product": {
+                        "product_id": PRODUCT_ID,
+                        "normalized_url": PRODUCT_URL,
+                        "title": "Sample product",
+                    },
+                    "logical_fields": {
+                        "title": "Sample product",
+                        "shop_name": "Sample Shop",
+                        "main_image_url": "https://example.com/main.jpg",
+                        "gallery_images": ["https://example.com/side.jpg"],
+                    },
+                    "fact_bundle": {"products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]},
+                }
+            },
+        )
+
+    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}})
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
+
+    def fail_feishu_write(context: HandlerContext) -> HandlerResult:
+        called["feishu_write"] += 1
+        raise AssertionError("Feishu write must not run when required charts cannot render")
+
+    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
+    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch)
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "fastmoss_chart_render_failed"
+    assert result.result["failed_step"] == "chart_render"
+    assert called["feishu_write"] == 0
+
+
+def test_selection_row_refresh_validates_required_fields_before_feishu_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"feishu_write": 0}
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "normalized_product_result": {
+                    "product_id": PRODUCT_ID,
+                    "normalized_product_url": PRODUCT_URL,
+                    "product": {
+                        "product_id": PRODUCT_ID,
+                        "normalized_url": PRODUCT_URL,
+                        "title": "Sample product",
+                    },
+                    "logical_fields": {
+                        "title": "Sample product",
+                        "shop_name": "Sample Shop",
+                    },
+                    "fact_bundle": {"products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]},
+                }
+            },
+        )
+
+    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}})
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
+
+    def fake_render_selection_charts(**kwargs):
+        assert kwargs["strict"] is True
+        return {
+            "distribution_chart": [{"local_path": "/tmp/distribution.png", "file_name": "distribution.png"}],
+            "trend_chart": [{"local_path": "/tmp/trend.png", "file_name": "trend.png"}],
+        }
+
+    def fail_feishu_write(context: HandlerContext) -> HandlerResult:
+        called["feishu_write"] += 1
+        raise AssertionError("Feishu write must not run when required fields are missing")
+
+    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
+    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch)
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fake_render_selection_charts)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "selection_writeback_required_fields_missing"
+    assert result.result["failed_step"] == "writeback_required_fields"
+    assert result.error.details["missing_required_fields"] == ["商品主图", "商品侧边栏图片"]
+    assert called["feishu_write"] == 0
+
+
 def test_selection_projection_skips_parent_fields_and_sku_chart_without_effective_best_sku() -> None:
     fields = _projection_fields(
         fastmoss_bundle={

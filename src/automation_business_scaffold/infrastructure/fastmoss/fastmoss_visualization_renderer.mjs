@@ -3,7 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 
 const rendererPackageJson =
-  process.env.RENDERER_PACKAGE_JSON || "/tmp/mujitask-echarts-renderer/package.json";
+  process.env.RENDERER_PACKAGE_JSON || import.meta.url;
 const require = createRequire(rendererPackageJson);
 const echarts = require("echarts");
 const sharp = require("sharp");

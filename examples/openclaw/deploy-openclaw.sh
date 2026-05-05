@@ -242,6 +242,8 @@ main() {
   log "Installing project package"
   "$UV_BIN" pip install --python "$venv_python" -e "$install_dir" --no-deps
 
+  install_project_node_dependencies "$install_dir"
+
   log "Installing Playwright Chromium"
   "$venv_python" -m playwright install chromium
 
@@ -506,6 +508,52 @@ ensure_python_311() {
   PYTHON_BIN="$("$UV_BIN" python find --managed-python --no-project --resolve-links 3.11 | tr -d '\r' | head -n 1)"
   [[ -n "$PYTHON_BIN" ]] || fail "Could not resolve Python 3.11 after uv installation."
   [[ -x "$PYTHON_BIN" ]] || fail "Resolved Python 3.11 is not executable: $PYTHON_BIN"
+}
+
+ensure_node_runtime() {
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    log "Installing Node.js runtime with Homebrew"
+    brew install node
+  fi
+  command -v node >/dev/null 2>&1 || fail "node is required for FastMoss chart rendering."
+  command -v npm >/dev/null 2>&1 || fail "npm is required for FastMoss chart rendering dependencies."
+}
+
+install_project_node_dependencies() {
+  local install_dir="$1"
+  local package_json="$install_dir/package.json"
+  [[ -f "$package_json" ]] || return 0
+
+  ensure_node_runtime
+  if [[ -f "$install_dir/package-lock.json" ]]; then
+    log "Installing project Node.js runtime dependencies with npm ci"
+    (cd "$install_dir" && npm ci --omit=dev --no-audit --no-fund)
+  else
+    log "Installing project Node.js runtime dependencies with npm install"
+    (cd "$install_dir" && npm install --omit=dev --no-audit --no-fund)
+  fi
+}
+
+validate_project_node_dependencies() {
+  local install_dir="$1"
+  local python_bin="$2"
+  local package_json="$install_dir/package.json"
+  [[ -f "$package_json" ]] || fail "Smoke check failed: $package_json is missing."
+
+  ensure_node_runtime
+  NODE_BINARY="$(command -v node)" \
+  FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON="$package_json" \
+    "$python_bin" - <<'PY'
+from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer import (
+    FastMossVisualizationRenderer,
+)
+
+FastMossVisualizationRenderer().validate_runtime_dependencies()
+print("OK")
+PY
 }
 
 python_json_get() {
@@ -904,9 +952,11 @@ smoke_check() {
   local install_dir="$1"
   local target_skill_dir="$2"
   local cli_bin="$install_dir/.venv/bin/automation-business-scaffold-run"
+  local python_bin="$install_dir/.venv/bin/python"
   local tasks_json="$TMP_ROOT/tasks.json"
 
   [[ -x "$cli_bin" ]] || fail "Smoke check failed: $cli_bin is missing."
+  [[ -x "$python_bin" ]] || fail "Smoke check failed: $python_bin is missing."
 
   "$cli_bin" list-tasks > "$tasks_json"
 
@@ -952,6 +1002,8 @@ PY
 
   check_skill_frontmatter "$target_skill_dir/SKILL.md" \
     || fail "Smoke check failed: $target_skill_dir/SKILL.md frontmatter is invalid."
+  validate_project_node_dependencies "$install_dir" "$python_bin" \
+    || fail "Smoke check failed: FastMoss visualization renderer dependencies are unavailable."
 }
 __OPENCLAW_DEPLOY_COMMON__
 

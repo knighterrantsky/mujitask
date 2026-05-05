@@ -160,6 +160,8 @@ main() {
   log "Installing project package"
   "$UV_BIN" pip install --python "$venv_python" -e "$install_dir" --no-deps
 
+  install_project_node_dependencies "$install_dir"
+
   log "Installing Playwright Chromium"
   "$venv_python" -m playwright install chromium
 

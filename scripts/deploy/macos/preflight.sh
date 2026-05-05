@@ -92,6 +92,12 @@ else
   log "uv is not installed yet; deploy.sh will install it with the official uv installer."
 fi
 
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  log "OK: Node.js and npm are installed."
+else
+  log "Node.js/npm are not installed yet; deploy.sh will install node with Homebrew."
+fi
+
 RUNTIME_MODE="${MUJITASK_RUNTIME_MODE:-native}"
 if [[ "${RUNTIME_MODE}" == "native" ]]; then
   require_command brew
