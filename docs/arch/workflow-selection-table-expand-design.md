@@ -69,7 +69,8 @@ flowchart TD
     C1 -->|失败且不可 fallback| D2
     C1 -->|成功| E["4. Media sync"]
     D1 -->|成功| E
-    C1 -->|商品不可访问| C2["回写 商品状态=已下架/区域不可售<br/>返回 skipped"]
+    C1 -->|商品不可访问| C2["跳过 media/FastMoss/图表<br/>Fact DB upsert + 回写 商品状态=已下架/区域不可售"]
+    C2 --> G
     E --> F["5. FastMoss fetch"]
     F --> F1{"API 成功?"}
     F1 -->|风控/MSG_SAFE_0001| F2["5b. FastMoss browser fallback<br/>刷新 cookie → 重试 API"]
@@ -78,7 +79,7 @@ flowchart TD
     F3 -->|否| G["6. Fact DB upsert<br/>FastMoss 失败不影响 TikTok 侧"]
     F1 -->|成功| G
     F1 -->|失败| G
-    G --> H["7. Feishu writeback<br/>17 字段 fill_missing_only<br/>图表渲染（如需要）"]
+    G --> H["7. Feishu writeback<br/>17 字段 fill_missing_only<br/>可售商品先渲染必填图表"]
     H --> I["返回 success / partial_success"]
 ```
 

@@ -42,7 +42,9 @@ def _context(*, writeback_enabled: bool = False) -> HandlerContext:
     )
 
 
-def test_selection_row_refresh_writeback_disabled_skips_feishu_write(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_selection_row_refresh_writeback_disabled_skips_feishu_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called = {"feishu_write": 0}
 
     def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
@@ -53,13 +55,17 @@ def test_selection_row_refresh_writeback_disabled_skips_feishu_write(monkeypatch
                     "product_id": PRODUCT_ID,
                     "normalized_product_url": PRODUCT_URL,
                     "logical_fields": {"title": "Sample product"},
-                    "fact_bundle": {"products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]},
+                    "fact_bundle": {
+                        "products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]
+                    },
                 }
             },
         )
 
     def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}})
+        return HandlerResult.success(
+            context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}}
+        )
 
     def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
@@ -68,8 +74,12 @@ def test_selection_row_refresh_writeback_disabled_skips_feishu_write(monkeypatch
         called["feishu_write"] += 1
         raise AssertionError("feishu_table_write must not run when writeback_enabled=false")
 
-    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
-    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch)
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
@@ -103,7 +113,9 @@ def test_selection_row_refresh_url_invalid_writeback_disabled_skips_status_write
         called["feishu_write"] += 1
         raise AssertionError("invalid URL status write must not run when writeback_enabled=false")
 
-    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
     result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=False))
@@ -112,7 +124,8 @@ def test_selection_row_refresh_url_invalid_writeback_disabled_skips_status_write
     assert result.result["row_status"] == "url_invalid"
     assert called["feishu_write"] == 0
     assert any(
-        step.get("step") == "feishu_writeback_url_invalid" and step.get("reason") == "writeback_disabled"
+        step.get("step") == "feishu_writeback_url_invalid"
+        and step.get("reason") == "writeback_disabled"
         for step in result.result["step_timeline"]
     )
 
@@ -140,13 +153,17 @@ def test_selection_row_refresh_fails_before_write_when_required_chart_render_mis
                         "main_image_url": "https://example.com/main.jpg",
                         "gallery_images": ["https://example.com/side.jpg"],
                     },
-                    "fact_bundle": {"products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]},
+                    "fact_bundle": {
+                        "products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]
+                    },
                 }
             },
         )
 
     def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}})
+        return HandlerResult.success(
+            context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}}
+        )
 
     def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
@@ -155,8 +172,12 @@ def test_selection_row_refresh_fails_before_write_when_required_chart_render_mis
         called["feishu_write"] += 1
         raise AssertionError("Feishu write must not run when required charts cannot render")
 
-    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
-    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch)
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
@@ -167,6 +188,85 @@ def test_selection_row_refresh_fails_before_write_when_required_chart_render_mis
     assert result.error.error_code == "fastmoss_chart_render_failed"
     assert result.result["failed_step"] == "chart_render"
     assert called["feishu_write"] == 0
+
+
+def test_selection_row_refresh_unavailable_writes_status_without_required_charts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fact_payloads: list[dict[str, object]] = []
+    write_payloads: list[dict[str, object]] = []
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "normalized_product_result": {
+                    "product_id": PRODUCT_ID,
+                    "normalized_product_url": PRODUCT_URL,
+                    "availability_status": "unavailable",
+                    "product": {
+                        "product_id": PRODUCT_ID,
+                        "normalized_url": PRODUCT_URL,
+                        "availability_status": "unavailable",
+                        "status": "off_shelf_or_region_unavailable",
+                    },
+                    "logical_fields": {"availability_status": "unavailable"},
+                    "fact_bundle": {
+                        "products": [
+                            {
+                                "product_id": PRODUCT_ID,
+                                "product_url": PRODUCT_URL,
+                                "availability_status": "unavailable",
+                                "status": "off_shelf_or_region_unavailable",
+                            }
+                        ]
+                    },
+                }
+            },
+        )
+
+    def fail_if_called(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} should not run for unavailable products")
+
+    def fail_chart_render(**kwargs: object) -> dict[str, object]:
+        raise AssertionError("required chart rendering should be skipped for unavailable products")
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        fact_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"persistence_mode": "database"})
+
+    def fake_feishu_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"written_count": 1})
+
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(selection_row_refresh, "media_asset_sync_handler", fail_if_called)
+    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fail_if_called)
+    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fail_chart_render)
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+
+    assert result.status == "success"
+    assert result.result["row_status"] == "unavailable"
+    assert [(step["step"], step["status"]) for step in result.result["step_timeline"]] == [
+        ("tiktok_request", "success"),
+        ("browser_fallback", "skipped"),
+        ("media_sync", "skipped"),
+        ("fastmoss_fetch", "skipped"),
+        ("fact_db_upsert", "success"),
+        ("chart_render", "skipped"),
+        ("feishu_writeback", "success"),
+    ]
+    assert (
+        fact_payloads[0]["fact_bundle"]["products"][0]["status"]
+        == "off_shelf_or_region_unavailable"
+    )
+    assert write_payloads[0]["records"][0]["projection_fields"]["商品状态"] == "已下架/区域不可售"
+    assert result.result["writeback_projection"]["fields"]["商品状态"] == "已下架/区域不可售"
 
 
 def test_selection_row_refresh_validates_required_fields_before_feishu_write(
@@ -190,13 +290,17 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
                         "title": "Sample product",
                         "shop_name": "Sample Shop",
                     },
-                    "fact_bundle": {"products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]},
+                    "fact_bundle": {
+                        "products": [{"product_id": PRODUCT_ID, "product_url": PRODUCT_URL}]
+                    },
                 }
             },
         )
 
     def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}})
+        return HandlerResult.success(
+            context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}}
+        )
 
     def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
@@ -204,7 +308,9 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
     def fake_render_selection_charts(**kwargs):
         assert kwargs["strict"] is True
         return {
-            "distribution_chart": [{"local_path": "/tmp/distribution.png", "file_name": "distribution.png"}],
+            "distribution_chart": [
+                {"local_path": "/tmp/distribution.png", "file_name": "distribution.png"}
+            ],
             "trend_chart": [{"local_path": "/tmp/trend.png", "file_name": "trend.png"}],
         }
 
@@ -212,10 +318,16 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
         called["feishu_write"] += 1
         raise AssertionError("Feishu write must not run when required fields are missing")
 
-    monkeypatch.setattr(selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch)
-    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch)
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
-    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fake_render_selection_charts)
+    monkeypatch.setattr(
+        selection_row_refresh, "_render_selection_charts", fake_render_selection_charts
+    )
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
     result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
@@ -228,7 +340,9 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
     assert called["feishu_write"] == 0
 
 
-def test_selection_projection_skips_parent_fields_and_sku_chart_without_effective_best_sku() -> None:
+def test_selection_projection_skips_parent_fields_and_sku_chart_without_effective_best_sku() -> (
+    None
+):
     fields = _projection_fields(
         fastmoss_bundle={
             "raw_api_responses": [
@@ -240,7 +354,12 @@ def test_selection_projection_skips_parent_fields_and_sku_chart_without_effectiv
                             {
                                 "sku_id": "sku-default",
                                 "sku_name": "Default",
-                                "sku_sale_props": [{"prop_value": "Default", "image": "https://example.com/default.jpg"}],
+                                "sku_sale_props": [
+                                    {
+                                        "prop_value": "Default",
+                                        "image": "https://example.com/default.jpg",
+                                    }
+                                ],
                             }
                         ],
                     },
@@ -282,7 +401,12 @@ def test_selection_projection_skips_default_best_sku_even_with_sales() -> None:
                             {
                                 "sku_id": "sku-default",
                                 "sku_name": "Default",
-                                "sku_sale_props": [{"prop_value": "Default", "image": "https://example.com/default.jpg"}],
+                                "sku_sale_props": [
+                                    {
+                                        "prop_value": "Default",
+                                        "image": "https://example.com/default.jpg",
+                                    }
+                                ],
                             }
                         ],
                     },
@@ -375,7 +499,12 @@ def test_selection_projection_can_read_best_sku_from_sku_distribution_payload() 
                                 {
                                     "sku_id": "sku-blue",
                                     "sku_name": "Blue - 12 Pack",
-                                    "sku_sale_props": [{"prop_value": "Blue - 12 Pack", "image": "https://example.com/blue.jpg"}],
+                                    "sku_sale_props": [
+                                        {
+                                            "prop_value": "Blue - 12 Pack",
+                                            "image": "https://example.com/blue.jpg",
+                                        }
+                                    ],
                                 },
                             ],
                         }
@@ -426,7 +555,12 @@ def test_selection_projection_writes_best_sku_spec_without_unmatched_image() -> 
                             {
                                 "sku_id": "sku-golden",
                                 "sku_name": "Golden - 12 Pack",
-                                "sku_sale_props": [{"prop_value": "Golden - 12 Pack", "image": "https://example.com/golden.jpg"}],
+                                "sku_sale_props": [
+                                    {
+                                        "prop_value": "Golden - 12 Pack",
+                                        "image": "https://example.com/golden.jpg",
+                                    }
+                                ],
                             },
                             {
                                 "sku_id": "sku-blue",
@@ -452,7 +586,11 @@ def test_selection_projection_uses_tiktok_sku_text_fallback_image() -> None:
                 {
                     "source_endpoint": "goods.skus",
                     "response_payload": {
-                        "best_sku": {"sku_name": "Specification", "sku_value": "2 Pcs", "sold_count": 35},
+                        "best_sku": {
+                            "sku_name": "Specification",
+                            "sku_value": "2 Pcs",
+                            "sold_count": 35,
+                        },
                         "sku_units_sold": {
                             "Specification": {
                                 "list": [
@@ -462,8 +600,16 @@ def test_selection_projection_uses_tiktok_sku_text_fallback_image() -> None:
                             }
                         },
                         "sku_list": [
-                            {"sku_id": "fm-1pcs", "sku_name": "1 Pcs", "sku_sale_props": [{"prop_value": "1 Pcs"}]},
-                            {"sku_id": "fm-2pcs", "sku_name": "2 Pcs", "sku_sale_props": [{"prop_value": "2 Pcs"}]},
+                            {
+                                "sku_id": "fm-1pcs",
+                                "sku_name": "1 Pcs",
+                                "sku_sale_props": [{"prop_value": "1 Pcs"}],
+                            },
+                            {
+                                "sku_id": "fm-2pcs",
+                                "sku_name": "2 Pcs",
+                                "sku_sale_props": [{"prop_value": "2 Pcs"}],
+                            },
                         ],
                     },
                 }
@@ -502,7 +648,11 @@ def test_selection_projection_uses_tiktok_sku_images_text_fallback() -> None:
                 {
                     "source_endpoint": "goods.skus",
                     "response_payload": {
-                        "best_sku": {"sku_name": "Specification", "sku_value": "2 Pcs", "sold_count": 35},
+                        "best_sku": {
+                            "sku_name": "Specification",
+                            "sku_value": "2 Pcs",
+                            "sold_count": 35,
+                        },
                         "sku_units_sold": {
                             "Specification": {
                                 "list": [
@@ -512,8 +662,16 @@ def test_selection_projection_uses_tiktok_sku_images_text_fallback() -> None:
                             }
                         },
                         "sku_list": [
-                            {"sku_id": "fm-1pcs", "sku_name": "1 Pcs", "sku_sale_props": [{"prop_value": "1 Pcs"}]},
-                            {"sku_id": "fm-2pcs", "sku_name": "2 Pcs", "sku_sale_props": [{"prop_value": "2 Pcs"}]},
+                            {
+                                "sku_id": "fm-1pcs",
+                                "sku_name": "1 Pcs",
+                                "sku_sale_props": [{"prop_value": "1 Pcs"}],
+                            },
+                            {
+                                "sku_id": "fm-2pcs",
+                                "sku_name": "2 Pcs",
+                                "sku_sale_props": [{"prop_value": "2 Pcs"}],
+                            },
                         ],
                     },
                 }
@@ -546,7 +704,11 @@ def test_selection_projection_uses_tiktok_sku_image_prop_value_id_fallback() -> 
                 {
                     "source_endpoint": "goods.skus",
                     "response_payload": {
-                        "best_sku": {"sku_name": "Color", "sku_value": "Sunflower 2 - Mom", "sold_count": 1400},
+                        "best_sku": {
+                            "sku_name": "Color",
+                            "sku_value": "Sunflower 2 - Mom",
+                            "sold_count": 1400,
+                        },
                         "sku_units_sold": {
                             "Color": {
                                 "list": [

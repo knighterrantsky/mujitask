@@ -62,7 +62,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
     source_context = _source_context(payload)
-    source_record_id = first_non_empty(payload.get("source_record_id"), source_context.get("source_record_id"))
+    source_record_id = first_non_empty(
+        payload.get("source_record_id"), source_context.get("source_record_id")
+    )
     source_table_ref = first_non_empty(
         payload.get("target_table_ref"),
         payload.get("source_table_ref"),
@@ -71,7 +73,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         payload.get("table_url"),
         request_payload.get("table_url"),
     )
-    business_key = first_non_empty(payload.get("business_key"), product_business_key(identity), source_record_id)
+    business_key = first_non_empty(
+        payload.get("business_key"), product_business_key(identity), source_record_id
+    )
 
     if not business_key:
         return failed_result(
@@ -94,7 +98,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     }
     step_timeline: list[dict[str, Any]] = []
 
-    _emit_progress(context, "selection_row_refresh.started", details={"source_record_id": source_record_id})
+    _emit_progress(
+        context, "selection_row_refresh.started", details={"source_record_id": source_record_id}
+    )
 
     tiktok_context = _child_context(
         context,
@@ -105,7 +111,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             "request_payload": request_payload,
             "source_record_id": source_record_id,
             "product_identity": identity,
-            "normalized_product_url": first_non_empty(payload.get("normalized_product_url"), identity.get("normalized_product_url")),
+            "normalized_product_url": first_non_empty(
+                payload.get("normalized_product_url"), identity.get("normalized_product_url")
+            ),
             "source_context": source_context,
         },
         step_code="tiktok_request",
@@ -148,7 +156,11 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                     source_table_ref=source_table_ref,
                 )
             elif source_table_ref:
-                step_timeline.append(_skipped_timeline_entry("feishu_writeback_url_invalid", reason="writeback_disabled"))
+                step_timeline.append(
+                    _skipped_timeline_entry(
+                        "feishu_writeback_url_invalid", reason="writeback_disabled"
+                    )
+                )
             return url_invalid_result
         return _failed_pipeline_result(
             context,
@@ -182,7 +194,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 source_table_ref=source_table_ref,
             )
         elif source_table_ref:
-            step_timeline.append(_skipped_timeline_entry("feishu_writeback_url_invalid", reason="writeback_disabled"))
+            step_timeline.append(
+                _skipped_timeline_entry("feishu_writeback_url_invalid", reason="writeback_disabled")
+            )
         return url_invalid_result
 
     effective_tiktok_payload = dict(tiktok_payload)
@@ -199,10 +213,16 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 "request_payload": request_payload,
                 "source_record_id": source_record_id,
                 "product_identity": identity,
-                "normalized_product_url": first_non_empty(payload.get("normalized_product_url"), identity.get("normalized_product_url")),
-                "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+                "normalized_product_url": first_non_empty(
+                    payload.get("normalized_product_url"), identity.get("normalized_product_url")
+                ),
+                "product_url": first_non_empty(
+                    identity.get("normalized_product_url"), identity.get("product_url")
+                ),
                 "source_context": source_context,
-                "fallback_source_job_id": first_non_empty(tiktok_payload.get("fallback_source_job_id"), context.job_id),
+                "fallback_source_job_id": first_non_empty(
+                    tiktok_payload.get("fallback_source_job_id"), context.job_id
+                ),
             },
             step_code="browser_fallback",
             worker_type="browser_worker",
@@ -216,7 +236,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             callbacks=ExecutionSupervisorCallbacks(
                 on_progress=lambda event: _forward_browser_progress(context, event),
             ),
-            child_runner_config=_browser_child_runner_config(payload, request_payload=request_payload),
+            child_runner_config=_browser_child_runner_config(
+                payload, request_payload=request_payload
+            ),
         )
         browser_result = browser_outcome.worker_result
         browser_supervisor = browser_outcome.to_dict()
@@ -248,7 +270,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     else:
         step_timeline.append(_skipped_timeline_entry("browser_fallback", reason="not_required"))
 
-    normalized_product_result = coerce_mapping(effective_tiktok_payload.get("normalized_product_result"))
+    normalized_product_result = coerce_mapping(
+        effective_tiktok_payload.get("normalized_product_result")
+    )
     if not normalized_product_result:
         return _failed_pipeline_result(
             context,
@@ -300,7 +324,11 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         step_timeline.append(_timeline_entry("media_sync", media_result))
         if media_result.status == "failed":
             optional_step_failed = True
-            warnings.append(first_non_empty(media_result.error.message if media_result.error else "", "Media sync failed."))
+            warnings.append(
+                first_non_empty(
+                    media_result.error.message if media_result.error else "", "Media sync failed."
+                )
+            )
         else:
             media_result_payload = dict(media_result.result)
     else:
@@ -308,7 +336,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
 
     fastmoss_payload: dict[str, Any] = {}
     if product_unavailable:
-        step_timeline.append(_skipped_timeline_entry("fastmoss_fetch", reason="product_unavailable"))
+        step_timeline.append(
+            _skipped_timeline_entry("fastmoss_fetch", reason="product_unavailable")
+        )
     else:
         fastmoss_context = _child_context(
             context,
@@ -377,7 +407,12 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         fastmoss_payload = dict(fastmoss_result.result)
         if fastmoss_result.status in {"failed", "fallback_required"}:
             optional_step_failed = True
-            warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
+            warnings.append(
+                first_non_empty(
+                    fastmoss_result.error.message if fastmoss_result.error else "",
+                    "FastMoss fetch failed.",
+                )
+            )
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
@@ -401,7 +436,9 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             "observation_context": {
                 "source_record_id": source_record_id,
                 "product_id": first_non_empty(identity.get("product_id")),
-                "normalized_product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+                "normalized_product_url": first_non_empty(
+                    identity.get("normalized_product_url"), identity.get("product_url")
+                ),
             },
         },
         step_code="fact_db_upsert",
@@ -425,41 +462,49 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
     projection_fields: dict[str, Any] = {}
     write_result = success_result(context, result={})
     if source_table_ref and _writeback_enabled(request_payload, payload):
-        try:
-            chart_image_paths = _render_selection_charts(
-                context=context,
-                product_id=first_non_empty(identity.get("product_id"), business_key),
-                fact_bundle=fact_bundle,
-                fastmoss_payload=fastmoss_payload,
-                strict=True,
+        if product_unavailable:
+            chart_image_paths = {}
+            step_timeline.append(
+                _skipped_timeline_entry("chart_render", reason="product_unavailable")
             )
-        except (FastMossVisualizationRenderError, ValueError, TypeError) as exc:
-            chart_error = build_error(
-                error_type="runtime_dependency",
-                error_code="fastmoss_chart_render_failed",
-                message=str(exc),
-                retryable=True,
-                details={
-                    "required_fields": [
-                        "出单种类占比图",
-                        "销量趋势图",
-                    ],
-                },
-            )
-            step_timeline.append(_timeline_entry("chart_render", failed_result(context, error=chart_error)))
-            return _failed_pipeline_result(
-                context,
-                identity=identity,
-                source_record_id=source_record_id,
-                business_key=business_key,
-                step_timeline=step_timeline,
-                failed_step="chart_render",
-                error=chart_error,
-                runtime_evidence=runtime_evidence,
-                normalized_product_result=normalized_product_result,
-                product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
-                fact_upsert=fact_result.result,
-            )
+        else:
+            try:
+                chart_image_paths = _render_selection_charts(
+                    context=context,
+                    product_id=first_non_empty(identity.get("product_id"), business_key),
+                    fact_bundle=fact_bundle,
+                    fastmoss_payload=fastmoss_payload,
+                    strict=True,
+                )
+            except (FastMossVisualizationRenderError, ValueError, TypeError) as exc:
+                chart_error = build_error(
+                    error_type="runtime_dependency",
+                    error_code="fastmoss_chart_render_failed",
+                    message=str(exc),
+                    retryable=True,
+                    details={
+                        "required_fields": [
+                            "出单种类占比图",
+                            "销量趋势图",
+                        ],
+                    },
+                )
+                step_timeline.append(
+                    _timeline_entry("chart_render", failed_result(context, error=chart_error))
+                )
+                return _failed_pipeline_result(
+                    context,
+                    identity=identity,
+                    source_record_id=source_record_id,
+                    business_key=business_key,
+                    step_timeline=step_timeline,
+                    failed_step="chart_render",
+                    error=chart_error,
+                    runtime_evidence=runtime_evidence,
+                    normalized_product_result=normalized_product_result,
+                    product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
+                    fact_upsert=fact_result.result,
+                )
         if chart_image_paths:
             step_timeline.append(
                 _timeline_entry(
@@ -475,9 +520,13 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
             media_result=media_result_payload,
             chart_image_paths=chart_image_paths,
         )
-        missing_required_fields = _missing_required_selection_writeback_fields(
-            source_context=source_context,
-            projection_fields=projection_fields,
+        missing_required_fields = (
+            []
+            if product_unavailable
+            else _missing_required_selection_writeback_fields(
+                source_context=source_context,
+                projection_fields=projection_fields,
+            )
         )
         if missing_required_fields:
             validation_error = build_error(
@@ -584,7 +633,13 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         coerce_mapping(normalized_product_result.get("product")).get("product_id"),
         identity.get("product_id"),
     )
-    row_status = "unavailable" if product_unavailable else "partial_success" if optional_step_failed or write_result.status == "skipped" else "success"
+    row_status = (
+        "unavailable"
+        if product_unavailable
+        else "partial_success"
+        if optional_step_failed or write_result.status == "skipped"
+        else "success"
+    )
     result = {
         "source_record_id": source_record_id,
         "business_entity_key": business_key,
@@ -604,9 +659,13 @@ def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         "browser_fallback_used": bool(runtime_evidence.get("browser_fallback_used")),
     }
     if row_status == "partial_success":
-        return partial_success_result(context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings)))
+        return partial_success_result(
+            context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings))
+        )
     if warnings:
-        return success_result(context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings)))
+        return success_result(
+            context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings))
+        )
     return success_result(context, summary=summary, result=result)
 
 
@@ -632,14 +691,18 @@ def _child_context(
         job_code=handler_code if worker_type == "api_worker" else "",
         item_code=item_code,
         business_key=parent.business_key,
-        dedupe_key=f"{parent.dedupe_key}:{step_code}" if parent.dedupe_key else f"{parent.job_id}:{step_code}",
+        dedupe_key=f"{parent.dedupe_key}:{step_code}"
+        if parent.dedupe_key
+        else f"{parent.job_id}:{step_code}",
         resource_code=parent.resource_code,
         worker_id=parent.worker_id,
         metadata=dict(parent.metadata),
     )
 
 
-def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload: Mapping[str, Any]) -> ChildRunnerConfig | None:
+def _browser_child_runner_config(
+    payload: Mapping[str, Any], *, request_payload: Mapping[str, Any]
+) -> ChildRunnerConfig | None:
     mode = first_non_empty(
         payload.get("browser_child_runner_mode"),
         request_payload.get("browser_child_runner_mode"),
@@ -724,13 +787,17 @@ def _emit_progress(
         callback(progress_stage, message=message, details=dict(details or {}))
 
 
-def _timeline_entry(step: str, handler_result: HandlerResult, *, detail: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _timeline_entry(
+    step: str, handler_result: HandlerResult, *, detail: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     payload = {
         "step": step,
         "status": handler_result.status,
     }
     if detail:
-        payload.update({str(key): value for key, value in detail.items() if value not in ("", None, [], {})})
+        payload.update(
+            {str(key): value for key, value in detail.items() if value not in ("", None, [], {})}
+        )
     if handler_result.error is not None:
         payload["error_type"] = handler_result.error.error_type
         payload["error_code"] = handler_result.error.error_code
@@ -760,11 +827,15 @@ def _failed_pipeline_result(
     fact_upsert: Mapping[str, Any] | None = None,
     writeback_projection: Mapping[str, Any] | None = None,
 ) -> HandlerResult:
-    handler_error = error if hasattr(error, "error_code") else build_error(
-        error_type="internal",
-        error_code="selection_row_refresh_failed",
-        message=str(error or "Selection row refresh failed."),
-        retryable=True,
+    handler_error = (
+        error
+        if hasattr(error, "error_code")
+        else build_error(
+            error_type="internal",
+            error_code="selection_row_refresh_failed",
+            message=str(error or "Selection row refresh failed."),
+            retryable=True,
+        )
     )
     return failed_result(
         context,
@@ -839,7 +910,9 @@ def _writeback_url_invalid_status(
             "source_record_id": source_record_id,
             "business_entity_key": business_key,
             "product_id": first_non_empty(identity.get("product_id")),
-            "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+            "product_url": first_non_empty(
+                identity.get("normalized_product_url"), identity.get("product_url")
+            ),
             "projection_fields": {"商品状态": "链接不可访问"},
         }
     )
@@ -923,7 +996,9 @@ def _merge_media_assets_preserving_roles(*asset_lists: Any) -> list[dict[str, An
                 record.get("local_path"),
                 record.get("file_token"),
             )
-            dedupe_key = f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
+            dedupe_key = (
+                f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
+            )
             if not dedupe_key or dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
@@ -934,11 +1009,17 @@ def _merge_media_assets_preserving_roles(*asset_lists: Any) -> list[dict[str, An
 def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in normalized_product_result.get("media_assets") if isinstance(normalized_product_result.get("media_assets"), list) else []:
+    for item in (
+        normalized_product_result.get("media_assets")
+        if isinstance(normalized_product_result.get("media_assets"), list)
+        else []
+    ):
         if not isinstance(item, Mapping):
             continue
         record = dict(item)
-        asset_ref = first_non_empty(record.get("source_url"), record.get("local_path"), record.get("object_key"))
+        asset_ref = first_non_empty(
+            record.get("source_url"), record.get("local_path"), record.get("object_key")
+        )
         dedupe_key = f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
         if not dedupe_key or dedupe_key in seen:
             continue
@@ -974,10 +1055,14 @@ def _render_selection_charts(
 
     sku_distribution_payload = _extract_raw_api_payload(fact_bundle, "goods.sku_distribution")
     if not sku_distribution_payload:
-        sku_distribution_payload = _extract_raw_api_payload(fastmoss_payload, "goods.sku_distribution")
+        sku_distribution_payload = _extract_raw_api_payload(
+            fastmoss_payload, "goods.sku_distribution"
+        )
     sku_payload = dict(product_sku_payload if isinstance(product_sku_payload, Mapping) else {})
     if isinstance(sku_distribution_payload, Mapping):
-        sku_payload.update({k: v for k, v in sku_distribution_payload.items() if k not in sku_payload})
+        sku_payload.update(
+            {k: v for k, v in sku_distribution_payload.items() if k not in sku_payload}
+        )
 
     try:
         renderer = FastMossVisualizationRenderer()
@@ -1038,7 +1123,9 @@ def _has_writeback_value(value: Any) -> bool:
     return True
 
 
-def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_type: int | None = None) -> dict[str, Any]:
+def _extract_raw_api_payload(
+    payload: Mapping[str, Any], endpoint: str, *, d_type: int | None = None
+) -> dict[str, Any]:
     raw_responses = payload.get("raw_api_responses")
     if isinstance(raw_responses, list):
         for item in raw_responses:
@@ -1048,7 +1135,10 @@ def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_typ
                     continue
                 if d_type is not None:
                     request_params = item.get("request_params")
-                    if isinstance(request_params, Mapping) and int(request_params.get("d_type") or 0) != d_type:
+                    if (
+                        isinstance(request_params, Mapping)
+                        and int(request_params.get("d_type") or 0) != d_type
+                    ):
                         continue
                 return dict(response_payload)
     return {}
@@ -1056,9 +1146,13 @@ def _extract_raw_api_payload(payload: Mapping[str, Any], endpoint: str, *, d_typ
 
 def _sku_analysis_payload(fastmoss_bundle: Mapping[str, Any]) -> dict[str, Any]:
     sku_payload = _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.skus"))
-    sku_distribution_payload = _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.sku_distribution"))
+    sku_distribution_payload = _unwrap_fastmoss_data(
+        _extract_raw_api_payload(fastmoss_bundle, "goods.sku_distribution")
+    )
     merged = dict(sku_payload)
-    merged.update({key: value for key, value in sku_distribution_payload.items() if key not in merged})
+    merged.update(
+        {key: value for key, value in sku_distribution_payload.items() if key not in merged}
+    )
     return merged
 
 
@@ -1070,7 +1164,9 @@ def _unwrap_fastmoss_data(payload: Mapping[str, Any]) -> dict[str, Any]:
 _DEFAULT_PARENT_SPEC_VALUES = {"default", "默认", "specification"}
 
 
-def _effective_best_sku(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> dict[str, Any]:
+def _effective_best_sku(
+    raw_sku_payload: Mapping[str, Any], product_skus: list[Any]
+) -> dict[str, Any]:
     best_sku = coerce_mapping(raw_sku_payload.get("best_sku"))
     sku_value = _normalized_parent_spec_value(best_sku.get("sku_value"))
     sold_count = _number_value(best_sku.get("sold_count"))
@@ -1083,7 +1179,9 @@ def _effective_best_sku(raw_sku_payload: Mapping[str, Any], product_skus: list[A
     return best_sku
 
 
-def _has_multiple_meaningful_sku_values(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> bool:
+def _has_multiple_meaningful_sku_values(
+    raw_sku_payload: Mapping[str, Any], product_skus: list[Any]
+) -> bool:
     values: set[str] = set()
     source_rows = _sku_source_rows(raw_sku_payload, product_skus)
     row_ids = {
@@ -1108,7 +1206,11 @@ def _has_multiple_meaningful_sku_values(raw_sku_payload: Mapping[str, Any], prod
             for row in rows:
                 row_map = coerce_mapping(row)
                 normalized = _normalized_parent_spec_value(row_map.get("source")).lower()
-                if normalized and normalized not in _DEFAULT_PARENT_SPEC_VALUES and normalized != "other":
+                if (
+                    normalized
+                    and normalized not in _DEFAULT_PARENT_SPEC_VALUES
+                    and normalized != "other"
+                ):
                     values.add(normalized)
     return len(values) > 1
 
@@ -1149,7 +1251,9 @@ def _parent_spec_and_image_from_best_sku(
     return parent_spec, ""
 
 
-def _sku_source_rows(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]) -> list[dict[str, Any]]:
+def _sku_source_rows(
+    raw_sku_payload: Mapping[str, Any], product_skus: list[Any]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for key in ("sku_list", "list"):
         value = raw_sku_payload.get(key)
@@ -1268,13 +1372,22 @@ def _find_best_sku_row(best_sku: Mapping[str, Any], rows: list[dict[str, Any]]) 
     best_sku_id = _normalized_lookup_value(best_sku.get("sku_id"))
     best_prop_value_id = _normalized_lookup_value(best_sku.get("prop_value_id"))
     for row in rows:
-        if best_sku_id and _normalized_lookup_value(first_non_empty(row.get("sku_id"), row.get("id"))) == best_sku_id:
+        if (
+            best_sku_id
+            and _normalized_lookup_value(first_non_empty(row.get("sku_id"), row.get("id")))
+            == best_sku_id
+        ):
             return row
     for row in rows:
-        if best_prop_value_id and _normalized_lookup_value(_sku_row_prop_value_id(row)) == best_prop_value_id:
+        if (
+            best_prop_value_id
+            and _normalized_lookup_value(_sku_row_prop_value_id(row)) == best_prop_value_id
+        ):
             return row
     for row in rows:
-        if best_value and any(_normalized_lookup_value(value) == best_value for value in _sku_row_spec_values(row)):
+        if best_value and any(
+            _normalized_lookup_value(value) == best_value for value in _sku_row_spec_values(row)
+        ):
             return row
     return {}
 
@@ -1289,7 +1402,9 @@ def _sku_row_spec_values(row: Mapping[str, Any]) -> list[str]:
     if isinstance(sku_property_keys, list):
         values.extend(first_non_empty(value) for value in sku_property_keys)
     for prop in _sku_row_sale_props(row):
-        prop_value = first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
+        prop_value = first_non_empty(
+            prop.get("prop_value"), prop.get("value_name"), prop.get("value")
+        )
         if prop_value:
             values.append(prop_value)
         prop_name = first_non_empty(prop.get("prop_name"), prop.get("name"))
@@ -1324,24 +1439,38 @@ def _sku_row_sale_props(row: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _sku_row_prop_value_id(row: Mapping[str, Any]) -> str:
     for prop in _sku_row_sale_props(row):
-        prop_value_id = first_non_empty(prop.get("prop_value_id"), prop.get("value_id"), prop.get("sku_property_key"))
+        prop_value_id = first_non_empty(
+            prop.get("prop_value_id"), prop.get("value_id"), prop.get("sku_property_key")
+        )
         if prop_value_id:
             return prop_value_id
-    return first_non_empty(row.get("prop_value_id"), row.get("sku_property_key"), row.get("value_id"))
+    return first_non_empty(
+        row.get("prop_value_id"), row.get("sku_property_key"), row.get("value_id")
+    )
 
 
 def _sku_row_image(row: Mapping[str, Any]) -> Any:
     sku_media = row.get("media_assets") if isinstance(row.get("media_assets"), list) else []
     for media in sku_media:
         media_map = coerce_mapping(media)
-        image = _first_present(media_map.get("source_url"), media_map.get("url"), media_map.get("file_token"))
+        image = _first_present(
+            media_map.get("source_url"), media_map.get("url"), media_map.get("file_token")
+        )
         if image:
             return image
     for prop in _sku_row_sale_props(row):
-        image = _first_present(prop.get("image"), prop.get("img"), prop.get("image_url"), prop.get("source_url"))
+        image = _first_present(
+            prop.get("image"), prop.get("img"), prop.get("image_url"), prop.get("source_url")
+        )
         if image:
             return image
-    return _first_present(row.get("image"), row.get("img"), row.get("image_url"), row.get("source_url"), row.get("cover"))
+    return _first_present(
+        row.get("image"),
+        row.get("img"),
+        row.get("image_url"),
+        row.get("source_url"),
+        row.get("cover"),
+    )
 
 
 def _sku_text_fallback_image(best_sku: Mapping[str, Any], rows: list[dict[str, Any]]) -> Any:
@@ -1370,22 +1499,33 @@ def _sku_row_text_matches_best_sku(best_sku: Mapping[str, Any], row: Mapping[str
         return False
     if not best_name:
         return True
-    return not _sku_row_has_named_option(row) or _sku_row_has_option_pair(row, best_name, best_value)
+    return not _sku_row_has_named_option(row) or _sku_row_has_option_pair(
+        row, best_name, best_value
+    )
 
 
 def _sku_row_has_named_option(row: Mapping[str, Any]) -> bool:
     if first_non_empty(row.get("spec_name"), row.get("sku_property_key")):
         return True
     sku_property_keys = row.get("sku_property_keys")
-    if isinstance(sku_property_keys, list) and any(first_non_empty(value) for value in sku_property_keys):
+    if isinstance(sku_property_keys, list) and any(
+        first_non_empty(value) for value in sku_property_keys
+    ):
         return True
-    return any(first_non_empty(prop.get("prop_name"), prop.get("name")) for prop in _sku_row_sale_props(row))
+    return any(
+        first_non_empty(prop.get("prop_name"), prop.get("name"))
+        for prop in _sku_row_sale_props(row)
+    )
 
 
 def _sku_row_has_option_pair(row: Mapping[str, Any], best_name: str, best_value: str) -> bool:
     for prop in _sku_row_sale_props(row):
-        prop_name = _normalized_sku_text_value(first_non_empty(prop.get("prop_name"), prop.get("name")))
-        prop_value = _normalized_sku_text_value(first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value")))
+        prop_name = _normalized_sku_text_value(
+            first_non_empty(prop.get("prop_name"), prop.get("name"))
+        )
+        prop_value = _normalized_sku_text_value(
+            first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
+        )
         if prop_name == best_name and prop_value == best_value:
             return True
     return False
@@ -1421,7 +1561,6 @@ _CHART_NAME_TO_FIELD: dict[str, str] = {
 }
 
 
-
 def _build_selection_projection_fields(
     *,
     source_context: Mapping[str, Any],
@@ -1436,9 +1575,15 @@ def _build_selection_projection_fields(
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
     overview_28d_metrics = coerce_mapping(
-        _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.overview", d_type=28)).get("overview")
+        _unwrap_fastmoss_data(
+            _extract_raw_api_payload(fastmoss_bundle, "goods.overview", d_type=28)
+        ).get("overview")
     )
-    product_skus = fastmoss_bundle.get("product_skus") if isinstance(fastmoss_bundle.get("product_skus"), list) else []
+    product_skus = (
+        fastmoss_bundle.get("product_skus")
+        if isinstance(fastmoss_bundle.get("product_skus"), list)
+        else []
+    )
     main_image = _first_present(
         _first_media_asset_ref(media_result),
         _first_media_asset_ref(normalized_product_result),
@@ -1479,11 +1624,19 @@ def _build_selection_projection_fields(
     )
     total_sales = _number_value(
         _metric_text(overview_28d_metrics, "sold_count"),
-        _metric_text(overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count", "sold_count"),
+        _metric_text(
+            overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count", "sold_count"
+        ),
     )
     fields = {
-        "商品ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),
-        "商品链接": first_non_empty(product.get("normalized_url"), product.get("product_url"), normalized_product_result.get("normalized_product_url")),
+        "商品ID": first_non_empty(
+            product.get("product_id"), normalized_product_result.get("product_id")
+        ),
+        "商品链接": first_non_empty(
+            product.get("normalized_url"),
+            product.get("product_url"),
+            normalized_product_result.get("normalized_product_url"),
+        ),
         "店铺名称": first_non_empty(logical_fields.get("shop_name"), product.get("shop_name")),
         "商品标题": first_non_empty(logical_fields.get("title"), product.get("title")),
         "商品当前价格": price_value if price_value is not None else "",
@@ -1519,7 +1672,9 @@ def _is_unavailable_product_result(payload: Mapping[str, Any]) -> bool:
     )
     if any(str(value or "").strip().lower() == "unavailable" for value in status_values):
         return True
-    product_status = first_non_empty(product.get("status"), facts.get("status"), payload.get("product_status"))
+    product_status = first_non_empty(
+        product.get("status"), facts.get("status"), payload.get("product_status")
+    )
     return product_status == "off_shelf_or_region_unavailable"
 
 
@@ -1607,7 +1762,9 @@ def _price_number_text(*values: Any) -> str:
         break
     if not text:
         return ""
-    normalized = re.sub(r"^(?:US\$|USD\s*|\$|￥|¥|CNY\s*|RMB\s*)", "", text.strip(), flags=re.IGNORECASE).strip()
+    normalized = re.sub(
+        r"^(?:US\$|USD\s*|\$|￥|¥|CNY\s*|RMB\s*)", "", text.strip(), flags=re.IGNORECASE
+    ).strip()
     normalized = re.sub(r"\s*(?:USD|US\$|美元|元)$", "", normalized, flags=re.IGNORECASE).strip()
     match = re.search(r"[-+]?\d+(?:\.\d+)?", normalized)
     if match is None:

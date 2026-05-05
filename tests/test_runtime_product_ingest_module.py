@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from automation_business_scaffold.control_plane.runtime_config.settings import PRODUCT_INGEST_TASK_CODE
+from automation_business_scaffold.control_plane.runtime_config.settings import (
+    PRODUCT_INGEST_TASK_CODE,
+)
 from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest import (
     advance_stage,
     finalize_request,
@@ -33,7 +35,9 @@ class FakeRuntimeStore:
     def load_task_request(self, *, request_id: str) -> RuntimeTaskRequestRecord:
         return self.requests[request_id]
 
-    def update_task_request(self, *, request_id: str, **updates: object) -> RuntimeTaskRequestRecord:
+    def update_task_request(
+        self, *, request_id: str, **updates: object
+    ) -> RuntimeTaskRequestRecord:
         current = self.requests[request_id]
         self.requests[request_id] = replace(current, **updates)
         return self.requests[request_id]
@@ -60,9 +64,15 @@ class FakeRuntimeStore:
             def to_dict(self) -> dict:
                 return dict(self._payload)
 
-        return [_OutboxRecord(record) for record in self.outbox if str(record.get("ref_id")) == request_id]
+        return [
+            _OutboxRecord(record)
+            for record in self.outbox
+            if str(record.get("ref_id")) == request_id
+        ]
 
-    def enqueue_api_worker_jobs(self, *, request_id: str, task_code: str, job_code: str, jobs: list[dict]) -> dict:
+    def enqueue_api_worker_jobs(
+        self, *, request_id: str, task_code: str, job_code: str, jobs: list[dict]
+    ) -> dict:
         created: list[dict] = []
         for job in jobs:
             self._job_seq += 1
@@ -81,9 +91,15 @@ class FakeRuntimeStore:
             }
             self.api_jobs.append(record)
             created.append(record)
-        return {"job_code": job_code, "created_count": len(created), "job_ids": [item["job_id"] for item in created]}
+        return {
+            "job_code": job_code,
+            "created_count": len(created),
+            "job_ids": [item["job_id"] for item in created],
+        }
 
-    def enqueue_task_executions(self, *, request_id: str, item_code: str, workflow_code: str, items: list[dict]) -> dict:
+    def enqueue_task_executions(
+        self, *, request_id: str, item_code: str, workflow_code: str, items: list[dict]
+    ) -> dict:
         created: list[RuntimeTaskExecutionRecord] = []
         for item in items:
             self._execution_seq += 1
@@ -311,9 +327,56 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
     assert updated_request.current_stage == "completed"
     assert updated_request.summary["child_success_count"] == 1
     assert updated_request.result["row_count"] == 1
+    assert updated_request.result["rows"][0] == {
+        "source_record_id": "rec-1",
+        "product_id": "1234567890",
+        "row_status": "success",
+    }
     assert len(store.outbox) == 1
     assert store.outbox[0]["ref_id"] == request.request_id
     assert store.outbox[0]["payload"]["task_code"] == PRODUCT_INGEST_TASK_CODE
+
+
+def test_finalize_request_uses_nested_row_result_status() -> None:
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="ready_for_summary",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
+    )
+    store = FakeRuntimeStore(
+        request=request,
+        api_jobs=[
+            _api_job(
+                request_id=request.request_id,
+                stage_code="collect_selection_rows",
+                job_code="selection_row_refresh",
+                result={
+                    "handler_result": {
+                        "status": "success",
+                        "summary": {
+                            "source_record_id": "rec-1",
+                            "product_business_key": "summary-product",
+                            "row_status": "success",
+                        },
+                        "result": {
+                            "source_record_id": "rec-1",
+                            "business_entity_key": "1234567890",
+                            "row_status": "unavailable",
+                        },
+                    },
+                },
+            ),
+        ],
+    )
+
+    finalize_request(store=store, request=request, workflow=workflow)
+    updated_request = store.load_task_request(request_id=request.request_id)
+
+    assert updated_request.result["rows"][0] == {
+        "source_record_id": "rec-1",
+        "product_id": "1234567890",
+        "row_status": "unavailable",
+    }
 
 
 def test_dispatch_stage_applies_selection_limit_to_candidate_rows() -> None:

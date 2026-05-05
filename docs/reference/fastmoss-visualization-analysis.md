@@ -729,7 +729,7 @@ src/automation_business_scaffold/infrastructure/fastmoss/visualization_renderer.
 
 注意：FastMoss 页面在 `sku_units_sold` 为空（零销量）时，左侧成交占比区域留空，右侧库存占比仍可能正常渲染。但 `TK选品收集` 的 `SKU销量占比图`、`父体规格`、`父体图片` 统一以有效 `best_sku` 为业务门槛；无有效 `best_sku` 时不写入这三项。
 
-写回门禁：`出单种类占比图`、`销量趋势图` 是选品补全写回的必填图表。renderer 依赖不可用、FastMoss overview payload 缺失或 PNG 生成失败时，本行写回任务失败，不继续写入半截字段。
+写回门禁：`出单种类占比图`、`销量趋势图` 是可售商品选品补全写回的必填图表。renderer 依赖不可用、FastMoss overview payload 缺失或 PNG 生成失败时，本行写回任务失败，不继续写入半截字段。商品已识别为不可售/区域不可售时不触发 FastMoss 图表门禁，只写 Fact DB 终态事实并回写 `商品状态=已下架/区域不可售`。
 
 ### 12.3 父体规格 / 父体图片的写入条件
 

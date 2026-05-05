@@ -39,11 +39,17 @@ def advance_stage(
 ) -> dict[str, Any]:
     stage = workflow.require_stage(stage_code)
     if stage.stage_code == "read_selection_rows":
-        return _advance_read_selection_rows(store=store, request=request, workflow=workflow, stage_code=stage_code)
+        return _advance_read_selection_rows(
+            store=store, request=request, workflow=workflow, stage_code=stage_code
+        )
     if stage.stage_code == "dispatch_selection_row_refresh":
-        return _advance_dispatch_selection_row_refresh(store=store, request=request, workflow=workflow, stage_code=stage_code)
+        return _advance_dispatch_selection_row_refresh(
+            store=store, request=request, workflow=workflow, stage_code=stage_code
+        )
     if stage.stage_code == "collect_selection_rows":
-        return _advance_collect_selection_rows(store=store, request=request, workflow=workflow, stage_code=stage_code)
+        return _advance_collect_selection_rows(
+            store=store, request=request, workflow=workflow, stage_code=stage_code
+        )
     if stage.stage_code == workflow.summary_policy.summary_stage_code:
         return {"action": "finalize"}
     return {
@@ -63,7 +69,9 @@ def finalize_request(
     force_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del workflow
-    row_jobs = _api_jobs_for_stage(store, request_id=request.request_id, stage_code="collect_selection_rows")
+    row_jobs = _api_jobs_for_stage(
+        store, request_id=request.request_id, stage_code="collect_selection_rows"
+    )
     read_job = _latest_api_job_by_code(
         _api_jobs_for_stage(store, request_id=request.request_id, stage_code="read_selection_rows"),
         "feishu_table_read",
@@ -72,11 +80,28 @@ def finalize_request(
     row_results = []
     for job in row_jobs:
         handler_result = _job_handler_result(job)
-        row_results.append({
-            "source_record_id": handler_result.get("source_record_id") or (job.get("payload") or {}).get("source_record_id", ""),
-            "product_id": handler_result.get("product_business_key") or "",
-            "row_status": handler_result.get("row_status") or job.get("status", ""),
-        })
+        handler_summary = _mapping(handler_result.get("summary"))
+        row_result = _mapping(handler_result.get("result"))
+        row_results.append(
+            {
+                "source_record_id": (
+                    row_result.get("source_record_id")
+                    or handler_result.get("source_record_id")
+                    or handler_summary.get("source_record_id")
+                    or (job.get("payload") or {}).get("source_record_id", "")
+                ),
+                "product_id": (
+                    row_result.get("product_business_key")
+                    or row_result.get("business_entity_key")
+                    or handler_result.get("product_business_key")
+                    or handler_summary.get("product_business_key")
+                    or ""
+                ),
+                "row_status": row_result.get("row_status")
+                or handler_result.get("row_status")
+                or job.get("status", ""),
+            }
+        )
 
     counts = _aggregate_request_children(store, request_id=request.request_id)
     summary = {
@@ -97,7 +122,9 @@ def finalize_request(
     if force_result and isinstance(force_result.get("result"), Mapping):
         final_result.update(dict(force_result.get("result") or {}))
 
-    final_status = _determine_final_status(force_result=force_result, row_jobs=row_jobs, counts=counts)
+    final_status = _determine_final_status(
+        force_result=force_result, row_jobs=row_jobs, counts=counts
+    )
     error_text = "" if final_status != "failed" else str(final_result.get("message") or "")
     store.update_task_request(
         request_id=request.request_id,
@@ -193,7 +220,9 @@ def _advance_read_selection_rows(
             job_code="feishu_table_read",
             jobs=[
                 {
-                    "business_key": str(request_payload.get("selection_table_ref") or request.request_id),
+                    "business_key": str(
+                        request_payload.get("selection_table_ref") or request.request_id
+                    ),
                     "dedupe_key": f"{request.request_id}:{stage_code}:feishu_table_read",
                     "max_attempts": 1,
                     "payload": {
@@ -203,7 +232,9 @@ def _advance_read_selection_rows(
                         "workflow_code": request.task_code,
                         "stage_code": stage_code,
                         "source_table_ref": str(request_payload.get("selection_table_ref") or ""),
-                        "selection_record_id": str(request_payload.get("selection_record_id") or ""),
+                        "selection_record_id": str(
+                            request_payload.get("selection_record_id") or ""
+                        ),
                         "product_url": str(request_payload.get("product_url") or ""),
                         "product_id": str(request_payload.get("product_id") or ""),
                         "adapter_code": "selection_table_source_adapter",
@@ -222,7 +253,11 @@ def _advance_read_selection_rows(
         }
 
     if _any_api_jobs_active(stage_jobs):
-        return {"action": "waiting", "current_stage": stage_code, "message": "Selection table read is still running."}
+        return {
+            "action": "waiting",
+            "current_stage": stage_code,
+            "message": "Selection table read is still running.",
+        }
 
     if _any_failed_api_jobs(stage_jobs):
         return {
@@ -236,7 +271,9 @@ def _advance_read_selection_rows(
     return {
         "action": "advance",
         "next_stage": "dispatch_selection_row_refresh",
-        "details": {"selection_table_read": _latest_api_job_by_code(stage_jobs, "feishu_table_read")},
+        "details": {
+            "selection_table_read": _latest_api_job_by_code(stage_jobs, "feishu_table_read")
+        },
     }
 
 
@@ -254,7 +291,9 @@ def _advance_dispatch_selection_row_refresh(
 ) -> dict[str, Any]:
     del workflow
     request_payload = dict(request.payload or {})
-    existing_jobs = _api_jobs_for_stage(store, request_id=request.request_id, stage_code="collect_selection_rows")
+    existing_jobs = _api_jobs_for_stage(
+        store, request_id=request.request_id, stage_code="collect_selection_rows"
+    )
     if existing_jobs:
         return {
             "action": "advance",
@@ -262,7 +301,9 @@ def _advance_dispatch_selection_row_refresh(
             "details": {"reason": "row jobs already dispatched"},
         }
 
-    candidate_rows = _resolve_candidate_rows(store, request=request, request_payload=request_payload)
+    candidate_rows = _resolve_candidate_rows(
+        store, request=request, request_payload=request_payload
+    )
     candidate_rows = _limit_candidate_rows(candidate_rows, request_payload=request_payload)
     if not candidate_rows:
         return {
@@ -281,14 +322,18 @@ def _advance_dispatch_selection_row_refresh(
             source_record_id,
         )
         row_payload = {
-            **_payload_subset(request_payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS + ARTIFACT_PASSTHROUGH_KEYS),
+            **_payload_subset(
+                request_payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS + ARTIFACT_PASSTHROUGH_KEYS
+            ),
             "request_payload": request_payload,
             "request_id": request.request_id,
             "task_code": request.task_code,
             "workflow_code": request.task_code,
             "stage_code": "collect_selection_rows",
             "source_record_id": source_record_id,
-            "source_table_ref": str(row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""),
+            "source_table_ref": str(
+                row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""
+            ),
             "target_table_ref": str(request_payload.get("selection_table_ref") or ""),
             "product_identity": product_identity,
             "source_context": _mapping(row.get("source_context")),
@@ -296,8 +341,12 @@ def _advance_dispatch_selection_row_refresh(
             "writeback_enabled": bool(request_payload.get("writeback_enabled", True)),
             "fastmoss_phone": str(request_payload.get("fastmoss_phone") or ""),
             "fastmoss_password": str(request_payload.get("fastmoss_password") or ""),
-            "fastmoss_phone_env": str(request_payload.get("fastmoss_phone_env") or "FASTMOSS_PHONE"),
-            "fastmoss_password_env": str(request_payload.get("fastmoss_password_env") or "FASTMOSS_PASSWORD"),
+            "fastmoss_phone_env": str(
+                request_payload.get("fastmoss_phone_env") or "FASTMOSS_PHONE"
+            ),
+            "fastmoss_password_env": str(
+                request_payload.get("fastmoss_password_env") or "FASTMOSS_PASSWORD"
+            ),
             "fastmoss_live_fetch": str(request_payload.get("fastmoss_live_fetch") or ""),
             "table_refs": request_payload.get("table_refs") or {},
             "access_token": request_payload.get("access_token") or "",
@@ -307,12 +356,14 @@ def _advance_dispatch_selection_row_refresh(
         row_payload["requires_object_storage"] = True
         row_payload["require_database_persistence"] = True
         row_payload["require_object_storage"] = True
-        jobs.append({
-            "business_key": business_key,
-            "dedupe_key": f"{request.request_id}:collect_selection_rows:{source_record_id or business_key}",
-            "max_attempts": 1,
-            "payload": row_payload,
-        })
+        jobs.append(
+            {
+                "business_key": business_key,
+                "dedupe_key": f"{request.request_id}:collect_selection_rows:{source_record_id or business_key}",
+                "max_attempts": 1,
+                "payload": row_payload,
+            }
+        )
 
     enqueue_payload = store.enqueue_api_worker_jobs(
         request_id=request.request_id,
@@ -353,7 +404,11 @@ def _advance_collect_selection_rows(
         }
 
     if _any_api_jobs_active(stage_jobs):
-        return {"action": "waiting", "current_stage": stage_code, "message": "Selection row refresh jobs are still running."}
+        return {
+            "action": "waiting",
+            "current_stage": stage_code,
+            "message": "Selection row refresh jobs are still running.",
+        }
 
     return {"action": "advance", "next_stage": "ready_for_summary"}
 
@@ -375,12 +430,14 @@ def _resolve_candidate_rows(
 
     if product_url or product_id:
         identity = _resolve_product_identity(request_payload)
-        return [{
-            "source_record_id": selection_record_id,
-            "product_identity": identity,
-            "source_table_ref": str(request_payload.get("selection_table_ref") or ""),
-            "source_context": {},
-        }]
+        return [
+            {
+                "source_record_id": selection_record_id,
+                "product_identity": identity,
+                "source_table_ref": str(request_payload.get("selection_table_ref") or ""),
+                "source_context": {},
+            }
+        ]
 
     read_job = _latest_api_job_by_code(
         _api_jobs_for_stage(store, request_id=request.request_id, stage_code="read_selection_rows"),
@@ -390,7 +447,9 @@ def _resolve_candidate_rows(
         return []
 
     handler_result = _job_handler_result(read_job)
-    nested_result = handler_result.get("result") if isinstance(handler_result.get("result"), Mapping) else {}
+    nested_result = (
+        handler_result.get("result") if isinstance(handler_result.get("result"), Mapping) else {}
+    )
     source_rows = (nested_result or handler_result).get("source_rows") or []
     if not isinstance(source_rows, list):
         return []
@@ -399,12 +458,16 @@ def _resolve_candidate_rows(
     for row in source_rows:
         if not isinstance(row, Mapping):
             continue
-        rows.append({
-            "source_record_id": str(row.get("source_record_id") or ""),
-            "product_identity": _mapping(row.get("product_identity")),
-            "source_table_ref": str(row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""),
-            "source_context": _mapping(row.get("source_context")),
-        })
+        rows.append(
+            {
+                "source_record_id": str(row.get("source_record_id") or ""),
+                "product_identity": _mapping(row.get("product_identity")),
+                "source_table_ref": str(
+                    row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""
+                ),
+                "source_context": _mapping(row.get("source_context")),
+            }
+        )
     return rows
 
 
@@ -501,7 +564,11 @@ def _determine_final_status(
     row_jobs: list[dict[str, Any]],
     counts: Mapping[str, Any],
 ) -> str:
-    if force_result and str(force_result.get("final_status") or "") in {"success", "partial_success", "failed"}:
+    if force_result and str(force_result.get("final_status") or "") in {
+        "success",
+        "partial_success",
+        "failed",
+    }:
         return str(force_result["final_status"])
     if not row_jobs:
         return "failed"
@@ -514,7 +581,9 @@ def _determine_final_status(
     return "success"
 
 
-def _api_jobs_for_stage(store: RuntimeStore, *, request_id: str, stage_code: str) -> list[dict[str, Any]]:
+def _api_jobs_for_stage(
+    store: RuntimeStore, *, request_id: str, stage_code: str
+) -> list[dict[str, Any]]:
     return [
         job
         for job in store.list_api_worker_jobs_for_request(request_id=request_id)
@@ -608,12 +677,19 @@ def _candidate_row_limit(request_payload: Mapping[str, Any]) -> int:
 
 
 def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
-    return {key: payload[key] for key in keys if key in payload and payload.get(key) not in (None, "")}
+    return {
+        key: payload[key] for key in keys if key in payload and payload.get(key) not in (None, "")
+    }
 
 
 def _resolve_product_identity(*sources: Any) -> dict[str, str]:
     product_url = _first_non_empty(
-        *[_lookup_nested(source, "normalized_product_url", "normalized_url", "product_url", "source_url") for source in sources]
+        *[
+            _lookup_nested(
+                source, "normalized_product_url", "normalized_url", "product_url", "source_url"
+            )
+            for source in sources
+        ]
     )
     product_id = _first_non_empty(*[_lookup_nested(source, "product_id") for source in sources])
     if not product_id:
