@@ -78,6 +78,7 @@ class BusinessDefaults:
 @dataclass(frozen=True, slots=True)
 class ExecutionControlDefaults:
     db_url: str
+    fact_db_url: str
     artifact_root: str
     artifact_bucket: str
     artifact_store_provider: str
@@ -134,6 +135,12 @@ def get_execution_control_defaults() -> ExecutionControlDefaults:
         db_url=_read_env(
             "BUSINESS_EXECUTION_CONTROL_DB_URL",
             "EXECUTION_CONTROL_DB_URL",
+        ).strip(),
+        fact_db_url=_read_env(
+            "TK_FACT_DB_URL",
+            "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL",
+            "EXECUTION_CONTROL_FACT_DB_URL",
+            "FACT_DB_URL",
         ).strip(),
         artifact_root=_read_env(
             "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT",

@@ -179,6 +179,36 @@ def test_media_asset_sync_can_require_referenced_assets_to_materialize(monkeypat
     assert result.result["synced_assets"][0]["sync_state"] == "referenced"
 
 
+def test_media_asset_sync_fails_when_object_storage_is_required_with_local_provider(tmp_path) -> None:
+    media_file = tmp_path / "main.webp"
+    media_file.write_bytes(b"fake-webp")
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "require_object_storage": True,
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "1730964478199763166",
+                        "media_role": "product_main_image",
+                        "local_path": str(media_file),
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "object_storage_required"
+    assert result.summary["artifact_store_provider"] == "local"
+    assert result.result["artifact_refs"] == []
+
+
 def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch, tmp_path) -> None:
     class FakeFactStore:
         def __init__(self, *, db_url: str):

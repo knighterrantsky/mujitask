@@ -5,6 +5,9 @@ status: active_contract
 principles:
   - product facts are independent from Feishu business writeback
   - all product media facts must be materialized to object storage before being persisted as fact media
+  - formal workflows that use fact_bundle_upsert or media_asset_sync must declare requires_fact_db=true and requires_object_storage=true
+  - missing Fact DB or object storage configuration must fail fast during submit or handler execution
+  - formal skill payloads carry business inputs only; project runtime config resolves Runtime DB, Fact DB, and object storage
   - business flows decide what products to collect and which projection mapper to use
   - fact collection does not decide Feishu fields
   - Feishu projection does not decide fact persistence
@@ -18,11 +21,85 @@ required_pipeline_roles:
 business_job_usage:
   tiktok_fastmoss_product_ingest:
     - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request/browser fallback, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
-    - fact_bundle_upsert must receive fact_db_url from explicit request payload or the configured Runtime/Fact DB environment; missing configuration is the only allowed dry-run path.
+    - fact_bundle_upsert must resolve Fact DB persistence from project runtime config or an explicit test-only submit override; missing configuration is a failed configuration state, not dry_run success.
+    - media_asset_sync must resolve non-local object storage configuration from project runtime config or an explicit test-only submit override before product media is considered persisted; missing configuration or provider=local is a failed configuration state, not linked_local success.
     - writeback_enabled only controls Feishu projection writes and must not disable product fact collection or Fact DB persistence.
   sync_tk_influencer_pool:
     - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.
     - influencer_creator_sync may call fact_bundle_upsert and media_asset_sync internally for one unique creator; product media facts still follow the same object storage materialization rules.
+
+formal_workflow_persistence_contract:
+  required_flags:
+    requires_fact_db: true
+    requires_object_storage: true
+  runtime_config_source:
+    primary: project_runtime_config
+    allowed_files:
+      - scripts/execution_control/executor.local.env
+      - process_environment
+      - deployment_environment
+    test_only_submit_override:
+      allowed: true
+      marker: allow_test_persistence_overrides
+      purpose: isolate pytest/integration fixtures from local project config
+  formal_skill_payload_boundary:
+    carries_business_inputs_only: true
+    run_mode_policy: forbidden_in_formal_skill_payload
+    forbidden_fields:
+      - run_mode
+      - db_url
+      - execution_control_db_url
+      - fact_db_url
+      - execution_control_fact_db_url
+      - artifact_store_provider
+      - execution_control_artifact_store_provider
+      - artifact_bucket
+      - execution_control_artifact_bucket
+      - minio_endpoint
+      - execution_control_minio_endpoint
+      - minio_access_key
+      - execution_control_minio_access_key
+      - minio_secret_key
+      - execution_control_minio_secret_key
+      - s3_access_key
+      - s3_secret_key
+      - browser_profile_ref
+      - browser_provider_name
+      - browser_profile_id
+      - browser_workspace_id
+      - BROWSER_PROFILE_REF
+      - BROWSER_PROVIDER_NAME
+      - BROWSER_PROFILE_ID
+      - BROWSER_WORKSPACE_ID
+      - BROWSER_PROFILES_FILE
+      - DEFAULT_PROFILE_REF
+    allowed_non_sensitive_runtime_summary:
+      - requires_fact_db
+      - requires_object_storage
+      - require_database_persistence
+      - require_object_storage
+      - artifact_store.provider
+      - artifact_store.bucket
+      - artifact_store.object_prefix
+      - runtime_config_source
+  submit_preflight:
+    missing_runtime_db: reject_submit
+    missing_fact_db: reject_submit
+    missing_artifact_provider: reject_submit
+    missing_artifact_bucket: reject_submit
+    missing_minio_or_s3_config: reject_submit
+  handler_fail_fast:
+    fact_bundle_upsert:
+      require_database_persistence: true
+      missing_fact_db_url: failed
+      forbidden_success_modes:
+        - dry_run
+    media_asset_sync:
+      require_object_storage: true
+      missing_object_storage: failed
+      provider_local: failed
+      forbidden_success_modes:
+        - linked_local
 
 media_rules:
   product_main_image:
@@ -40,6 +117,8 @@ forbidden_patterns:
   - feishu_projection_drives_fact_persistence
   - product_fact_collection_helper_without_contract
   - raw_cdn_url_persisted_as_fact_media_without_object_key_or_remote_uri
+  - formal_fact_bundle_upsert_dry_run_success
+  - formal_media_asset_sync_linked_local_success
 
 allowed_implementation_owners:
   - src/automation_business_scaffold/capabilities/fact_sources/**

@@ -70,12 +70,8 @@ main() {
     default_install_dir="$existing_install_dir"
   fi
   if [[ -f "$existing_skill_env" ]]; then
-    existing_browser_profile_ref="$(read_kv_value "$existing_skill_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
     existing_fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
     existing_fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
-    existing_db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-    existing_artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
-    existing_artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
     existing_notification_channel_code="$(read_kv_value "$existing_skill_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
     existing_openclaw_agent_id="$(read_kv_value "$existing_skill_env" "OPENCLAW_AGENT_ID" 2>/dev/null || true)"
     existing_openclaw_state_dir="$(read_kv_value "$existing_skill_env" "OPENCLAW_STATE_DIR" 2>/dev/null || true)"
@@ -122,6 +118,7 @@ main() {
       [[ -n "$existing_db_url" ]] || existing_db_url="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
       [[ -n "$existing_artifact_root" ]] || existing_artifact_root="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
       [[ -n "$existing_artifact_bucket" ]] || existing_artifact_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
+      [[ -n "$existing_browser_profile_ref" ]] || existing_browser_profile_ref="$(read_kv_value "$existing_executor_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
       [[ -n "$existing_notification_channel_code" ]] || existing_notification_channel_code="$(read_kv_value "$existing_executor_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
     fi
   fi
@@ -251,7 +248,7 @@ main() {
     "$install_dir/runtime/cli_runs" \
     "$install_dir/runtime/artifacts" \
     "$install_dir/runtime/downloads" \
-    "$install_dir/runtime/phase1_daemons" \
+    "$install_dir/runtime/daemons" \
     "$install_dir/runtime/execution_control"
   write_browser_profiles_if_missing "$install_dir"
 
@@ -292,13 +289,8 @@ main() {
     "$tk_hot_video_table_id" \
     "$tk_hot_video_view_id" \
     "$token" \
-    "$browser_profile_ref" \
     "$fastmoss_phone" \
     "$fastmoss_password" \
-    "$db_url" \
-    "$artifact_root" \
-    "$artifact_bucket" \
-    "$requested_by" \
     "$notification_channel_code" \
     "$openclaw_agent_id" \
     "$openclaw_state_dir"

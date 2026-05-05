@@ -22,8 +22,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/watchdog.launchd.stdout.log</string>
+  <string>__ROOT_DIR__/runtime/daemons/watchdog.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/watchdog.launchd.stderr.log</string>
+  <string>__ROOT_DIR__/runtime/daemons/watchdog.launchd.stderr.log</string>
 </dict>
 </plist>

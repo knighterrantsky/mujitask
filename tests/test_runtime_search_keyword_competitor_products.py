@@ -916,7 +916,7 @@ def _mark_api_job_fastmoss_security_fallback_required(
         },
         "warnings": [],
         "next_action": {"type": "browser_fallback", "payload": {}},
-        "contract_revision": "phase2",
+        "contract_revision": "product_fact_contract",
         "error": {
             "error_type": "security_verification",
             "error_code": "fastmoss_security_verification_required",
@@ -970,7 +970,7 @@ def _mark_browser_execution_success(
         "result": result,
         "warnings": [],
         "next_action": {"type": "none", "payload": {}},
-        "contract_revision": "phase2",
+        "contract_revision": "product_fact_contract",
     }
     store.mark_browser_execution_success(
         execution_id=execution_id,

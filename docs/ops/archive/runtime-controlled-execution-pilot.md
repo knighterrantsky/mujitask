@@ -1,4 +1,4 @@
-# Phase 1 受控执行 Pilot 说明
+# Runtime 受控执行 Pilot 说明
 
 > 状态: Ops archive。本文保留历史 Pilot/runbook；当前 Runtime 和 artifact 设计以 [../../arch/README.md](../../arch/README.md) 为准。
 
@@ -6,7 +6,7 @@
 
 ## 1. 目的
 
-本文说明当前仓库内已经落地的 Phase 1 Pilot 能力：
+本文说明当前仓库内已经落地的受控执行 Pilot 能力：
 
 - `feishu_single_row_update` 支持受控执行模式
 - 支持 `submit / status / result / execute_next / daemon_once / daemon_loop`
@@ -14,7 +14,7 @@
 - 支持 `artifact_object` 本地索引
 
 如果要按“可交付阶段”执行部署、验收和回退，请继续参考
-[../phase1-acceptance-and-rollback.md](../phase1-acceptance-and-rollback.md)。
+[../runtime-acceptance-and-rollback.md](../runtime-acceptance-and-rollback.md)。
 
 当前实现仍然是 **兼容式升级**：
 
@@ -138,7 +138,7 @@ feishu_single_row_update
 
 ## 6. 本地产物目录
 
-当前 Phase 1 Pilot 先使用本地对象目录模拟对象存储。
+当前受控执行 Pilot 先使用本地对象目录模拟对象存储。
 
 默认根目录：
 
@@ -234,9 +234,10 @@ runs/<run_id>/artifacts/execute_controlled_single_row_update/state.json
 
 本文件记录的是早期 Pilot。当前 `skills/mujitask-tiktok-feishu-sync/run_skill_step.py` 已经收敛为：
 
-- `single-row-update`：只作为手动直跑排障入口
-- `refresh-current-competitor-table` / `refresh-current-competitor-table-submit`：提交顶层刷新 workflow
-- `keyword-search` / `keyword-search-submit`：提交顶层关键词搜索 workflow
-- `influencer-pool-sync` / `influencer-pool-sync-submit`：达人池同步入口
+- `refresh-current-competitor-table-submit`：提交顶层刷新 workflow
+- `product-url-complete-submit`：提交选品表单商品补全 workflow
+- `competitor-row-by-url-submit`：提交竞品表 URL 定位并补全 workflow
+- `keyword-search-submit`：提交顶层关键词搜索 workflow
+- `influencer-pool-sync-submit`：提交达人池同步 workflow
 
-旧的单行异步控制命令已经移除，正式异步路径统一由顶层 workflow 提交后交给 `executor_daemon` 推进。
+旧 direct run、status/result、worker、cleanup、seed 等兼容入口已经移除，正式异步路径统一由顶层 workflow 提交后交给 `executor_daemon` 推进。

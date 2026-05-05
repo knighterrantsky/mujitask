@@ -93,26 +93,14 @@ FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
     "mock_fastmoss_security_browser_resolve",
 )
 FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
-    "db_url",
-    "fact_db_url",
     "persistence",
+    "require_database_persistence",
+    "requires_fact_db",
 )
 ARTIFACT_PASSTHROUGH_KEYS = (
-    "artifact_bucket",
-    "artifact_object_prefix",
-    "artifact_root",
     "artifact_store",
-    "artifact_store_provider",
-    "db_url",
-    "execution_control_fact_db_url",
-    "fact_db_url",
-    "minio_access_key",
-    "minio_create_bucket",
-    "minio_endpoint",
-    "minio_region",
-    "minio_secret_key",
-    "minio_secure",
-    "persistence",
+    "require_object_storage",
+    "requires_object_storage",
 )
 
 
@@ -609,6 +597,10 @@ def _advance_dispatch_selection_row_refresh_jobs(
             "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
             "writeback_enabled": bool(request.payload.get("writeback_enabled", True)),
         }
+        row_payload["requires_fact_db"] = True
+        row_payload["requires_object_storage"] = True
+        row_payload["require_database_persistence"] = True
+        row_payload["require_object_storage"] = True
         row_keys = render_job_keys(
             row_job_def,
             request.payload,
@@ -735,20 +727,6 @@ def _advance_search_product_candidates(
         fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
         if fastmoss_settings:
             payload["fastmoss"] = fastmoss_settings
-        for source_key, target_key in (
-            ("execution_control_artifact_root", "artifact_root"),
-            ("execution_control_artifact_bucket", "artifact_bucket"),
-            ("execution_control_artifact_store_provider", "artifact_store_provider"),
-            ("execution_control_artifact_object_prefix", "artifact_object_prefix"),
-            ("execution_control_minio_endpoint", "minio_endpoint"),
-            ("execution_control_minio_access_key", "minio_access_key"),
-            ("execution_control_minio_secret_key", "minio_secret_key"),
-            ("execution_control_minio_region", "minio_region"),
-            ("execution_control_minio_secure", "minio_secure"),
-            ("execution_control_minio_create_bucket", "minio_create_bucket"),
-        ):
-            if request.payload.get(source_key) not in (None, ""):
-                payload[target_key] = request.payload.get(source_key)
         keys = render_job_keys(
             job_def,
             request.payload,
@@ -1316,6 +1294,8 @@ def _advance_sync_media(
                 "source_context": dict(candidate["source_context"]),
             }
             payload.update(_payload_subset(request.payload, ARTIFACT_PASSTHROUGH_KEYS))
+            payload["requires_object_storage"] = True
+            payload["require_object_storage"] = True
             keys = render_job_keys(
                 job_def,
                 request.payload,
@@ -1386,6 +1366,8 @@ def _advance_persist_facts(
                 },
             }
             payload.update(_payload_subset(request.payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS))
+            payload["requires_fact_db"] = True
+            payload["require_database_persistence"] = True
             keys = render_job_keys(
                 job_def,
                 request.payload,

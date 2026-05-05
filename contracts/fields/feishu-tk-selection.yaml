@@ -73,9 +73,14 @@ fields:
   - display_name: 商品状态
     canonical_name: product_status
     role: system_status
-    update_policy: read_for_skip_policy
-    overwrite_policy: do_not_write_currently
-    source_of_truth: feishu.TK选品收集.商品状态
+    update_policy: read_for_skip_policy_and_write_terminal_status
+    overwrite_policy: system_may_write_terminal_status_only
+    allowed_system_write_values:
+      - 已下架/区域不可售
+      - 链接不可访问
+    disallowed_system_write_values:
+      - 在售
+    source_of_truth: terminal_product_availability_detection_or_feishu_existing_status
     write_target: feishu.TK选品收集.商品状态
 
   - display_name: 记录日期

@@ -12,6 +12,13 @@ fact_bundle_module = importlib.import_module(
     "automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler"
 )
 
+_FACT_DB_ENV_KEYS = (
+    "TK_FACT_DB_URL",
+    "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL",
+    "EXECUTION_CONTROL_FACT_DB_URL",
+    "FACT_DB_URL",
+)
+
 
 def _context(payload: dict) -> HandlerContext:
     return HandlerContext(
@@ -24,7 +31,14 @@ def _context(payload: dict) -> HandlerContext:
     )
 
 
-def test_fact_bundle_upsert_accepts_top_level_fact_bundle_only() -> None:
+def _clear_fact_db_env(monkeypatch) -> None:
+    for key in _FACT_DB_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_fact_bundle_upsert_accepts_top_level_fact_bundle_only(monkeypatch) -> None:
+    _clear_fact_db_env(monkeypatch)
+
     result = fact_bundle_upsert_handler(
         _context(
             {
@@ -95,7 +109,7 @@ def test_fact_bundle_upsert_ignores_legacy_nested_fact_bundle_inputs() -> None:
     assert result.result["upserted_entities"] == []
 
 
-def test_fact_bundle_upsert_uses_request_execution_control_db_url(monkeypatch) -> None:
+def test_fact_bundle_upsert_uses_project_fact_db_url(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_persist_fact_bundle(fact_bundle: dict, *, fact_db_url: str) -> dict:
@@ -109,13 +123,12 @@ def test_fact_bundle_upsert_uses_request_execution_control_db_url(monkeypatch) -
         }
 
     monkeypatch.setattr(fact_bundle_module, "_persist_fact_bundle", fake_persist_fact_bundle)
+    monkeypatch.setenv("TK_FACT_DB_URL", "postgresql+psycopg://facts")
 
     result = fact_bundle_upsert_handler(
         _context(
             {
-                "request_payload": {
-                    "execution_control_db_url": "postgresql+psycopg://runtime",
-                },
+                "request_payload": {},
                 "fact_bundle": {
                     "products": [{"product_id": "123456789"}],
                 },
@@ -125,7 +138,27 @@ def test_fact_bundle_upsert_uses_request_execution_control_db_url(monkeypatch) -
 
     assert result.status == "success"
     assert result.result["persistence_mode"] == "database"
-    assert captured["fact_db_url"] == "postgresql+psycopg://runtime"
+    assert captured["fact_db_url"] == "postgresql+psycopg://facts"
+
+
+def test_fact_bundle_upsert_fails_when_database_persistence_is_required_without_url(monkeypatch) -> None:
+    _clear_fact_db_env(monkeypatch)
+
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "require_database_persistence": True,
+                "fact_bundle": {
+                    "products": [{"product_id": "123456789"}],
+                },
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "fact_database_persistence_required"
+    assert result.summary["persistence_mode"] == "missing_database"
 
 
 def test_fact_bundle_upsert_persists_unavailable_product_status(monkeypatch) -> None:

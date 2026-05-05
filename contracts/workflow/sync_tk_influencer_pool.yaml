@@ -20,6 +20,21 @@ projection_mappers:
   - influencer_pool_projection_mapper
   - competitor_influencer_status_projection_mapper
 
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
 stages:
   - stage_code: read_competitor_candidates
     handler_code: feishu_table_read
@@ -42,6 +57,7 @@ stages:
 
 protected_invariants:
   - TK达人池 保持一人一行，按 达人ID upsert
+  - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 达人查找状态 的正式状态值只有 待查找、处理中、已完成、失败重试
   - 商品状态=已下架/区域不可售 的竞品记录不进入达人查找
   - 达人同步不新增业务专用 Runtime job 表，目标执行单元统一进入 api_worker_job

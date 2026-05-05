@@ -30,7 +30,14 @@ DIRECT_PRODUCT_ID = "123"
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
+        "allow_test_persistence_overrides": True,
         "execution_control_db_url": runtime_db_url,
+        "fact_db_url": runtime_db_url,
+        "execution_control_artifact_store_provider": "minio",
+        "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+        "execution_control_minio_endpoint": "127.0.0.1:9000",
+        "execution_control_minio_access_key": "minioadmin",
+        "execution_control_minio_secret_key": "miniosecret",
         "execution_control_stop_when_idle": True,
         "execution_control_max_iterations": 1,
         "requested_by": "pytest",
@@ -47,7 +54,7 @@ def _submit_ingest_request(runtime_db_url: str, **overrides: object) -> dict[str
         "product_id": DIRECT_PRODUCT_ID,
         "fallback_allowed": True,
         "source_channel_code": "console",
-        "reply_target": "reply://phase2",
+        "reply_target": "reply://product_fact",
     }
     submit_params.update(overrides)
     params = _runtime_params(runtime_db_url, **submit_params)
@@ -143,7 +150,88 @@ def _bind_browser_fallback_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_orchestrator, "BROWSER_HANDLER_REGISTRY", registry, raising=False)
 
 
-def test_phase2_submit_then_executor_dispatches_direct_ingest_jobs(runtime_db_url: str) -> None:
+def test_product_fact_submit_rejects_missing_strict_persistence_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "BUSINESS_EXECUTION_CONTROL_DB_URL",
+        "EXECUTION_CONTROL_DB_URL",
+        "TK_FACT_DB_URL",
+        "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL",
+        "EXECUTION_CONTROL_FACT_DB_URL",
+        "FACT_DB_URL",
+        "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER",
+        "EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER",
+        "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET",
+        "EXECUTION_CONTROL_ARTIFACT_BUCKET",
+        "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT",
+        "EXECUTION_CONTROL_MINIO_ENDPOINT",
+        "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY",
+        "EXECUTION_CONTROL_MINIO_ACCESS_KEY",
+        "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY",
+        "EXECUTION_CONTROL_MINIO_SECRET_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    task = TikTokFastMossProductIngestTask()
+    payload = task.run_runtime_request(
+        {
+            "control_action": "submit",
+            "product_url": DIRECT_PRODUCT_URL,
+            "product_id": DIRECT_PRODUCT_ID,
+        }
+    )
+
+    assert payload["request_status"] == "rejected"
+    assert payload["error_code"] == "strict_persistence_config_missing"
+    assert "Fact DB URL" in payload["missing_required_config"]
+    assert "object storage provider" in payload["missing_required_config"]
+
+
+def test_product_fact_submit_rejects_runtime_config_payload_without_test_override(runtime_db_url: str) -> None:
+    task = TikTokFastMossProductIngestTask()
+
+    payload = task.run_runtime_request(
+        {
+            "control_action": "submit",
+            "execution_control_db_url": runtime_db_url,
+            "fact_db_url": runtime_db_url,
+            "execution_control_artifact_store_provider": "minio",
+            "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+            "execution_control_minio_endpoint": "127.0.0.1:9000",
+            "execution_control_minio_access_key": "minioadmin",
+            "execution_control_minio_secret_key": "miniosecret",
+            "product_url": DIRECT_PRODUCT_URL,
+            "product_id": DIRECT_PRODUCT_ID,
+        }
+    )
+
+    assert payload["request_status"] == "rejected"
+    assert payload["error_code"] == "strict_persistence_config_missing"
+    assert "execution_control_db_url" in payload["forbidden_runtime_config_fields"]
+    assert "fact_db_url" in payload["forbidden_runtime_config_fields"]
+
+
+def test_product_fact_submit_persists_strict_persistence_summary_into_request_payload(runtime_db_url: str) -> None:
+    submitted = _submit_ingest_request(runtime_db_url)
+    request_id = str(submitted["request_id"])
+    store = _load_store(runtime_db_url)
+
+    stored_payload = store.load_task_request(request_id=request_id).payload
+
+    assert stored_payload["requires_fact_db"] is True
+    assert stored_payload["requires_object_storage"] is True
+    assert stored_payload["require_database_persistence"] is True
+    assert stored_payload["require_object_storage"] is True
+    assert stored_payload["runtime_config_source"] == "test_submit_override"
+    assert stored_payload["persistence"]["fact_db_configured"] is True
+    assert stored_payload["persistence"]["runtime_db_configured"] is True
+    assert stored_payload["artifact_store"]["provider"] == "minio"
+    assert stored_payload["artifact_store"]["bucket"] == "pytest-runtime-artifacts"
+    assert "fact_db_url" not in stored_payload
+    assert "execution_control_db_url" not in stored_payload
+    assert "minio_secret_key" not in stored_payload
+
+
+def test_product_fact_submit_then_executor_dispatches_direct_ingest_jobs(runtime_db_url: str) -> None:
     submitted = _submit_ingest_request(runtime_db_url)
     request_id = str(submitted["request_id"])
 
@@ -161,7 +249,7 @@ def test_phase2_submit_then_executor_dispatches_direct_ingest_jobs(runtime_db_ur
     assert row_job["payload"]["stage_code"] == "collect_selection_rows"
 
 
-def test_phase2_api_worker_once_dispatches_registry_and_persists_results(
+def test_product_fact_api_worker_once_dispatches_registry_and_persists_results(
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -187,7 +275,7 @@ def test_phase2_api_worker_once_dispatches_registry_and_persists_results(
     assert jobs_by_code["selection_row_refresh"]["result"]["supervisor"]["progress_stage"] == "selection_row_refresh"
 
 
-def test_phase2_browser_fallback_path_from_request_handler(
+def test_product_fact_browser_fallback_path_from_request_handler(
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,7 +299,7 @@ def test_phase2_browser_fallback_path_from_request_handler(
     assert row_job["result"]["handler_result"]["summary"]["browser_fallback_used"] is True
 
 
-def test_phase2_final_executor_once_summarizes_and_creates_notification_outbox(runtime_db_url: str) -> None:
+def test_product_fact_final_executor_once_summarizes_and_creates_notification_outbox(runtime_db_url: str) -> None:
     submitted = _submit_ingest_request(runtime_db_url)
     request_id = str(submitted["request_id"])
     store = _load_store(runtime_db_url)
@@ -274,7 +362,7 @@ def test_phase2_final_executor_once_summarizes_and_creates_notification_outbox(r
 
 
 @pytest.mark.parametrize("channel_code", ["noop", "console"])
-def test_phase2_outbox_once_marks_noop_or_console_sent(runtime_db_url: str, channel_code: str) -> None:
+def test_product_fact_outbox_once_marks_noop_or_console_sent(runtime_db_url: str, channel_code: str) -> None:
     submitted = _submit_ingest_request(runtime_db_url, source_channel_code=channel_code)
     request_id = str(submitted["request_id"])
     store = _load_store(runtime_db_url)

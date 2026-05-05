@@ -178,7 +178,7 @@ prepare_local_files() {
     "${install_dir}/runtime/cli_runs" \
     "${install_dir}/runtime/artifacts" \
     "${install_dir}/runtime/downloads" \
-    "${install_dir}/runtime/phase1_daemons" \
+    "${install_dir}/runtime/daemons" \
     "${install_dir}/runtime/execution_control"
 
   if [[ ! -f "${install_dir}/.env" && -f "${install_dir}/.env.example" ]]; then
@@ -479,27 +479,22 @@ install_agent_skill() {
   local install_dir="$1"
   local skills_dir="$2"
   local token="$3"
-  local browser_profile_ref="$4"
-  local fastmoss_phone="$5"
-  local fastmoss_password="$6"
-  local db_url="$7"
-  local artifact_root="$8"
-  local artifact_bucket="$9"
-  local requested_by="${10}"
-  local notification_channel_code="${11}"
-  local openclaw_agent_id="${12}"
-  local openclaw_state_dir="${13}"
-  local feishu_base_url="${14}"
-  local tk_selection_table_id="${15}"
-  local tk_selection_view_id="${16}"
-  local tk_competitor_table_id="${17}"
-  local tk_competitor_view_id="${18}"
-  local tk_influencer_pool_table_id="${19}"
-  local tk_influencer_pool_view_id="${20}"
-  local tk_influencer_outreach_table_id="${21}"
-  local tk_influencer_outreach_view_id="${22}"
-  local tk_hot_video_table_id="${23}"
-  local tk_hot_video_view_id="${24}"
+  local fastmoss_phone="$4"
+  local fastmoss_password="$5"
+  local notification_channel_code="$6"
+  local openclaw_agent_id="$7"
+  local openclaw_state_dir="$8"
+  local feishu_base_url="$9"
+  local tk_selection_table_id="${10}"
+  local tk_selection_view_id="${11}"
+  local tk_competitor_table_id="${12}"
+  local tk_competitor_view_id="${13}"
+  local tk_influencer_pool_table_id="${14}"
+  local tk_influencer_pool_view_id="${15}"
+  local tk_influencer_outreach_table_id="${16}"
+  local tk_influencer_outreach_view_id="${17}"
+  local tk_hot_video_table_id="${18}"
+  local tk_hot_video_view_id="${19}"
 
   local source_skill_dir="${install_dir}/skills/mujitask-tiktok-feishu-sync"
   local target_skill_dir="${skills_dir}/mujitask-tiktok-feishu-sync"
@@ -528,6 +523,7 @@ install_agent_skill() {
   fi
 
   seed_key_value_file_from_example "${target_skill_dir}/skill.local.env" "${target_skill_dir}/skill.local.env.example"
+  remove_skill_runtime_config_keys "${target_skill_dir}/skill.local.env"
   merge_key_value_file \
     "${target_skill_dir}/skill.local.env" \
     "INSTALL_DIR=$(quote_env_value "${install_dir}")" \
@@ -543,13 +539,8 @@ install_agent_skill() {
     "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "${tk_hot_video_table_id}")" \
     "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "${tk_hot_video_view_id}")" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
-    "BROWSER_PROFILE_REF=$(quote_env_value "${browser_profile_ref}")" \
     "FASTMOSS_PHONE=$(quote_env_value "${fastmoss_phone}")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "${fastmoss_password}")" \
-    "EXECUTION_CONTROL_DB_URL=$(quote_env_value "${db_url}")" \
-    "EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "${artifact_root}")" \
-    "EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "${artifact_bucket}")" \
-    "EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "${requested_by}")" \
     "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "${notification_channel_code}")" \
     "OPENCLAW_AGENT_ID=$(quote_env_value "${openclaw_agent_id}")" \
     "OPENCLAW_STATE_DIR=$(quote_env_value "${openclaw_state_dir}")"
@@ -673,13 +664,8 @@ main() {
     "${install_dir}" \
     "${skills_dir}" \
     "${token}" \
-    "${browser_profile_ref}" \
     "${fastmoss_phone}" \
     "${fastmoss_password}" \
-    "${db_url}" \
-    "${artifact_root}" \
-    "${artifact_bucket}" \
-    "${requested_by}" \
     "${notification_channel_code}" \
     "${openclaw_agent_id}" \
     "${openclaw_state_dir}" \

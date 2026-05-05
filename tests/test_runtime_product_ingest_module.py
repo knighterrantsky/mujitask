@@ -219,8 +219,8 @@ def test_dispatch_stage_enqueues_single_selection_row_job_for_direct_ingest() ->
     assert row_job["payload"]["product_identity"]["product_id"] == "1234567890"
 
 
-def test_dispatch_stage_passes_fact_db_url_from_runtime_env(monkeypatch) -> None:
-    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_URL", "postgresql+psycopg://runtime-fact")
+def test_dispatch_stage_marks_fact_db_required_without_passing_db_url(monkeypatch) -> None:
+    monkeypatch.setenv("TK_FACT_DB_URL", "postgresql+psycopg://runtime-fact")
     workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
     request = _build_request(
         current_stage="dispatch_selection_row_refresh",
@@ -236,7 +236,43 @@ def test_dispatch_stage_passes_fact_db_url_from_runtime_env(monkeypatch) -> None
     )
 
     row_job = next(job for job in store.api_jobs if job["job_code"] == "selection_row_refresh")
-    assert row_job["payload"]["fact_db_url"] == "postgresql+psycopg://runtime-fact"
+    assert row_job["payload"]["requires_fact_db"] is True
+    assert row_job["payload"]["require_database_persistence"] is True
+    assert "fact_db_url" not in row_job["payload"]
+    assert "execution_control_db_url" not in row_job["payload"]
+
+
+def test_dispatch_stage_passes_strict_object_storage_summary_without_secrets() -> None:
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="dispatch_selection_row_refresh",
+        payload={
+            "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
+            "artifact_store": {
+                "provider": "minio",
+                "bucket": "selection-media",
+                "object_prefix": "pytest/selection",
+            },
+        },
+    )
+    store = FakeRuntimeStore(request=request)
+
+    advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_selection_row_refresh",
+    )
+
+    row_job = next(job for job in store.api_jobs if job["job_code"] == "selection_row_refresh")
+    payload = row_job["payload"]
+    assert payload["requires_object_storage"] is True
+    assert payload["require_object_storage"] is True
+    assert payload["artifact_store"]["provider"] == "minio"
+    assert payload["artifact_store"]["bucket"] == "selection-media"
+    assert "minio_endpoint" not in payload
+    assert "minio_access_key" not in payload
+    assert "minio_secret_key" not in payload
 
 
 def test_finalize_request_updates_request_and_creates_outbox() -> None:

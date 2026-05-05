@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 from collections.abc import Mapping
@@ -18,6 +17,17 @@ from automation_business_scaffold.domains.tiktok.workflows import get_workflow_d
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
+
+FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
+    "persistence",
+    "require_database_persistence",
+    "requires_fact_db",
+)
+ARTIFACT_PASSTHROUGH_KEYS = (
+    "artifact_store",
+    "require_object_storage",
+    "requires_object_storage",
+)
 
 
 def advance_stage(
@@ -270,33 +280,38 @@ def _advance_dispatch_selection_row_refresh(
             product_identity.get("normalized_product_url"),
             source_record_id,
         )
+        row_payload = {
+            **_payload_subset(request_payload, FACT_PERSISTENCE_PASSTHROUGH_KEYS + ARTIFACT_PASSTHROUGH_KEYS),
+            "request_payload": request_payload,
+            "request_id": request.request_id,
+            "task_code": request.task_code,
+            "workflow_code": request.task_code,
+            "stage_code": "collect_selection_rows",
+            "source_record_id": source_record_id,
+            "source_table_ref": str(row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""),
+            "target_table_ref": str(request_payload.get("selection_table_ref") or ""),
+            "product_identity": product_identity,
+            "source_context": _mapping(row.get("source_context")),
+            "fallback_allowed": bool(request_payload.get("fallback_allowed", True)),
+            "writeback_enabled": bool(request_payload.get("writeback_enabled", True)),
+            "fastmoss_phone": str(request_payload.get("fastmoss_phone") or ""),
+            "fastmoss_password": str(request_payload.get("fastmoss_password") or ""),
+            "fastmoss_phone_env": str(request_payload.get("fastmoss_phone_env") or "FASTMOSS_PHONE"),
+            "fastmoss_password_env": str(request_payload.get("fastmoss_password_env") or "FASTMOSS_PASSWORD"),
+            "fastmoss_live_fetch": str(request_payload.get("fastmoss_live_fetch") or ""),
+            "table_refs": request_payload.get("table_refs") or {},
+            "access_token": request_payload.get("access_token") or "",
+            "access_token_env": request_payload.get("access_token_env") or "",
+        }
+        row_payload["requires_fact_db"] = True
+        row_payload["requires_object_storage"] = True
+        row_payload["require_database_persistence"] = True
+        row_payload["require_object_storage"] = True
         jobs.append({
             "business_key": business_key,
             "dedupe_key": f"{request.request_id}:collect_selection_rows:{source_record_id or business_key}",
             "max_attempts": 1,
-            "payload": {
-                "request_payload": request_payload,
-                "request_id": request.request_id,
-                "task_code": request.task_code,
-                "workflow_code": request.task_code,
-                "stage_code": "collect_selection_rows",
-                "source_record_id": source_record_id,
-                "source_table_ref": str(row.get("source_table_ref") or request_payload.get("selection_table_ref") or ""),
-                "target_table_ref": str(request_payload.get("selection_table_ref") or ""),
-                "product_identity": product_identity,
-                "source_context": _mapping(row.get("source_context")),
-                "fallback_allowed": bool(request_payload.get("fallback_allowed", True)),
-                "writeback_enabled": bool(request_payload.get("writeback_enabled", True)),
-                "fastmoss_phone": str(request_payload.get("fastmoss_phone") or ""),
-                "fastmoss_password": str(request_payload.get("fastmoss_password") or ""),
-                "fastmoss_phone_env": str(request_payload.get("fastmoss_phone_env") or "FASTMOSS_PHONE"),
-                "fastmoss_password_env": str(request_payload.get("fastmoss_password_env") or "FASTMOSS_PASSWORD"),
-                "fastmoss_live_fetch": str(request_payload.get("fastmoss_live_fetch") or ""),
-                "fact_db_url": _fact_db_url_from_request(request_payload),
-                "table_refs": request_payload.get("table_refs") or {},
-                "access_token": request_payload.get("access_token") or "",
-                "access_token_env": request_payload.get("access_token_env") or "",
-            },
+            "payload": row_payload,
         })
 
     enqueue_payload = store.enqueue_api_worker_jobs(
@@ -592,16 +607,8 @@ def _candidate_row_limit(request_payload: Mapping[str, Any]) -> int:
     return 0
 
 
-def _fact_db_url_from_request(request_payload: Mapping[str, Any]) -> str:
-    return _first_non_empty(
-        request_payload.get("fact_db_url"),
-        request_payload.get("execution_control_fact_db_url"),
-        request_payload.get("db_url"),
-        request_payload.get("execution_control_db_url"),
-        os.environ.get("TK_FACT_DB_URL", ""),
-        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", ""),
-        os.environ.get("EXECUTION_CONTROL_DB_URL", ""),
-    )
+def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: payload[key] for key in keys if key in payload and payload.get(key) not in (None, "")}
 
 
 def _resolve_product_identity(*sources: Any) -> dict[str, str]:

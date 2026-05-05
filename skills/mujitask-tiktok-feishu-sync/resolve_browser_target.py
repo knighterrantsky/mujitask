@@ -44,10 +44,7 @@ def _resolve_path(install_dir: Path, raw_path: str) -> Path:
 
 def _load_resolution_env(install_dir: Path) -> dict[str, str]:
     env: dict[str, str] = {}
-    for path in (
-        install_dir / ".env",
-        install_dir / "skills" / "mujitask-tiktok-feishu-sync" / "skill.local.env",
-    ):
+    for path in (install_dir / ".env",):
         env.update(_load_env_file(path))
     for key in (
         "BROWSER_PROFILES_FILE",
@@ -101,7 +98,8 @@ def resolve_browser_target(
     if not resolved_profile_ref:
         raise ValueError(
             "No browser profile_ref provided. Pass one explicitly, set BROWSER_PROFILE_REF "
-            "in skill.local.env, or configure DEFAULT_PROFILE_REF in the project .env."
+            "in the process/project runtime environment, or configure DEFAULT_PROFILE_REF "
+            "in the project .env."
         )
 
     explicit_profile = _profile_from_explicit_env(env=env, profile_ref=resolved_profile_ref)

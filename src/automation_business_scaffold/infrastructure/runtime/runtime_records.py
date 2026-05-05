@@ -130,7 +130,3 @@ class ResourceLeaseRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-Phase1TaskRequestRecord = RuntimeTaskRequestRecord
-Phase1TaskExecutionRecord = RuntimeTaskExecutionRecord

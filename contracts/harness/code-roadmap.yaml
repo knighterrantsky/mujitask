@@ -1,5 +1,5 @@
 schema_version: 1
-current_phase: stable
+roadmap_status: stable
 
 source_of_truth:
   project_structure: docs/arch/project-structure-contract.md
@@ -152,7 +152,7 @@ features:
         - tests/test_runtime_influencer_executor_integration.py
         - tests/test_runtime_sync_tk_influencer_pool.py
         - tests/test_tiktok_fastmoss_product_ingest.py
-        - tests/test_runtime_phase2_ingest.py
+        - tests/test_runtime_product_fact_ingest.py
         - tests/test_runtime_product_ingest_module.py
         - tests/test_outbox_dispatcher_integration.py
         - tests/test_execution_supervisor_runtime.py
@@ -162,7 +162,7 @@ features:
         - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py
         - uv run --extra dev pytest tests/test_runtime_influencer_executor_integration.py tests/test_runtime_sync_tk_influencer_pool.py
         - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_product_ingest_module.py
-        - uv run --extra dev pytest tests/test_runtime_phase2_ingest.py
+        - uv run --extra dev pytest tests/test_runtime_product_fact_ingest.py
         - uv run --extra dev pytest tests/test_outbox_dispatcher_integration.py
         - uv run --extra dev pytest tests/test_execution_supervisor_runtime.py
     completion_rules:
@@ -334,10 +334,14 @@ features:
       - contracts/workflow/search_keyword_selection_products.yaml
       - contracts/facts/product-fact-collection.yaml
     allowed_paths:
+      - skills/**
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/contracts/**
+      - src/automation_business_scaffold/infrastructure/artifacts/**
+      - scripts/deploy/**
+      - examples/openclaw/**
       - contracts/**
       - tests/**
     forbidden_paths:
@@ -347,6 +351,10 @@ features:
         - tests/test_feishu_common_handlers.py
         - tests/test_runtime_search_keyword_competitor_products.py
         - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_run_skill_step.py
+        - tests/test_fact_bundle_upsert_handler.py
+        - tests/test_media_asset_sync_handler.py
+        - tests/integration/test_real_skill_submit_persistence.py
         - tests/test_tiktok_fastmoss_product_ingest.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
@@ -356,7 +364,7 @@ features:
         - tests/test_agent.py
         - tests/test_workflow_demo.py
       commands:
-        - uv run --extra dev pytest tests/test_fastmoss_product_search_handler.py tests/test_feishu_common_handlers.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_tiktok_fastmoss_product_ingest.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_workflow_defs_contract.py tests/test_registry.py tests/test_project_structure_contract.py tests/test_agent.py tests/test_workflow_demo.py
+        - uv run --extra dev pytest tests/test_fastmoss_product_search_handler.py tests/test_feishu_common_handlers.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_tiktok_fastmoss_product_ingest.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_workflow_defs_contract.py tests/test_registry.py tests/test_project_structure_contract.py tests/test_agent.py tests/test_workflow_demo.py
     completion_rules:
       - FastMoss search-list filtering must apply before selection seed insertion.
       - Selection keyword defaults are 7-day sales >= 500 and price range maximum >= 10.99.
@@ -376,23 +384,40 @@ features:
       - tests/test_tiktok_fastmoss_product_ingest.py
     source_contracts:
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+      - contracts/facts/product-fact-collection.yaml
       - contracts/fields/feishu-tk-selection.yaml
       - docs/arch/fact-db-schema-design.md
       - docs/arch/storage-architecture-design.md
     allowed_paths:
+      - docs/arch/**
+      - docs/dev/**
+      - docs/ops/**
+      - docs/reference/**
+      - skills/**
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/infrastructure/artifacts/**
       - contracts/**
       - tests/**
     forbidden_paths:
     done_gate:
       tests:
         - tests/test_tiktok_fastmoss_product_ingest.py
-        - tests/test_runtime_phase2_ingest.py
+        - tests/test_runtime_product_fact_ingest.py
         - tests/test_runtime_product_ingest_module.py
+        - tests/test_run_skill_step.py
+        - tests/test_fact_bundle_upsert_handler.py
+        - tests/test_media_asset_sync_handler.py
+        - tests/integration/test_real_skill_submit_persistence.py
+        - tests/test_config.py
+        - tests/test_openclaw_deploy_utils.py
       commands:
-        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_phase2_ingest.py tests/test_runtime_product_ingest_module.py
+        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_product_fact_ingest.py tests/test_runtime_product_ingest_module.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_config.py tests/test_openclaw_deploy_utils.py
     completion_rules:
       - Must preserve request-first/browser-fallback workflow contract.
+      - Formal skill submit must not pass run_mode or raw Runtime DB/Fact DB/Object Storage config.
+      - skill.local.env must not own Runtime DB, Fact DB, Object Storage, browser provider/profile_id/workspace_id, or browser default profile configuration.
+      - Submit preflight must resolve strict persistence from project runtime config or explicit test-only overrides.
+      - Request and row job payloads must not persist DB URLs or object storage secrets.
       - Full e2e may remain blocked by active rewrite, but complete claim requires gate pass.

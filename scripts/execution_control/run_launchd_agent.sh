@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ROOT_DIR}/scripts/execution_control/executor.local.env"
 
 cd "${ROOT_DIR}"
-mkdir -p "${ROOT_DIR}/runtime/phase1_daemons"
+mkdir -p "${ROOT_DIR}/runtime/daemons"
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a

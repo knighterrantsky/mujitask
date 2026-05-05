@@ -30,7 +30,14 @@ def test_submit_rejects_when_runtime_db_connection_health_is_unhealthy(monkeypat
     payload = runner.submit_task_request(
         "refresh_current_competitor_table",
         {
+            "allow_test_persistence_overrides": True,
             "execution_control_db_url": "postgresql+psycopg://pytest@/runtime?host=/tmp",
+            "fact_db_url": "postgresql+psycopg://pytest@/facts?host=/tmp",
+            "execution_control_artifact_store_provider": "minio",
+            "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+            "execution_control_minio_endpoint": "127.0.0.1:9000",
+            "execution_control_minio_access_key": "minioadmin",
+            "execution_control_minio_secret_key": "miniosecret",
             "execution_control_db_health_max_connection_ratio": 0.7,
         },
     )

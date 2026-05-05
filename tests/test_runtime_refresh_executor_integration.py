@@ -19,6 +19,7 @@ from automation_business_scaffold.contracts.handler.contract import (
 from automation_business_scaffold.domains.tiktok.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import StoredArtifact
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
@@ -36,13 +37,29 @@ row_flow_module = importlib.import_module(
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
+        "allow_test_persistence_overrides": True,
         "execution_control_db_url": runtime_db_url,
+        "fact_db_url": runtime_db_url,
+        "execution_control_artifact_store_provider": "minio",
+        "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+        "execution_control_minio_endpoint": "127.0.0.1:9000",
+        "execution_control_minio_access_key": "minioadmin",
+        "execution_control_minio_secret_key": "miniosecret",
         "execution_control_stop_when_idle": True,
         "execution_control_max_iterations": 1,
         "requested_by": "pytest",
     }
     params.update(overrides)
     return params
+
+
+def _configure_project_runtime_env(monkeypatch: pytest.MonkeyPatch, runtime_db_url: str) -> None:
+    monkeypatch.setenv("TK_FACT_DB_URL", runtime_db_url)
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "minio")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET", "pytest-runtime-artifacts")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT", "127.0.0.1:9000")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY", "minioadmin")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY", "miniosecret")
 
 
 def _submit_refresh_request(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -354,6 +371,8 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    _configure_project_runtime_env(monkeypatch, runtime_db_url)
+
     class FakeFeishuClient:
         rows: list[dict[str, object]] = []
         updated: list[dict[str, object]] = []
@@ -401,6 +420,45 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         FakeFeishuClient,
     )
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)
+
+    class FakeArtifactStore:
+        provider_code = "minio"
+
+        def upload_file(self, *, bucket, object_key, local_path, content_type, metadata=None):
+            return StoredArtifact(
+                bucket=bucket,
+                object_key=object_key,
+                etag="pytest-etag",
+                size=1,
+                content_type=content_type,
+                uri=f"minio://{bucket}/{object_key}",
+                metadata={"remote_uri": f"minio://{bucket}/{object_key}", **dict(metadata or {})},
+            )
+
+        def build_uri(self, *, bucket, object_key):
+            return f"minio://{bucket}/{object_key}"
+
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.media.asset_sync_handler.create_store_from_settings",
+        lambda settings: FakeArtifactStore(),
+    )
+
+    class FakeImageResponse:
+        headers = {"Content-Type": "image/jpeg"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b"fake-image-bytes"
+
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.media.asset_sync_handler.urlopen",
+        lambda request, timeout: FakeImageResponse(),
+    )
 
     submitted = _submit_refresh_request(
         runtime_db_url,
@@ -477,6 +535,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         },
         fact_db_url=runtime_db_url,
         artifact_root=str(tmp_path),
+        sync_referenced_files=True,
         require_materialized_assets=False,
         execution_child_runner_mode="inline",
     )

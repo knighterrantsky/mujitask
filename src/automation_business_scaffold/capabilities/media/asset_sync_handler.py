@@ -30,6 +30,7 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     create_store_from_settings,
     sync_artifact_specs,
 )
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
 from pathlib import Path
@@ -50,7 +51,54 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         )
 
     artifact_settings = _resolve_artifact_settings(payload)
-    artifact_store = create_store_from_settings(artifact_settings)
+    strict_storage_required = _requires_object_storage(payload, artifact_settings)
+    storage_error = _object_storage_requirement_error(
+        payload=payload,
+        artifact_settings=artifact_settings,
+        asset_count=len(asset_refs),
+    )
+    if storage_error:
+        return failed_result(
+            context,
+            error=storage_error,
+            summary={
+                "asset_count": len(asset_refs),
+                "synced_count": 0,
+                "artifact_count": 0,
+                "artifact_store_provider": normalize_artifact_store_provider(
+                    artifact_settings.get("artifact_store_provider")
+                ),
+            },
+            result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+        )
+    try:
+        artifact_store = create_store_from_settings(artifact_settings)
+    except Exception as exc:  # noqa: BLE001 - strict formal workflows must fail before local fallback.
+        if strict_storage_required:
+            return failed_result(
+                context,
+                error=build_error(
+                    error_type="persistence_configuration_invalid",
+                    error_code="object_storage_configuration_invalid",
+                    message=str(exc),
+                    retryable=False,
+                    details={
+                        "artifact_store_provider": normalize_artifact_store_provider(
+                            artifact_settings.get("artifact_store_provider")
+                        )
+                    },
+                ),
+                summary={
+                    "asset_count": len(asset_refs),
+                    "synced_count": 0,
+                    "artifact_count": 0,
+                    "artifact_store_provider": normalize_artifact_store_provider(
+                        artifact_settings.get("artifact_store_provider")
+                    ),
+                },
+                result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+            )
+        raise
     artifact_root = Path(first_non_empty(payload.get("artifact_root"), tempfile.gettempdir()))
     artifact_bucket = first_non_empty(payload.get("artifact_bucket"), artifact_settings.get("artifact_bucket"), "runtime-artifacts")
     artifact_object_prefix = first_non_empty(
@@ -186,7 +234,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "artifact_refs": artifact_refs,
         "media_fact_bundle": media_bundle,
     }
-    if _coerce_bool(payload.get("require_materialized_assets")):
+    if strict_storage_required or _coerce_bool(payload.get("require_materialized_assets")):
         referenced_assets = [asset for asset in synced_assets if asset.get("sync_state") == "referenced"]
         if referenced_assets:
             return failed_result(
@@ -217,8 +265,7 @@ def _create_fact_store(payload: dict[str, Any], *, warnings: list[str]) -> TKFac
         coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
         payload.get("db_url"),
         request_payload.get("db_url"),
-        payload.get("execution_control_db_url"),
-        request_payload.get("execution_control_db_url"),
+        get_execution_control_defaults().fact_db_url,
     )
     if not fact_db_url:
         return None
@@ -306,30 +353,14 @@ def _asset_ref_keys(asset: dict[str, Any]) -> list[str]:
 
 
 def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    settings = coerce_mapping(payload.get("artifact_store"))
-    if settings:
-        return settings
-    explicit_settings = compact_dict(
-        {
-            "artifact_store_provider": payload.get("artifact_store_provider"),
-            "artifact_bucket": payload.get("artifact_bucket"),
-            "artifact_object_prefix": payload.get("artifact_object_prefix"),
-            "minio_endpoint": payload.get("minio_endpoint"),
-            "minio_access_key": payload.get("minio_access_key"),
-            "minio_secret_key": payload.get("minio_secret_key"),
-            "minio_secure": payload.get("minio_secure"),
-            "minio_region": payload.get("minio_region"),
-            "minio_create_bucket": payload.get("minio_create_bucket"),
-        }
-    )
-    if explicit_settings:
-        return explicit_settings
+    request_payload = coerce_mapping(payload.get("request_payload"))
     defaults = get_execution_control_defaults()
-    return compact_dict(
+    settings = compact_dict(
         {
             "artifact_store_provider": defaults.artifact_store_provider,
             "artifact_bucket": defaults.artifact_bucket,
             "artifact_object_prefix": defaults.artifact_object_prefix,
+            "artifact_root": defaults.artifact_root,
             "minio_endpoint": defaults.minio_endpoint,
             "minio_access_key": defaults.minio_access_key,
             "minio_secret_key": defaults.minio_secret_key,
@@ -337,6 +368,131 @@ def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
             "minio_region": defaults.minio_region,
             "minio_create_bucket": defaults.minio_create_bucket,
         }
+    )
+    for source in (coerce_mapping(request_payload.get("artifact_store")), coerce_mapping(payload.get("artifact_store"))):
+        if not source:
+            continue
+        for source_key, target_key in (
+            ("provider", "artifact_store_provider"),
+            ("artifact_store_provider", "artifact_store_provider"),
+            ("bucket", "artifact_bucket"),
+            ("artifact_bucket", "artifact_bucket"),
+            ("object_prefix", "artifact_object_prefix"),
+            ("artifact_object_prefix", "artifact_object_prefix"),
+            ("artifact_root", "artifact_root"),
+        ):
+            value = source.get(source_key)
+            if value not in (None, ""):
+                settings[target_key] = value
+    explicit_settings = compact_dict(
+        {
+            "artifact_store_provider": first_non_empty(
+                payload.get("artifact_store_provider"),
+                payload.get("execution_control_artifact_store_provider"),
+                request_payload.get("artifact_store_provider"),
+                request_payload.get("execution_control_artifact_store_provider"),
+            ),
+            "artifact_bucket": first_non_empty(
+                payload.get("artifact_bucket"),
+                payload.get("execution_control_artifact_bucket"),
+                request_payload.get("artifact_bucket"),
+                request_payload.get("execution_control_artifact_bucket"),
+            ),
+            "artifact_object_prefix": first_non_empty(
+                payload.get("artifact_object_prefix"),
+                payload.get("execution_control_artifact_object_prefix"),
+                request_payload.get("artifact_object_prefix"),
+                request_payload.get("execution_control_artifact_object_prefix"),
+            ),
+            "minio_endpoint": first_non_empty(
+                payload.get("minio_endpoint"),
+                payload.get("execution_control_minio_endpoint"),
+                request_payload.get("minio_endpoint"),
+                request_payload.get("execution_control_minio_endpoint"),
+            ),
+            "minio_access_key": first_non_empty(
+                payload.get("minio_access_key"),
+                payload.get("execution_control_minio_access_key"),
+                request_payload.get("minio_access_key"),
+                request_payload.get("execution_control_minio_access_key"),
+            ),
+            "minio_secret_key": first_non_empty(
+                payload.get("minio_secret_key"),
+                payload.get("execution_control_minio_secret_key"),
+                request_payload.get("minio_secret_key"),
+                request_payload.get("execution_control_minio_secret_key"),
+            ),
+            "minio_secure": first_non_empty(
+                payload.get("minio_secure"),
+                payload.get("execution_control_minio_secure"),
+                request_payload.get("minio_secure"),
+                request_payload.get("execution_control_minio_secure"),
+            ),
+            "minio_region": first_non_empty(
+                payload.get("minio_region"),
+                payload.get("execution_control_minio_region"),
+                request_payload.get("minio_region"),
+                request_payload.get("execution_control_minio_region"),
+            ),
+            "minio_create_bucket": first_non_empty(
+                payload.get("minio_create_bucket"),
+                payload.get("execution_control_minio_create_bucket"),
+                request_payload.get("minio_create_bucket"),
+                request_payload.get("execution_control_minio_create_bucket"),
+            ),
+        }
+    )
+    if explicit_settings:
+        settings.update(explicit_settings)
+    return compact_dict(settings)
+
+
+def _requires_object_storage(payload: dict[str, Any], artifact_settings: dict[str, Any]) -> bool:
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    for source in (payload, request_payload, artifact_settings):
+        for key in ("require_object_storage", "requires_object_storage", "strict_object_storage"):
+            if key in source and source.get(key) not in (None, ""):
+                return _coerce_bool(source.get(key))
+    return False
+
+
+def _object_storage_requirement_error(
+    *,
+    payload: dict[str, Any],
+    artifact_settings: dict[str, Any],
+    asset_count: int,
+) -> Any | None:
+    if not _requires_object_storage(payload, artifact_settings):
+        return None
+    provider = normalize_artifact_store_provider(artifact_settings.get("artifact_store_provider"))
+    missing: list[str] = []
+    if provider == "local":
+        missing.append("object storage provider")
+    if not first_non_empty(payload.get("artifact_bucket"), artifact_settings.get("artifact_bucket")):
+        missing.append("artifact bucket")
+    if provider == "minio":
+        for key, label in (
+            ("minio_endpoint", "MinIO/S3 endpoint"),
+            ("minio_access_key", "MinIO/S3 access key"),
+            ("minio_secret_key", "MinIO/S3 secret key"),
+        ):
+            if not first_non_empty(payload.get(key), artifact_settings.get(key)):
+                missing.append(label)
+    if not missing:
+        return None
+    return build_error(
+        error_type="persistence_configuration_missing",
+        error_code="object_storage_required",
+        message=(
+            "media_asset_sync requires object storage persistence, but required "
+            f"configuration is missing: {', '.join(missing)}."
+        ),
+        retryable=False,
+        details={
+            "asset_count": asset_count,
+            "artifact_store_provider": provider,
+            "missing_required_config": missing,
+        },
     )
 
 

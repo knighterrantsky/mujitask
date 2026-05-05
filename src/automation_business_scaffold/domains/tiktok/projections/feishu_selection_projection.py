@@ -36,7 +36,8 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
     return _compact(item)
 
 
-_SKIP_WRITE_IF_EMPTY = frozenset({"记录日期", "商品状态"})
+_SKIP_WRITE_IF_EMPTY = frozenset({"记录日期"})
+_TERMINAL_PRODUCT_STATUSES = frozenset({"已下架/区域不可售", "链接不可访问"})
 
 
 def _map_selection_seed_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -119,6 +120,11 @@ def _select_missing_selection_fields(
     has_content_update = False
     for field_name, value in projection_fields.items():
         if field_name in _SKIP_WRITE_IF_EMPTY:
+            continue
+        if field_name == "商品状态":
+            if _text(value) in _TERMINAL_PRODUCT_STATUSES:
+                selected[field_name] = value
+                has_content_update = True
             continue
         if field_name == "商品ID":
             selected["商品ID"] = product_id or value

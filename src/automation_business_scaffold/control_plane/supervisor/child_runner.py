@@ -200,7 +200,7 @@ def handler_result_from_payload(
             payload=dict(next_action_payload.get("payload") or {}),
         ),
         error=error,
-        contract_revision=str(payload.get("contract_revision") or "phase1"),
+        contract_revision=str(payload.get("contract_revision") or "runtime_contract"),
     )
 
 

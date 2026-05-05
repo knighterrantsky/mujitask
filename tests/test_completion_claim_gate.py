@@ -62,7 +62,7 @@ def test_harness_completion_claim_gate_returns_structured_result() -> None:
 def test_missing_context_feature_fails(tmp_path: Path) -> None:
     roadmap = {
         "schema_version": 1,
-        "current_phase": "test",
+        "roadmap_status": "test",
         "features": [
             {
                 "feature_code": "missing_context",
@@ -92,7 +92,7 @@ def test_missing_context_feature_fails(tmp_path: Path) -> None:
 def test_complete_claim_requires_done_gate(tmp_path: Path) -> None:
     roadmap = {
         "schema_version": 1,
-        "current_phase": "test",
+        "roadmap_status": "test",
         "features": [
             {
                 "feature_code": "complete_without_gate",
@@ -118,7 +118,7 @@ def test_complete_claim_requires_done_gate(tmp_path: Path) -> None:
 def test_complete_claim_requires_run_gates(tmp_path: Path) -> None:
     roadmap = {
         "schema_version": 1,
-        "current_phase": "test",
+        "roadmap_status": "test",
         "features": [
             {
                 "feature_code": "complete_without_running_gates",
@@ -148,7 +148,7 @@ def test_complete_claim_requires_run_gates(tmp_path: Path) -> None:
 def test_run_gates_executes_done_gate_commands(tmp_path: Path) -> None:
     roadmap = {
         "schema_version": 1,
-        "current_phase": "test",
+        "roadmap_status": "test",
         "features": [
             {
                 "feature_code": "command_failure",

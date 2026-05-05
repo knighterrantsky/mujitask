@@ -7,26 +7,27 @@ import json
 import os
 import subprocess
 import tempfile
-import time
-import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "skill.local.env"
-RESULT_HELPER = SCRIPT_DIR / "openclaw_result.py"
 RESOLVE_BROWSER_TARGET = SCRIPT_DIR / "resolve_browser_target.py"
 LIGHTWEIGHT_SUBMIT_HELPER = SCRIPT_DIR / "lightweight_submit.py"
+
 DEFAULT_OPENCLAW_AGENT_ID = "tiktok-ops"
+FEISHU_ACCESS_TOKEN_ENV = "MUJITASK_FEISHU_ACCESS_TOKEN"
 FEISHU_TABLE_REF_PREFIX = "feishu://mujitask/"
+DEFAULT_URL_FIELD_NAME = "产品链接"
+
 TK_SELECTION_TABLE_ALIAS = "tk_selection"
 TK_COMPETITOR_TABLE_ALIAS = "tk_competitor"
 TK_INFLUENCER_POOL_TABLE_ALIAS = "tk_influencer_pool"
 TK_INFLUENCER_OUTREACH_TABLE_ALIAS = "tk_influencer_outreach"
 TK_HOT_VIDEO_TABLE_ALIAS = "tk_hot_video"
-FEISHU_ACCESS_TOKEN_ENV = "MUJITASK_FEISHU_ACCESS_TOKEN"
+
 TK_FEISHU_TABLE_ENV_SLUGS = {
     TK_SELECTION_TABLE_ALIAS: "TK_SELECTION",
     TK_COMPETITOR_TABLE_ALIAS: "TK_COMPETITOR",
@@ -34,10 +35,6 @@ TK_FEISHU_TABLE_ENV_SLUGS = {
     TK_INFLUENCER_OUTREACH_TABLE_ALIAS: "TK_INFLUENCER_OUTREACH",
     TK_HOT_VIDEO_TABLE_ALIAS: "TK_HOT_VIDEO",
 }
-
-
-def _feishu_table_ref(table_alias: str) -> str:
-    return f"{FEISHU_TABLE_REF_PREFIX}{table_alias}"
 
 
 def _normalize_env_entry(value: str) -> str:
@@ -60,14 +57,13 @@ def _load_skill_env(path: Path) -> dict[str, str]:
             continue
         key, value = raw_line.split("=", 1)
         normalized_key = _normalize_env_entry(key)
-        if not normalized_key:
-            continue
-        values[normalized_key] = _normalize_env_entry(value)
+        if normalized_key:
+            values[normalized_key] = _normalize_env_entry(value)
     return values
 
 
 def _require_env_value(env: dict[str, str], key: str) -> str:
-    value = str(env.get(key, "")).strip()
+    value = str(env.get(key, "") or "").strip()
     if not value:
         raise ValueError(f"{key} is required in {ENV_FILE}.")
     return value
@@ -81,6 +77,10 @@ def _json_compact(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _feishu_table_ref(table_alias: str) -> str:
+    return f"{FEISHU_TABLE_REF_PREFIX}{table_alias}"
+
+
 def _compose_feishu_table_url(base_url: str, table_id: str, view_id: str = "") -> str:
     base = str(base_url or "").strip()
     table = str(table_id or "").strip()
@@ -92,15 +92,14 @@ def _compose_feishu_table_url(base_url: str, table_id: str, view_id: str = "") -
     query["table"] = table
     if view:
         query["view"] = view
-    elif "view" in query:
+    else:
         query.pop("view", None)
     path = parsed.path.rstrip("/") or parsed.path
     return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment))
 
 
 def _feishu_table_env_key(table_alias: str, suffix: str) -> str:
-    env_slug = TK_FEISHU_TABLE_ENV_SLUGS[table_alias]
-    return f"MUJITASK_FEISHU_{env_slug}_{suffix}"
+    return f"MUJITASK_FEISHU_{TK_FEISHU_TABLE_ENV_SLUGS[table_alias]}_{suffix}"
 
 
 def _configured_feishu_table_url(*, skill_env: dict[str, str], table_alias: str) -> str:
@@ -201,7 +200,7 @@ def _discover_openclaw_delivery_context(skill_env: dict[str, str]) -> dict[str, 
         or str(os.environ.get("OPENCLAW_DELIVERY_SESSION_ID", "")).strip()
     )
     if explicit_channel and explicit_to:
-        payload = {"channel": explicit_channel, "to": explicit_to}
+        payload: dict[str, Any] = {"channel": explicit_channel, "to": explicit_to}
         if explicit_account:
             payload["accountId"] = explicit_account
         if explicit_session_id:
@@ -217,12 +216,9 @@ def _discover_openclaw_delivery_context(skill_env: dict[str, str]) -> dict[str, 
     candidate_files = [sessions_dir / "sessions.json"]
     backups_dir = sessions_dir / "backups"
     if backups_dir.exists():
-        backup_files = sorted(
-            backups_dir.glob("*.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
+        candidate_files.extend(
+            sorted(backups_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]
         )
-        candidate_files.extend(backup_files[:10])
 
     best_candidate: dict[str, Any] = {}
     best_updated_at = -1.0
@@ -258,7 +254,13 @@ def _discover_openclaw_delivery_context(skill_env: dict[str, str]) -> dict[str, 
     return best_candidate
 
 
-def _resolve_browser_target(*, python_bin: Path, install_dir: Path, requested_profile_ref: str, fallback_profile_ref: str) -> dict[str, Any]:
+def _resolve_browser_target(
+    *,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+    fallback_profile_ref: str = "",
+) -> dict[str, Any]:
     command = [
         str(python_bin),
         str(RESOLVE_BROWSER_TARGET),
@@ -272,159 +274,8 @@ def _resolve_browser_target(*, python_bin: Path, install_dir: Path, requested_pr
         command.extend(["--fallback-profile-ref", fallback_profile_ref])
 
     result = subprocess.run(command, check=True, capture_output=True, text=True)
-    return json.loads(result.stdout)
-
-
-def _probe_cdp_status(debug_http: str) -> tuple[bool, str]:
-    version_url = f"{debug_http.rstrip('/')}/json/version"
-    try:
-        with urllib.request.urlopen(version_url, timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        browser = str(payload.get("Browser", "") or "").strip()
-        if browser:
-            return True, f"Browser={browser}"
-        return False, "missing Browser field in /json/version response"
-    except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code} from {version_url}"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-
-
-def _ensure_browser_ready(*, python_bin: Path, script_dir: Path, browser_target: dict[str, Any]) -> None:
-    provider = str(browser_target.get("provider", "")).strip()
-    profile_ref = str(browser_target.get("profile_ref", "")).strip()
-    metadata = browser_target.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-    debug_http = str(metadata.get("debug_http", "") or "http://127.0.0.1:9222").strip()
-
-    if provider == "roxy":
-        print(f"[skill-step] Using browser profile_ref={profile_ref} provider=roxy. Skipping local CDP checks.")
-        return
-    if provider != "chrome_cdp":
-        raise ValueError(f"Unsupported browser provider '{provider}' for profile_ref={profile_ref}.")
-    ready, detail = _probe_cdp_status(debug_http)
-    if ready:
-        return
-    parsed_debug = urlparse(debug_http)
-    debug_host = (parsed_debug.hostname or "").strip().lower()
-    debug_port = parsed_debug.port or (443 if parsed_debug.scheme == "https" else 80)
-    if debug_host not in {"127.0.0.1", "localhost"}:
-        raise ValueError(
-            f"Chrome CDP is not ready at {debug_http} for profile_ref={profile_ref}. "
-            f"Probe detail: {detail}."
-        )
-
-    print(
-        f"[skill-step] Chrome CDP is not ready at {debug_http} "
-        f"(probe={detail}). Trying to start Chrome on port {debug_port}."
-    )
-    startup_env = os.environ.copy()
-    startup_env["MUJITASK_CHROME_CDP_PORT"] = str(debug_port)
-    subprocess.run(["bash", str(script_dir / "start_browser_cdp.sh")], check=True, env=startup_env)
-    last_detail = detail
-    for _ in range(30):
-        ready, last_detail = _probe_cdp_status(debug_http)
-        if ready:
-            return
-        time.sleep(1)
-    raise ValueError(f"Chrome CDP did not become ready on {debug_http}. Last probe detail: {last_detail}.")
-
-
-def _generate_run_id(task_name: str) -> str:
-    return f"openclaw-{task_name}-{time.strftime('%Y%m%d%H%M%S')}-{os.getpid()}"
-
-
-def _read_json_file(path: Path) -> Any:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _progress_snapshot(*, run_file: Path, steps_file: Path) -> tuple[int, str, str, str]:
-    step_count = 0
-    last_step = ""
-    last_status = ""
-    run_status = ""
-
-    steps_payload = _read_json_file(steps_file)
-    if isinstance(steps_payload, list):
-        step_count = len(steps_payload)
-        if steps_payload and isinstance(steps_payload[-1], dict):
-            last_step = str(steps_payload[-1].get("step_id", "") or "")
-            last_status = str(steps_payload[-1].get("status", "") or "")
-
-    run_payload = _read_json_file(run_file)
-    if isinstance(run_payload, dict):
-        run_status = str(run_payload.get("status", "") or "")
-
-    return step_count, last_step, last_status, run_status
-
-
-def _monitor_process(*, process: subprocess.Popen[str], run_file: Path, steps_file: Path, prefix: str) -> None:
-    last_snapshot: tuple[int, str, str, str] | None = None
-    heartbeat_counter = 0
-    while process.poll() is None:
-        snapshot = _progress_snapshot(run_file=run_file, steps_file=steps_file)
-        if snapshot != last_snapshot:
-            step_count, last_step, last_status, run_status = snapshot
-            if step_count > 0:
-                print(
-                    f"[{prefix}] Progress: run_status={run_status or 'running'} "
-                    f"completed_steps={step_count} last_step={last_step or 'unknown'} "
-                    f"last_status={last_status or 'unknown'}"
-                )
-            elif run_status:
-                print(f"[{prefix}] Progress: run_status={run_status} waiting for workflow steps")
-            last_snapshot = snapshot
-            heartbeat_counter = 0
-        else:
-            heartbeat_counter += 1
-            if heartbeat_counter % 3 == 0:
-                if run_file.exists() or steps_file.exists():
-                    print(f"[{prefix}] Heartbeat: run is still active; waiting for the next workflow update")
-                else:
-                    print(f"[{prefix}] Heartbeat: run is still active; waiting for runtime files to appear")
-        time.sleep(5)
-
-
-def _build_result_json(
-    *,
-    python_bin: Path,
-    run_file: Path,
-    steps_file: Path,
-    signals_file: Path,
-    stdout_file: Path,
-    run_id: str,
-    task_name: str,
-    cli_status: int,
-) -> str:
-    command = [
-        str(python_bin),
-        str(RESULT_HELPER),
-        "run-summary",
-        "--run-file",
-        str(run_file),
-        "--steps-file",
-        str(steps_file),
-        "--signals-file",
-        str(signals_file),
-        "--stdout-file",
-        str(stdout_file),
-        "--run-id",
-        run_id,
-        "--fallback-task",
-        task_name,
-        "--status",
-        "success" if cli_status == 0 else "failed",
-        "--error-message",
-        "" if cli_status == 0 else f"{task_name} exited with code {cli_status}",
-    ]
-    result = subprocess.run(command, check=True, capture_output=True, text=True)
-    return result.stdout.strip()
+    payload = json.loads(result.stdout)
+    return payload if isinstance(payload, dict) else {}
 
 
 def _resolve_profile_ref_for_task(
@@ -432,56 +283,17 @@ def _resolve_profile_ref_for_task(
     python_bin: Path,
     install_dir: Path,
     requested_profile_ref: str,
-    fallback_profile_ref: str,
-    ensure_ready: bool,
+    fallback_profile_ref: str = "",
+    ensure_ready: bool = False,
 ) -> str:
+    del ensure_ready
     browser_target = _resolve_browser_target(
         python_bin=python_bin,
         install_dir=install_dir,
         requested_profile_ref=requested_profile_ref,
         fallback_profile_ref=fallback_profile_ref,
     )
-    if ensure_ready:
-        _ensure_browser_ready(
-            python_bin=python_bin,
-            script_dir=SCRIPT_DIR,
-            browser_target=browser_target,
-        )
     return str(browser_target["profile_ref"])
-
-
-def _single_row_submit_params(
-    *,
-    python_bin: Path,
-    install_dir: Path,
-    requested_profile_ref: str,
-    fallback_profile_ref: str,
-    record_id: str,
-    product_url: str,
-    sku_id: str,
-    skip_fastmoss_login_validation: bool,
-    ensure_ready: bool,
-) -> list[str]:
-    resolved_profile_ref = _resolve_profile_ref_for_task(
-        python_bin=python_bin,
-        install_dir=install_dir,
-        requested_profile_ref=requested_profile_ref,
-        fallback_profile_ref=fallback_profile_ref,
-        ensure_ready=ensure_ready,
-    )
-    params = [
-        f"profile_ref={resolved_profile_ref}",
-        f"record_id={record_id}",
-        "fastmoss_phone_env=FASTMOSS_PHONE",
-        "fastmoss_password_env=FASTMOSS_PASSWORD",
-    ]
-    if product_url:
-        params.append(f"product_url={product_url}")
-    if sku_id:
-        params.append(f"sku_id={sku_id}")
-    if skip_fastmoss_login_validation:
-        params.append("verify_fastmoss_login=false")
-    return params
 
 
 def _refresh_competitor_submit_params(
@@ -489,8 +301,8 @@ def _refresh_competitor_submit_params(
     python_bin: Path,
     install_dir: Path,
     requested_profile_ref: str,
-    fallback_profile_ref: str,
-    ensure_ready: bool,
+    fallback_profile_ref: str = "",
+    ensure_ready: bool = False,
 ) -> list[str]:
     resolved_profile_ref = _resolve_profile_ref_for_task(
         python_bin=python_bin,
@@ -513,8 +325,8 @@ def _product_url_complete_submit_params(
     python_bin: Path,
     install_dir: Path,
     requested_profile_ref: str,
-    fallback_profile_ref: str,
-    ensure_ready: bool,
+    fallback_profile_ref: str = "",
+    ensure_ready: bool = False,
 ) -> list[str]:
     resolved_profile_ref = _resolve_profile_ref_for_task(
         python_bin=python_bin,
@@ -538,11 +350,11 @@ def _keyword_search_submit_params(
     python_bin: Path,
     install_dir: Path,
     requested_profile_ref: str,
-    fallback_profile_ref: str,
+    fallback_profile_ref: str = "",
     search_keyword: str,
     sales_7d_threshold: str,
     skip_fastmoss_login_validation: bool,
-    ensure_ready: bool,
+    ensure_ready: bool = False,
 ) -> list[str]:
     resolved_profile_ref = _resolve_profile_ref_for_task(
         python_bin=python_bin,
@@ -563,33 +375,6 @@ def _keyword_search_submit_params(
     return params
 
 
-def _influencer_pool_sync_env(skill_env: dict[str, str]) -> dict[str, Any]:
-    table_refs = _load_feishu_table_refs(skill_env)
-    source_table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
-    target_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_POOL_TABLE_ALIAS)
-    feishu_access_token_env = FEISHU_ACCESS_TOKEN_ENV
-    fastmoss_phone_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
-    fastmoss_password_env = _require_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
-
-    feishu_access_token = _require_env_value(skill_env, feishu_access_token_env)
-    fastmoss_phone = _require_env_value(skill_env, fastmoss_phone_env)
-    fastmoss_password = _require_env_value(skill_env, fastmoss_password_env)
-
-    return {
-        "source_table_url": source_table_url,
-        "target_table_url": target_table_url,
-        "source_table_ref": _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS),
-        "target_table_ref": _feishu_table_ref(TK_INFLUENCER_POOL_TABLE_ALIAS),
-        "table_refs": table_refs,
-        "feishu_access_token_env": feishu_access_token_env,
-        "feishu_access_token": feishu_access_token,
-        "fastmoss_phone_env": fastmoss_phone_env,
-        "fastmoss_phone": fastmoss_phone,
-        "fastmoss_password_env": fastmoss_password_env,
-        "fastmoss_password": fastmoss_password,
-    }
-
-
 def _influencer_pool_sync_submit_params(
     *,
     skill_env: dict[str, str],
@@ -597,54 +382,73 @@ def _influencer_pool_sync_submit_params(
     max_source_rows: int = 0,
     max_author_pages: int = 0,
     max_author_detail_jobs_per_source_row: int = 0,
-    queue_mode: str = "",
+    queue_mode: str = "inline",
     worker_kinds: str = "",
-    worker_max_iterations: int = 0,
+    worker_max_iterations: int = 1,
     worker_stop_when_idle: bool | None = None,
     include_contact: bool = False,
     request_delay_min_seconds: float = 1.0,
     request_delay_max_seconds: float = 3.0,
 ) -> tuple[list[str], dict[str, str]]:
-    config = _influencer_pool_sync_env(skill_env)
-    base_params = [
-        f"source_table_ref={config['source_table_ref']}",
-        f"table_url={config['source_table_url']}",
-        f"target_table_ref={config['target_table_ref']}",
-        f"target_table_url={config['target_table_url']}",
-        f"access_token_env={config['feishu_access_token_env']}",
-        f"fastmoss_phone_env={config['fastmoss_phone_env']}",
-        f"fastmoss_password_env={config['fastmoss_password_env']}",
-    ]
-    _append_feishu_table_refs(base_params, config["table_refs"])
-    if max_source_rows > 0:
-        base_params.append(f"max_source_rows={max_source_rows}")
-    if max_author_pages > 0:
-        base_params.append(f"max_author_pages={max_author_pages}")
-    if max_author_detail_jobs_per_source_row > 0:
-        base_params.append(
-            f"max_author_detail_jobs_per_source_row={max_author_detail_jobs_per_source_row}"
-        )
-    if queue_mode:
-        base_params.append(f"queue_mode={queue_mode}")
-    if worker_kinds:
-        base_params.append(f"worker_kinds={worker_kinds}")
-    if worker_max_iterations >= 0:
-        base_params.append(f"worker_max_iterations={worker_max_iterations}")
+    table_refs = _load_feishu_table_refs(skill_env)
+    source_table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    target_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_POOL_TABLE_ALIAS)
+    outreach_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
+    hot_video_table_url = _resolve_table_url(skill_env, table_refs, TK_HOT_VIDEO_TABLE_ALIAS)
+    config = {
+        "feishu_access_token_env": _optional_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
+        or FEISHU_ACCESS_TOKEN_ENV,
+        "feishu_access_token": _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV),
+        "fastmoss_phone_env": _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
+        or "FASTMOSS_PHONE",
+        "fastmoss_password_env": _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
+        or "FASTMOSS_PASSWORD",
+        "fastmoss_phone": _optional_env_value(skill_env, "FASTMOSS_PHONE"),
+        "fastmoss_password": _optional_env_value(skill_env, "FASTMOSS_PASSWORD"),
+    }
+    source_table_ref = _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS)
+    target_table_ref = _feishu_table_ref(TK_INFLUENCER_POOL_TABLE_ALIAS)
+    outreach_table_ref = _feishu_table_ref(TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
+    hot_video_table_ref = _feishu_table_ref(TK_HOT_VIDEO_TABLE_ALIAS)
+    params = _append_feishu_table_refs(
+        [
+            f"source_table_ref={source_table_ref}",
+            f"target_table_ref={target_table_ref}",
+            f"outreach_table_ref={outreach_table_ref}",
+            f"hot_video_table_ref={hot_video_table_ref}",
+            f"table_url={source_table_url}",
+            f"target_table_url={target_table_url}",
+            f"outreach_table_url={outreach_table_url}",
+            f"hot_video_table_url={hot_video_table_url}",
+            f"access_token_env={config['feishu_access_token_env']}",
+            f"fastmoss_phone_env={config['fastmoss_phone_env']}",
+            f"fastmoss_password_env={config['fastmoss_password_env']}",
+            f"max_source_rows={max(max_source_rows, 0)}",
+            f"max_author_pages={max(max_author_pages, 0)}",
+            "request_filter_status=已完成",
+            "status_field_name=状态",
+            "url_field_name=产品链接",
+            f"max_author_detail_jobs_per_source_row={max(max_author_detail_jobs_per_source_row, 0)}",
+            f"queue_mode={queue_mode}",
+            f"worker_kinds={worker_kinds}",
+            f"worker_max_iterations={max(worker_max_iterations, 0)}",
+            f"request_delay_min_seconds={max(request_delay_min_seconds, 0.0)}",
+            f"request_delay_max_seconds={max(request_delay_max_seconds, 0.0)}",
+        ],
+        table_refs,
+    )
     if worker_stop_when_idle is not None:
-        base_params.append(f"worker_stop_when_idle={str(bool(worker_stop_when_idle)).lower()}")
+        params.append(f"worker_stop_when_idle={str(bool(worker_stop_when_idle)).lower()}")
     if include_contact:
-        base_params.append("include_contact=true")
-    base_params.append(f"request_delay_min_seconds={max(request_delay_min_seconds, 0.0)}")
-    base_params.append(f"request_delay_max_seconds={max(request_delay_max_seconds, 0.0)}")
+        params.append("include_contact=true")
     if include_submit_control_action:
-        base_params.append("control_action=submit")
-    params = _append_runtime_params(base_params, skill_env)
+        params.append("control_action=submit")
     extra_env = {
         config["feishu_access_token_env"]: config["feishu_access_token"],
         config["fastmoss_phone_env"]: config["fastmoss_phone"],
         config["fastmoss_password_env"]: config["fastmoss_password"],
     }
-    return params, extra_env
+    return _append_runtime_params(params, skill_env), extra_env
 
 
 def _append_influencer_pool_browser_params(
@@ -656,23 +460,7 @@ def _append_influencer_pool_browser_params(
     requested_profile_ref: str,
     fallback_profile_ref: str,
 ) -> list[str]:
-    explicit_provider = _optional_env_value(skill_env, "BROWSER_PROVIDER_NAME")
-    explicit_profile_id = _optional_env_value(skill_env, "BROWSER_PROFILE_ID")
-    explicit_workspace_id = _optional_env_value(skill_env, "BROWSER_WORKSPACE_ID")
-    explicit_profile_ref = requested_profile_ref or fallback_profile_ref
-
-    if explicit_provider and explicit_profile_id and explicit_workspace_id:
-        if explicit_profile_ref:
-            params.append(f"profile_ref={explicit_profile_ref}")
-        params.extend(
-            [
-                f"browser_provider_name={explicit_provider}",
-                f"browser_profile_id={explicit_profile_id}",
-                f"browser_workspace_id={explicit_workspace_id}",
-            ]
-        )
-        return params
-
+    del skill_env
     try:
         browser_target = _resolve_browser_target(
             python_bin=python_bin,
@@ -686,36 +474,14 @@ def _append_influencer_pool_browser_params(
             f"HTTP login fallback remains available. detail={exc}"
         )
         return params
-
     params.append(f"profile_ref={browser_target['profile_ref']}")
-    provider = str(browser_target.get("provider", "") or "").strip()
-    profile_id = str(browser_target.get("profile_id", "") or "").strip()
-    workspace_id = str(browser_target.get("workspace_id", "") or "").strip()
-    if provider:
-        params.append(f"browser_provider_name={provider}")
-    if profile_id:
-        params.append(f"browser_profile_id={profile_id}")
-    if workspace_id:
-        params.append(f"browser_workspace_id={workspace_id}")
     return params
 
 
 def _append_runtime_params(params: list[str], skill_env: dict[str, str]) -> list[str]:
-    db_url = _optional_env_value(skill_env, "EXECUTION_CONTROL_DB_URL")
-    artifact_root = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_ROOT")
-    artifact_bucket = _optional_env_value(skill_env, "EXECUTION_CONTROL_ARTIFACT_BUCKET")
-    requested_by = _optional_env_value(skill_env, "EXECUTION_CONTROL_REQUESTED_BY")
     notification_channel_code = _optional_env_value(skill_env, "NOTIFICATION_CHANNEL_CODE")
     delivery_context = _discover_openclaw_delivery_context(skill_env)
 
-    if db_url:
-        params.append(f"execution_control_db_url={db_url}")
-    if artifact_root:
-        params.append(f"execution_control_artifact_root={artifact_root}")
-    if artifact_bucket:
-        params.append(f"execution_control_artifact_bucket={artifact_bucket}")
-    if requested_by:
-        params.append(f"requested_by={requested_by}")
     if notification_channel_code:
         params.append(f"notification_channel_code={notification_channel_code}")
     elif delivery_context:
@@ -749,8 +515,6 @@ def _parse_param_items(items: list[str]) -> dict[str, Any]:
 
 
 def _build_summary_text(summary: dict[str, Any]) -> str:
-    if not isinstance(summary, dict):
-        return ""
     counts = summary.get("counts", {})
     if not isinstance(counts, dict) or not counts:
         total = summary.get("total")
@@ -792,33 +556,22 @@ def _normalize_lightweight_submit_payload(
         summary = {"total": 1, "counts": {"queued": 1}}
     normalized["summary"] = summary
     normalized["summary_text"] = _build_summary_text(summary)
-    normalized["failed_item_count"] = int(normalized.get("failed_item_count", 0) or 0)
+    normalized.setdefault("request_id", "")
+    normalized.setdefault("request_status", "")
+    normalized.setdefault("failed_item_count", 0)
     normalized.setdefault("error", "")
-    normalized.setdefault("run_id", "")
-    normalized.setdefault("run_file", "")
-    normalized.setdefault("steps_file", "")
-    normalized.setdefault("signals_file", "")
-    normalized.setdefault("stdout_file", "")
-    normalized.setdefault("execution_id", "")
-    normalized.setdefault("execution_status", "")
-    normalized.setdefault("resource_code", "")
-    normalized.setdefault("queue_position", 0)
-    normalized.setdefault("wait_timed_out", False)
-    normalized.setdefault("daemon_status", "")
-    normalized.setdefault("processed_count", 0)
-    normalized.setdefault("success_count", 0)
-    normalized.setdefault("failed_count", 0)
-    normalized.setdefault("artifact_count", 0)
-    normalized.setdefault("artifact_uri_prefix", "")
-    normalized.setdefault("run_object_key", "")
-    normalized.setdefault("steps_object_key", "")
-    normalized.setdefault("signals_object_key", "")
-    normalized.setdefault("stdout_object_key", "")
-    normalized.setdefault("artifacts_dir", "")
-    normalized.setdefault("worker_id", "")
     normalized.setdefault("artifacts", [])
     _augment_message_with_request_id(normalized)
     return normalized
+
+
+def _read_json_file(path: Path) -> Any:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _run_lightweight_submit_capture_payload(
@@ -826,15 +579,12 @@ def _run_lightweight_submit_capture_payload(
     install_dir: Path,
     python_bin: Path,
     task_name: str,
-    run_mode: str,
     params: list[str],
     stdout_prefix: str,
     extra_env: dict[str, str],
     accepted_message: str,
 ) -> tuple[int, dict[str, Any]]:
     parsed_params = _parse_param_items(params)
-    parsed_params["run_mode"] = run_mode
-
     env = os.environ.copy()
     env.update(extra_env)
 
@@ -864,21 +614,19 @@ def _run_lightweight_submit_capture_payload(
         payload = _read_json_file(result_file)
         if result.returncode != 0:
             error_message = str(result.stderr or result.stdout or "").strip()
-            failed_payload = {
+            return result.returncode, {
                 "status": "failed",
                 "task_name": task_name,
                 "message": f"{task_name} submit failed.",
                 "error": error_message or f"lightweight submit exited with code {result.returncode}",
             }
-            return result.returncode, failed_payload
         if not isinstance(payload, dict):
-            failed_payload = {
+            return 1, {
                 "status": "failed",
                 "task_name": task_name,
                 "message": f"{task_name} submit failed.",
                 "error": "lightweight submit did not return a JSON object payload",
             }
-            return 1, failed_payload
         normalized = _normalize_lightweight_submit_payload(
             task_name=task_name,
             payload=payload,
@@ -891,123 +639,6 @@ def _run_lightweight_submit_capture_payload(
         return 0, normalized
 
 
-def _run_cli_task(
-    *,
-    install_dir: Path,
-    python_bin: Path,
-    cli_bin: Path,
-    task_name: str,
-    run_mode: str,
-    params: list[str],
-    stdout_prefix: str,
-    extra_env: dict[str, str],
-) -> int:
-    run_dir = install_dir / "runtime" / "cli_runs"
-    stdout_dir = run_dir / "stdout"
-    stdout_dir.mkdir(parents=True, exist_ok=True)
-
-    run_id = _generate_run_id(task_name)
-    run_file = run_dir / f"{run_id}.json"
-    steps_file = run_dir / "steps" / f"{run_id}.json"
-    signals_file = run_dir / "signals" / f"{run_id}.json"
-    stdout_file = stdout_dir / f"{run_id}.log"
-
-    env = os.environ.copy()
-    env.update(extra_env)
-
-    command = [
-        str(cli_bin),
-        "run",
-        "--task",
-        task_name,
-        "--run-mode",
-        run_mode,
-        "--run-id",
-        run_id,
-    ]
-    for item in params:
-        command.extend(["--param", item])
-
-    print(f"[{stdout_prefix}] Running {task_name} with run_mode={run_mode} run_id={run_id}")
-    print(f"[{stdout_prefix}] Progress files: run_file={run_file} steps_file={steps_file}")
-    print(f"[{stdout_prefix}] CLI output: stdout_file={stdout_file}")
-
-    with stdout_file.open("w", encoding="utf-8") as output_handle:
-        process = subprocess.Popen(
-            command,
-            cwd=str(install_dir),
-            env=env,
-            stdout=output_handle,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        _monitor_process(process=process, run_file=run_file, steps_file=steps_file, prefix=stdout_prefix)
-        cli_status = process.wait()
-
-    result_json = _build_result_json(
-        python_bin=python_bin,
-        run_file=run_file,
-        steps_file=steps_file,
-        signals_file=signals_file,
-        stdout_file=stdout_file,
-        run_id=run_id,
-        task_name=task_name,
-        cli_status=cli_status,
-    )
-    result_file_path = str(env.get("MUJITASK_RESULT_FILE", "") or "").strip()
-    if result_file_path:
-        Path(result_file_path).write_text(f"{result_json}\n", encoding="utf-8")
-
-    try:
-        payload = json.loads(result_json)
-    except Exception:
-        payload = {}
-    summary_text = str(payload.get("summary_text", "") or "").strip()
-    if summary_text:
-        print(f"[{stdout_prefix}] Summary: {summary_text}")
-    if cli_status == 0:
-        print(f"[{stdout_prefix}] Completed run_id={run_id}")
-    else:
-        print(
-            f"[{stdout_prefix}] Failed run_id={run_id}. "
-            f"Inspect {run_file}, {steps_file}, {signals_file}, and {stdout_file} for details."
-        )
-
-    if str(env.get("MUJITASK_SUPPRESS_RESULT_MARKER", "0")) != "1":
-        print(f"__OPENCLAW_RESULT__ {result_json}")
-    return cli_status
-
-
-def _run_cli_task_capture_payload(
-    *,
-    install_dir: Path,
-    python_bin: Path,
-    cli_bin: Path,
-    task_name: str,
-    run_mode: str,
-    params: list[str],
-    stdout_prefix: str,
-    extra_env: dict[str, str],
-) -> tuple[int, dict[str, Any]]:
-    with tempfile.TemporaryDirectory(prefix="mujitask-skill-result-") as temp_dir:
-        result_file = Path(temp_dir) / "result.json"
-        env = dict(extra_env)
-        env["MUJITASK_RESULT_FILE"] = str(result_file)
-        env["MUJITASK_SUPPRESS_RESULT_MARKER"] = "1"
-        status = _run_cli_task(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            cli_bin=cli_bin,
-            task_name=task_name,
-            run_mode=run_mode,
-            params=params,
-            stdout_prefix=stdout_prefix,
-            extra_env=env,
-        )
-        payload = _read_json_file(result_file)
-        return status, payload if isinstance(payload, dict) else {}
-
-
 def _emit_final_result(payload: dict[str, Any]) -> int:
     result_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if os.getenv("MUJITASK_RESULT_FILE"):
@@ -1015,312 +646,142 @@ def _emit_final_result(payload: dict[str, Any]) -> int:
     if os.getenv("MUJITASK_SUPPRESS_RESULT_MARKER", "0") != "1":
         print(f"__OPENCLAW_RESULT__ {result_json}")
     status = str(payload.get("status", "") or payload.get("execution_status", "") or "").strip().lower()
-    if status in {"failed", "error"}:
-        return 1
-    return 0
+    return 1 if status in {"failed", "error"} else 0
+
+
+def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile-ref", default="")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run deterministic OpenClaw skill steps.")
+    parser = argparse.ArgumentParser(description="Submit Mujitask OpenClaw skill tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    cleanup_parser = subparsers.add_parser("cleanup")
-    cleanup_parser.add_argument("--run-mode", default="draft")
+    refresh_parser = subparsers.add_parser("refresh-current-competitor-table-submit")
+    _add_profile_arg(refresh_parser)
 
-    pending_parser = subparsers.add_parser("pending-rows")
-    pending_parser.add_argument("--run-mode", default="draft")
+    product_parser = subparsers.add_parser("product-url-complete-submit")
+    _add_profile_arg(product_parser)
+    product_parser.add_argument("--product-url", required=True)
 
-    clear_row_parser = subparsers.add_parser("clear-row-by-url")
-    clear_row_parser.add_argument("--run-mode", default="canary")
-    clear_row_parser.add_argument("--url", required=True)
+    competitor_parser = subparsers.add_parser("competitor-row-by-url-submit")
+    _add_profile_arg(competitor_parser)
+    competitor_parser.add_argument("--product-url", required=True)
 
-    login_parser = subparsers.add_parser("fastmoss-login-check")
-    login_parser.add_argument("--run-mode", default="draft")
-    login_parser.add_argument("--profile-ref", default="")
-
-    update_parser = subparsers.add_parser("single-row-update")
-    update_parser.add_argument("--run-mode", default="canary")
-    update_parser.add_argument("--record-id", required=True)
-    update_parser.add_argument("--profile-ref", default="")
-    update_parser.add_argument("--product-url", default="")
-    update_parser.add_argument("--sku-id", default="")
-    update_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
-
-    refresh_parser = subparsers.add_parser("refresh-current-competitor-table")
-    refresh_parser.add_argument("--run-mode", default="canary")
-    refresh_parser.add_argument("--profile-ref", default="")
-    refresh_parser.add_argument("--max-idle-cycles", type=int, default=1)
-
-    refresh_submit_parser = subparsers.add_parser("refresh-current-competitor-table-submit")
-    refresh_submit_parser.add_argument("--run-mode", default="canary")
-    refresh_submit_parser.add_argument("--profile-ref", default="")
-
-    refresh_status_parser = subparsers.add_parser("refresh-current-competitor-table-status")
-    refresh_status_parser.add_argument("--run-mode", default="canary")
-    refresh_status_parser.add_argument("--request-id", required=True)
-
-    refresh_result_parser = subparsers.add_parser("refresh-current-competitor-table-result")
-    refresh_result_parser.add_argument("--run-mode", default="canary")
-    refresh_result_parser.add_argument("--request-id", required=True)
-
-    product_complete_parser = subparsers.add_parser("product-url-complete")
-    product_complete_parser.add_argument("--run-mode", default="canary")
-    product_complete_parser.add_argument("--profile-ref", default="")
-    product_complete_parser.add_argument("--product-url", required=True)
-
-    product_complete_submit_parser = subparsers.add_parser("product-url-complete-submit")
-    product_complete_submit_parser.add_argument("--run-mode", default="canary")
-    product_complete_submit_parser.add_argument("--profile-ref", default="")
-    product_complete_submit_parser.add_argument("--product-url", required=True)
-
-    product_complete_status_parser = subparsers.add_parser("product-url-complete-status")
-    product_complete_status_parser.add_argument("--run-mode", default="canary")
-    product_complete_status_parser.add_argument("--request-id", required=True)
-
-    product_complete_result_parser = subparsers.add_parser("product-url-complete-result")
-    product_complete_result_parser.add_argument("--run-mode", default="canary")
-    product_complete_result_parser.add_argument("--request-id", required=True)
-
-    competitor_row_parser = subparsers.add_parser("competitor-row-by-url")
-    competitor_row_parser.add_argument("--run-mode", default="canary")
-    competitor_row_parser.add_argument("--profile-ref", default="")
-    competitor_row_parser.add_argument("--product-url", required=True)
-
-    competitor_row_submit_parser = subparsers.add_parser("competitor-row-by-url-submit")
-    competitor_row_submit_parser.add_argument("--run-mode", default="canary")
-    competitor_row_submit_parser.add_argument("--profile-ref", default="")
-    competitor_row_submit_parser.add_argument("--product-url", required=True)
-
-    competitor_row_status_parser = subparsers.add_parser("competitor-row-by-url-status")
-    competitor_row_status_parser.add_argument("--run-mode", default="canary")
-    competitor_row_status_parser.add_argument("--request-id", required=True)
-
-    competitor_row_result_parser = subparsers.add_parser("competitor-row-by-url-result")
-    competitor_row_result_parser.add_argument("--run-mode", default="canary")
-    competitor_row_result_parser.add_argument("--request-id", required=True)
-
-    keyword_search_parser = subparsers.add_parser("keyword-search")
-    keyword_search_parser.add_argument("--run-mode", default="canary")
-    keyword_search_parser.add_argument("--profile-ref", default="")
-    keyword_search_parser.add_argument("--search-keyword", required=True)
-    keyword_search_parser.add_argument("--sales-7d-threshold", default="200")
-    keyword_search_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
-
-    keyword_search_submit_parser = subparsers.add_parser("keyword-search-submit")
-    keyword_search_submit_parser.add_argument("--run-mode", default="canary")
-    keyword_search_submit_parser.add_argument("--profile-ref", default="")
-    keyword_search_submit_parser.add_argument("--search-keyword", required=True)
-    keyword_search_submit_parser.add_argument("--sales-7d-threshold", default="200")
-    keyword_search_submit_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
-
-    keyword_search_status_parser = subparsers.add_parser("keyword-search-status")
-    keyword_search_status_parser.add_argument("--run-mode", default="canary")
-    keyword_search_status_parser.add_argument("--request-id", required=True)
-
-    keyword_search_result_parser = subparsers.add_parser("keyword-search-result")
-    keyword_search_result_parser.add_argument("--run-mode", default="canary")
-    keyword_search_result_parser.add_argument("--request-id", required=True)
-
-    influencer_pool_sync_parser = subparsers.add_parser("influencer-pool-sync")
-    influencer_pool_sync_parser.add_argument("--run-mode", default="canary")
-    influencer_pool_sync_parser.add_argument("--max-source-rows", type=int, default=0)
-    influencer_pool_sync_parser.add_argument("--max-author-pages", type=int, default=0)
-    influencer_pool_sync_parser.add_argument("--max-author-detail-jobs-per-source-row", type=int, default=0)
-    influencer_pool_sync_parser.add_argument("--queue-mode", default="inline")
-    influencer_pool_sync_parser.add_argument("--worker-kinds", default="")
-    influencer_pool_sync_parser.add_argument("--worker-max-iterations", type=int, default=1)
-    influencer_pool_sync_parser.add_argument("--worker-stop-when-idle", action="store_true")
-    influencer_pool_sync_parser.add_argument("--include-contact", action="store_true")
-    influencer_pool_sync_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
-    influencer_pool_sync_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
-
-    influencer_pool_sync_submit_parser = subparsers.add_parser("influencer-pool-sync-submit")
-    influencer_pool_sync_submit_parser.add_argument("--run-mode", default="canary")
-    influencer_pool_sync_submit_parser.add_argument("--max-source-rows", type=int, default=0)
-    influencer_pool_sync_submit_parser.add_argument("--max-author-pages", type=int, default=0)
-    influencer_pool_sync_submit_parser.add_argument("--max-author-detail-jobs-per-source-row", type=int, default=0)
-    influencer_pool_sync_submit_parser.add_argument("--queue-mode", default="inline")
-    influencer_pool_sync_submit_parser.add_argument("--worker-kinds", default="")
-    influencer_pool_sync_submit_parser.add_argument("--worker-max-iterations", type=int, default=1)
-    influencer_pool_sync_submit_parser.add_argument("--worker-stop-when-idle", action="store_true")
-    influencer_pool_sync_submit_parser.add_argument("--include-contact", action="store_true")
-    influencer_pool_sync_submit_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
-    influencer_pool_sync_submit_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
-
-    influencer_pool_sync_status_parser = subparsers.add_parser("influencer-pool-sync-status")
-    influencer_pool_sync_status_parser.add_argument("--run-mode", default="canary")
-    influencer_pool_sync_status_parser.add_argument("--request-id", required=True)
-
-    influencer_pool_sync_result_parser = subparsers.add_parser("influencer-pool-sync-result")
-    influencer_pool_sync_result_parser.add_argument("--run-mode", default="canary")
-    influencer_pool_sync_result_parser.add_argument("--request-id", required=True)
-
-    influencer_pool_worker_parser = subparsers.add_parser("influencer-pool-worker")
-    influencer_pool_worker_parser.add_argument("--run-mode", default="canary")
-    influencer_pool_worker_parser.add_argument("--worker-kinds", default="product,author,finalizer")
-    influencer_pool_worker_parser.add_argument("--worker-max-iterations", type=int, default=1)
-    influencer_pool_worker_parser.add_argument("--worker-stop-when-idle", action="store_true")
-    influencer_pool_worker_parser.add_argument("--include-contact", action="store_true")
-    influencer_pool_worker_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
-    influencer_pool_worker_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
-
-    keyword_parser = subparsers.add_parser("keyword-candidates")
-    keyword_parser.add_argument("--run-mode", default="draft")
-    keyword_parser.add_argument("--profile-ref", default="")
+    keyword_parser = subparsers.add_parser("keyword-search-submit")
+    _add_profile_arg(keyword_parser)
     keyword_parser.add_argument("--search-keyword", required=True)
     keyword_parser.add_argument("--sales-7d-threshold", default="200")
     keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
-    seed_parser = subparsers.add_parser("insert-seed-row")
-    seed_parser.add_argument("--run-mode", default="canary")
-    seed_parser.add_argument("--sku-id", required=True)
-    seed_parser.add_argument("--search-keyword", required=True)
-    seed_parser.add_argument("--product-url", default="")
+    influencer_parser = subparsers.add_parser("influencer-pool-sync-submit")
+    influencer_parser.add_argument("--max-source-rows", type=int, default=0)
+    influencer_parser.add_argument("--max-author-pages", type=int, default=0)
+    influencer_parser.add_argument("--max-author-detail-jobs-per-source-row", type=int, default=0)
+    influencer_parser.add_argument("--queue-mode", default="inline")
+    influencer_parser.add_argument("--worker-kinds", default="")
+    influencer_parser.add_argument("--worker-max-iterations", type=int, default=1)
+    influencer_parser.add_argument("--worker-stop-when-idle", action="store_true")
+    influencer_parser.add_argument("--include-contact", action="store_true")
+    influencer_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
+    influencer_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
 
     return parser
+
+
+def _runtime_paths(skill_env: dict[str, str]) -> tuple[Path, Path]:
+    install_dir = Path(_require_env_value(skill_env, "INSTALL_DIR")).expanduser().resolve()
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    if not python_bin.exists():
+        raise ValueError(f"Cannot find Python at {python_bin}. Re-run the deployment script.")
+    return install_dir, python_bin
+
+
+def _base_extra_env(skill_env: dict[str, str]) -> dict[str, str]:
+    extra_env = {FEISHU_ACCESS_TOKEN_ENV: _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV)}
+    fastmoss_phone = _optional_env_value(skill_env, "FASTMOSS_PHONE")
+    fastmoss_password = _optional_env_value(skill_env, "FASTMOSS_PASSWORD")
+    if fastmoss_phone:
+        extra_env["FASTMOSS_PHONE"] = fastmoss_phone
+    if fastmoss_password:
+        extra_env["FASTMOSS_PASSWORD"] = fastmoss_password
+    return extra_env
+
+
+def _submit(
+    *,
+    install_dir: Path,
+    python_bin: Path,
+    task_name: str,
+    params: list[str],
+    stdout_prefix: str,
+    extra_env: dict[str, str],
+    accepted_message: str,
+) -> int:
+    status, payload = _run_lightweight_submit_capture_payload(
+        install_dir=install_dir,
+        python_bin=python_bin,
+        task_name=task_name,
+        params=params,
+        stdout_prefix=stdout_prefix,
+        extra_env=extra_env,
+        accepted_message=accepted_message,
+    )
+    if status != 0:
+        return _emit_final_result(payload or {"status": "failed", "error": "submit failed"})
+    return _emit_final_result(payload)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     skill_env = _load_skill_env(ENV_FILE)
+    install_dir, python_bin = _runtime_paths(skill_env)
+    extra_env = _base_extra_env(skill_env)
 
-    install_dir = Path(_require_env_value(skill_env, "INSTALL_DIR")).expanduser().resolve()
     table_refs = _load_feishu_table_refs(skill_env)
-    table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    competitor_table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    selection_table_url = _resolve_table_url(skill_env, table_refs, TK_SELECTION_TABLE_ALIAS)
     competitor_table_ref = _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS)
-    feishu_access_token = _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV)
-    browser_profile_ref = str(skill_env.get("BROWSER_PROFILE_REF", "")).strip()
-    fastmoss_phone = str(skill_env.get("FASTMOSS_PHONE", "")).strip()
-    fastmoss_password = str(skill_env.get("FASTMOSS_PASSWORD", "")).strip()
+    selection_table_ref = _feishu_table_ref(TK_SELECTION_TABLE_ALIAS)
 
-    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
-    python_bin = install_dir / ".venv" / "bin" / "python"
-    if not cli_bin.exists():
-        raise ValueError(f"Cannot find CLI at {cli_bin}. Re-run the deployment script.")
-    if not python_bin.exists():
-        raise ValueError(f"Cannot find Python at {python_bin}. Re-run the deployment script.")
-
-    extra_env = {
-        FEISHU_ACCESS_TOKEN_ENV: feishu_access_token,
-    }
-    if fastmoss_phone:
-        extra_env["FASTMOSS_PHONE"] = fastmoss_phone
-    if fastmoss_password:
-        extra_env["FASTMOSS_PASSWORD"] = fastmoss_password
-
-    params = [
-        f"source_table_ref={competitor_table_ref}",
-        f"table_url={table_url}",
-        "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-        f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-    ]
-    _append_feishu_table_refs(params, table_refs)
-    task_name = ""
-    prefix = "skill-step"
-
-    if args.command == "cleanup":
-        task_name = "tiktok_product_link_cleanup"
-        prefix = "cleanup-step"
-    elif args.command == "pending-rows":
-        task_name = "feishu_pending_rows_scan"
-        prefix = "pending-rows-step"
-    elif args.command == "clear-row-by-url":
-        task_name = "feishu_clear_row_by_url"
-        prefix = "clear-row-by-url-step"
-        params.append(f"url={args.url}")
-    elif args.command == "fastmoss-login-check":
-        task_name = "fastmoss_login_check"
-        prefix = "fastmoss-login-check-step"
-        browser_target = _resolve_browser_target(
-            python_bin=python_bin,
-            install_dir=install_dir,
-            requested_profile_ref=args.profile_ref,
-            fallback_profile_ref=browser_profile_ref,
+    if args.command == "refresh-current-competitor-table-submit":
+        params = _append_runtime_params(
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={competitor_table_ref}",
+                    f"table_url={competitor_table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
+            skill_env,
         )
-        _ensure_browser_ready(python_bin=python_bin, script_dir=SCRIPT_DIR, browser_target=browser_target)
-        params = [
-            f"profile_ref={browser_target['profile_ref']}",
-            "fastmoss_phone_env=FASTMOSS_PHONE",
-            "fastmoss_password_env=FASTMOSS_PASSWORD",
-        ]
-    elif args.command == "single-row-update":
-        task_name = "feishu_single_row_update"
-        prefix = "single-row-update-step"
         params.extend(
-            _single_row_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                record_id=args.record_id,
-                product_url=args.product_url,
-                sku_id=args.sku_id,
-                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
-                ensure_ready=True,
-            )
-        )
-    elif args.command == "refresh-current-competitor-table-submit":
-        submit_params = _append_runtime_params(
-            _append_feishu_table_refs(
-                [
-                    f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
-                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                    "control_action=submit",
-                ],
-                table_refs,
-            ),
-            skill_env,
-        )
-        submit_params.extend(
             _refresh_competitor_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
             )
         )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+        return _submit(
             install_dir=install_dir,
             python_bin=python_bin,
             task_name="refresh_current_competitor_table",
-            run_mode=args.run_mode,
-            params=submit_params,
+            params=params,
             stdout_prefix="refresh-current-competitor-table-submit-step",
             extra_env=extra_env,
             accepted_message="Refresh task accepted for asynchronous execution.",
         )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "refresh-current-competitor-table-status":
-        task_name = "refresh_current_competitor_table"
-        prefix = "refresh-current-competitor-table-status-step"
+
+    if args.command == "product-url-complete-submit":
         params = _append_runtime_params(
-            [
-                "control_action=status",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "refresh-current-competitor-table-result":
-        task_name = "refresh_current_competitor_table"
-        prefix = "refresh-current-competitor-table-result-step"
-        params = _append_runtime_params(
-            [
-                "control_action=result",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "product-url-complete-submit":
-        submit_params = _append_runtime_params(
             _append_feishu_table_refs(
                 [
-                    f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
+                    f"source_table_ref={selection_table_ref}",
+                    f"selection_table_ref={selection_table_ref}",
+                    f"table_url={selection_table_url}",
                     f"product_url={args.product_url}",
                     "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
                     "control_action=submit",
@@ -1329,54 +790,29 @@ def main(argv: list[str] | None = None) -> int:
             ),
             skill_env,
         )
-        submit_params.extend(
+        params.extend(
             _product_url_complete_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
             )
         )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+        return _submit(
             install_dir=install_dir,
             python_bin=python_bin,
             task_name="tiktok_fastmoss_product_ingest",
-            run_mode=args.run_mode,
-            params=submit_params,
+            params=params,
             stdout_prefix="product-url-complete-submit-step",
             extra_env=extra_env,
             accepted_message="Product URL completion task accepted for asynchronous execution.",
         )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "product-url-complete-status":
-        task_name = "tiktok_fastmoss_product_ingest"
-        prefix = "product-url-complete-status-step"
+
+    if args.command == "competitor-row-by-url-submit":
         params = _append_runtime_params(
-            [
-                "control_action=status",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "product-url-complete-result":
-        task_name = "tiktok_fastmoss_product_ingest"
-        prefix = "product-url-complete-result-step"
-        params = _append_runtime_params(
-            [
-                "control_action=result",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "product-url-complete":
-        submit_params = _append_runtime_params(
             _append_feishu_table_refs(
                 [
                     f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
+                    f"table_url={competitor_table_url}",
                     f"product_url={args.product_url}",
                     "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
                     "control_action=submit",
@@ -1385,163 +821,30 @@ def main(argv: list[str] | None = None) -> int:
             ),
             skill_env,
         )
-        submit_params.extend(
+        params.extend(
             _product_url_complete_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
             )
         )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name="tiktok_fastmoss_product_ingest",
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix="product-url-complete-submit-step",
-            extra_env=extra_env,
-            accepted_message="Product URL completion task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "competitor-row-by-url-submit":
-        submit_params = _append_runtime_params(
-            _append_feishu_table_refs(
-                [
-                    f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
-                    f"product_url={args.product_url}",
-                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-                    "control_action=submit",
-                ],
-                table_refs,
-            ),
-            skill_env,
-        )
-        submit_params.extend(
-            _product_url_complete_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
-            )
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+        return _submit(
             install_dir=install_dir,
             python_bin=python_bin,
             task_name="refresh_competitor_row_by_url",
-            run_mode=args.run_mode,
-            params=submit_params,
+            params=params,
             stdout_prefix="competitor-row-by-url-submit-step",
             extra_env=extra_env,
             accepted_message="Competitor row refresh by URL task accepted for asynchronous execution.",
         )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "competitor-row-by-url-status":
-        task_name = "refresh_competitor_row_by_url"
-        prefix = "competitor-row-by-url-status-step"
+
+    if args.command == "keyword-search-submit":
         params = _append_runtime_params(
-            [
-                "control_action=status",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "competitor-row-by-url-result":
-        task_name = "refresh_competitor_row_by_url"
-        prefix = "competitor-row-by-url-result-step"
-        params = _append_runtime_params(
-            [
-                "control_action=result",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "competitor-row-by-url":
-        submit_params = _append_runtime_params(
-            _append_feishu_table_refs(
-                [
-                    f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
-                    f"product_url={args.product_url}",
-                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-                    "control_action=submit",
-                ],
-                table_refs,
-            ),
-            skill_env,
-        )
-        submit_params.extend(
-            _product_url_complete_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
-            )
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name="refresh_competitor_row_by_url",
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix="competitor-row-by-url-submit-step",
-            extra_env=extra_env,
-            accepted_message="Competitor row refresh by URL task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "refresh-current-competitor-table":
-        submit_params = _append_runtime_params(
-            _append_feishu_table_refs(
-                [
-                    f"source_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
-                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                    "control_action=submit",
-                ],
-                table_refs,
-            ),
-            skill_env,
-        )
-        submit_params.extend(
-            _refresh_competitor_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                ensure_ready=False,
-            )
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name="refresh_current_competitor_table",
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix="refresh-current-competitor-table-submit-step",
-            extra_env=extra_env,
-            accepted_message="Refresh task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "keyword-search-submit":
-        submit_params = _append_runtime_params(
             _append_feishu_table_refs(
                 [
                     f"seed_table_ref={competitor_table_ref}",
                     f"target_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
+                    f"table_url={competitor_table_url}",
                     "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
                     f"url_field_name={DEFAULT_URL_FIELD_NAME}",
                     "control_action=submit",
@@ -1550,246 +853,52 @@ def main(argv: list[str] | None = None) -> int:
             ),
             skill_env,
         )
-        submit_params.extend(
+        params.extend(
             _keyword_search_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
                 search_keyword=args.search_keyword,
                 sales_7d_threshold=args.sales_7d_threshold,
                 skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
-                ensure_ready=False,
             )
         )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
+        return _submit(
             install_dir=install_dir,
             python_bin=python_bin,
             task_name="search_keyword_competitor_products",
-            run_mode=args.run_mode,
-            params=submit_params,
+            params=params,
             stdout_prefix="keyword-search-submit-step",
             extra_env=extra_env,
             accepted_message="Keyword search task accepted for asynchronous execution.",
         )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "keyword-search-status":
-        task_name = "search_keyword_competitor_products"
-        prefix = "keyword-search-status-step"
-        params = _append_runtime_params(
-            [
-                "control_action=status",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "keyword-search-result":
-        task_name = "search_keyword_competitor_products"
-        prefix = "keyword-search-result-step"
-        params = _append_runtime_params(
-            [
-                "control_action=result",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "keyword-search":
-        submit_params = _append_runtime_params(
-            _append_feishu_table_refs(
-                [
-                    f"seed_table_ref={competitor_table_ref}",
-                    f"target_table_ref={competitor_table_ref}",
-                    f"table_url={table_url}",
-                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
-                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
-                    "control_action=submit",
-                ],
-                table_refs,
-            ),
-            skill_env,
-        )
-        submit_params.extend(
-            _keyword_search_submit_params(
-                python_bin=python_bin,
-                install_dir=install_dir,
-                requested_profile_ref=args.profile_ref,
-                fallback_profile_ref=browser_profile_ref,
-                search_keyword=args.search_keyword,
-                sales_7d_threshold=args.sales_7d_threshold,
-                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
-                ensure_ready=False,
-            )
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name="search_keyword_competitor_products",
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix="keyword-search-submit-step",
-            extra_env=extra_env,
-            accepted_message="Keyword search task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "influencer-pool-sync-submit":
-        task_name = "sync_tk_influencer_pool"
-        prefix = "influencer-pool-sync-submit-step"
-        submit_params, influencer_pool_env = _influencer_pool_sync_submit_params(
-            skill_env=skill_env,
-            include_submit_control_action=True,
-            max_source_rows=max(args.max_source_rows, 0),
-            max_author_pages=max(args.max_author_pages, 0),
-            max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
-            queue_mode=str(args.queue_mode or "inline"),
-            worker_kinds=str(args.worker_kinds or ""),
-            worker_max_iterations=max(args.worker_max_iterations, 0),
-            worker_stop_when_idle=bool(args.worker_stop_when_idle),
-            include_contact=bool(args.include_contact),
-            request_delay_min_seconds=float(args.request_delay_min_seconds),
-            request_delay_max_seconds=float(args.request_delay_max_seconds),
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name=task_name,
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix=prefix,
-            extra_env={**extra_env, **influencer_pool_env},
-            accepted_message="Influencer pool sync task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "influencer-pool-sync-status":
-        task_name = "sync_tk_influencer_pool"
-        prefix = "influencer-pool-sync-status-step"
-        params = _append_runtime_params(
-            [
-                "control_action=status",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "influencer-pool-sync-result":
-        task_name = "sync_tk_influencer_pool"
-        prefix = "influencer-pool-sync-result-step"
-        params = _append_runtime_params(
-            [
-                "control_action=result",
-                f"request_id={args.request_id}",
-            ],
-            skill_env,
-        )
-    elif args.command == "influencer-pool-sync":
-        task_name = "sync_tk_influencer_pool"
-        prefix = "influencer-pool-sync-step"
-        submit_params, influencer_pool_env = _influencer_pool_sync_submit_params(
-            skill_env=skill_env,
-            include_submit_control_action=True,
-            max_source_rows=max(args.max_source_rows, 0),
-            max_author_pages=max(args.max_author_pages, 0),
-            max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
-            queue_mode=str(args.queue_mode or "inline"),
-            worker_kinds=str(args.worker_kinds or ""),
-            worker_max_iterations=max(args.worker_max_iterations, 0),
-            worker_stop_when_idle=bool(args.worker_stop_when_idle),
-            include_contact=bool(args.include_contact),
-            request_delay_min_seconds=float(args.request_delay_min_seconds),
-            request_delay_max_seconds=float(args.request_delay_max_seconds),
-        )
-        submit_status, submit_payload = _run_lightweight_submit_capture_payload(
-            install_dir=install_dir,
-            python_bin=python_bin,
-            task_name=task_name,
-            run_mode=args.run_mode,
-            params=submit_params,
-            stdout_prefix=prefix,
-            extra_env={**extra_env, **influencer_pool_env},
-            accepted_message="Influencer pool sync task accepted for asynchronous execution.",
-        )
-        if submit_status != 0:
-            return _emit_final_result(submit_payload or {"status": "failed", "error": "submit failed"})
-        return _emit_final_result(submit_payload)
-    elif args.command == "influencer-pool-worker":
-        task_name = "sync_tk_influencer_pool"
-        prefix = "influencer-pool-worker-step"
+
+    if args.command == "influencer-pool-sync-submit":
         params, influencer_pool_env = _influencer_pool_sync_submit_params(
             skill_env=skill_env,
-            include_submit_control_action=False,
-            queue_mode="worker",
-            worker_kinds=str(args.worker_kinds or "product,author,finalizer"),
+            include_submit_control_action=True,
+            max_source_rows=max(args.max_source_rows, 0),
+            max_author_pages=max(args.max_author_pages, 0),
+            max_author_detail_jobs_per_source_row=max(args.max_author_detail_jobs_per_source_row, 0),
+            queue_mode=str(args.queue_mode or "inline"),
+            worker_kinds=str(args.worker_kinds or ""),
             worker_max_iterations=max(args.worker_max_iterations, 0),
             worker_stop_when_idle=bool(args.worker_stop_when_idle),
             include_contact=bool(args.include_contact),
             request_delay_min_seconds=float(args.request_delay_min_seconds),
             request_delay_max_seconds=float(args.request_delay_max_seconds),
         )
-        cli_status, cli_payload = _run_cli_task_capture_payload(
+        return _submit(
             install_dir=install_dir,
             python_bin=python_bin,
-            cli_bin=cli_bin,
-            task_name=task_name,
-            run_mode=args.run_mode,
+            task_name="sync_tk_influencer_pool",
             params=params,
-            stdout_prefix=prefix,
+            stdout_prefix="influencer-pool-sync-submit-step",
             extra_env={**extra_env, **influencer_pool_env},
+            accepted_message="Influencer pool sync task accepted for asynchronous execution.",
         )
-        if cli_status != 0:
-            return _emit_final_result(cli_payload or {"status": "failed", "error": "run failed"})
-        return _emit_final_result(cli_payload)
-    elif args.command == "keyword-candidates":
-        task_name = "fastmoss_keyword_candidate_discovery"
-        prefix = "keyword-candidates-step"
-        params.extend(
-            [
-                f"search_keyword={args.search_keyword}",
-                f"sales_7d_threshold={args.sales_7d_threshold}",
-                "fastmoss_phone_env=FASTMOSS_PHONE",
-                "fastmoss_password_env=FASTMOSS_PASSWORD",
-            ]
-        )
-        browser_target = _resolve_browser_target(
-            python_bin=python_bin,
-            install_dir=install_dir,
-            requested_profile_ref=args.profile_ref,
-            fallback_profile_ref=browser_profile_ref,
-        )
-        _ensure_browser_ready(python_bin=python_bin, script_dir=SCRIPT_DIR, browser_target=browser_target)
-        params.append(f"profile_ref={browser_target['profile_ref']}")
-        if args.skip_fastmoss_login_validation:
-            params.append("verify_fastmoss_login=false")
-    elif args.command == "insert-seed-row":
-        task_name = "feishu_seed_row_insert"
-        prefix = "insert-seed-row-step"
-        params.extend(
-            [
-                f"sku_id={args.sku_id}",
-                f"search_keyword={args.search_keyword}",
-            ]
-        )
-        if args.product_url:
-            params.append(f"product_url={args.product_url}")
-    else:
-        raise ValueError(f"Unsupported command: {args.command}")
 
-    return _run_cli_task(
-        install_dir=install_dir,
-        python_bin=python_bin,
-        cli_bin=cli_bin,
-        task_name=task_name,
-        run_mode=args.run_mode,
-        params=params,
-        stdout_prefix=prefix,
-        extra_env=extra_env,
-    )
-
-
-DEFAULT_URL_FIELD_NAME = "产品链接"
+    raise ValueError(f"Unsupported command: {args.command}")
 
 
 if __name__ == "__main__":

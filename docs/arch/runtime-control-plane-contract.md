@@ -33,7 +33,7 @@ Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTo
 | Watchdog Entry | `src/automation_business_scaffold/apps/daemons/watchdog/main.py`、`control_plane/watchdog/scanner.py` | `automation-business-scaffold-watchdog` | 扫描 stuck runtime 状态，执行 retry/fail/repair | 正常 workflow 推进、业务字段映射 |
 | Execution Supervisor | `control_plane/supervisor/execution_supervisor.py` | 由 worker control path 调用 | 包装 handler dispatch，负责 heartbeat、进度、超时、异常归一化和 child process 结果落库 | 业务规则判断、外部数据源字段解释 |
 | Reconciler | `control_plane/reconciler/views.py`、`control_plane/reconciler/reconciler.py` | 由 executor / status / result 路径调用 | 汇总 child task/job 状态，推进 parent request 终态和可观测视图 | 外部副作用、通知发送、handler 执行 |
-| Project Configuration | `src/automation_business_scaffold/project_env.py`、`src/automation_business_scaffold/config.py`、`scripts/execution_control/executor.local.env`、`skills/{skill_code}/skill.local.env`、`.env` | 各 CLI / daemon / pytest / Alembic 启动时加载 | 统一配置加载顺序、默认值、typed settings | 将业务映射散落到 daemon 或 handler wrapper |
+| Project Configuration | `src/automation_business_scaffold/project_env.py`、`src/automation_business_scaffold/config.py`、`scripts/execution_control/executor.local.env`、`skills/{skill_code}/skill.local.env`、`.env` | 各 CLI / daemon / pytest / Alembic 启动时加载 | 统一配置加载顺序、默认值、typed settings；过滤 skill env 中的运行资源残留 | 将业务映射散落到 daemon 或 handler wrapper |
 | Launchd Deployment | `config/deployment/launchd/*.plist.template`、`scripts/execution_control/install_launch_agents.sh`、`scripts/execution_control/run_launchd_agent.sh` | launchd | 安装、刷新、拉起常驻进程 | 业务逻辑、Runtime DB schema 变更 |
 
 ## 3. 控制链路
@@ -69,15 +69,24 @@ CLI 参数 > 环境变量 > executor.local.env > skill.local.env > .env
 - `config.py` 负责把环境变量解析成 typed defaults，例如 `BusinessDefaults`、`ExecutionControlDefaults` 和 `get_execution_control_defaults()`。
 - `scripts/execution_control/executor.local.env` 是 Runtime DB、Fact DB、Object Store、lease、heartbeat、worker poll、daemon stop idle 等运行配置的主入口。
 - `skills/{skill_code}/skill.local.env` 是 agent skill 固定输入和部署到 agent workspace 后的 skill 配置入口。
+- `skills/{skill_code}/skill.local.env` 不得提供 Runtime DB、Fact DB、Object Store 或 browser profile 配置；加载器必须忽略其中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键。
 - `.env` 是本地默认配置入口，适合浏览器 profile、agent host/port、通用本地变量。
 - `*.env.example` 必须跟实际读取文件保持同名示例关系；新增必填配置时要同步示例、部署脚本、配置文档和测试。
+- 正式 Skill submit 只提交业务 payload；Runtime DB、Fact DB、Object Storage 必须由 Project Configuration 解析，不能由 Skill payload 透传真实连接串或密钥。
+- browser profile 属于项目运行资源；正式 Skill 可以传显式业务级 `profile_ref` override，但固定默认值、provider、profile_id、workspace_id 必须来自 Project Configuration 或 `config/browser_profiles.json`，不能来自 `skill.local.env`。
+- Formal workflow submit 必须在 `Task Request Entry` 阶段完成持久化 preflight；缺 Runtime DB、Fact DB、非 local object store、bucket 或 MinIO/S3 必填配置时拒绝创建正式任务。
+- `task_request.payload_json` 和 child job payload 可以保存非敏感运行摘要，例如 `requires_fact_db`、`requires_object_storage`、`artifact_store.provider`、`artifact_store.bucket`、`artifact_store.object_prefix` 和配置来源标记；不得保存完整 DB URL、access key、secret key。
+- `run_mode` 只允许作为本地测试或 debug submit override，不属于正式 Skill submit 契约。
 
 禁止:
 
 - 在 daemon wrapper 中硬编码业务默认值。
 - 在 handler 中私自读取部署脚本专属配置。
 - 把用户 agent workspace 的 `skill.local.env` 当成 Runtime DB 或 Object Store 的唯一事实来源。
+- 把用户 agent workspace 的 `skill.local.env` 当成 browser profile / provider / profile_id / workspace_id 的事实来源。
 - 让不同入口用不同配置优先级。
+- 在正式 Skill payload 中传入 `run_mode`、Runtime DB、Fact DB 或 MinIO/S3 连接配置。
+- 为了让正式任务“先跑起来”而把 `fact_bundle_upsert` 退化成 `dry_run`，或把 `media_asset_sync` 退化成 `local` / `linked_local` 成功。
 
 ## 4.1 Runtime DB 连接契约
 

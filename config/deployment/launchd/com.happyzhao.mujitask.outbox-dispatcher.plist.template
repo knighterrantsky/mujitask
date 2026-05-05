@@ -22,8 +22,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/outbox_dispatcher.launchd.stdout.log</string>
+  <string>__ROOT_DIR__/runtime/daemons/outbox_dispatcher.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>__ROOT_DIR__/runtime/phase1_daemons/outbox_dispatcher.launchd.stderr.log</string>
+  <string>__ROOT_DIR__/runtime/daemons/outbox_dispatcher.launchd.stderr.log</string>
 </dict>
 </plist>

@@ -12,6 +12,21 @@ target_table:
   feishu_table_name: TK选品收集
   table_code: tk_selection
 
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
 stages:
   - stage_code: keyword_seed_import
     job_code: keyword_seed_import
@@ -33,6 +48,7 @@ stages:
 protected_invariants:
   - Existing selection rows are skipped by insert_if_absent and must not be overwritten by keyword seed import.
   - Skipped existing rows must not trigger selection_row_refresh fan-out.
+  - Formal refresh fan-out must pass requires_fact_db=true and requires_object_storage=true; Fact DB dry_run or local media success is invalid.
   - New seed rows write 商品ID, 商品链接, 关键词, 备注, and 记录日期.
   - 备注 must be written as 通过搜索关键字：{关键词} on keyword seed creation.
   - Default search-list filters are 近7天销量 >= 500 and price range maximum >= 10.99.

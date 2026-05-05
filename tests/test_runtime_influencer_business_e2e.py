@@ -36,7 +36,14 @@ CREATOR_UID = "7094679250578015274"
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
+        "allow_test_persistence_overrides": True,
         "execution_control_db_url": runtime_db_url,
+        "fact_db_url": runtime_db_url,
+        "execution_control_artifact_store_provider": "minio",
+        "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+        "execution_control_minio_endpoint": "127.0.0.1:9000",
+        "execution_control_minio_access_key": "minioadmin",
+        "execution_control_minio_secret_key": "miniosecret",
         "execution_child_runner_mode": "inline",
         "execution_control_stop_when_idle": True,
         "execution_control_max_iterations": 1,
@@ -44,6 +51,15 @@ def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, objec
     }
     params.update(overrides)
     return params
+
+
+def _configure_project_runtime_env(monkeypatch: pytest.MonkeyPatch, runtime_db_url: str) -> None:
+    monkeypatch.setenv("TK_FACT_DB_URL", runtime_db_url)
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "minio")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET", "pytest-runtime-artifacts")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT", "127.0.0.1:9000")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY", "minioadmin")
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY", "miniosecret")
 
 
 def _submit_request(runtime_db_url: str) -> dict[str, object]:
@@ -55,7 +71,6 @@ def _submit_request(runtime_db_url: str) -> dict[str, object]:
             table_url=SOURCE_TABLE_URL,
             target_table_url=POOL_TABLE_URL,
             access_token="test-access-token",
-            fact_db_url=runtime_db_url,
             source_record_ids=[SOURCE_RECORD_ID],
             source_channel_code="console",
             reply_target="reply://influencer-business-e2e",
@@ -370,6 +385,7 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _configure_project_runtime_env(monkeypatch, runtime_db_url)
     feishu_state = _bind_fake_business_clients(monkeypatch)
     runtime_params = _runtime_params(runtime_db_url)
     submitted = _submit_request(runtime_db_url)

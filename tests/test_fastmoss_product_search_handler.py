@@ -146,7 +146,7 @@ def test_fastmoss_product_search_normalizes_candidates_and_raw_capture(tmp_path:
     )
 
     assert result.status == "success"
-    assert result.contract_revision == "phase2"
+    assert result.contract_revision == "product_fact_contract"
     assert result.result["query"]["source_endpoint"] == "/api/goods/V2/search"
     assert result.result["pagination"]["stop_reason"] == "inline_response"
     assert result.result["condition_summary"]["raw_candidate_count"] == 3

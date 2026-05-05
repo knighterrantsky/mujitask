@@ -98,7 +98,7 @@ def _contract(
             "optional": [],
             "forbidden": [],
             "notes": (
-                "Phase 1 skeleton. Concrete payload fields should be filled in the "
+                "Baseline skeleton. Concrete payload fields should be filled in the "
                 "per-handler module before the runtime starts executing it."
             ),
         },

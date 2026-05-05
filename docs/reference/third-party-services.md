@@ -40,7 +40,7 @@
 
 TikTok 访问依赖浏览器 profile、Cookie 和相关事实采集 handler。数据采集优先走 request/API 路径，browser 只作为 fallback。
 
-配置:
+配置在项目运行环境或 `.env`，不放在 skill 固定配置中:
 
 ```text
 BROWSER_PROFILE_REF

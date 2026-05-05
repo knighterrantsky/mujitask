@@ -17,6 +17,21 @@ source_adapter: selection_table_source_adapter
 projection_mappers:
   - selection_table_projection_mapper
 
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
 stages:
   - stage_code: read_selection_rows
     handler_code: feishu_table_read
@@ -35,6 +50,7 @@ stages:
 protected_invariants:
   - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据
   - 行级 pipeline 内部串行：URL 校验 → TikTok request → media sync → FastMoss fetch → fact upsert → 飞书 17 字段写回
+  - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - Browser 只作为 fallback，用于 request 失效或风控阻断；request 已明确不可售时直接产出不可售终态
   - 17 个自动维护字段统一采用 fill_missing_only 策略，不覆盖已有值；商品ID/商品链接 始终刷新
 

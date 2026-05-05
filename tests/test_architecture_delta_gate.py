@@ -42,7 +42,7 @@ def _minimal_architecture_contract() -> str:
     return yaml.safe_dump(
         {
             "schema_version": 1,
-            "current_phase": "domains_runtime_rewrite",
+            "roadmap_status": "domains_runtime_rewrite",
             "owners": {},
             "legacy_reference_only": [],
         },
@@ -101,7 +101,7 @@ def test_architecture_ownership_yaml_parses() -> None:
     loaded = yaml.safe_load(ARCHITECTURE_OWNERSHIP.read_text(encoding="utf-8"))
 
     assert loaded["schema_version"] == 1
-    assert loaded["current_phase"] == "stable"
+    assert loaded["roadmap_status"] == "stable"
     assert "business_flow" in loaded["owners"]
 
 
@@ -173,7 +173,7 @@ def test_claim_done_treats_architecture_delta_failure_as_not_complete(tmp_path: 
     )
     roadmap = {
         "schema_version": 1,
-        "current_phase": "domains_runtime_rewrite",
+        "roadmap_status": "domains_runtime_rewrite",
         "features": [
             {
                 "feature_code": "failing_architecture_delta",

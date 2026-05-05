@@ -22,6 +22,8 @@
 4. `skills/mujitask-tiktok-feishu-sync/skill.local.env`
 5. `.env`
 
+其中 `skill.local.env` 只允许注入业务输入和 agent 本机上下文。加载器会忽略这份文件里的 Runtime DB、Fact DB、对象存储和浏览器 profile 配置键，避免旧部署文件把运行资源重新变成 skill 事实来源。
+
 ## 2. 每个文件应该放什么
 
 ### 2.1 `scripts/execution_control/executor.local.env`
@@ -31,6 +33,7 @@
 应该放：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `TK_FACT_DB_URL` 或 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
@@ -69,17 +72,16 @@
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
-- `BROWSER_PROFILE_REF`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
 - `OPENCLAW_*`
-- 可选的 `EXECUTION_CONTROL_*` 兼容键
 
 说明：
 
 - skill wrapper 仍然会直接解析这份文件。
-- 如果 skill 在项目仓库内运行，运行时代码也会自动读取它。
-- 但 Runtime DB / MinIO 的正式默认配置仍建议放在 `executor.local.env`，不要只放 skill 文件里。
+- 如果 skill 在项目仓库内运行，运行时代码也会自动读取它，但只接受业务输入和 agent 上下文。
+- Runtime DB / Fact DB / MinIO/S3 / 浏览器 profile 的正式默认配置必须放在项目运行配置中，不能由 skill env 或 skill submit payload 透传。
+- 旧 `skill.local.env` 中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键会被项目配置加载器忽略。
 
 ### 2.3 `.env`
 
@@ -173,6 +175,9 @@ cp .env.example .env
 5. 如果新增 Fact DB 或辅助 DB 连接，优先复用已有 `runtime_store`；确实需要独立 engine 时，必须显式设置有界连接池或 `NullPool`。
 6. 新增 task submit、watchdog 或 worker 连接健康逻辑时，配置来源仍按本文优先级读取，不允许绕过 `executor.local.env` 私自读取部署脚本变量。
 7. `too many clients already` 等 DB 连接错误在开发和测试中应按基础设施错误处理，不应被写成业务失败或字段校验失败。
+8. 正式 skill submit 不传 `run_mode`，也不传 Runtime DB、Fact DB、MinIO/S3 endpoint、access key、secret key、bucket 或浏览器 provider/profile_id/workspace_id 等运行配置；这些配置由项目运行环境解析。
+9. 测试可以在直接 submit 调用中使用显式 test-only override 指向测试 DB / MinIO，但不能把这些字段写成正式 skill wrapper 的默认参数。
+10. 正式 workflow 缺 Runtime DB、Fact DB 或对象存储配置时必须 fail fast，不能通过 `dry_run`、`local` 或 `linked_local` 返回成功。
 
 ## 7. DB 连接开发护栏
 

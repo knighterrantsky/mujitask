@@ -44,6 +44,36 @@ def test_merge_key_value_file_preserves_unknown_keys_and_updates_managed_values(
     )
 
 
+def test_remove_key_value_file_removes_retired_skill_runtime_keys(tmp_path: Path) -> None:
+    env_file = tmp_path / "skill.local.env"
+    env_file.write_text(
+        "# existing config\n"
+        "INSTALL_DIR=/install\n"
+        "BROWSER_PROFILE_REF=profile-a\n"
+        "EXECUTION_CONTROL_DB_URL=postgresql+psycopg://runtime\n"
+        "EXECUTION_CONTROL_ARTIFACT_BUCKET=artifacts\n"
+        "FASTMOSS_PHONE=13800000000\n"
+        "UNKNOWN_KEY=keep-me\n",
+        encoding="utf-8",
+    )
+
+    MODULE.remove_key_value_file(
+        env_file,
+        [
+            "BROWSER_PROFILE_REF",
+            "EXECUTION_CONTROL_DB_URL",
+            "EXECUTION_CONTROL_ARTIFACT_BUCKET",
+        ],
+    )
+
+    assert env_file.read_text(encoding="utf-8") == (
+        "# existing config\n"
+        "INSTALL_DIR=/install\n"
+        "FASTMOSS_PHONE=13800000000\n"
+        "UNKNOWN_KEY=keep-me\n"
+    )
+
+
 def test_write_deploy_state_file_adds_update_markers_and_preserves_unknown_keys(tmp_path: Path) -> None:
     deploy_state = tmp_path / "openclaw-deploy.env"
     deploy_state.write_text("CUSTOM_FLAG=keep\n", encoding="utf-8")

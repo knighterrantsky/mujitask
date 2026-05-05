@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -49,11 +50,22 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
         coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
         payload.get("db_url"),
         request_payload.get("db_url"),
-        payload.get("execution_control_db_url"),
-        request_payload.get("execution_control_db_url"),
+        get_execution_control_defaults().fact_db_url,
     )
     if fact_db_url:
         persistence_mode = "database"
+    elif _requires_database_persistence(payload, request_payload):
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="persistence_configuration_missing",
+                error_code="fact_database_persistence_required",
+                message="fact_bundle_upsert requires Fact DB persistence, but no fact_db_url was provided.",
+                retryable=False,
+                details={"required": True, "configured": False},
+            ),
+            summary={"entity_count": len(entity_keys), "persistence_mode": "missing_database"},
+        )
 
     try:
         if persistence_mode == "database":
@@ -89,6 +101,22 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
         "persistence_mode": persistence_mode,
     }
     return success_result(context, summary=summary, result=result)
+
+
+def _requires_database_persistence(payload: dict[str, Any], request_payload: dict[str, Any]) -> bool:
+    persistence = coerce_mapping(payload.get("persistence"))
+    request_persistence = coerce_mapping(request_payload.get("persistence"))
+    for source in (payload, request_payload, persistence, request_persistence):
+        for key in ("require_database_persistence", "requires_fact_db", "strict_persistence"):
+            if key in source and source.get(key) not in (None, ""):
+                return _coerce_bool(source.get(key))
+    return False
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _plan_fact_bundle_upsert(fact_bundle: dict[str, Any]) -> dict[str, Any]:

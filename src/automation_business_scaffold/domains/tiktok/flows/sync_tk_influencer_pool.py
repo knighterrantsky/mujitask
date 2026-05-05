@@ -1415,7 +1415,10 @@ def _build_influencer_creator_sync_jobs(*, request: Any, product_jobs: list[dict
                         "influencer_pool_write_handler": "feishu_table_write",
                         "competitor_status_write_handler": "feishu_table_write",
                     },
-                    "fact_db_url": _fact_db_url_from_request(request_payload),
+                    "requires_fact_db": True,
+                    "requires_object_storage": True,
+                    "require_database_persistence": True,
+                    "require_object_storage": True,
                     **_fastmoss_common_payload(request_payload),
                     **_feishu_common_payload(request_payload),
                 },
@@ -1432,7 +1435,6 @@ def _build_fact_upsert_jobs(
 ) -> list[dict[str, Any]]:
     resolved_job = SYNC_TK_INFLUENCER_POOL_WORKFLOW.require_job("fact_bundle_upsert")
     request_payload = dict(request.payload or {})
-    fact_db_url = _fact_db_url_from_request(request_payload)
     jobs_to_enqueue: list[dict[str, Any]] = []
     seen_dedupe: set[str] = set()
 
@@ -1476,7 +1478,8 @@ def _build_fact_upsert_jobs(
                     "entity_business_keys": ",".join(entity_keys),
                     "observation_at": _first_non_empty(result_payload.get("observed_at")),
                     "fact_bundle": fact_bundle,
-                    "fact_db_url": fact_db_url,
+                    "requires_fact_db": True,
+                    "require_database_persistence": True,
                 },
             }
         )
@@ -1531,7 +1534,8 @@ def _build_fact_upsert_jobs(
                     "entity_business_keys": ",".join(entity_keys),
                     "observation_at": _first_non_empty(result_payload.get("observed_at")),
                     "fact_bundle": fact_bundle,
-                    "fact_db_url": fact_db_url,
+                    "requires_fact_db": True,
+                    "require_database_persistence": True,
                 },
             }
         )
@@ -2159,16 +2163,6 @@ def _source_product_images_from_fields(source_fields: Mapping[str, Any]) -> list
         if value not in (None, "", {}, []):
             return [value]
     return []
-
-
-def _fact_db_url_from_request(request_payload: Mapping[str, Any]) -> str:
-    return _first_non_empty(
-        request_payload.get("fact_db_url"),
-        request_payload.get("execution_control_db_url"),
-        os.environ.get("TK_FACT_DB_URL", ""),
-        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", ""),
-        os.environ.get("EXECUTION_CONTROL_DB_URL", ""),
-    )
 
 
 def _normalize_product_identity(raw_identity: Any, fallback_row: Mapping[str, Any]) -> dict[str, Any]:

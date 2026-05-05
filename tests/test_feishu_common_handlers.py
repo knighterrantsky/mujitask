@@ -459,6 +459,97 @@ def test_competitor_projection_keeps_non_terminal_product_status_out_of_auto_wri
     assert mapped == []
 
 
+def test_selection_projection_writes_terminal_product_status_through_feishu(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [
+                {"field_name": "商品ID", "type": 1},
+                {"field_name": "商品链接", "type": 15},
+                {"field_name": "商品状态", "type": 1},
+                {"field_name": "记录日期", "type": 1},
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK选品收集",
+        write_mode="fill_missing_only",
+        mapper_code="selection_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-selection-unavailable",
+                "product_id": "1731481529151688792",
+                "product_url": "https://www.tiktok.com/shop/pdp/1731481529151688792",
+                "projection_fields": {
+                    "商品ID": "1731481529151688792",
+                    "商品链接": "https://www.tiktok.com/shop/pdp/1731481529151688792",
+                    "商品状态": "已下架/区域不可售",
+                },
+                "source_fields": {
+                    "商品ID": "1731481529151688792",
+                    "商品链接": "https://www.tiktok.com/shop/pdp/1731481529151688792",
+                    "商品状态": "",
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    fields = FakeClient.updated[0]["fields"]
+    assert fields["商品状态"] == "已下架/区域不可售"
+    assert "记录日期" in fields
+    assert "商品状态" in result.result["records"][0]["fields_written"]
+
+
+def test_selection_projection_keeps_non_terminal_product_status_out_of_auto_writeback() -> None:
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK选品收集",
+        write_mode="fill_missing_only",
+        mapper_code="selection_table_projection_mapper",
+        records=[
+            {
+                "source_record_id": "rec-selection-active",
+                "product_id": "123456789",
+                "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                "projection_fields": {
+                    "商品ID": "123456789",
+                    "商品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "商品状态": "在售",
+                },
+                "source_fields": {
+                    "商品ID": "123456789",
+                    "商品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "商品状态": "",
+                },
+            }
+        ],
+    )
+
+    mapped = map_write_records(payload)
+
+    assert mapped[0]["fields"] == {
+        "商品ID": "123456789",
+        "商品链接": {
+            "text": "https://www.tiktok.com/shop/pdp/123456789",
+            "link": "https://www.tiktok.com/shop/pdp/123456789",
+        },
+    }
+
+
 def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
     payload = _table_payload(
         target_table_ref="feishu://mujitask/TK竞品收集",
