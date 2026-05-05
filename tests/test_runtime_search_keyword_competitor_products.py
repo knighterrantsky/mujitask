@@ -677,6 +677,36 @@ def test_keyword_search_parameter_mapper_builds_fastmoss_search_payload() -> Non
     assert mapped["output_conditions"]["business_conditions"]["min_day7_sold_count"] == "200"
 
 
+def test_keyword_search_parameter_mapper_applies_selection_defaults() -> None:
+    mapped = keyword_search_parameter_mapper(
+        {
+            "search_keyword": SEARCH_QUERY,
+            "keyword_workflow_mode": "selection",
+        }
+    )
+
+    assert mapped["output_conditions"]["business_conditions"] == {
+        "min_day7_sold_count": "500",
+        "min_price_range_max_amount": "10.99",
+    }
+
+
+def test_keyword_search_parameter_mapper_selection_defaults_are_overridable() -> None:
+    mapped = keyword_search_parameter_mapper(
+        {
+            "search_keyword": SEARCH_QUERY,
+            "keyword_workflow_mode": "selection",
+            "sales_7d_threshold": "800",
+            "product_price_threshold": "15.5",
+        }
+    )
+
+    assert mapped["output_conditions"]["business_conditions"] == {
+        "min_day7_sold_count": "800",
+        "min_price_range_max_amount": "15.5",
+    }
+
+
 def test_keyword_search_parameter_mapper_keeps_zero_as_unlimited_candidate_limit() -> None:
     mapped = keyword_search_parameter_mapper(
         {

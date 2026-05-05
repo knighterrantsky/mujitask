@@ -1008,6 +1008,7 @@ def _parent_spec_and_image_from_best_sku(
     raw_sku_payload: Mapping[str, Any],
     product_skus: list[Any],
     best_sku: Mapping[str, Any],
+    tiktok_sku_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[str, Any]:
     parent_spec = _normalized_parent_spec_value(best_sku.get("sku_value"))
     if not parent_spec:
@@ -1026,11 +1027,15 @@ def _parent_spec_and_image_from_best_sku(
                     return parent_spec, parent_image
     prop_value_id = first_non_empty(best_sku.get("prop_value_id"), _sku_row_prop_value_id(best_row))
     if prop_value_id:
-        for row in rows:
-            if _sku_row_prop_value_id(row) == prop_value_id:
+        normalized_prop_value_id = _normalized_lookup_value(prop_value_id)
+        for row in [*rows, *(tiktok_sku_rows or [])]:
+            if _normalized_lookup_value(_sku_row_prop_value_id(row)) == normalized_prop_value_id:
                 parent_image = _sku_row_image(row)
                 if parent_image:
                     return parent_spec, parent_image
+    parent_image = _sku_text_fallback_image(best_sku, tiktok_sku_rows or [])
+    if parent_image:
+        return parent_spec, parent_image
     return parent_spec, ""
 
 
@@ -1042,6 +1047,110 @@ def _sku_source_rows(raw_sku_payload: Mapping[str, Any], product_skus: list[Any]
             rows.extend(dict(item) for item in value if isinstance(item, Mapping))
     rows.extend(dict(item) for item in product_skus if isinstance(item, Mapping))
     return rows
+
+
+def _tiktok_sku_source_rows(normalized_product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    containers = [
+        normalized_product_result,
+        coerce_mapping(normalized_product_result.get("product")),
+        coerce_mapping(normalized_product_result.get("logical_fields")),
+        coerce_mapping(normalized_product_result.get("fact_bundle")),
+    ]
+    for container in containers:
+        for key in ("product_skus", "sku_list", "skus"):
+            rows.extend(_sku_rows_from_items(container.get(key)))
+        rows.extend(_sku_image_rows_from_items(container.get("sku_images")))
+        rows.extend(_sku_image_rows_from_media_assets(container.get("media_assets")))
+    return rows
+
+
+def _sku_rows_from_items(items: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return rows
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        raw = coerce_mapping(coerce_mapping(row.get("facts")).get("raw"))
+        if raw:
+            row = {**raw, **row}
+        rows.append(row)
+    return rows
+
+
+def _sku_image_rows_from_items(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    return [_sku_image_row(item) for item in items if isinstance(item, Mapping)]
+
+
+def _sku_image_rows_from_media_assets(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        item_map = coerce_mapping(item)
+        if first_non_empty(item_map.get("media_role")) != "product_sku_image":
+            continue
+        rows.append(_sku_image_row(item_map))
+    return rows
+
+
+def _sku_image_row(item: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = coerce_mapping(item.get("metadata"))
+    option_name = first_non_empty(
+        item.get("option_name"),
+        metadata.get("option_name"),
+        item.get("prop_name"),
+        metadata.get("prop_name"),
+        item.get("name"),
+        metadata.get("name"),
+    )
+    option_value = first_non_empty(
+        item.get("option_value"),
+        metadata.get("option_value"),
+        item.get("prop_value"),
+        metadata.get("prop_value"),
+        item.get("value"),
+        metadata.get("value"),
+    )
+    sku_property_key = first_non_empty(
+        item.get("sku_property_key"),
+        metadata.get("sku_property_key"),
+        f"{option_name}:{option_value}" if option_name and option_value else "",
+    )
+    image = _first_present(
+        item.get("image"),
+        item.get("img"),
+        item.get("image_url"),
+        item.get("source_url"),
+        item.get("url"),
+        item.get("file_token"),
+        item.get("local_path"),
+    )
+    return compact_dict(
+        {
+            "sku_name": option_value,
+            "spec_name": sku_property_key,
+            "sku_property_key": sku_property_key,
+            "sku_property_keys": [sku_property_key] if sku_property_key else [],
+            "image": image,
+            "source_url": image,
+            "sku_sale_props": [
+                compact_dict(
+                    {
+                        "prop_name": option_name,
+                        "prop_value": option_value,
+                        "sku_property_key": sku_property_key,
+                        "image": image,
+                        "source_url": image,
+                    }
+                )
+            ],
+        }
+    )
 
 
 def _find_best_sku_row(best_sku: Mapping[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1064,7 +1173,11 @@ def _sku_row_spec_values(row: Mapping[str, Any]) -> list[str]:
     values = [
         first_non_empty(row.get("spec_name")),
         first_non_empty(row.get("sku_name"), row.get("name")),
+        first_non_empty(row.get("sku_property_key")),
     ]
+    sku_property_keys = row.get("sku_property_keys")
+    if isinstance(sku_property_keys, list):
+        values.extend(first_non_empty(value) for value in sku_property_keys)
     for prop in _sku_row_sale_props(row):
         prop_value = first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value"))
         if prop_value:
@@ -1093,7 +1206,7 @@ def _sku_row_primary_spec_value(row: Mapping[str, Any]) -> str:
 
 
 def _sku_row_sale_props(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    props = row.get("sku_sale_props") or row.get("props")
+    props = row.get("sku_sale_props") or row.get("props") or row.get("properties")
     if not isinstance(props, list):
         return []
     return [dict(prop) for prop in props if isinstance(prop, Mapping)]
@@ -1118,7 +1231,54 @@ def _sku_row_image(row: Mapping[str, Any]) -> Any:
         image = _first_present(prop.get("image"), prop.get("img"), prop.get("image_url"), prop.get("source_url"))
         if image:
             return image
-    return _first_present(row.get("image"), row.get("img"), row.get("image_url"), row.get("cover"))
+    return _first_present(row.get("image"), row.get("img"), row.get("image_url"), row.get("source_url"), row.get("cover"))
+
+
+def _sku_text_fallback_image(best_sku: Mapping[str, Any], rows: list[dict[str, Any]]) -> Any:
+    for row in rows:
+        if not _sku_row_text_matches_best_sku(best_sku, row):
+            continue
+        image = _sku_row_image(row)
+        if image:
+            return image
+    return ""
+
+
+def _sku_row_text_matches_best_sku(best_sku: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    best_name = _normalized_sku_text_value(best_sku.get("sku_name"))
+    best_value = _normalized_sku_text_value(best_sku.get("sku_value"))
+    if not best_value:
+        return False
+    row_texts = {_normalized_sku_text_value(value) for value in _sku_row_spec_values(row)}
+    row_texts.discard("")
+    if not row_texts:
+        return False
+    pair_texts = _sku_pair_text_values(best_name, best_value)
+    if pair_texts and row_texts.intersection(pair_texts):
+        return True
+    if best_value not in row_texts:
+        return False
+    if not best_name:
+        return True
+    return not _sku_row_has_named_option(row) or _sku_row_has_option_pair(row, best_name, best_value)
+
+
+def _sku_row_has_named_option(row: Mapping[str, Any]) -> bool:
+    if first_non_empty(row.get("spec_name"), row.get("sku_property_key")):
+        return True
+    sku_property_keys = row.get("sku_property_keys")
+    if isinstance(sku_property_keys, list) and any(first_non_empty(value) for value in sku_property_keys):
+        return True
+    return any(first_non_empty(prop.get("prop_name"), prop.get("name")) for prop in _sku_row_sale_props(row))
+
+
+def _sku_row_has_option_pair(row: Mapping[str, Any], best_name: str, best_value: str) -> bool:
+    for prop in _sku_row_sale_props(row):
+        prop_name = _normalized_sku_text_value(first_non_empty(prop.get("prop_name"), prop.get("name")))
+        prop_value = _normalized_sku_text_value(first_non_empty(prop.get("prop_value"), prop.get("value_name"), prop.get("value")))
+        if prop_name == best_name and prop_value == best_value:
+            return True
+    return False
 
 
 def _normalized_parent_spec_value(value: Any) -> str:
@@ -1127,6 +1287,21 @@ def _normalized_parent_spec_value(value: Any) -> str:
 
 def _normalized_lookup_value(value: Any) -> str:
     return _normalized_parent_spec_value(value).lower()
+
+
+def _normalized_sku_text_value(value: Any) -> str:
+    normalized = _normalized_lookup_value(value)
+    normalized = re.sub(r"\s*[:：]\s*", ":", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _sku_pair_text_values(best_name: str, best_value: str) -> set[str]:
+    if not best_name or not best_value:
+        return set()
+    return {
+        _normalized_sku_text_value(f"{best_name}:{best_value}"),
+        _normalized_sku_text_value(f"{best_name}: {best_value}"),
+    }
 
 
 _CHART_NAME_TO_FIELD: dict[str, str] = {
@@ -1150,6 +1325,9 @@ def _build_selection_projection_fields(
     fastmoss_bundle = coerce_mapping(fastmoss_result.get("product_fact_bundle"))
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
+    overview_28d_metrics = coerce_mapping(
+        _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.overview", d_type=28)).get("overview")
+    )
     product_skus = fastmoss_bundle.get("product_skus") if isinstance(fastmoss_bundle.get("product_skus"), list) else []
     main_image = _first_present(
         _first_media_asset_ref(media_result),
@@ -1170,6 +1348,7 @@ def _build_selection_projection_fields(
             raw_sku_payload=sku_raw_payload,
             product_skus=product_skus,
             best_sku=best_sku,
+            tiktok_sku_rows=_tiktok_sku_source_rows(normalized_product_result),
         )
 
     chart_images = dict(chart_image_paths or {})
@@ -1189,7 +1368,8 @@ def _build_selection_projection_fields(
         ),
     )
     total_sales = _number_value(
-        _metric_text(overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count"),
+        _metric_text(overview_28d_metrics, "sold_count"),
+        _metric_text(overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count", "sold_count"),
     )
     fields = {
         "商品ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),

@@ -313,6 +313,57 @@ features:
       - Detail completion must dispatch competitor_row_refresh row jobs instead of leaf sibling jobs.
       - Do not claim complete until claim_done.py returns no failed_checks.
 
+  - feature_code: tk_keyword_selection_search
+    status: complete
+    default_context:
+      - docs/arch/system-architecture-design.md
+      - contracts/fields/feishu-tk-selection.yaml
+      - contracts/workflow/search_keyword_selection_products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - src/automation_business_scaffold/capabilities/
+      - tests/test_fastmoss_product_search_handler.py
+      - tests/test_feishu_common_handlers.py
+      - tests/test_runtime_search_keyword_competitor_products.py
+      - tests/test_runtime_keyword_executor_integration.py
+      - tests/test_agent.py
+      - tests/test_workflow_demo.py
+    source_contracts:
+      - contracts/fields/feishu-tk-selection.yaml
+      - contracts/workflow/search_keyword_selection_products.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/contracts/**
+      - contracts/**
+      - tests/**
+    forbidden_paths:
+    done_gate:
+      tests:
+        - tests/test_fastmoss_product_search_handler.py
+        - tests/test_feishu_common_handlers.py
+        - tests/test_runtime_search_keyword_competitor_products.py
+        - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_tiktok_fastmoss_product_ingest.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+        - tests/test_workflow_defs_contract.py
+        - tests/test_registry.py
+        - tests/test_project_structure_contract.py
+        - tests/test_agent.py
+        - tests/test_workflow_demo.py
+      commands:
+        - uv run --extra dev pytest tests/test_fastmoss_product_search_handler.py tests/test_feishu_common_handlers.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_tiktok_fastmoss_product_ingest.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_workflow_defs_contract.py tests/test_registry.py tests/test_project_structure_contract.py tests/test_agent.py tests/test_workflow_demo.py
+    completion_rules:
+      - FastMoss search-list filtering must apply before selection seed insertion.
+      - Selection keyword defaults are 7-day sales >= 500 and price range maximum >= 10.99.
+      - Seed insertion must write 商品ID, 商品链接, 关键词, 备注, and 记录日期 with insert_if_absent semantics.
+      - Successful new seed rows must dispatch selection_row_refresh; skipped existing rows must not fan out.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
   - feature_code: tiktok_fastmoss_product_ingest
     status: complete
     default_context:

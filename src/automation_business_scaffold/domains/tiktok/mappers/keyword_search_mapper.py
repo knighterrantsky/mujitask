@@ -29,11 +29,35 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
     )
     filters = dict(_mapping(explicit.get("filters")) or _mapping(payload.get("filters")))
     output_conditions = dict(_mapping(explicit.get("output_conditions")) or _mapping(payload.get("output_conditions")))
+    business_conditions = dict(_mapping(output_conditions.get("business_conditions")))
+    selection_mode = _first_text(explicit.get("keyword_workflow_mode"), payload.get("keyword_workflow_mode")) == "selection"
 
-    sales_7d_threshold = _first_text(explicit.get("sales_7d_threshold"), payload.get("sales_7d_threshold"))
+    sales_7d_threshold = _first_text(
+        explicit.get("sales_7d_threshold"),
+        explicit.get("min_day7_sold_count"),
+        explicit.get("day7_sales_threshold"),
+        payload.get("sales_7d_threshold"),
+        payload.get("min_day7_sold_count"),
+        payload.get("day7_sales_threshold"),
+        business_conditions.get("min_day7_sold_count"),
+        "500" if selection_mode else "",
+    )
     if sales_7d_threshold:
-        business_conditions = dict(_mapping(output_conditions.get("business_conditions")))
         business_conditions.setdefault("min_day7_sold_count", sales_7d_threshold)
+
+    price_threshold = _first_text(
+        explicit.get("product_price_threshold"),
+        explicit.get("price_threshold"),
+        explicit.get("min_price_range_max_amount"),
+        payload.get("product_price_threshold"),
+        payload.get("price_threshold"),
+        payload.get("min_price_range_max_amount"),
+        business_conditions.get("min_price_range_max_amount"),
+        "10.99" if selection_mode else "",
+    )
+    if price_threshold:
+        business_conditions.setdefault("min_price_range_max_amount", price_threshold)
+    if business_conditions:
         output_conditions["business_conditions"] = business_conditions
 
     max_candidates = _non_negative_int(
@@ -77,6 +101,7 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
         ),
         "raw_capture_policy": dict(_mapping(explicit.get("raw_capture_policy")) or {"store_raw_response": True}),
         "page_request_delay_seconds": _non_negative_float(payload.get("fastmoss_page_request_delay_seconds"), 0.0),
+        "keyword_workflow_mode": _first_text(explicit.get("keyword_workflow_mode"), payload.get("keyword_workflow_mode")),
         "search_digest": _first_text(payload.get("search_digest"), _search_digest(search_query=search_query, filters=filters)),
     }
     for key, value in payload.items():

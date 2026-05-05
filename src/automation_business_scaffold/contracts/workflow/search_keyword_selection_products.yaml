@@ -1,0 +1,88 @@
+schema_version: 1
+workflow_origin: new_workflow
+workflow_code: search_keyword_selection_products
+domain: tiktok
+agent_artifact:
+  skill_code: mujitask-tiktok-feishu-sync
+  path: skills/mujitask-tiktok-feishu-sync
+  status: legacy_skills_directory
+task:
+  code: search_keyword_selection_products
+  module: automation_business_scaffold.domains.tiktok.tasks.search_keyword_selection_products
+  exports:
+    - SearchKeywordSelectionProductsTask
+workflow:
+  module: automation_business_scaffold.domains.tiktok.workflows.search_keyword_selection_products
+  definition_export: build_search_keyword_selection_products_definition
+  runtime_export: build_search_keyword_selection_products_workflow
+  exports:
+    - SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION
+custom_logic:
+  mappers:
+    - code: keyword_search_parameter_mapper
+      module: automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper
+      export: keyword_search_parameter_mapper
+  policies:
+    - code: table_workflow_policies
+      module: automation_business_scaffold.domains.tiktok.policies.workflow_policies
+      exports:
+        - table_workflow_idempotency_rules
+        - table_workflow_timeout_rules
+        - standard_watchdog_rules
+        - notification_summary_policy
+  projections:
+    - code: selection_seed_projection_mapper
+      module: automation_business_scaffold.domains.tiktok.projections.feishu_selection_projection
+      export: selection_seed_projection_mapper
+    - code: selection_table_projection_mapper
+      module: automation_business_scaffold.domains.tiktok.projections.feishu_selection_projection
+      export: selection_table_projection_mapper
+outbox:
+  job_code: task_completed_notification
+  handler_code: outbox_dispatch
+  capability:
+    role: channel
+    system: outbox
+    module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+    export: outbox_dispatch_handler
+jobs:
+  - code: keyword_seed_import
+    module: automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import
+    handler_code: keyword_seed_import
+    capability:
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import
+      export: keyword_seed_import_handler
+    custom_logic_refs:
+      mappers:
+        - keyword_search_parameter_mapper
+      projections:
+        - selection_seed_projection_mapper
+  - code: selection_row_refresh
+    module: automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh
+    handler_code: selection_row_refresh
+    capability:
+      role: business_orchestration
+      system: tiktok
+      module: automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh
+      export: selection_row_refresh_handler
+    custom_logic_refs:
+      projections:
+        - selection_table_projection_mapper
+  - code: fastmoss_security_browser_resolve
+    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_security_browser_resolve
+    handler_code: fastmoss_security_browser_resolve
+    capability:
+      role: browser
+      system: fastmoss
+      module: automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler
+      export: fastmoss_security_browser_resolve_handler
+  - code: task_completed_notification
+    module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification
+    handler_code: outbox_dispatch
+    capability:
+      role: channel
+      system: outbox
+      module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+      export: outbox_dispatch_handler

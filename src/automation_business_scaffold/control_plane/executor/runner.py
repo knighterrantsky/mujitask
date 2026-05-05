@@ -15,6 +15,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
+    SELECTION_KEYWORD_TASK_CODE,
     REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
     build_idle_payload,
@@ -162,6 +163,10 @@ def run_refresh_competitor_row_by_url_request(params: dict[str, Any]) -> dict[st
 
 def run_search_keyword_competitor_products_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(KEYWORD_TASK_CODE, params)
+
+
+def run_search_keyword_selection_products_request(params: dict[str, Any]) -> dict[str, Any]:
+    return run_task_request(SELECTION_KEYWORD_TASK_CODE, params)
 
 
 def run_sync_tk_influencer_pool_request(params: dict[str, Any]) -> dict[str, Any]:

@@ -201,6 +201,9 @@ def _bind_fake_business_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, An
         def replace_browser_cookies(self, cookies: list[dict[str, Any]]) -> None:
             del cookies
 
+        def set_auth_refresh_callback(self, callback: object) -> None:
+            del callback
+
         def ensure_logged_in(self) -> None:
             return None
 

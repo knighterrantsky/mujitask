@@ -39,6 +39,42 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
 _SKIP_WRITE_IF_EMPTY = frozenset({"记录日期", "商品状态"})
 
 
+def _map_selection_seed_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    product_id = _first_non_empty(record.get("product_id"), _extract_product_id(record.get("product_url")))
+    product_url = _normalize_product_url(
+        _first_non_empty(record.get("product_url"), f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else "")
+    )
+    search_query = _text(record.get("search_query") or payload.get("search_query"))
+    fields = {
+        "商品ID": product_id,
+        "商品链接": _link_value(product_url),
+        "关键词": search_query,
+        "备注": f"通过搜索关键字：{search_query}" if search_query else "",
+        "记录日期": date.today().isoformat(),
+    }
+    upsert_key = (
+        {"field": "商品ID", "value": product_id}
+        if product_id
+        else {"field": "商品链接", "value": product_url}
+    )
+    return _normalize_write_record(
+        {
+            "op": "insert_if_absent",
+            "business_entity_key": _candidate_key(
+                {
+                    "product_id": product_id,
+                    "business_entity_key": record.get("business_entity_key"),
+                    "product_url": product_url,
+                }
+            ),
+            "upsert_key": upsert_key,
+            "fields": fields,
+            "source_context": _source_context_from_record(record, payload),
+        },
+        payload,
+    )
+
+
 def _map_selection_table_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     product_identity = _mapping(payload.get("product_identity")) or _mapping(record.get("product_identity"))
     product_id = _first_non_empty(record.get("product_id"), product_identity.get("product_id"))
@@ -127,6 +163,13 @@ def _selection_writeback_records(payload: Mapping[str, Any]) -> list[dict[str, A
             "product_url": _first_non_empty(product_identity.get("normalized_product_url"), product_identity.get("product_url"), payload.get("product_url")),
         }
     ]
+
+
+def selection_seed_projection_mapper(
+    record: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _map_selection_seed_record(record, payload)
 
 
 def selection_table_projection_mapper(

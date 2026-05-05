@@ -83,7 +83,7 @@
 
 | 字段名 | 数据来源 | 写入策略 |
 | --- | --- | --- |
-| `今年总销量` | FastMoss `overview.sales_28d` | `fill_missing_only` |
+| `今年总销量` | FastMoss `goods.overview(d_type=28).overview.sold_count` | `fill_missing_only` |
 | `出单种类占比图` | FastMoss 分布快照元数据 → 写回前渲染 PNG | `fill_missing_only` |
 | `销量趋势图` | FastMoss 每日指标元数据 → 写回前渲染 PNG | `fill_missing_only` |
 | `SKU销量占比图` | FastMoss SKU 分析快照元数据；仅在存在有效 `best_sku` 时渲染 PNG | `fill_missing_only` |
@@ -92,7 +92,7 @@
 
 说明：
 
-- `今年总销量` 字段名不变，实际写入近 28 天销量数据
+- `今年总销量` 字段名不变，实际写入近 28 天销量数据；使用 FastMoss `overview.sold_count`，与销量趋势图 `inc_sold_count` / 分布图 `sold_count` 口径一致，不使用 `real_sold_count`
 - 有效 `best_sku` 定义为 `sku_value` 有业务值且 `sold_count > 0`；`Default`、`默认`、`Specification`、空值、单 SKU 或第一条 SKU 都不能作为父体字段兜底来源。
 - 没有有效 `best_sku` 时，跳过 `SKU销量占比图`、`父体规格`、`父体图片`，不阻塞其他字段。
 - `父体规格` 可在图片缺失时单独写入；`父体图片` 只在能通过 `sku_id` 或 `prop_value_id` 匹配到该 `best_sku` 对应图片时写入。

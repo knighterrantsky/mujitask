@@ -825,6 +825,8 @@ def _normalize_fastmoss_search_candidate(
         coerce_mapping(coerce_mapping(query.get("filters")).get("price_range")).get("currency"),
         "USD",
     )
+    price_display = first_non_empty(row.get("price"), row.get("price_show"))
+    price_amounts = _parse_price_amounts(price_display)
     candidate = {
         "source": "fastmoss",
         "source_endpoint": FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
@@ -846,9 +848,11 @@ def _normalize_fastmoss_search_candidate(
             "raw": shop_info,
         },
         "price": {
-            "amount": _parse_number(row.get("price")),
+            "amount": price_amounts.get("amount"),
+            "min_amount": price_amounts.get("min_amount"),
+            "max_amount": price_amounts.get("max_amount"),
             "currency": currency,
-            "display": first_non_empty(row.get("price"), row.get("price_show")),
+            "display": price_display,
         },
         "original_price": {
             "amount": _parse_number(row.get("ori_price")),
@@ -934,6 +938,8 @@ def _evaluate_fastmoss_output_conditions(
             matched[key] = _number_at_least(candidate["metrics"].get("relate_author_count"), threshold)
         elif key == "max_price_amount":
             matched[key] = _number_at_most(candidate["price"].get("amount"), threshold)
+        elif key in {"min_price_range_max_amount", "min_price_max_amount", "min_product_price_amount"}:
+            matched[key] = _number_at_least(candidate["price"].get("max_amount"), threshold)
         elif key == "min_commission_rate":
             matched[key] = _number_at_least(candidate["commission"].get("rate"), threshold)
         else:
@@ -1165,6 +1171,25 @@ def _parse_number(value: Any) -> int | float | None:
     elif suffix == "亿":
         number *= 100_000_000
     return int(number) if number.is_integer() else number
+
+
+def _parse_price_amounts(value: Any) -> dict[str, int | float | None]:
+    if value is None or isinstance(value, bool):
+        return {"amount": None, "min_amount": None, "max_amount": None}
+    if isinstance(value, (int, float)):
+        number = _parse_number(value)
+        return {"amount": number, "min_amount": number, "max_amount": number}
+    text = coerce_str(value).replace(",", "")
+    if not text:
+        return {"amount": None, "min_amount": None, "max_amount": None}
+    numbers: list[int | float] = []
+    for match in re.finditer(r"([-+]?\d+(?:\.\d+)?)\s*([kKmMwW万亿]?)", text):
+        number = _parse_number(match.group(0))
+        if number is not None:
+            numbers.append(number)
+    if not numbers:
+        return {"amount": None, "min_amount": None, "max_amount": None}
+    return {"amount": numbers[0], "min_amount": min(numbers), "max_amount": max(numbers)}
 
 
 def _parse_rate(value: Any) -> float | None:

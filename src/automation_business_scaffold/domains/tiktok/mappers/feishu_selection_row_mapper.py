@@ -31,6 +31,7 @@ AUTO_MAINTAINED_FIELDS = (
 )
 
 SKIP_STATUSES = ("已下架/区域不可售", "链接不可访问")
+_INVALID_PARENT_SPEC_VALUES = {"default", "默认", "specification"}
 
 
 def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -191,10 +192,17 @@ def _has_missing_auto_fields(fields: Mapping[str, Any]) -> bool:
         if field_name in ("商品ID", "商品链接", "记录日期"):
             continue
         value = fields.get(field_name)
+        if field_name == "父体规格" and _is_invalid_parent_spec_value(value):
+            return True
         text = _text_value(value)
         if not text:
             return True
     return False
+
+
+def _is_invalid_parent_spec_value(value: Any) -> bool:
+    text = _text_value(value).strip().lower()
+    return bool(text and text in _INVALID_PARENT_SPEC_VALUES)
 
 
 def _product_identity_from_fields(fields: Mapping[str, Any]) -> dict[str, Any]:

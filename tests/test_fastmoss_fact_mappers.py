@@ -135,13 +135,13 @@ def test_fastmoss_product_fetch_maps_window_overview_sales_to_sales_90d():
     assert result.status == "success"
     overview = result.result["metrics_snapshot"]["overview"]
     assert result.result["metrics_snapshot"]["window_days"] == 90
-    assert overview["sales_90d"] == "1659"
-    assert overview["day90_sold_count"] == "1659"
-    assert overview["sold_count_90d"] == "1659"
+    assert overview["sales_90d"] == "1690"
+    assert overview["day90_sold_count"] == "1690"
+    assert overview["sold_count_90d"] == "1690"
     assert overview["real_sales_90d"] == "1659"
     metric_snapshot = result.result["product_fact_bundle"]["product_metric_snapshots"][0]
     assert metric_snapshot["window_days"] == 90
-    assert metric_snapshot["payload"]["overview"]["sales_90d"] == "1659"
+    assert metric_snapshot["payload"]["overview"]["sales_90d"] == "1690"
     raw_overview = result.result["product_fact_bundle"]["raw_api_responses"][0]
     assert raw_overview["source_endpoint"] == "goods.overview"
     assert raw_overview["request_params"] == {
@@ -213,9 +213,9 @@ def test_fastmoss_product_fetch_live_fetch_collects_7_28_90_overview_windows(mon
     assert FakeSession.sku_calls == [28]
     overview = result.result["metrics_snapshot"]["overview"]
     assert result.result["metrics_snapshot"]["window_days"] == [7, 28, 90]
-    assert overview["sales_7d"] == "70"
-    assert overview["sales_28d"] == "280"
-    assert overview["sales_90d"] == "900"
+    assert overview["sales_7d"] == "77"
+    assert overview["sales_28d"] == "308"
+    assert overview["sales_90d"] == "990"
     raw_overview_params = [
         item["request_params"]
         for item in result.result["product_fact_bundle"]["raw_api_responses"]

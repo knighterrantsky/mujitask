@@ -216,7 +216,7 @@
 
 - `商品ID` 是 `TK选品收集` 的 upsert 主键；系统新建选品行时必须写入，每次写回始终刷新。
 - `商品链接` 每次写回始终刷新，保持与最新采集结果一致。
-- `今年总销量` 字段名不变，实际写入近 28 天销量数据（来源 FastMoss `overview.sales_28d`）。
+- `今年总销量` 字段名不变，实际写入近 28 天销量数据；来源为 FastMoss `goods.overview(d_type=28).overview.sold_count`，与销量趋势图 `inc_sold_count` 口径一致，不使用 `real_sold_count`。
 - `父体规格` 和 `父体图片` 只来源于 FastMoss SKU 分析中的有效 `best_sku`（`sku_value` 有业务值且 `sold_count > 0`）；`父体规格` 可单独写入，`父体图片` 仅在能匹配到该 `best_sku` 对应图片时写入。
 - 没有有效 `best_sku` 时跳过 `SKU销量占比图`、`父体规格`、`父体图片`；不得使用单 SKU、`Default`、`默认`、`Specification`、空 SKU 或第一条 SKU 兜底生成父体字段。
 - `出单种类占比图`、`销量趋势图`、`SKU销量占比图` 在写回前按需渲染为 PNG 插入飞书单元格，DB 只保存元数据，不入 MinIO。

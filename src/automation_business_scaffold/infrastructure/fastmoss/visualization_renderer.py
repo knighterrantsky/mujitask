@@ -112,6 +112,7 @@ class FastMossVisualizationRenderer:
                 "sku_list",
             ),
             payload_name="product_sku_payload",
+            allow_empty=True,
         )
 
         resolved_output_dir = Path(
@@ -218,6 +219,7 @@ def _normalize_payload(
     *,
     expected_keys: Sequence[str],
     payload_name: str,
+    allow_empty: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError(f"{payload_name} must be a mapping")
@@ -226,6 +228,8 @@ def _normalize_payload(
     if not any(key in value for key in expected_keys) and isinstance(data, Mapping):
         value = dict(data)
     if not any(key in value for key in expected_keys):
+        if allow_empty:
+            return value
         raise ValueError(f"{payload_name} does not look like a FastMoss product payload")
     return value
 

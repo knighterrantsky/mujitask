@@ -73,6 +73,10 @@ def test_cli_runner_lists_only_formal_runtime_tasks():
             "description": "Submit, inspect, or advance the keyword competitor search runtime request.",
         },
         {
+            "name": "search_keyword_selection_products",
+            "description": "Submit, inspect, or advance the keyword selection search runtime request.",
+        },
+        {
             "name": "sync_tk_influencer_pool",
             "description": "Submit, inspect, or advance the influencer pool sync runtime request.",
         },

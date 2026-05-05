@@ -128,6 +128,36 @@ def test_fastmoss_visualization_renderer_skips_single_sku_chart(tmp_path: Path) 
     assert set(result.files) == {"marketing_strategy", "overview_trend"}
 
 
+def test_fastmoss_visualization_renderer_renders_overview_charts_with_empty_sku_payload(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
+        del cwd, env, check, capture_output, text, timeout
+        input_payload = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
+        captured["charts"] = input_payload["charts"]
+        captured["productSku"] = input_payload["productSku"]
+        output_dir = Path(command[-1])
+        outputs = {}
+        for chart_name in input_payload["charts"]:
+            output_path = output_dir / f"{chart_name}.png"
+            output_path.write_bytes(b"png")
+            outputs[chart_name] = str(output_path)
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"outputs": outputs}), stderr="")
+
+    result = FastMossVisualizationRenderer(command_runner=fake_runner).render_product_charts(
+        product_id=PRODUCT_ID,
+        overview_payload=_overview_payload(),
+        product_sku_payload={"d_type": 28},
+        output_dir=tmp_path,
+    )
+
+    assert captured["charts"] == ["marketing_strategy", "overview_trend"]
+    assert captured["productSku"] == {"d_type": 28}
+    assert set(result.files) == {"marketing_strategy", "overview_trend"}
+
+
 def test_product_ingest_flow_can_render_fastmoss_visualizations(monkeypatch, tmp_path: Path) -> None:
     del monkeypatch, tmp_path
     pytest.skip("Legacy product ingest visualization wrapper is archived; renderer coverage lives here.")

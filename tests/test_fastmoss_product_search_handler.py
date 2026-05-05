@@ -30,7 +30,13 @@ def _context(payload: dict[str, object]) -> HandlerContext:
     )
 
 
-def _raw_search_page(*, product_id: str, day7_sold_count: int, title: str = "Halloween decoration") -> dict[str, object]:
+def _raw_search_page(
+    *,
+    product_id: str,
+    day7_sold_count: int,
+    title: str = "Halloween decoration",
+    price: str = "$14.50 - 18.97",
+) -> dict[str, object]:
     return {
         "code": 200,
         "msg": "success!",
@@ -42,7 +48,7 @@ def _raw_search_page(*, product_id: str, day7_sold_count: int, title: str = "Hal
                     "img": "https://cdn.example.com/product.jpg",
                     "shop_name": "Spooky Shop",
                     "shop_info": {"seller_id": "seller-1", "currency": "USD"},
-                    "price": "$14.50 - 18.97",
+                    "price": price,
                     "ori_price": "$20.00",
                     "crate": "8%",
                     "crate_show": "8%",
@@ -151,6 +157,8 @@ def test_fastmoss_product_search_normalizes_candidates_and_raw_capture(tmp_path:
     candidate = result.result["candidates"][0]
     assert candidate["title"] == "Halloween decoration"
     assert candidate["price"]["amount"] == 14.5
+    assert candidate["price"]["min_amount"] == 14.5
+    assert candidate["price"]["max_amount"] == 18.97
     assert candidate["commission"]["rate"] == 0.08
     assert candidate["metrics"]["sold_count"] == 1200
     assert candidate["metrics"]["day7_sold_count"] == 260
@@ -164,6 +172,102 @@ def test_fastmoss_product_search_normalizes_candidates_and_raw_capture(tmp_path:
     raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
     assert raw_payload["query"]["keyword"] == "Halloween decoration"
     assert len(raw_payload["pages"]) == 3
+
+
+def test_fastmoss_product_search_filters_by_price_range_max_amount(tmp_path: Path) -> None:
+    result = fastmoss_product_search_handler(
+        _context(
+            {
+                "search_mode": "keyword",
+                "keyword": "Halloween decoration",
+                "mock_fastmoss_search_pages": [
+                    {
+                        "page": 1,
+                        "response": _raw_search_page(
+                            product_id="1731194997356205027",
+                            day7_sold_count=260,
+                            price="$8.99 - $12.50",
+                        ),
+                    },
+                    {
+                        "page": 2,
+                        "response": _raw_search_page(
+                            product_id="1730000000000000001",
+                            day7_sold_count=260,
+                            price="$8.99 - $10.50",
+                        ),
+                    },
+                    {
+                        "page": 3,
+                        "response": _raw_search_page(
+                            product_id="1730000000000000002",
+                            day7_sold_count=260,
+                            price="$12.00",
+                        ),
+                    },
+                    {
+                        "page": 4,
+                        "response": _raw_search_page(
+                            product_id="1730000000000000003",
+                            day7_sold_count=260,
+                            price="$9.99",
+                        ),
+                    },
+                ],
+                "output_conditions": {
+                    "max_candidates": 20,
+                    "business_conditions": {"min_price_range_max_amount": 10.99},
+                },
+                "artifact_root": str(tmp_path),
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["condition_summary"]["accepted_count"] == 2
+    assert result.result["condition_summary"]["rejected_count"] == 2
+    assert [candidate["product_id"] for candidate in result.result["candidates"]] == [
+        "1731194997356205027",
+        "1730000000000000002",
+    ]
+    assert result.result["candidates"][0]["matched_conditions"] == {"min_price_range_max_amount": True}
+
+
+def test_fastmoss_product_search_keeps_existing_max_price_amount_semantics(tmp_path: Path) -> None:
+    result = fastmoss_product_search_handler(
+        _context(
+            {
+                "search_mode": "keyword",
+                "keyword": "Halloween decoration",
+                "mock_fastmoss_search_pages": [
+                    {
+                        "page": 1,
+                        "response": _raw_search_page(
+                            product_id="1731194997356205027",
+                            day7_sold_count=260,
+                            price="$14.50 - 18.97",
+                        ),
+                    },
+                    {
+                        "page": 2,
+                        "response": _raw_search_page(
+                            product_id="1730000000000000001",
+                            day7_sold_count=260,
+                            price="$20.00",
+                        ),
+                    },
+                ],
+                "output_conditions": {
+                    "max_candidates": 20,
+                    "business_conditions": {"max_price_amount": 15},
+                },
+                "artifact_root": str(tmp_path),
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert [candidate["product_id"] for candidate in result.result["candidates"]] == ["1731194997356205027"]
 
 
 def test_fastmoss_product_search_limit_zero_keeps_all_matching_candidates(tmp_path: Path) -> None:

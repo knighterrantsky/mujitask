@@ -25,6 +25,8 @@ identity_fields:
 auto_maintained_fields:
   - 商品ID
   - 商品链接
+  - 关键词
+  - 备注
   - 记录日期
   - 店铺名称
   - 商品标题
@@ -96,6 +98,14 @@ fields:
     update_policy: preserve_existing
     overwrite_policy: do_not_overwrite_non_empty
     write_target: feishu.TK选品收集.关键词
+
+  - display_name: 备注
+    canonical_name: remark
+    role: seed_context
+    update_policy: write_on_keyword_seed_insert
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: keyword_seed_import.search_query
+    write_target: feishu.TK选品收集.备注
 
   - display_name: 店铺名称
     canonical_name: shop_name
@@ -174,8 +184,11 @@ fields:
     role: research_metric
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: fastmoss_overview.sales_28d
+    source_of_truth: fastmoss.goods.overview(d_type=28).overview.sold_count
     write_target: feishu.TK选品收集.今年总销量
+    notes: >
+      字段名沿用历史命名；实际口径为 FastMoss 近 28 天 overview.sold_count，
+      与销量趋势图 inc_sold_count / 分布图 sold_count 保持一致，不使用 real_sold_count。
 
   - display_name: 销量趋势图
     canonical_name: current_year_sales_trend_screenshot

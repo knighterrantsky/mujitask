@@ -10,6 +10,9 @@ from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_
 from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_source_mapper import (
     influencer_pool_source_adapter,
 )
+from automation_business_scaffold.domains.tiktok.mappers.feishu_selection_row_mapper import (
+    selection_table_source_adapter,
+)
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 
@@ -51,6 +54,7 @@ def test_feishu_business_components_have_named_registries() -> None:
         "competitor_table_projection_mapper",
         "influencer_pool_projection_mapper",
         "competitor_influencer_status_projection_mapper",
+        "selection_seed_projection_mapper",
         "selection_table_projection_mapper",
     }
 
@@ -87,6 +91,37 @@ def test_influencer_source_adapter_honors_explicit_source_record_ids() -> None:
     )
 
     assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-target"]
+
+
+def test_selection_source_adapter_treats_default_parent_spec_as_missing() -> None:
+    rows = [
+        {
+            "record_id": "rec-default-parent",
+            "fields": {
+                "商品ID": "1732295206515806399",
+                "商品链接": "https://www.tiktok.com/shop/pdp/1732295206515806399",
+                "店铺名称": "Yuxilio",
+                "商品标题": "Pin",
+                "商品当前价格": "7.99",
+                "商品评论数": "15",
+                "商品评分": "5.0",
+                "商品描述": "desc",
+                "商品主图": [{"file_token": "main"}],
+                "商品侧边栏图片": [{"file_token": "gallery"}],
+                "今年总销量": "986",
+                "出单种类占比图": [{"file_token": "distribution"}],
+                "销量趋势图": [{"file_token": "trend"}],
+                "SKU销量占比图": [{"file_token": "sku"}],
+                "父体规格": "Default",
+                "父体图片": [{"file_token": "parent"}],
+            },
+        }
+    ]
+
+    result = selection_table_source_adapter(rows, {"source_table_ref": "feishu://selection"})
+
+    assert result["adapter_summary"]["source_row_count"] == 1
+    assert result["source_rows"][0]["source_record_id"] == "rec-default-parent"
 
 
 def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
@@ -686,6 +721,120 @@ def test_competitor_seed_projection_mapper_creates_keyword_seed_row(monkeypatch)
         "备注": "通过搜索关键字：water bottle",
     }
     assert result.result["records"][0]["op"] == "append"
+
+
+def test_selection_seed_projection_mapper_creates_keyword_seed_row(monkeypatch) -> None:
+    class FakeClient:
+        created: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_records(self, app_token, table_id, page_size=100, view_id=None):
+            return list(self.rows)
+
+        def create_record(self, app_token, table_id, fields):
+            record_id = f"rec-{len(self.rows) + 1}"
+            self.created.append({"record_id": record_id, "fields": dict(fields)})
+            self.rows.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.created = []
+    FakeClient.rows = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        request_id="req-selection-keyword-seed",
+        target_table_ref="feishu://mujitask/TK选品收集",
+        mapper_code="selection_seed_projection_mapper",
+        write_mode="insert_if_absent",
+        records=[
+            {
+                "product_id": "123456789",
+                "search_query": "water bottle",
+                "search_rank": 1,
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert result.result["target_record_ids"] == ["rec-1"]
+    assert FakeClient.created[0]["fields"] == {
+        "商品ID": "123456789",
+        "商品链接": {
+            "text": "https://www.tiktok.com/shop/pdp/123456789",
+            "link": "https://www.tiktok.com/shop/pdp/123456789",
+        },
+        "关键词": "water bottle",
+        "备注": "通过搜索关键字：water bottle",
+        "记录日期": FakeClient.created[0]["fields"]["记录日期"],
+    }
+    assert result.result["records"][0]["op"] == "append"
+
+
+def test_selection_seed_projection_mapper_skips_existing_product_without_rewrite(monkeypatch) -> None:
+    class FakeClient:
+        created: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_records(self, app_token, table_id, page_size=100, view_id=None):
+            return list(self.rows)
+
+        def create_record(self, app_token, table_id, fields):
+            self.created.append({"fields": dict(fields)})
+            raise AssertionError("existing selection seed rows must not be recreated")
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            raise AssertionError("existing selection seed rows must not be updated")
+
+    FakeClient.created = []
+    FakeClient.updated = []
+    FakeClient.rows = [
+        {
+            "record_id": "rec-existing",
+            "fields": {
+                "商品ID": "123456789",
+                "备注": "manual note",
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        request_id="req-selection-keyword-seed",
+        target_table_ref="feishu://mujitask/TK选品收集",
+        mapper_code="selection_seed_projection_mapper",
+        write_mode="insert_if_absent",
+        records=[
+            {
+                "product_id": "123456789",
+                "product_url": "https://www.fastmoss.com/zh/e-commerce/detail/123456789",
+                "search_query": "water bottle",
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "skipped"
+    assert FakeClient.created == []
+    assert FakeClient.updated == []
+    assert result.result["written_count"] == 0
+    assert result.result["skipped_count"] == 1
+    assert result.result["records"][0]["record_id"] == "rec-existing"
+    assert result.result["records"][0]["op"] == "skip_existing"
 
 
 def test_competitor_seed_projection_mapper_skips_existing_product_without_rewrite(monkeypatch) -> None:

@@ -334,6 +334,162 @@ def test_selection_projection_writes_best_sku_spec_without_unmatched_image() -> 
     assert "父体图片" not in fields
 
 
+def test_selection_projection_uses_tiktok_sku_text_fallback_image() -> None:
+    fields = _projection_fields(
+        fastmoss_bundle={
+            "raw_api_responses": [
+                {
+                    "source_endpoint": "goods.skus",
+                    "response_payload": {
+                        "best_sku": {"sku_name": "Specification", "sku_value": "2 Pcs", "sold_count": 35},
+                        "sku_units_sold": {
+                            "Specification": {
+                                "list": [
+                                    {"source": "1 Pcs", "sold_count": 10},
+                                    {"source": "2 Pcs", "sold_count": 35},
+                                ]
+                            }
+                        },
+                        "sku_list": [
+                            {"sku_id": "fm-1pcs", "sku_name": "1 Pcs", "sku_sale_props": [{"prop_value": "1 Pcs"}]},
+                            {"sku_id": "fm-2pcs", "sku_name": "2 Pcs", "sku_sale_props": [{"prop_value": "2 Pcs"}]},
+                        ],
+                    },
+                }
+            ],
+            "product_skus": [],
+        },
+        normalized_product_result={
+            "product": {"product_id": PRODUCT_ID, "normalized_url": PRODUCT_URL},
+            "product_skus": [
+                {
+                    "sku_id": "tk-2pcs",
+                    "sku_name": "2 PCS",
+                    "spec_name": "Specification: 2 PCS",
+                    "sku_property_keys": ["Specification:2 PCS"],
+                    "properties": [
+                        {
+                            "name": "Specification",
+                            "value": "2 PCS",
+                            "image_url": "https://example.com/tiktok-2pcs.webp",
+                        }
+                    ],
+                }
+            ],
+            "logical_fields": {},
+        },
+    )
+
+    assert fields["父体规格"] == "2 Pcs"
+    assert fields["父体图片"] == "https://example.com/tiktok-2pcs.webp"
+
+
+def test_selection_projection_uses_tiktok_sku_images_text_fallback() -> None:
+    fields = _projection_fields(
+        fastmoss_bundle={
+            "raw_api_responses": [
+                {
+                    "source_endpoint": "goods.skus",
+                    "response_payload": {
+                        "best_sku": {"sku_name": "Specification", "sku_value": "2 Pcs", "sold_count": 35},
+                        "sku_units_sold": {
+                            "Specification": {
+                                "list": [
+                                    {"source": "1 Pcs", "sold_count": 10},
+                                    {"source": "2 Pcs", "sold_count": 35},
+                                ]
+                            }
+                        },
+                        "sku_list": [
+                            {"sku_id": "fm-1pcs", "sku_name": "1 Pcs", "sku_sale_props": [{"prop_value": "1 Pcs"}]},
+                            {"sku_id": "fm-2pcs", "sku_name": "2 Pcs", "sku_sale_props": [{"prop_value": "2 Pcs"}]},
+                        ],
+                    },
+                }
+            ],
+            "product_skus": [],
+        },
+        normalized_product_result={
+            "product": {"product_id": PRODUCT_ID, "normalized_url": PRODUCT_URL},
+            "logical_fields": {
+                "sku_images": [
+                    {
+                        "source_url": "https://example.com/tiktok-sku-image-2pcs.webp",
+                        "option_name": "Specification",
+                        "option_value": "2 PCS",
+                        "sku_property_key": "Specification:2 PCS",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert fields["父体规格"] == "2 Pcs"
+    assert fields["父体图片"] == "https://example.com/tiktok-sku-image-2pcs.webp"
+
+
+def test_selection_projection_uses_tiktok_sku_image_prop_value_id_fallback() -> None:
+    fields = _projection_fields(
+        fastmoss_bundle={
+            "raw_api_responses": [
+                {
+                    "source_endpoint": "goods.skus",
+                    "response_payload": {
+                        "best_sku": {"sku_name": "Color", "sku_value": "Sunflower 2 - Mom", "sold_count": 1400},
+                        "sku_units_sold": {
+                            "Color": {
+                                "list": [
+                                    {"source": "Sunflower 1 - Mom", "sold_count": 10},
+                                    {"source": "Sunflower 2 - Mom", "sold_count": 1400},
+                                ]
+                            }
+                        },
+                        "sku_list": [
+                            {
+                                "sku_id": "fm-sunflower-1",
+                                "sku_name": "Sunflower 1 - Mom",
+                                "sku_sale_props": [
+                                    {
+                                        "prop_name": "Color",
+                                        "prop_value": "Sunflower 1 - Mom",
+                                        "prop_value_id": "7552855600246376204",
+                                    }
+                                ],
+                            },
+                            {
+                                "sku_id": "fm-sunflower-2",
+                                "sku_name": "Sunflower 2 - Mom",
+                                "sku_sale_props": [
+                                    {
+                                        "prop_name": "Color",
+                                        "prop_value": "Sunflower 2 - Mom",
+                                        "prop_value_id": "7552855600246376205",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                }
+            ],
+            "product_skus": [],
+        },
+        normalized_product_result={
+            "product": {"product_id": PRODUCT_ID, "normalized_url": PRODUCT_URL},
+            "logical_fields": {
+                "sku_images": [
+                    {
+                        "source_url": "https://example.com/tiktok-sunflower-2.webp",
+                        "sku_property_key": "7552855600246376205",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert fields["父体规格"] == "Sunflower 2 - Mom"
+    assert fields["父体图片"] == "https://example.com/tiktok-sunflower-2.webp"
+
+
 def test_selection_projection_skips_single_sku_best_sku_as_non_distinct_analysis() -> None:
     fields = _projection_fields(
         fastmoss_bundle={
@@ -373,20 +529,73 @@ def test_selection_projection_skips_single_sku_best_sku_as_non_distinct_analysis
     assert "父体图片" not in fields
 
 
+def test_selection_projection_uses_28d_fastmoss_sold_count_for_total_sales() -> None:
+    fields = _projection_fields(
+        fastmoss_bundle={
+            "raw_api_responses": [
+                {
+                    "source_endpoint": "goods.overview",
+                    "request_params": {"d_type": 7},
+                    "response_payload": {
+                        "data": {
+                            "d_type": 7,
+                            "overview": {"sold_count": "4913", "real_sold_count": "4913"},
+                        }
+                    },
+                },
+                {
+                    "source_endpoint": "goods.overview",
+                    "request_params": {"d_type": 28},
+                    "response_payload": {
+                        "data": {
+                            "d_type": 28,
+                            "overview": {"sold_count": "5128", "real_sold_count": "5932"},
+                        }
+                    },
+                },
+                {
+                    "source_endpoint": "goods.overview",
+                    "request_params": {"d_type": 90},
+                    "response_payload": {
+                        "data": {
+                            "d_type": 90,
+                            "overview": {"sold_count": "5157", "real_sold_count": "5961"},
+                        }
+                    },
+                },
+            ]
+        },
+        metrics_snapshot={
+            "overview": {
+                "sold_count": "5157",
+                "real_sold_count": "5961",
+                "sales_28d": "5932",
+                "sold_count_28d": "5932",
+                "day28_sold_count": "5932",
+            }
+        },
+    )
+
+    assert fields["今年总销量"] == 5128.0
+
+
 def _projection_fields(
     *,
     fastmoss_bundle: dict[str, object],
+    metrics_snapshot: dict[str, object] | None = None,
+    normalized_product_result: dict[str, object] | None = None,
     chart_image_paths: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return selection_row_refresh._build_selection_projection_fields(
         source_context={},
-        normalized_product_result={
+        normalized_product_result=normalized_product_result
+        or {
             "product": {"product_id": PRODUCT_ID, "normalized_url": PRODUCT_URL},
             "logical_fields": {},
         },
         fastmoss_result={
             "product_fact_bundle": fastmoss_bundle,
-            "metrics_snapshot": {"overview": {}},
+            "metrics_snapshot": metrics_snapshot or {"overview": {}},
         },
         media_result={},
         chart_image_paths=chart_image_paths,

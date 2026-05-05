@@ -752,8 +752,8 @@ def _windowed_overview_metrics(raw_overview: Mapping[str, Any]) -> dict[str, Any
         overview.get(f"day{window_days}_sold_count"),
         overview.get(f"day{window_days}_sales"),
         overview.get(f"sold_count_{window_days}d"),
-        overview.get("real_sold_count"),
         overview.get("sold_count"),
+        overview.get("real_sold_count"),
     )
     if window_sold_count:
         overview.setdefault(f"sales_{window_days}d", window_sold_count)
