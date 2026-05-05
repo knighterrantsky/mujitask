@@ -13,6 +13,18 @@ PRODUCT_URL = f"https://www.tiktok.com/shop/pdp/{PRODUCT_ID}"
 SOURCE_TABLE_REF = "tbl_competitor_source"
 
 
+def _strict_persistence_params(runtime_db_url: str) -> dict[str, object]:
+    return {
+        "allow_test_persistence_overrides": True,
+        "fact_db_url": runtime_db_url,
+        "execution_control_artifact_store_provider": "minio",
+        "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+        "execution_control_minio_endpoint": "127.0.0.1:9000",
+        "execution_control_minio_access_key": "minioadmin",
+        "execution_control_minio_secret_key": "miniosecret",
+    }
+
+
 def _run_task(*, params: dict[str, object], run_dir: Path) -> dict[str, object]:
     payload = run_registered_task(
         "refresh_competitor_row_by_url",
@@ -54,6 +66,7 @@ def test_refresh_competitor_row_by_url_submit_via_registered_task_creates_pendin
         params={
             "control_action": "submit",
             "execution_control_db_url": runtime_db_url,
+            **_strict_persistence_params(runtime_db_url),
             "source_table_ref": SOURCE_TABLE_REF,
             "product_url": PRODUCT_URL,
             "reply_target": "reply://pytest-competitor-row",
@@ -77,6 +90,7 @@ def test_refresh_competitor_row_by_url_submit_then_executor_once_dispatches_look
         params={
             "control_action": "submit",
             "execution_control_db_url": runtime_db_url,
+            **_strict_persistence_params(runtime_db_url),
             "source_table_ref": SOURCE_TABLE_REF,
             "product_url": PRODUCT_URL,
             "fallback_allowed": True,

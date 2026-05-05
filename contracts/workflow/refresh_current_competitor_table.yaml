@@ -17,6 +17,21 @@ source_adapter: competitor_table_source_adapter
 projection_mappers:
   - competitor_table_projection_mapper
 
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
 stages:
   - stage_code: read_competitor_rows
     handler_code: feishu_table_read
@@ -37,6 +52,7 @@ stages:
 protected_invariants:
   - 一条候选飞书记录最多创建一个 competitor_row_refresh 主 job
   - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于该主 job 内部步骤
+  - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch child task_execution
   - 商品状态不是 12 个自动维护字段，不参与 pending 判断
   - 商品不可访问、已下架或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售

@@ -243,7 +243,7 @@ class TikTokProductUnavailableError(TikTokProductExtractionError):
     pass
 
 
-def _log_tiktok_fetch_timing(*, trace_id: str, phase: str, **extra: Any) -> None:
+def _log_tiktok_fetch_timing(*, trace_id: str, step: str, **extra: Any) -> None:
     normalized_trace_id = str(trace_id).strip()
     if not normalized_trace_id:
         return
@@ -256,7 +256,7 @@ def _log_tiktok_fetch_timing(*, trace_id: str, phase: str, **extra: Any) -> None
     )
     message = (
         f"[tiktok-fetch-timing] epoch_ms={epoch_ms} "
-        f"trace_id={normalized_trace_id} phase={phase}"
+        f"trace_id={normalized_trace_id} step={step}"
     )
     if detail:
         message = f"{message} {detail}"
@@ -353,7 +353,7 @@ def fetch_tiktok_product_record_via_browser(
 ) -> TikTokProductRecord:
     _log_tiktok_fetch_timing(
         trace_id=trace_id,
-        phase="browser_fetch_start",
+        step="browser_fetch_start",
         product_url=product_url,
     )
     with open_automation_page(
@@ -368,7 +368,7 @@ def fetch_tiktok_product_record_via_browser(
         _page_goto(page, product_url, timeout_ms=timeout_ms)
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="page_goto_ready",
+            step="page_goto_ready",
             resolved_url=str(getattr(page, "url", "") or product_url),
         )
         login_toast_timeout_ms = min(
@@ -382,7 +382,7 @@ def fetch_tiktok_product_record_via_browser(
         )
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="login_toast_settled",
+            step="login_toast_settled",
         )
         initial_html = _safe_page_content(page)
         initial_resolved_url = str(getattr(page, "url", "") or product_url)
@@ -407,7 +407,7 @@ def fetch_tiktok_product_record_via_browser(
             slider_resolutions.append(slider_resolution)
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
-                phase="security_check_slider_resolution",
+                step="security_check_slider_resolution",
                 attempted=bool(slider_resolution.get("attempted")),
                 resolved=bool(slider_resolution.get("resolved")),
                 reason=str(slider_resolution.get("reason", "")).strip(),
@@ -432,7 +432,7 @@ def fetch_tiktok_product_record_via_browser(
         )
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="product_page_ready",
+            step="product_page_ready",
             visible_signal_count=dom_snapshot.get("visible_signal_count", ""),
             has_title=bool(str(dom_snapshot.get("title", "")).strip()),
             has_price=bool(str(dom_snapshot.get("price_text", "")).strip()),
@@ -461,7 +461,7 @@ def fetch_tiktok_product_record_via_browser(
             slider_resolutions.append(slider_resolution)
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
-                phase="security_check_slider_resolution",
+                step="security_check_slider_resolution",
                 attempted=bool(slider_resolution.get("attempted")),
                 resolved=bool(slider_resolution.get("resolved")),
                 reason=str(slider_resolution.get("reason", "")).strip(),
@@ -493,7 +493,7 @@ def fetch_tiktok_product_record_via_browser(
             raise TikTokSecurityCheckError(security_check_message)
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="security_check_cleared",
+            step="security_check_cleared",
             resolved_url=resolved_url,
         )
         unavailable_message = (
@@ -515,7 +515,7 @@ def fetch_tiktok_product_record_via_browser(
         )
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="record_built",
+            step="record_built",
             product_id=product.product_id,
         )
         return _capture_browser_product_artifacts(
@@ -802,7 +802,7 @@ def _wait_for_product_page_ready(
             elapsed_ms = max(int((time.monotonic() - started_at) * 1000), 0)
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
-                phase="product_page_wait_probe",
+                step="product_page_wait_probe",
                 poll=poll_count,
                 elapsed_ms=elapsed_ms,
                 visible_signal_count=visible_signal_count,
@@ -820,7 +820,7 @@ def _wait_for_product_page_ready(
             if trace_id:
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
-                    phase="product_page_wait_satisfied",
+                    step="product_page_wait_satisfied",
                     poll=poll_count,
                     elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
                     visible_signal_count=visible_signal_count,
@@ -830,7 +830,7 @@ def _wait_for_product_page_ready(
             if trace_id:
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
-                    phase="product_page_wait_unavailable",
+                    step="product_page_wait_unavailable",
                     poll=poll_count,
                     elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
                     unavailable_message=unavailable_message,
@@ -843,7 +843,7 @@ def _wait_for_product_page_ready(
             if trace_id:
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
-                    phase="product_page_wait_security_check",
+                    step="product_page_wait_security_check",
                     poll=poll_count,
                     elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
                     security_signal=security_check_message,
@@ -856,7 +856,7 @@ def _wait_for_product_page_ready(
             if trace_id:
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
-                    phase="product_page_wait_capture_ready",
+                    step="product_page_wait_capture_ready",
                     poll=poll_count,
                     elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
                     capture_reason=str(capture_ready_state.get("reason", "")).strip() or "record_and_image_ready",
@@ -867,7 +867,7 @@ def _wait_for_product_page_ready(
     if trace_id:
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="product_page_wait_timeout",
+            step="product_page_wait_timeout",
             poll=poll_count,
             elapsed_ms=max(int((time.monotonic() - started_at) * 1000), 0),
             visible_signal_count=int(latest_snapshot.get("visible_signal_count", 0)),
@@ -1169,7 +1169,7 @@ def _capture_browser_product_artifacts(
     )
     _log_tiktok_fetch_timing(
         trace_id=trace_id,
-        phase="main_image_ready",
+        step="main_image_ready",
         product_id=updated.product_id,
         main_image_file_name=updated.main_image_file_name,
     )
@@ -1177,7 +1177,7 @@ def _capture_browser_product_artifacts(
     if not capture_page_screenshot:
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="browser_fetch_complete",
+            step="browser_fetch_complete",
             product_id=updated.product_id,
             capture_page_screenshot=False,
         )
@@ -1196,13 +1196,13 @@ def _capture_browser_product_artifacts(
     )
     _log_tiktok_fetch_timing(
         trace_id=trace_id,
-        phase="page_screenshot_ready",
+        step="page_screenshot_ready",
         product_id=final_product.product_id,
         screenshot_file_name=screenshot_file_name,
     )
     _log_tiktok_fetch_timing(
         trace_id=trace_id,
-        phase="browser_fetch_complete",
+        step="browser_fetch_complete",
         product_id=final_product.product_id,
         capture_page_screenshot=True,
     )
@@ -1225,7 +1225,7 @@ def _materialize_browser_main_image(
         )
         _log_tiktok_fetch_timing(
             trace_id=trace_id,
-            phase="main_image_download_ready",
+            step="main_image_download_ready",
             product_id=downloaded.product_id,
         )
         return downloaded
@@ -1258,7 +1258,7 @@ def _materialize_browser_main_image(
             )
             _log_tiktok_fetch_timing(
                 trace_id=trace_id,
-                phase="main_image_screenshot_ready",
+                step="main_image_screenshot_ready",
                 product_id=captured.product_id,
                 selector=screenshot_selector,
             )
@@ -1607,7 +1607,7 @@ def _try_resolve_tiktok_slider_security_check(
                     continue
                 _log_tiktok_fetch_timing(
                     trace_id=trace_id,
-                    phase="slider_security_check_resolved",
+                    step="slider_security_check_resolved",
                     product_url=product_url,
                     attempt=attempt_index,
                     drag_distance=round(drag_distance, 2),

@@ -5740,7 +5740,3 @@ class RuntimeStore:
                         "created_at": record.created_at,
                     },
                 )
-
-
-# Backward-compatible alias for callers that still import the old class name.
-Phase1RuntimeStore = RuntimeStore

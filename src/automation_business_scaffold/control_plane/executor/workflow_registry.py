@@ -9,6 +9,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     INFLUENCER_POOL_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
+    SELECTION_KEYWORD_TASK_CODE,
     REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
 )
@@ -61,6 +62,10 @@ WORKFLOW_RUNTIME_MODULES = {
     KEYWORD_TASK_CODE: (
         "automation_business_scaffold.domains.tiktok.flows."
         "search_keyword_competitor_products"
+    ),
+    SELECTION_KEYWORD_TASK_CODE: (
+        "automation_business_scaffold.domains.tiktok.flows."
+        "search_keyword_selection_products"
     ),
 }
 

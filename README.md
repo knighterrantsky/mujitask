@@ -158,8 +158,7 @@ automation-business-scaffold-run run \
     "control_action": "submit",
     "product_url": "https://www.tiktok.com/shop/pdp/1732183068040729370",
     "fastmoss_phone_env": "FASTMOSS_PHONE",
-    "fastmoss_password_env": "FASTMOSS_PASSWORD",
-    "execution_control_artifact_store_provider": "minio"
+    "fastmoss_password_env": "FASTMOSS_PASSWORD"
   }'
 ```
 
@@ -216,7 +215,7 @@ automation-business-scaffold-run run \
 | `.env` | 本地 agent / browser profile / 通用调试配置 |
 | `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
 | `scripts/execution_control/executor.local.env` | Runtime DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
-| `skills/mujitask-tiktok-feishu-sync/skill.local.env` | skill 固定输入配置和兼容 `EXECUTION_CONTROL_*` 参数 |
+| `skills/mujitask-tiktok-feishu-sync/skill.local.env` | skill 固定业务输入配置；正式 skill submit 不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
 
 当前代码自动加载的优先级是：
 

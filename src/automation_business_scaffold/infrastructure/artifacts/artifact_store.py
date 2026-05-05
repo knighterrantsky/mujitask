@@ -64,8 +64,21 @@ def create_artifact_store(settings: Mapping[str, Any]) -> ArtifactStore | None:
             endpoint=str(settings.get("minio_endpoint") or "").strip(),
             access_key=str(settings.get("minio_access_key") or "").strip(),
             secret_key=str(settings.get("minio_secret_key") or "").strip(),
-            secure=bool(settings.get("minio_secure", False)),
+            secure=_coerce_bool(settings.get("minio_secure"), default=False),
             region=str(settings.get("minio_region") or "").strip(),
-            create_bucket=bool(settings.get("minio_create_bucket", False)),
+            create_bucket=_coerce_bool(settings.get("minio_create_bucket"), default=False),
         )
     raise ValueError(f"Unsupported artifact store provider '{provider}'.")
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default

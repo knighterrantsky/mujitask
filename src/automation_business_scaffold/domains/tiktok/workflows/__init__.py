@@ -14,6 +14,11 @@ from .search_keyword_competitor_products import (
     build_search_keyword_competitor_products_definition,
     build_search_keyword_competitor_products_workflow,
 )
+from .search_keyword_selection_products import (
+    SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION,
+    build_search_keyword_selection_products_definition,
+    build_search_keyword_selection_products_workflow,
+)
 from .sync_tk_influencer_pool import (
     SYNC_TK_INFLUENCER_POOL_DEFINITION,
     build_sync_tk_influencer_pool_definition,
@@ -29,6 +34,7 @@ DEFAULT_WORKFLOW_DEFINITIONS = (
     REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION,
     REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION,
     SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION,
+    SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION,
     SYNC_TK_INFLUENCER_POOL_DEFINITION,
     TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION,
 )
@@ -56,6 +62,7 @@ __all__ = [
     "REFRESH_COMPETITOR_ROW_BY_URL_DEFINITION",
     "REFRESH_CURRENT_COMPETITOR_TABLE_DEFINITION",
     "SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION",
+    "SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION",
     "SYNC_TK_INFLUENCER_POOL_DEFINITION",
     "TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION",
     "WorkflowDefinition",
@@ -65,6 +72,8 @@ __all__ = [
     "build_refresh_current_competitor_table_workflow",
     "build_search_keyword_competitor_products_definition",
     "build_search_keyword_competitor_products_workflow",
+    "build_search_keyword_selection_products_definition",
+    "build_search_keyword_selection_products_workflow",
     "build_sync_tk_influencer_pool_definition",
     "build_sync_tk_influencer_pool_workflow",
     "build_tiktok_fastmoss_product_ingest_definition",

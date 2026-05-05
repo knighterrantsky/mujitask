@@ -54,54 +54,14 @@ jobs:
     custom_logic_refs:
       mappers:
         - selection_table_source_adapter
-  - code: tiktok_product_request_fetch
-    module: automation_business_scaffold.domains.tiktok.jobs.tiktok_product_request_fetch
-    handler_code: tiktok_product_request_fetch
+  - code: selection_row_refresh
+    module: automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh
+    handler_code: selection_row_refresh
     capability:
-      role: fact_source
+      role: business_orchestration
       system: tiktok
-      module: automation_business_scaffold.capabilities.fact_sources.tiktok.product_request_fetch_handler
-      export: tiktok_product_request_fetch_handler
-  - code: fastmoss_product_fetch
-    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_product_fetch
-    handler_code: fastmoss_product_fetch
-    capability:
-      role: fact_source
-      system: fastmoss
-      module: automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler
-      export: fastmoss_product_fetch_handler
-  - code: tiktok_product_browser_fetch
-    module: automation_business_scaffold.domains.tiktok.jobs.tiktok_product_browser_fetch
-    handler_code: tiktok_product_browser_fetch
-    capability:
-      role: browser
-      system: tiktok
-      module: automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler
-      export: tiktok_product_browser_fetch_handler
-  - code: media_asset_sync
-    module: automation_business_scaffold.domains.tiktok.jobs.media_asset_sync
-    handler_code: media_asset_sync
-    capability:
-      role: media
-      system: object_storage
-      module: automation_business_scaffold.capabilities.media.asset_sync_handler
-      export: media_asset_sync_handler
-  - code: fact_bundle_upsert
-    module: automation_business_scaffold.domains.tiktok.jobs.fact_bundle_upsert
-    handler_code: fact_bundle_upsert
-    capability:
-      role: persistence
-      system: database
-      module: automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler
-      export: fact_bundle_upsert_handler
-  - code: feishu_table_write
-    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_write
-    handler_code: feishu_table_write
-    capability:
-      role: channel
-      system: feishu
-      module: automation_business_scaffold.capabilities.channels.feishu.table_write_handler
-      export: feishu_table_write_handler
+      module: automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh
+      export: selection_row_refresh_handler
     custom_logic_refs:
       projections:
         - selection_table_projection_mapper

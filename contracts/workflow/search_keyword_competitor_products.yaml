@@ -25,6 +25,21 @@ projection_mappers:
 parameter_mappers:
   - keyword_search_parameter_mapper
 
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
 stages:
   - stage_code: keyword_seed_import
     job_code: keyword_seed_import
@@ -68,6 +83,7 @@ stages:
 protected_invariants:
   - 已存在商品直接跳过，不重复新增，也不重写现有记录
   - 新商品先写 SKU-ID、产品链接和 备注=通过搜索关键字：{关键词}
+  - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - max_candidates 默认 20；传 0 表示不按候选数截断，直到分页、FastMoss total、空页、无新商品或 below_min_day7_sold_count 等停止条件触发
   - FastMoss 关键词搜索按 order=2,2 的 7 日销量倒序返回且存在 min_day7_sold_count 时，如果整页 day7_sold_count 最大值低于阈值，应停止继续翻页
   - FastMoss provider API 风控 fallback 对同一原始请求最多一次；browser fallback 成功判据是原始失败的 FastMoss API 请求不再返回 MSG_SAFE_0001，搜索场景必须验证原始 /api/goods/V2/search，商品详情页不能作为搜索风控解除成功判据

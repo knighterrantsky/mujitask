@@ -98,8 +98,8 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 规则：
 
 - 如果用户没有明确给出 `7日销量阈值`，默认使用 `200`
-- `MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_TK_*_TABLE_ID`、`MUJITASK_FEISHU_TK_*_VIEW_ID`、`MUJITASK_FEISHU_ACCESS_TOKEN`、`BROWSER_PROFILE_REF`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
-- Runtime DB / MinIO 默认配置来自项目自动加载的 `scripts/execution_control/executor.local.env`
+- `MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_TK_*_TABLE_ID`、`MUJITASK_FEISHU_TK_*_VIEW_ID`、`MUJITASK_FEISHU_ACCESS_TOKEN`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
+- Runtime DB / Fact DB / MinIO-S3 / 浏览器 profile 默认配置来自项目自动加载的运行配置，不放在 `skill.local.env`
 - 不在对话中向用户索取这些部署级配置
 
 ## 5. 当前输出契约
@@ -167,6 +167,16 @@ Agent workspace 与项目安装目录的边界:
 | 目标 `skill.local.env` | agent skill 的固定输入和本机上下文 |
 | 项目安装目录 `executor.local.env` | Runtime DB、对象存储、通知、浏览器和第三方账号等后台运行配置 |
 
+### 7.1 `run_skill_step.py` 现状约束
+
+`run_skill_step.py` 当前只保留正式 submit wrapper 职责：命令解析、飞书表路由、OpenClaw 回执、profile ref 解析调用、业务 payload 拼装和 lightweight submit。旧 direct run、status/result、worker、cleanup、seed 等兼容入口已经移除。
+
+- 该文件不得再成为 Runtime DB、Fact DB、对象存储或浏览器 provider/profile_id/workspace_id 的配置 owner。
+- 新增正式入口时，只能在这里做业务参数组装和 submit 调用；workflow 编排、handler fallback、事实持久化、对象存储同步和结果 projection 必须落到 domain / capability / control_plane owner。
+- 浏览器默认 profile 只能通过项目配置解析；`skill.local.env` 不再保存 `BROWSER_*`。
+- 运行资源 preflight 必须由 Task Request Entry / Runtime 控制面执行，不能在 skill wrapper 中以参数透传绕过。
+- 后续如果继续拆分，只能按“命令解析、业务 payload builder、OpenClaw 回执”分离，而不是恢复兼容入口或新增跨层 helper / workflow 旁路。
+
 ## 8. 当前推荐排障顺序
 
 当用户说“没有回执”或“结果不对”时，排查顺序推荐为：
@@ -176,7 +186,7 @@ Agent workspace 与项目安装目录的边界:
 3. `task_request`
 4. `task_execution`
 5. `notification_outbox`
-6. `runtime/phase1_daemons`
+6. `runtime/daemons`
 7. `runtime/execution_control/object_store`
 
 ## 9. 当前适用说明

@@ -11,8 +11,10 @@ business_truth:
   overview: docs/business/business-requirements.md
   reference:
     - docs/business/feishu-five-table-relationship-analysis.md
-  requirement_note: 当前表字段已作为业务事实沉淀；独立选品扩展需求仍在 backlog，不能从该字段契约反推未确认的新业务规则。
+    - docs/business/requirements/tk-selection-collection-expand.md
+  requirement_note: TK 选品表自动采集扩展（17 个自动维护字段）按 docs/business/requirements/tk-selection-collection-expand.md 落地，全部新增字段使用 fill_missing_only 策略。
 arch_truth:
+  - docs/arch/workflow-selection-table-expand-design.md
   - docs/arch/workflow-selection-analysis-design.md
   - docs/arch/handler-contract-design.md
 
@@ -23,7 +25,23 @@ identity_fields:
 auto_maintained_fields:
   - 商品ID
   - 商品链接
+  - 关键词
+  - 备注
   - 记录日期
+  - 店铺名称
+  - 商品标题
+  - 商品当前价格
+  - 商品评论数
+  - 商品评分
+  - 商品描述
+  - 商品主图
+  - 商品侧边栏图片
+  - 今年总销量
+  - 出单种类占比图
+  - 销量趋势图
+  - SKU销量占比图
+  - 父体规格
+  - 父体图片
 
 pending_policy:
   selection_table_mode_requires:
@@ -55,9 +73,14 @@ fields:
   - display_name: 商品状态
     canonical_name: product_status
     role: system_status
-    update_policy: read_for_skip_policy
-    overwrite_policy: do_not_write_currently
-    source_of_truth: feishu.TK选品收集.商品状态
+    update_policy: read_for_skip_policy_and_write_terminal_status
+    overwrite_policy: system_may_write_terminal_status_only
+    allowed_system_write_values:
+      - 已下架/区域不可售
+      - 链接不可访问
+    disallowed_system_write_values:
+      - 在售
+    source_of_truth: terminal_product_availability_detection_or_feishu_existing_status
     write_target: feishu.TK选品收集.商品状态
 
   - display_name: 记录日期
@@ -81,88 +104,127 @@ fields:
     overwrite_policy: do_not_overwrite_non_empty
     write_target: feishu.TK选品收集.关键词
 
+  - display_name: 备注
+    canonical_name: remark
+    role: seed_context
+    update_policy: write_on_keyword_seed_insert
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: keyword_seed_import.search_query
+    write_target: feishu.TK选品收集.备注
+
   - display_name: 店铺名称
     canonical_name: shop_name
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.shop_name
     write_target: feishu.TK选品收集.店铺名称
 
   - display_name: 商品标题
     canonical_name: product_title
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.title
     write_target: feishu.TK选品收集.商品标题
 
   - display_name: 商品当前价格
     canonical_name: product_current_price
     role: research_metric
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.price_text|fastmoss_overview.front_price
     write_target: feishu.TK选品收集.商品当前价格
 
   - display_name: 商品评论数
     canonical_name: product_review_count
     role: research_metric
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.review_count
     write_target: feishu.TK选品收集.商品评论数
 
   - display_name: 商品描述
     canonical_name: product_description
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.description
     write_target: feishu.TK选品收集.商品描述
 
   - display_name: 商品评分
     canonical_name: product_rating
     role: research_metric
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.rating
     write_target: feishu.TK选品收集.商品评分
 
   - display_name: 商品主图
     canonical_name: product_main_image
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.main_image_url|media_sync_result
     write_target: feishu.TK选品收集.商品主图
 
   - display_name: 商品侧边栏图片
     canonical_name: product_side_images
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: tiktok_logical_fields.gallery_images
     write_target: feishu.TK选品收集.商品侧边栏图片
 
-  - display_name: 出单种类占比截图
+  - display_name: 出单种类占比图
     canonical_name: order_type_ratio_screenshot
     role: research_material
-    update_policy: not_written_by_current_ingest
-    write_target: feishu.TK选品收集.出单种类占比截图
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fact_db.product_distribution_snapshots|rendered_chart_png
+    write_target: feishu.TK选品收集.出单种类占比图
 
   - display_name: 今年总销量
     canonical_name: current_year_sales
     role: research_metric
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.goods.overview(d_type=28).overview.sold_count
     write_target: feishu.TK选品收集.今年总销量
+    notes: >
+      字段名沿用历史命名；实际口径为 FastMoss 近 28 天 overview.sold_count，
+      与销量趋势图 inc_sold_count / 分布图 sold_count 保持一致，不使用 real_sold_count。
 
-  - display_name: 今年总销量趋势截图
+  - display_name: 销量趋势图
     canonical_name: current_year_sales_trend_screenshot
     role: research_material
-    update_policy: not_written_by_current_ingest
-    write_target: feishu.TK选品收集.今年总销量趋势截图
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fact_db.product_daily_metrics|rendered_chart_png
+    write_target: feishu.TK选品收集.销量趋势图
 
-  - display_name: SKU销量占比分析
+  - display_name: SKU销量占比图
     canonical_name: sku_sales_ratio_analysis
     role: research_material
-    update_policy: not_written_by_current_ingest
-    write_target: feishu.TK选品收集.SKU销量占比分析
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fact_db.product_sku_metric_snapshots|rendered_chart_png
+    write_target: feishu.TK选品收集.SKU销量占比图
 
   - display_name: 父体规格
     canonical_name: parent_sku_spec
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss_sku_analysis.best_sku.sku_value
     write_target: feishu.TK选品收集.父体规格
 
   - display_name: 父体图片
     canonical_name: parent_sku_image
     role: research_material
-    update_policy: not_written_by_current_ingest
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss_sku_analysis.best_sku -> sku_sale_props.image
     write_target: feishu.TK选品收集.父体图片
 
   - display_name: 差评整理

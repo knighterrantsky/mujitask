@@ -9,7 +9,7 @@ from typing import Any
 
 from .contract import HandlerContext, HandlerError, HandlerNextAction, HandlerResult
 
-CONTRACT_REVISION = "phase2"
+CONTRACT_REVISION = "product_fact_contract"
 
 _PRODUCT_ID_PATTERNS = (
     re.compile(r"/product/(\d+)", re.IGNORECASE),

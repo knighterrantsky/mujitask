@@ -1,17 +1,17 @@
-# Phase 1 可交付验收与回退说明
+# Runtime 可交付验收与回退说明
 
-> 状态: Ops 历史文档。本文保留 Phase 1 验收与回退基线；当前系统全貌以 [../arch/README.md](../arch/README.md) 为准。
+> 状态: Ops 历史文档。本文保留 Runtime 验收与回退基线；当前系统全貌以 [../arch/README.md](../arch/README.md) 为准。
 
 更新时间：`2026-04-14`
 
 ## 1. 本文目的
 
-本文记录 Phase 1 首次可交付时的验收与回退口径。
+本文记录早期受控执行首次可交付时的验收与回退口径。
 
 补充说明：
 
-- 当前仓库已经继续推进并完成了 Phase 2 的对象存储接入与 Phase 3 的实体快照沉淀。
-- 因此本文件应视为“Phase 1 历史交付基线”，不是当前系统全貌。
+- 当前仓库已经继续推进并完成了对象存储接入与实体快照沉淀。
+- 因此本文件应视为“早期受控执行历史交付基线”，不是当前系统全貌。
 - 当前正式运行形态请以 [deployment.md](./deployment.md) 和 [../arch/README.md](../arch/README.md) 为准。
 
 补充说明：
@@ -25,15 +25,15 @@
 
 如果部署文档里不明确写出这 5 个常驻进程，后续很容易出现“任务能提交，但无人消费”或“超时状态无人恢复”的误判。
 
-Phase 1 历史交付口径包含 3 类要求：
+早期受控执行历史交付口径包含 3 类要求：
 
 - 代码交付物
 - 数据交付物
 - 运维交付物
 
-## 2. Phase 1 交付范围
+## 2. 早期受控执行交付范围
 
-按历史阶段口径，Phase 1 只交付 `feishu_single_row_update` 的执行控制闭环，不扩大到达人链或视频链。
+按历史阶段口径，早期受控执行只交付 `feishu_single_row_update` 的执行控制闭环，不扩大到达人链或视频链。
 
 当前交付内容：
 
@@ -46,7 +46,7 @@ Phase 1 历史交付口径包含 3 类要求：
 - executor 启动脚本与环境模板
 - 保留旧同步直跑作为 fallback
 
-按 Phase 1 历史边界，本阶段仍不包含：
+按早期受控执行历史边界，本版本仍不包含：
 
 - MinIO 正式上传
 - `entity_registry / external_binding / entity_snapshot`
@@ -59,24 +59,24 @@ Phase 1 历史交付口径包含 3 类要求：
 
 ## 3. 交付物清单
 
-以下清单记录的是 Phase 1 当时的最小交付物，不等于当前完整系统交付物。
+以下清单记录的是早期受控执行当时的最小交付物，不等于当前完整系统交付物。
 
 - 控制面代码
   - `src/automation_business_scaffold/infrastructure/runtime/runtime_store.py`
   - `src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py`
   - `src/automation_business_scaffold/executor_daemon.py`
 - 数据库迁移
-  - [alembic.ini](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic.ini:1)
-  - [env.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic/env.py:1)
-  - [20260412_0001_phase1_execution_control.py](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/alembic/versions/20260412_0001_phase1_execution_control.py:1)
+  - `alembic.ini`
+  - `alembic/env.py`
+  - `alembic/versions/20260412_0001_execution_control.py`
 - 运行脚本
-  - [run_executor_daemon.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/run_executor_daemon.sh:1)
-  - [run_alembic_upgrade.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/run_alembic_upgrade.sh:1)
-  - [executor.local.env.example](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/executor.local.env.example:1)
+  - `scripts/execution_control/run_executor_daemon.sh`
+  - `scripts/execution_control/run_alembic_upgrade.sh`
+  - `scripts/execution_control/executor.local.env.example`
 
 ## 4. 数据库交付标准
 
-Phase 1 正式数据库以 `BUSINESS_EXECUTION_CONTROL_DB_URL` 为准，推荐：
+早期受控执行正式数据库以 `BUSINESS_EXECUTION_CONTROL_DB_URL` 为准，推荐：
 
 ```bash
 export BUSINESS_EXECUTION_CONTROL_DB_URL='postgresql+psycopg://postgres:postgres@127.0.0.1:5432/automation_business_scaffold'
@@ -138,7 +138,7 @@ bash scripts/execution_control/run_alembic_upgrade.sh
 ```
 
 ### 5.4 启动 executor
-历史上 Phase 1 只强调过单个 `executor_daemon`。
+历史上早期受控执行只强调过单个 `executor_daemon`。
 按当前实现，正式部署时应同时启动 5 个常驻进程：
 
 - 顶层任务推进：`executor_daemon`
@@ -182,9 +182,9 @@ bash scripts/execution_control/run_executor_daemon.sh --once
 
 项目内已提供：
 
-- 模板目录：[config/deployment/launchd](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/config/deployment/launchd)
-- 启动包装脚本：[run_launchd_agent.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/run_launchd_agent.sh:1)
-- 安装脚本：[install_launch_agents.sh](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/scripts/execution_control/install_launch_agents.sh:1)
+- 模板目录：`config/deployment/launchd`
+- 启动包装脚本：`scripts/execution_control/run_launchd_agent.sh`
+- 安装脚本：`scripts/execution_control/install_launch_agents.sh`
 
 本地开发机完整测试建议直接使用项目配置的 Postgres：
 
@@ -224,7 +224,7 @@ launchctl print gui/$(id -u)/com.happyzhao.mujitask.executor-daemon
 
 守护进程日志统一落在：
 
-- [runtime/phase1_daemons](/Users/happyzhao/Work/mujitask-wt-system-architecture-upgrade/runtime/phase1_daemons)
+- `runtime/daemons`
 
 如果是 `launchd` 托管，重点看这些文件：
 
@@ -251,7 +251,7 @@ Skill 侧示例：
 
 ```bash
 python3 skills/mujitask-tiktok-feishu-sync/run_skill_step.py \
-  refresh-current-competitor-table \
+  refresh-current-competitor-table-submit \
   --profile-ref main
 ```
 
@@ -302,7 +302,7 @@ automation-business-scaffold-run run \
 
 ## 8. 回退方案
 
-如果 Phase 1 上线后需要快速回退，按下面顺序做：
+如果早期受控执行上线后需要快速回退，按下面顺序做：
 
 1. 停掉 5 个守护进程
 2. 停止给 skill/CLI 传 `control_action` 与 `execution_control_*` 参数
@@ -324,9 +324,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.out
 - 不依赖受控排队
 - 本地 runtime 与原排障路径保持不变
 
-## 9. 当前阶段结论
+## 9. 当前结论
 
-按“每个阶段必须是可交付完整流程”的标准，当前 Phase 1 的完成定义应该是：
+按“每个版本必须是可交付完整流程”的标准，早期受控执行的完成定义应该是：
 
 - 已有正式数据库入口
 - 已有迁移脚本
@@ -334,4 +334,4 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.happyzhao.mujitask.out
 - 已有标准操作流
 - 已有验收与回退文档
 
-满足这几个条件后，才建议继续进入 Phase 2 的 MinIO 正式接入。
+满足这几个条件后，才建议继续进入 MinIO 正式接入。

@@ -2,13 +2,7 @@ from __future__ import annotations
 
 import time
 
-from automation_business_scaffold.infrastructure.runtime.runtime_store import Phase1RuntimeStore, RuntimeStore
-
-
-def test_legacy_phase1_runtime_store_alias_still_constructs_runtime_store(runtime_db_url):
-    store = Phase1RuntimeStore(db_url=runtime_db_url)
-
-    assert isinstance(store, RuntimeStore)
+from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 
 def test_claim_next_task_request_requeues_expired_cleanup_request(runtime_db_url):

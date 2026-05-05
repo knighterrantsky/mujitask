@@ -39,13 +39,8 @@ main() {
   tk_hot_video_table_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID" 2>/dev/null || true)"
   tk_hot_video_view_id="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID" 2>/dev/null || true)"
   token="$(read_kv_value "$existing_skill_env" "MUJITASK_FEISHU_ACCESS_TOKEN" 2>/dev/null || true)"
-  browser_profile_ref="$(read_kv_value "$existing_skill_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
   fastmoss_phone="$(read_kv_value "$existing_skill_env" "FASTMOSS_PHONE" 2>/dev/null || true)"
   fastmoss_password="$(read_kv_value "$existing_skill_env" "FASTMOSS_PASSWORD" 2>/dev/null || true)"
-  db_url="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_DB_URL" 2>/dev/null || true)"
-  artifact_root="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_ROOT" 2>/dev/null || true)"
-  artifact_bucket="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_ARTIFACT_BUCKET" 2>/dev/null || true)"
-  requested_by="$(read_kv_value "$existing_skill_env" "EXECUTION_CONTROL_REQUESTED_BY" 2>/dev/null || true)"
   notification_channel_code="$(read_kv_value "$existing_skill_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
   openclaw_agent_id="$(read_kv_value "$existing_skill_env" "OPENCLAW_AGENT_ID" 2>/dev/null || true)"
   openclaw_state_dir="$(read_kv_value "$existing_skill_env" "OPENCLAW_STATE_DIR" 2>/dev/null || true)"
@@ -79,6 +74,7 @@ main() {
     minio_create_bucket="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET" 2>/dev/null || true)"
     sync_referenced_files="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES" 2>/dev/null || true)"
     [[ -n "$requested_by" ]] || requested_by="$(read_kv_value "$existing_executor_env" "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY" 2>/dev/null || true)"
+    [[ -n "$browser_profile_ref" ]] || browser_profile_ref="$(read_kv_value "$existing_executor_env" "BROWSER_PROFILE_REF" 2>/dev/null || true)"
     [[ -n "$notification_channel_code" ]] || notification_channel_code="$(read_kv_value "$existing_executor_env" "NOTIFICATION_CHANNEL_CODE" 2>/dev/null || true)"
   fi
 
@@ -160,6 +156,8 @@ main() {
   log "Installing project package"
   "$UV_BIN" pip install --python "$venv_python" -e "$install_dir" --no-deps
 
+  install_project_node_dependencies "$install_dir"
+
   log "Installing Playwright Chromium"
   "$venv_python" -m playwright install chromium
 
@@ -198,13 +196,8 @@ main() {
     "$tk_hot_video_table_id" \
     "$tk_hot_video_view_id" \
     "$token" \
-    "$browser_profile_ref" \
     "$fastmoss_phone" \
     "$fastmoss_password" \
-    "$db_url" \
-    "$artifact_root" \
-    "$artifact_bucket" \
-    "${requested_by:-openclaw-skill}" \
     "${notification_channel_code:-feishu_bot_api}" \
     "${openclaw_agent_id:-tiktok-ops}" \
     "${openclaw_state_dir:-$HOME/.openclaw}"

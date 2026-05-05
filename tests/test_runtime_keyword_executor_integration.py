@@ -24,10 +24,15 @@ from automation_business_scaffold.contracts.handler.contract import (
 from automation_business_scaffold.domains.tiktok.tasks.search_keyword_competitor_products import (
     SearchKeywordCompetitorProductsTask,
 )
+from automation_business_scaffold.domains.tiktok.tasks.search_keyword_selection_products import (
+    SearchKeywordSelectionProductsTask,
+)
 
 TASK_CODE = "search_keyword_competitor_products"
+SELECTION_TASK_CODE = "search_keyword_selection_products"
 SEARCH_QUERY = "water bottle"
 SEED_TABLE_REF = "tbl_keyword_seed"
+SELECTION_TABLE_REF = "tbl_selection_keyword_seed"
 SEED_RECORD_ID = "seed-row-1"
 PRODUCT_ID = "123456789"
 PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
@@ -35,7 +40,14 @@ PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
+        "allow_test_persistence_overrides": True,
         "execution_control_db_url": runtime_db_url,
+        "fact_db_url": runtime_db_url,
+        "execution_control_artifact_store_provider": "minio",
+        "execution_control_artifact_bucket": "pytest-runtime-artifacts",
+        "execution_control_minio_endpoint": "127.0.0.1:9000",
+        "execution_control_minio_access_key": "minioadmin",
+        "execution_control_minio_secret_key": "miniosecret",
         "execution_control_stop_when_idle": True,
         "execution_control_max_iterations": 1,
         "requested_by": "pytest",
@@ -63,6 +75,13 @@ def _submit_keyword_request(runtime_db_url: str, **overrides: object) -> dict[st
 def _status(runtime_db_url: str, request_id: str) -> dict[str, object]:
     return runtime_orchestrator.get_task_request_status(
         TASK_CODE,
+        _runtime_params(runtime_db_url, control_action="status", request_id=request_id),
+    )
+
+
+def _selection_status(runtime_db_url: str, request_id: str) -> dict[str, object]:
+    return runtime_orchestrator.get_task_request_status(
+        SELECTION_TASK_CODE,
         _runtime_params(runtime_db_url, control_action="status", request_id=request_id),
     )
 
@@ -434,6 +453,157 @@ def test_keyword_executor_integration_happy_path(
     assert status_payload["result"]["row_results"][0]["feishu_row"]["fields"]["备注"] == f"通过搜索关键字：{SEARCH_QUERY}"
     assert status_payload["result"]["stage_summary"]["keyword_seed_import"]["total_count"] == 1
     assert status_payload["result"]["stage_summary"]["refresh_competitor_rows"]["total_count"] == 1
+
+
+def test_selection_keyword_executor_dispatches_selection_row_refresh(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert load_workflow_runtime(SELECTION_TASK_CODE) is not None
+    registry = build_api_handler_registry()
+
+    def fake_keyword_seed_import(context: HandlerContext) -> HandlerResult:
+        search_request = dict(context.payload.get("search_request") or {})
+        assert context.payload["seed_write"]["mapper_code"] == "selection_seed_projection_mapper"
+        assert search_request["keyword_workflow_mode"] == "selection"
+        assert search_request["output_conditions"]["business_conditions"] == {
+            "min_day7_sold_count": "500",
+            "min_price_range_max_amount": "10.99",
+        }
+        return HandlerResult.success(
+            context,
+            summary={"candidate_count": 1, "written_count": 1, "skipped_count": 0, "failed_count": 0},
+            result={
+                "search_parameters": search_request,
+                "normalized_candidates": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "search_query": SEARCH_QUERY,
+                        "search_rank": 1,
+                        "source_context": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
+                    }
+                ],
+                "seed_contexts": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "search_query": SEARCH_QUERY,
+                        "search_rank": 1,
+                        "source_context": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
+                        "source_record_id": SEED_RECORD_ID,
+                        "seed_status": "success",
+                        "feishu_row": {
+                            "record_id": SEED_RECORD_ID,
+                            "status": "success",
+                            "op": "append",
+                            "fields": {
+                                "商品ID": PRODUCT_ID,
+                                "商品链接": {"text": PRODUCT_URL, "link": PRODUCT_URL},
+                                "关键词": SEARCH_QUERY,
+                                "备注": f"通过搜索关键字：{SEARCH_QUERY}",
+                            },
+                        },
+                        "target_record_ids": [SEED_RECORD_ID],
+                    }
+                ],
+                "seed_write_results": [
+                    {
+                        "product_id": PRODUCT_ID,
+                        "source_record_id": SEED_RECORD_ID,
+                        "status": "success",
+                    }
+                ],
+                "written_count": 1,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "target_record_ids": [SEED_RECORD_ID],
+            },
+        )
+
+    def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
+        assert context.payload["source_record_id"] == SEED_RECORD_ID
+        assert context.payload["source_table_ref"] == SELECTION_TABLE_REF
+        assert context.payload["target_table_ref"] == SELECTION_TABLE_REF
+        assert context.payload["product_identity"]["product_id"] == PRODUCT_ID
+        return HandlerResult.success(
+            context,
+            summary={"row_status": "success"},
+            result={
+                "row_status": "success",
+                "step_timeline": [
+                    {"step": "tiktok_request", "status": "success"},
+                    {"step": "fastmoss_fetch", "status": "success"},
+                    {"step": "fact_db_upsert", "status": "success"},
+                    {"step": "feishu_writeback", "status": "success"},
+                ],
+            },
+        )
+
+    register_api_handler(registry, "keyword_seed_import", fake_keyword_seed_import)
+    register_api_handler(registry, "selection_row_refresh", fake_selection_row_refresh)
+    monkeypatch.setattr(runtime_orchestrator, "build_api_handler_registry", lambda: registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
+
+    task = SearchKeywordSelectionProductsTask()
+    submitted = task.run_runtime_request(
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            search_query=SEARCH_QUERY,
+            selection_table_ref=SELECTION_TABLE_REF,
+            reply_target="reply://selection-keyword-executor",
+            source_channel_code="console",
+        )
+    )
+    request_id = str(submitted["request_id"])
+
+    seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
+    assert len(seed_jobs) == 1
+    assert seed_jobs[0]["payload"]["seed_write"]["target_table_ref"] == SELECTION_TABLE_REF
+    assert seed_jobs[0]["payload"]["seed_write"]["mapper_code"] == "selection_seed_projection_mapper"
+
+    seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
+    assert seed_worker["api_worker_job"]["status"] == "success"
+
+    refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert refresh_wait["current_stage"] == "refresh_selection_rows"
+    row_jobs = _stage_jobs(refresh_wait, stage_code="refresh_selection_rows", job_code="selection_row_refresh")
+    assert len(row_jobs) == 1
+    assert row_jobs[0]["payload"]["source_record_id"] == SEED_RECORD_ID
+    assert row_jobs[0]["payload"]["target_table_ref"] == SELECTION_TABLE_REF
+
+    row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert row_worker["api_worker_job"]["job_code"] == "selection_row_refresh"
+    assert row_worker["api_worker_job"]["status"] == "success"
+
+    finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert finalized["request_id"] == request_id
+    assert finalized["request_status"] == "success"
+    assert finalized["result"]["row_results"][0]["row_status"] == "success"
+    assert finalized["result"]["stage_summary"]["refresh_selection_rows"]["total_count"] == 1
+
+    status_payload = _selection_status(runtime_db_url, request_id)
+    assert status_payload["request_status"] == "success"
+    assert status_payload["result"]["row_results"][0]["feishu_row"]["fields"]["备注"] == f"通过搜索关键字：{SEARCH_QUERY}"
 
 
 def test_keyword_executor_passes_zero_candidate_limit_to_seed_import(

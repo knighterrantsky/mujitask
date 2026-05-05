@@ -40,7 +40,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run lightweight Phase 1 submit helpers.")
+    parser = argparse.ArgumentParser(description="Run lightweight browser runtime submit helpers.")
     parser.add_argument("--install-dir", required=True)
     parser.add_argument("--task-name", required=True)
     parser.add_argument("--params-json", required=True)

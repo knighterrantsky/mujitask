@@ -98,7 +98,7 @@ def _contract(
             "optional": [],
             "forbidden": [],
             "notes": (
-                "Phase 1 skeleton. Concrete payload fields should be filled in the "
+                "Baseline skeleton. Concrete payload fields should be filled in the "
                 "per-handler module before the runtime starts executing it."
             ),
         },
@@ -247,6 +247,14 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             purpose="Upsert normalized entities, relations, and observations into Fact DB.",
             contract_reference="docs/arch/handler-contract-design.md#67-fact_bundle_upsert",
             side_effects=("fact_db.write",),
+        ),
+        "selection_row_refresh": _contract(
+            handler_code="selection_row_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Refresh one selection row as a serial pipeline that reuses existing step handlers.",
+            contract_reference="docs/arch/workflow-selection-table-expand-design.md#4-job-设计",
+            side_effects=("runtime_db", "feishu.write", "fact_db.write", "artifact.write", "fastmoss.request", "tiktok.request"),
         ),
     }
 )

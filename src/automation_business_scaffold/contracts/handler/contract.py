@@ -148,7 +148,7 @@ class HandlerResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     next_action: HandlerNextAction = field(default_factory=HandlerNextAction)
     error: HandlerError | None = None
-    contract_revision: str = "phase1"
+    contract_revision: str = "runtime_contract"
 
     @classmethod
     def success(

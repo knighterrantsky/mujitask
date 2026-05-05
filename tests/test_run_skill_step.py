@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 FEISHU_BASE_URL = "https://example.feishu.cn/base/app"
 FEISHU_TABLE_ROUTE_ENV = {
     "MUJITASK_FEISHU_BASE_URL": FEISHU_BASE_URL,
@@ -25,6 +27,18 @@ FEISHU_TABLE_URLS = {
     "tk_influencer_outreach": f"{FEISHU_BASE_URL}?table=tblOutreach&view=vewOutreach",
     "tk_hot_video": f"{FEISHU_BASE_URL}?table=tblVideo&view=vewVideo",
 }
+STRICT_RUNTIME_ENV = {
+    "EXECUTION_CONTROL_DB_URL": "postgresql+psycopg://runtime",
+    "TK_FACT_DB_URL": "postgresql+psycopg://facts",
+    "EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER": "minio",
+    "EXECUTION_CONTROL_ARTIFACT_BUCKET": "mujitask-test-artifacts",
+    "EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX": "tests/skill-submit",
+    "EXECUTION_CONTROL_MINIO_ENDPOINT": "127.0.0.1:9000",
+    "EXECUTION_CONTROL_MINIO_ACCESS_KEY": "minioadmin",
+    "EXECUTION_CONTROL_MINIO_SECRET_KEY": "miniosecret",
+    "EXECUTION_CONTROL_MINIO_REGION": "us-east-1",
+    "EXECUTION_CONTROL_MINIO_SECURE": "false",
+}
 
 
 def _load_run_skill_step_module():
@@ -40,6 +54,84 @@ def _load_run_skill_step_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_resolve_browser_target_module():
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills"
+        / "mujitask-tiktok-feishu-sync"
+        / "resolve_browser_target.py"
+    )
+    spec = importlib.util.spec_from_file_location("mujitask_resolve_browser_target", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_skill_entry_files_do_not_own_runtime_or_browser_config():
+    root = Path(__file__).resolve().parents[1]
+    skill_example = (
+        root
+        / "skills"
+        / "mujitask-tiktok-feishu-sync"
+        / "skill.local.env.example"
+    ).read_text(encoding="utf-8")
+    run_skill_step = (
+        root
+        / "skills"
+        / "mujitask-tiktok-feishu-sync"
+        / "run_skill_step.py"
+    ).read_text(encoding="utf-8")
+
+    forbidden_skill_env_tokens = (
+        "BROWSER_PROFILE_REF",
+        "BROWSER_PROVIDER_NAME",
+        "BROWSER_PROFILE_ID",
+        "BROWSER_WORKSPACE_ID",
+        "BROWSER_PROFILES_FILE",
+        "DEFAULT_PROFILE_REF",
+        "EXECUTION_CONTROL_DB_URL",
+        "EXECUTION_CONTROL_ARTIFACT_ROOT",
+        "EXECUTION_CONTROL_ARTIFACT_BUCKET",
+        "EXECUTION_CONTROL_REQUESTED_BY",
+    )
+    forbidden_run_step_tokens = (
+        '"BROWSER_PROFILE_REF"',
+        '"BROWSER_PROVIDER_NAME"',
+        '"BROWSER_PROFILE_ID"',
+        '"BROWSER_WORKSPACE_ID"',
+        '"EXECUTION_CONTROL_REQUESTED_BY"',
+        '"BUSINESS_EXECUTION_CONTROL_REQUESTED_BY"',
+    )
+
+    assert not any(token in skill_example for token in forbidden_skill_env_tokens)
+    assert not any(token in run_skill_step for token in forbidden_run_step_tokens)
+
+
+def test_resolve_browser_target_ignores_skill_local_browser_defaults(tmp_path, monkeypatch):
+    module = _load_resolve_browser_target_module()
+    skill_env = tmp_path / "skills" / "mujitask-tiktok-feishu-sync" / "skill.local.env"
+    skill_env.parent.mkdir(parents=True)
+    skill_env.write_text('BROWSER_PROFILE_REF="stale-skill-profile"\n', encoding="utf-8")
+    for key in (
+        "BROWSER_PROFILES_FILE",
+        "DEFAULT_PROFILE_REF",
+        "BROWSER_PROFILE_REF",
+        "BROWSER_PROVIDER_NAME",
+        "BROWSER_PROFILE_ID",
+        "BROWSER_WORKSPACE_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    with pytest.raises(ValueError, match="No browser profile_ref provided"):
+        module.resolve_browser_target(
+            install_dir=tmp_path,
+            profile_ref=None,
+            fallback_profile_ref=None,
+        )
 
 
 def _param_value(params: list[str], key: str):
@@ -136,58 +228,64 @@ def test_append_runtime_params_falls_back_to_openclaw_session_store(tmp_path, mo
     assert reply_target["sessionId"] == "session-latest"
 
 
-def test_run_cli_task_capture_payload_writes_result_file_via_extra_env(tmp_path, monkeypatch):
+def test_append_runtime_params_does_not_include_persistence_config():
     module = _load_run_skill_step_module()
 
-    def fake_monitor_process(**kwargs):
-        return None
+    params = module._append_runtime_params(
+        ["control_action=submit"],
+        {
+            **STRICT_RUNTIME_ENV,
+            "EXECUTION_CONTROL_REQUESTED_BY": "legacy-skill",
+            "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY": "project-runtime",
+        },
+    )
 
-    class FakePopen:
-        def __init__(self, *args, **kwargs):
-            self.returncode = 0
+    forbidden_prefixes = (
+        "requested_by=",
+        "execution_control_db_url=",
+        "fact_db_url=",
+        "execution_control_fact_db_url=",
+        "execution_control_artifact_",
+        "execution_control_minio_",
+        "browser_provider_name=",
+        "browser_profile_id=",
+        "browser_workspace_id=",
+        "requires_fact_db=",
+        "requires_object_storage=",
+        "require_database_persistence=",
+        "require_object_storage=",
+    )
+    assert not any(item.startswith(forbidden_prefixes) for item in params)
 
-        def poll(self):
-            return 0
 
-        def wait(self):
-            return 0
+def test_influencer_pool_browser_params_only_pass_profile_ref(monkeypatch, tmp_path):
+    module = _load_run_skill_step_module()
 
-    monkeypatch.setattr(module, "_monitor_process", fake_monitor_process)
     monkeypatch.setattr(
         module,
-        "_build_result_json",
-        lambda **kwargs: json.dumps(
-            {
-                "status": "success",
-                "task_name": "refresh_current_competitor_table",
-                "request_id": "req-123",
-                "summary": {"total": 1, "counts": {"queued": 1}},
-                "summary_text": "queued=1, total=1",
-            },
-            ensure_ascii=False,
-        ),
+        "_resolve_browser_target",
+        lambda **kwargs: {
+            "profile_ref": "roxy-tiktok",
+            "provider": "roxy",
+            "profile_id": "profile-123",
+            "workspace_id": "workspace-456",
+        },
     )
-    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
 
-    cli_bin = tmp_path / "automation-business-scaffold-run"
-    python_bin = tmp_path / "python"
-    cli_bin.write_text("", encoding="utf-8")
-    python_bin.write_text("", encoding="utf-8")
-
-    status, payload = module._run_cli_task_capture_payload(
+    params = module._append_influencer_pool_browser_params(
+        params=[],
+        skill_env={
+            "BROWSER_PROVIDER_NAME": "skill-provider",
+            "BROWSER_PROFILE_ID": "skill-profile",
+            "BROWSER_WORKSPACE_ID": "skill-workspace",
+        },
+        python_bin=tmp_path / "python",
         install_dir=tmp_path,
-        python_bin=python_bin,
-        cli_bin=cli_bin,
-        task_name="refresh_current_competitor_table",
-        run_mode="canary",
-        params=["control_action=submit"],
-        stdout_prefix="test-step",
-        extra_env={},
+        requested_profile_ref="",
+        fallback_profile_ref="",
     )
 
-    assert status == 0
-    assert payload["request_id"] == "req-123"
-    assert payload["summary"]["counts"] == {"queued": 1}
+    assert params == ["profile_ref=roxy-tiktok"]
 
 
 def test_refresh_competitor_submit_params_include_fastmoss_env_markers(tmp_path, monkeypatch):
@@ -278,7 +376,6 @@ def test_main_refresh_submit_passes_fastmoss_env_markers(tmp_path, monkeypatch):
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
         },
@@ -300,7 +397,7 @@ def test_main_refresh_submit_passes_fastmoss_env_markers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
 
-    exit_code = module.main(["refresh-current-competitor-table-submit", "--run-mode", "canary"])
+    exit_code = module.main(["refresh-current-competitor-table-submit"])
 
     assert exit_code == 0
     params = list(captured["params"])
@@ -333,7 +430,6 @@ def test_main_refresh_submit_resolves_competitor_table_from_english_route_config
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
         },
@@ -346,7 +442,7 @@ def test_main_refresh_submit_resolves_competitor_table_from_english_route_config
 
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
 
-    exit_code = module.main(["refresh-current-competitor-table-submit", "--run-mode", "canary"])
+    exit_code = module.main(["refresh-current-competitor-table-submit"])
 
     assert exit_code == 0
     params = list(captured["params"])
@@ -378,7 +474,6 @@ def test_main_refresh_current_competitor_table_returns_after_submit(tmp_path, mo
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
         },
@@ -405,7 +500,7 @@ def test_main_refresh_current_competitor_table_returns_after_submit(tmp_path, mo
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
     monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
 
-    exit_code = module.main(["refresh-current-competitor-table", "--run-mode", "canary"])
+    exit_code = module.main(["refresh-current-competitor-table-submit"])
 
     assert exit_code == 0
     assert len(captured_calls) == 1
@@ -434,7 +529,6 @@ def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
         },
@@ -463,9 +557,7 @@ def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
 
     exit_code = module.main(
         [
-            "competitor-row-by-url",
-            "--run-mode",
-            "canary",
+            "competitor-row-by-url-submit",
             "--product-url",
             "https://www.tiktok.com/shop/pdp/123456789",
         ]
@@ -482,6 +574,69 @@ def test_main_competitor_row_by_url_returns_after_submit(tmp_path, monkeypatch):
     assert "fallback_allowed=true" in params
     assert emitted["request_id"] == "req-competitor-url-123"
     assert emitted["request_status"] == "pending"
+
+
+def test_main_product_url_complete_submit_uses_selection_table_without_runtime_config_params(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            **STRICT_RUNTIME_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (0, {"status": "success", "request_id": "req-product-url-123", "request_status": "pending"})
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: 0)
+
+    exit_code = module.main(
+        [
+            "product-url-complete-submit",
+            "--product-url",
+            "https://www.tiktok.com/shop/pdp/123456789",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "tiktok_fastmoss_product_ingest"
+    params = list(captured_calls[0]["params"])
+    assert "source_table_ref=feishu://mujitask/tk_selection" in params
+    assert "selection_table_ref=feishu://mujitask/tk_selection" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_selection']}" in params
+    forbidden_prefixes = (
+        "run_mode=",
+        "execution_control_db_url=",
+        "fact_db_url=",
+        "execution_control_fact_db_url=",
+        "execution_control_artifact_",
+        "execution_control_minio_",
+        "browser_provider_name=",
+        "browser_profile_id=",
+        "browser_workspace_id=",
+        "requires_fact_db=",
+        "requires_object_storage=",
+    )
+    assert not any(item.startswith(forbidden_prefixes) for item in params)
 
 
 def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
@@ -503,7 +658,6 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
         },
@@ -532,9 +686,7 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
 
     exit_code = module.main(
         [
-            "keyword-search",
-            "--run-mode",
-            "canary",
+            "keyword-search-submit",
             "--search-keyword",
             "Easter Basket Stuffers",
         ]
@@ -568,7 +720,6 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
             "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
@@ -589,18 +740,14 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
             },
         )
 
-    def fake_run_cli_task_capture_payload(**kwargs):
-        raise AssertionError("influencer-pool-sync must submit asynchronously instead of direct CLI execution")
-
     def fake_emit_final_result(payload):
         emitted.update(payload)
         return 0
 
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
-    monkeypatch.setattr(module, "_run_cli_task_capture_payload", fake_run_cli_task_capture_payload)
     monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
 
-    exit_code = module.main(["influencer-pool-sync", "--run-mode", "canary"])
+    exit_code = module.main(["influencer-pool-sync-submit"])
 
     assert exit_code == 0
     assert len(captured_calls) == 1
@@ -634,7 +781,6 @@ def test_main_influencer_pool_sync_uses_english_route_config_for_source_and_targ
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
-            "BROWSER_PROFILE_REF": "roxy-default",
             "FASTMOSS_PHONE": "18000000000",
             "FASTMOSS_PASSWORD": "secret",
             "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
@@ -648,7 +794,7 @@ def test_main_influencer_pool_sync_uses_english_route_config_for_source_and_targ
 
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
 
-    exit_code = module.main(["influencer-pool-sync", "--run-mode", "canary"])
+    exit_code = module.main(["influencer-pool-sync-submit"])
 
     assert exit_code == 0
     params = list(captured_calls[0]["params"])

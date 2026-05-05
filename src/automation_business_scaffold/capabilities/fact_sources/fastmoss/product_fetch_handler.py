@@ -406,6 +406,18 @@ def _build_fastmoss_fact_bundle(raw_bundle: dict[str, Any], *, product_id: str) 
                 product_id=product_id,
             )
         )
+    sku_distribution = coerce_mapping(raw_bundle.get("sku_distribution"))
+    if sku_distribution:
+        fact_bundle["raw_api_responses"].append(
+            {
+                "source_platform": "fastmoss",
+                "source_endpoint": "goods.sku_distribution",
+                "request_url": "",
+                "request_params": compact_dict({"product_id": product_id, "d_type": extract_fastmoss_data(sku_distribution).get("d_type")}),
+                "response_payload": sku_distribution,
+                "status_code": 200,
+            }
+        )
     if related_creators:
         fact_bundle = merge_fact_bundles(fact_bundle, map_fastmoss_goods_author(related_creators, product_id=product_id))
     if videos:
@@ -740,8 +752,8 @@ def _windowed_overview_metrics(raw_overview: Mapping[str, Any]) -> dict[str, Any
         overview.get(f"day{window_days}_sold_count"),
         overview.get(f"day{window_days}_sales"),
         overview.get(f"sold_count_{window_days}d"),
-        overview.get("real_sold_count"),
         overview.get("sold_count"),
+        overview.get("real_sold_count"),
     )
     if window_sold_count:
         overview.setdefault(f"sales_{window_days}d", window_sold_count)

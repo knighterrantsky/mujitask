@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from automation_business_scaffold.control_plane.runtime_config.settings import PRODUCT_INGEST_TASK_CODE
+from automation_business_scaffold.control_plane.runtime_config.settings import (
+    PRODUCT_INGEST_TASK_CODE,
+)
 from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest import (
     advance_stage,
     finalize_request,
@@ -33,7 +35,9 @@ class FakeRuntimeStore:
     def load_task_request(self, *, request_id: str) -> RuntimeTaskRequestRecord:
         return self.requests[request_id]
 
-    def update_task_request(self, *, request_id: str, **updates: object) -> RuntimeTaskRequestRecord:
+    def update_task_request(
+        self, *, request_id: str, **updates: object
+    ) -> RuntimeTaskRequestRecord:
         current = self.requests[request_id]
         self.requests[request_id] = replace(current, **updates)
         return self.requests[request_id]
@@ -60,9 +64,15 @@ class FakeRuntimeStore:
             def to_dict(self) -> dict:
                 return dict(self._payload)
 
-        return [_OutboxRecord(record) for record in self.outbox if str(record.get("ref_id")) == request_id]
+        return [
+            _OutboxRecord(record)
+            for record in self.outbox
+            if str(record.get("ref_id")) == request_id
+        ]
 
-    def enqueue_api_worker_jobs(self, *, request_id: str, task_code: str, job_code: str, jobs: list[dict]) -> dict:
+    def enqueue_api_worker_jobs(
+        self, *, request_id: str, task_code: str, job_code: str, jobs: list[dict]
+    ) -> dict:
         created: list[dict] = []
         for job in jobs:
             self._job_seq += 1
@@ -81,9 +91,15 @@ class FakeRuntimeStore:
             }
             self.api_jobs.append(record)
             created.append(record)
-        return {"job_code": job_code, "created_count": len(created), "job_ids": [item["job_id"] for item in created]}
+        return {
+            "job_code": job_code,
+            "created_count": len(created),
+            "job_ids": [item["job_id"] for item in created],
+        }
 
-    def enqueue_task_executions(self, *, request_id: str, item_code: str, workflow_code: str, items: list[dict]) -> dict:
+    def enqueue_task_executions(
+        self, *, request_id: str, item_code: str, workflow_code: str, items: list[dict]
+    ) -> dict:
         created: list[RuntimeTaskExecutionRecord] = []
         for item in items:
             self._execution_seq += 1
@@ -133,7 +149,7 @@ class FakeRuntimeStore:
 def _build_request(
     *,
     request_id: str = "req-1",
-    current_stage: str = "collect_product_data",
+    current_stage: str = "read_selection_rows",
     payload: dict | None = None,
 ) -> RuntimeTaskRequestRecord:
     return RuntimeTaskRequestRecord(
@@ -172,7 +188,7 @@ def _api_job(
     }
 
 
-def test_advance_stage_dispatches_collect_jobs_for_direct_ingest() -> None:
+def test_read_stage_skips_to_row_dispatch_for_direct_ingest() -> None:
     workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
     request = _build_request(
         payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
@@ -183,59 +199,96 @@ def test_advance_stage_dispatches_collect_jobs_for_direct_ingest() -> None:
         store=store,
         request=request,
         workflow=workflow,
-        stage_code="collect_product_data",
+        stage_code="read_selection_rows",
     )
 
-    assert result["action"] == "waiting"
-    assert result["current_stage"] == "collect_product_data"
-    dispatch_payload = result["details"]["dispatch_payload"]
-    assert set(dispatch_payload) == {"tiktok_product_request_fetch", "fastmoss_product_fetch"}
-    assert len(store.api_jobs) == 2
-    assert {job["job_code"] for job in store.api_jobs} == {
-        "tiktok_product_request_fetch",
-        "fastmoss_product_fetch",
+    assert result == {
+        "action": "advance",
+        "next_stage": "dispatch_selection_row_refresh",
+        "details": {"stage_transition": "direct_ingest_skip_selection_read"},
     }
-    assert result["details"]["product_identity"]["product_id"] == "1234567890"
+    assert store.api_jobs == []
 
 
-def test_advance_stage_moves_to_browser_fallback_when_request_fetch_requires_it() -> None:
+def test_dispatch_stage_enqueues_single_selection_row_job_for_direct_ingest() -> None:
     workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
     request = _build_request(
+        current_stage="dispatch_selection_row_refresh",
         payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
     )
-    store = FakeRuntimeStore(
-        request=request,
-        api_jobs=[
-            _api_job(
-                request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="tiktok_product_request_fetch",
-                result={
-                    "handler_result": {
-                        "status": "fallback_required",
-                        "next_action": {"payload": {"source_url": "https://www.tiktok.com/shop/pdp/1234567890"}},
-                    }
-                },
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="fastmoss_product_fetch",
-                result={"handler_result": {"status": "success"}, "product_id": "1234567890"},
-            ),
-        ],
-    )
+    store = FakeRuntimeStore(request=request)
 
     result = advance_stage(
         store=store,
         request=request,
         workflow=workflow,
-        stage_code="collect_product_data",
+        stage_code="dispatch_selection_row_refresh",
     )
 
     assert result["action"] == "advance"
-    assert result["next_stage"] == "browser_fallback"
-    assert result["details"]["tiktok_product_request_fetch"]["job_code"] == "tiktok_product_request_fetch"
+    assert result["next_stage"] == "collect_selection_rows"
+    assert result["details"]["row_count"] == 1
+    assert len(store.api_jobs) == 1
+    row_job = store.api_jobs[0]
+    assert row_job["job_code"] == "selection_row_refresh"
+    assert row_job["payload"]["stage_code"] == "collect_selection_rows"
+    assert row_job["payload"]["product_identity"]["product_id"] == "1234567890"
+
+
+def test_dispatch_stage_marks_fact_db_required_without_passing_db_url(monkeypatch) -> None:
+    monkeypatch.setenv("TK_FACT_DB_URL", "postgresql+psycopg://runtime-fact")
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="dispatch_selection_row_refresh",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
+    )
+    store = FakeRuntimeStore(request=request)
+
+    advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_selection_row_refresh",
+    )
+
+    row_job = next(job for job in store.api_jobs if job["job_code"] == "selection_row_refresh")
+    assert row_job["payload"]["requires_fact_db"] is True
+    assert row_job["payload"]["require_database_persistence"] is True
+    assert "fact_db_url" not in row_job["payload"]
+    assert "execution_control_db_url" not in row_job["payload"]
+
+
+def test_dispatch_stage_passes_strict_object_storage_summary_without_secrets() -> None:
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="dispatch_selection_row_refresh",
+        payload={
+            "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
+            "artifact_store": {
+                "provider": "minio",
+                "bucket": "selection-media",
+                "object_prefix": "pytest/selection",
+            },
+        },
+    )
+    store = FakeRuntimeStore(request=request)
+
+    advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_selection_row_refresh",
+    )
+
+    row_job = next(job for job in store.api_jobs if job["job_code"] == "selection_row_refresh")
+    payload = row_job["payload"]
+    assert payload["requires_object_storage"] is True
+    assert payload["require_object_storage"] is True
+    assert payload["artifact_store"]["provider"] == "minio"
+    assert payload["artifact_store"]["bucket"] == "selection-media"
+    assert "minio_endpoint" not in payload
+    assert "minio_access_key" not in payload
+    assert "minio_secret_key" not in payload
 
 
 def test_finalize_request_updates_request_and_creates_outbox() -> None:
@@ -249,31 +302,19 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
         api_jobs=[
             _api_job(
                 request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="tiktok_product_request_fetch",
+                stage_code="collect_selection_rows",
+                job_code="selection_row_refresh",
                 result={
-                    "handler_result": {"status": "success"},
-                    "product_id": "1234567890",
-                    "normalized_product_result": {"logical_fields": {"product_id": "1234567890"}},
+                    "handler_result": {
+                        "status": "success",
+                        "summary": {
+                            "source_record_id": "rec-1",
+                            "product_business_key": "1234567890",
+                            "row_status": "success",
+                        },
+                        "result": {"row_status": "success"},
+                    },
                 },
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="fastmoss_product_fetch",
-                result={"handler_result": {"status": "success"}, "product_id": "1234567890", "sales": 12},
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="sync_media",
-                job_code="media_asset_sync",
-                result={"handler_result": {"status": "success"}, "stored_assets": 1},
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="persist_facts",
-                job_code="fact_bundle_upsert",
-                result={"handler_result": {"status": "success"}, "upserted_products": 1},
             ),
         ],
     )
@@ -284,21 +325,67 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
     assert payload["final_status"] == "success"
     assert updated_request.status == "success"
     assert updated_request.current_stage == "completed"
-    assert updated_request.summary["child_success_count"] == 4
-    assert updated_request.result["product_id"] == "1234567890"
-    assert updated_request.result["fact_bundle_upsert"]["upserted_products"] == 1
+    assert updated_request.summary["child_success_count"] == 1
+    assert updated_request.result["row_count"] == 1
+    assert updated_request.result["rows"][0] == {
+        "source_record_id": "rec-1",
+        "product_id": "1234567890",
+        "row_status": "success",
+    }
     assert len(store.outbox) == 1
     assert store.outbox[0]["ref_id"] == request.request_id
     assert store.outbox[0]["payload"]["task_code"] == PRODUCT_INGEST_TASK_CODE
 
 
-def test_advance_stage_persist_facts_enqueues_standard_fact_bundle_payload() -> None:
+def test_finalize_request_uses_nested_row_result_status() -> None:
     workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
     request = _build_request(
-        current_stage="persist_facts",
+        current_stage="ready_for_summary",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
+    )
+    store = FakeRuntimeStore(
+        request=request,
+        api_jobs=[
+            _api_job(
+                request_id=request.request_id,
+                stage_code="collect_selection_rows",
+                job_code="selection_row_refresh",
+                result={
+                    "handler_result": {
+                        "status": "success",
+                        "summary": {
+                            "source_record_id": "rec-1",
+                            "product_business_key": "summary-product",
+                            "row_status": "success",
+                        },
+                        "result": {
+                            "source_record_id": "rec-1",
+                            "business_entity_key": "1234567890",
+                            "row_status": "unavailable",
+                        },
+                    },
+                },
+            ),
+        ],
+    )
+
+    finalize_request(store=store, request=request, workflow=workflow)
+    updated_request = store.load_task_request(request_id=request.request_id)
+
+    assert updated_request.result["rows"][0] == {
+        "source_record_id": "rec-1",
+        "product_id": "1234567890",
+        "row_status": "unavailable",
+    }
+
+
+def test_dispatch_stage_applies_selection_limit_to_candidate_rows() -> None:
+    workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
+    request = _build_request(
+        current_stage="dispatch_selection_row_refresh",
         payload={
-            "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
-            "fact_db_url": "postgresql+psycopg://fact-db",
+            "selection_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+            "selection_limit": 1,
         },
     )
     store = FakeRuntimeStore(
@@ -306,67 +393,25 @@ def test_advance_stage_persist_facts_enqueues_standard_fact_bundle_payload() -> 
         api_jobs=[
             _api_job(
                 request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="tiktok_product_request_fetch",
+                stage_code="read_selection_rows",
+                job_code="feishu_table_read",
                 result={
-                    "handler_result": {"status": "success"},
-                    "normalized_product_result": {
-                        "product_id": "1234567890",
-                        "normalized_product_url": "https://www.tiktok.com/shop/pdp/1234567890",
-                        "fact_bundle": {
-                            "products": [
+                    "handler_result": {
+                        "status": "success",
+                        "result": {
+                            "source_rows": [
                                 {
-                                    "product_id": "1234567890",
-                                    "product_url": "https://www.tiktok.com/shop/pdp/1234567890",
-                                    "title": "Sample product",
-                                    "source_platform": "tiktok",
-                                }
-                            ],
-                            "product_skus": [
+                                    "source_record_id": "rec-1",
+                                    "source_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+                                    "product_identity": {"product_id": "1234567890"},
+                                },
                                 {
-                                    "product_id": "1234567890",
-                                    "sku_id": "sku-1",
-                                    "sku_name": "Black",
-                                }
+                                    "source_record_id": "rec-2",
+                                    "source_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+                                    "product_identity": {"product_id": "9876543210"},
+                                },
                             ],
                         },
-                    },
-                },
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="fastmoss_product_fetch",
-                result={
-                    "handler_result": {"status": "success"},
-                    "product_fact_bundle": {
-                        "product_metric_snapshots": [
-                            {
-                                "product_id": "1234567890",
-                                "source_platform": "fastmoss",
-                                "source_endpoint": "fastmoss.product.overview",
-                                "window_days": 7,
-                                "payload": {"sold_count": 12},
-                            }
-                        ],
-                    },
-                },
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="sync_media",
-                job_code="media_asset_sync",
-                result={
-                    "handler_result": {"status": "success"},
-                    "media_fact_bundle": {
-                        "media_assets": [
-                            {
-                                "entity_type": "product",
-                                "entity_external_id": "1234567890",
-                                "media_role": "product_main_image",
-                                "object_key": "phase2/local/1234567890/main.webp",
-                            }
-                        ],
                     },
                 },
             ),
@@ -377,27 +422,19 @@ def test_advance_stage_persist_facts_enqueues_standard_fact_bundle_payload() -> 
         store=store,
         request=request,
         workflow=workflow,
-        stage_code="persist_facts",
+        stage_code="dispatch_selection_row_refresh",
     )
 
-    assert result["action"] == "waiting"
-    fact_job = next(job for job in store.api_jobs if job["job_code"] == "fact_bundle_upsert")
-    payload = fact_job["payload"]
-    assert "tiktok_result" not in payload
-    assert "fastmoss_result" not in payload
-    assert "media_sync_result" not in payload
-    assert "mapper_code" not in payload
-    assert payload["fact_db_url"] == "postgresql+psycopg://fact-db"
-    fact_bundle = payload["fact_bundle"]
-    assert fact_bundle["products"][0]["product_id"] == "1234567890"
-    assert fact_bundle["product_skus"][0]["sku_id"] == "sku-1"
-    assert fact_bundle["product_metric_snapshots"][0]["payload"]["sold_count"] == 12
-    assert fact_bundle["media_assets"][0]["object_key"] == "phase2/local/1234567890/main.webp"
+    assert result["action"] == "advance"
+    assert result["next_stage"] == "collect_selection_rows"
+    row_jobs = [job for job in store.api_jobs if job["job_code"] == "selection_row_refresh"]
+    assert len(row_jobs) == 1
+    assert row_jobs[0]["payload"]["source_record_id"] == "rec-1"
 
 
 def test_release_request_after_child_completion_requeues_pending_executor() -> None:
     request = _build_request(
-        current_stage="collect_product_data",
+        current_stage="collect_selection_rows",
         payload={"product_url": "https://www.tiktok.com/shop/pdp/1234567890"},
     )
     store = FakeRuntimeStore(
@@ -405,14 +442,8 @@ def test_release_request_after_child_completion_requeues_pending_executor() -> N
         api_jobs=[
             _api_job(
                 request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="tiktok_product_request_fetch",
-                result={"handler_result": {"status": "success"}},
-            ),
-            _api_job(
-                request_id=request.request_id,
-                stage_code="collect_product_data",
-                job_code="fastmoss_product_fetch",
+                stage_code="collect_selection_rows",
+                job_code="selection_row_refresh",
                 result={"handler_result": {"status": "success"}},
             ),
         ],
@@ -424,12 +455,12 @@ def test_release_request_after_child_completion_requeues_pending_executor() -> N
     assert updates == [
         {
             "request_id": request.request_id,
-            "stage_code": "collect_product_data",
+            "stage_code": "collect_selection_rows",
             "released": True,
             "next_executor_status": "pending",
         }
     ]
     assert updated_request.status == "pending"
-    assert updated_request.child_total_count == 2
-    assert updated_request.child_terminal_count == 2
-    assert updated_request.child_success_count == 2
+    assert updated_request.child_total_count == 1
+    assert updated_request.child_terminal_count == 1
+    assert updated_request.child_success_count == 1

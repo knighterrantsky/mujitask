@@ -201,7 +201,8 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                     "product_url": "https://www.tiktok.com/shop/pdp/123456789",
                 },
                 "request_payload": {
-                    "execution_control_db_url": "postgresql+psycopg://runtime",
+                    "persistence": {"fact_db_configured": True},
+                    "artifact_store": {"provider": "minio", "bucket": "pytest-runtime-artifacts"},
                 },
                 "source_context": {
                     "source_fields": {
@@ -235,7 +236,8 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         "product_main_image",
         "product_sku_image",
     ]
-    assert fact_payloads[0]["request_payload"]["execution_control_db_url"] == "postgresql+psycopg://runtime"
+    assert fact_payloads[0]["request_payload"]["persistence"]["fact_db_configured"] is True
+    assert "execution_control_db_url" not in fact_payloads[0]["request_payload"]
     assert fastmoss_payloads[0]["fastmoss_overview_window_days"] == [7, 28, 90]
     assert str(fastmoss_payloads[0]["fastmoss_window_days"]) == "90"
     assert str(fastmoss_payloads[0]["fastmoss_sku_window_days"]) == "28"

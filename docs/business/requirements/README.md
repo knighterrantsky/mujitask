@@ -17,8 +17,7 @@
 | 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | [refresh-current-competitor-table.md](./refresh-current-competitor-table.md) |
 | 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [search-keyword-competitor-products.md](./search-keyword-competitor-products.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | [sync-tk-influencer-pool.md](./sync-tk-influencer-pool.md) |
-
-说明：`tiktok_fastmoss_product_ingest` 已是当前系统入口之一，但原主需求文档中尚未形成独立正式需求段落；待对应客户需求确认后，再在本目录新增流程需求文档。
+| 选品表自动采集扩展 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | [tk-selection-collection-expand.md](./tk-selection-collection-expand.md) |
 
 ## 维护规则
 

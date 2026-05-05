@@ -26,11 +26,11 @@ def test_get_execution_control_defaults_accepts_legacy_execution_control_env_nam
     ]:
         monkeypatch.delenv(key, raising=False)
 
-    monkeypatch.setenv("EXECUTION_CONTROL_DB_URL", "postgresql+psycopg://demo@/phase1?host=/tmp")
+    monkeypatch.setenv("EXECUTION_CONTROL_DB_URL", "postgresql+psycopg://demo@/runtime_control?host=/tmp")
     monkeypatch.setenv("EXECUTION_CONTROL_ARTIFACT_ROOT", "runtime/custom_artifacts")
     monkeypatch.setenv("EXECUTION_CONTROL_ARTIFACT_BUCKET", "custom-bucket")
     monkeypatch.setenv("EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "minio")
-    monkeypatch.setenv("EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX", "phase2/artifacts")
+    monkeypatch.setenv("EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX", "product_fact/artifacts")
     monkeypatch.setenv("EXECUTION_CONTROL_MINIO_ENDPOINT", "127.0.0.1:9000")
     monkeypatch.setenv("EXECUTION_CONTROL_MINIO_ACCESS_KEY", "minioadmin")
     monkeypatch.setenv("EXECUTION_CONTROL_MINIO_SECRET_KEY", "secret123")
@@ -44,11 +44,11 @@ def test_get_execution_control_defaults_accepts_legacy_execution_control_env_nam
 
     defaults = get_execution_control_defaults()
 
-    assert defaults.db_url == "postgresql+psycopg://demo@/phase1?host=/tmp"
+    assert defaults.db_url == "postgresql+psycopg://demo@/runtime_control?host=/tmp"
     assert defaults.artifact_root == "runtime/custom_artifacts"
     assert defaults.artifact_bucket == "custom-bucket"
     assert defaults.artifact_store_provider == "minio"
-    assert defaults.artifact_object_prefix == "phase2/artifacts"
+    assert defaults.artifact_object_prefix == "product_fact/artifacts"
     assert defaults.minio_endpoint == "127.0.0.1:9000"
     assert defaults.minio_access_key == "minioadmin"
     assert defaults.minio_secret_key == "secret123"
@@ -97,7 +97,11 @@ def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(mo
         encoding="utf-8",
     )
     skill_env.write_text(
-        "SHARED_KEY=skill\nSKILL_ONLY=skill\nEXECUTION_CONTROL_DB_URL=postgresql+psycopg://skill@/runtime?host=/tmp\n",
+        "SHARED_KEY=skill\n"
+        "SKILL_ONLY=skill\n"
+        "EXECUTION_CONTROL_DB_URL=postgresql+psycopg://skill@/runtime?host=/tmp\n"
+        "TK_FACT_DB_URL=postgresql+psycopg://skill@/facts?host=/tmp\n"
+        "BROWSER_PROFILE_REF=skill-profile\n",
         encoding="utf-8",
     )
     root_env.write_text(
@@ -112,6 +116,7 @@ def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(mo
         "ROOT_ONLY",
         "BUSINESS_EXECUTION_CONTROL_DB_URL",
         "EXECUTION_CONTROL_DB_URL",
+        "TK_FACT_DB_URL",
         "BROWSER_PROFILE_REF",
     ]:
         monkeypatch.delenv(key, raising=False)
@@ -126,7 +131,6 @@ def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(mo
         ],
         "skills/mujitask-tiktok-feishu-sync/skill.local.env": [
             "SKILL_ONLY",
-            "EXECUTION_CONTROL_DB_URL",
         ],
         ".env": [
             "ROOT_ONLY",
@@ -138,7 +142,8 @@ def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(mo
     assert os.environ["SKILL_ONLY"] == "skill"
     assert os.environ["ROOT_ONLY"] == "root"
     assert os.environ["BUSINESS_EXECUTION_CONTROL_DB_URL"] == "postgresql+psycopg://executor@/runtime?host=/tmp"
-    assert os.environ["EXECUTION_CONTROL_DB_URL"] == "postgresql+psycopg://skill@/runtime?host=/tmp"
+    assert "EXECUTION_CONTROL_DB_URL" not in os.environ
+    assert "TK_FACT_DB_URL" not in os.environ
     assert os.environ["BROWSER_PROFILE_REF"] == "root-profile"
 
 

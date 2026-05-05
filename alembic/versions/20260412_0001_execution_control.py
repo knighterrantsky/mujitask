@@ -1,4 +1,4 @@
-"""Create Phase 1 execution control tables.
+"""Create execution control tables.
 
 Revision ID: 20260412_0001
 Revises:

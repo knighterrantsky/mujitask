@@ -123,6 +123,19 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         )
     )
     if tiktok_result.status == "failed":
+        error_code = tiktok_result.error.error_code if tiktok_result.error else ""
+        if error_code in {"url_invalid_domain", "url_invalid_no_product_id"}:
+            return _url_invalid_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                runtime_evidence=runtime_evidence,
+                source_context=source_context,
+                request_payload=request_payload,
+                payload=payload,
+            )
         return _failed_pipeline_result(
             context,
             identity=identity,
@@ -624,6 +637,77 @@ def _skipped_timeline_entry(step: str, *, reason: str) -> dict[str, Any]:
         "status": "skipped",
         "reason": reason,
     }
+
+
+def _url_invalid_pipeline_result(
+    context: HandlerContext,
+    *,
+    identity: Mapping[str, Any],
+    source_record_id: str,
+    business_key: str,
+    step_timeline: list[dict[str, Any]],
+    runtime_evidence: Mapping[str, Any],
+    source_context: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> HandlerResult:
+    projection_fields = {"商品状态": "链接不可访问"}
+    projection_record = compact_dict(
+        {
+            "source_record_id": source_record_id,
+            "business_entity_key": business_key,
+            "product_id": first_non_empty(identity.get("product_id")),
+            "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+            "projection_fields": projection_fields,
+            "source_context": source_context,
+        }
+    )
+    write_context = _child_context(
+        context,
+        handler_code="feishu_table_write",
+        payload={
+            **request_payload,
+            **payload,
+            **build_projection_write_payload(
+                stage_code=context.stage_code or "collect_competitor_rows",
+                request_id=context.request_id,
+                target_table_ref=first_non_empty(
+                    payload.get("source_table_ref"),
+                    request_payload.get("source_table_ref"),
+                    payload.get("target_table_ref"),
+                    request_payload.get("target_table_ref"),
+                ),
+                records=[projection_record],
+                mapper_code="competitor_table_projection_mapper",
+                write_mode="fill_missing_only",
+                request_payload=dict(request_payload),
+                source_record_id=source_record_id,
+                business_entity_key=business_key,
+            ),
+            "request_payload": dict(request_payload),
+        },
+        step_code="feishu_writeback_url_invalid",
+    )
+    feishu_table_write_handler(write_context)
+    return success_result(
+        context,
+        summary={
+            "source_record_id": source_record_id,
+            "product_business_key": business_key,
+            "row_status": "url_invalid",
+        },
+        result=compact_dict(
+            {
+                "source_record_id": source_record_id,
+                "business_entity_key": business_key,
+                "row_status": "url_invalid",
+                "product_identity": dict(identity),
+                "step_timeline": step_timeline,
+                "runtime_evidence": dict(runtime_evidence),
+                "writeback_projection": {"fields": projection_fields},
+            }
+        ),
+    )
 
 
 def _failed_pipeline_result(

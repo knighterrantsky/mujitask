@@ -26,7 +26,7 @@ def _path_exists(value: str) -> bool:
 def test_code_roadmap_parses() -> None:
     roadmap = _load_roadmap()
     assert roadmap["schema_version"] == 1
-    assert roadmap["current_phase"] == "stable"
+    assert roadmap["roadmap_status"] == "stable"
 
 
 def test_feature_codes_are_unique() -> None:

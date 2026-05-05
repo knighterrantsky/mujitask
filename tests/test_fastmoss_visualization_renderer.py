@@ -8,6 +8,7 @@ import pytest
 
 from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer import (
     DEFAULT_FASTMOSS_VISUALIZATION_CHARTS,
+    FASTMOSS_VISUALIZATION_RENDERER_NODE_PACKAGES,
     FastMossVisualizationRenderer,
 )
 
@@ -15,8 +16,50 @@ from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer
 PRODUCT_ID = "1732039802895831738"
 
 
+def test_fastmoss_visualization_renderer_uses_project_package_json_by_default() -> None:
+    renderer = FastMossVisualizationRenderer(command_runner=lambda *args, **kwargs: None)
+
+    assert renderer.renderer_package_json
+    assert renderer.renderer_package_json.endswith("package.json")
+    assert "/tmp/mujitask-echarts-renderer" not in renderer.renderer_package_json
+
+
+def test_fastmoss_visualization_renderer_validates_node_dependencies(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
+        del cwd, check, capture_output, text, timeout
+        captured["command"] = command
+        captured["env"] = env
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"ok": True, "versions": {"echarts": "6.0.0", "sharp": "0.34.5"}}),
+            stderr="",
+        )
+
+    package_json = tmp_path / "package.json"
+    package_json.write_text(
+        json.dumps({"dependencies": {"echarts": "^6.0.0", "sharp": "^0.34.5"}}),
+        encoding="utf-8",
+    )
+    renderer = FastMossVisualizationRenderer(
+        node_binary="node-test",
+        renderer_package_json=package_json,
+        command_runner=fake_runner,
+    )
+
+    result = renderer.validate_runtime_dependencies()
+
+    assert captured["command"][:3] == ["node-test", "-e", captured["command"][2]]
+    assert json.loads(captured["command"][-1]) == list(FASTMOSS_VISUALIZATION_RENDERER_NODE_PACKAGES)
+    assert captured["env"]["RENDERER_PACKAGE_JSON"] == str(package_json)
+    assert result["dependencies"]["ok"] is True
+
+
 def test_fastmoss_visualization_renderer_invokes_node_and_writes_manifest(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
+    renderer_package_json = tmp_path / "renderer-package.json"
 
     def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
         del cwd, check, capture_output, text, timeout
@@ -38,7 +81,7 @@ def test_fastmoss_visualization_renderer_invokes_node_and_writes_manifest(tmp_pa
 
     renderer = FastMossVisualizationRenderer(
         node_binary="node-test",
-        renderer_package_json="/tmp/test-renderer/package.json",
+        renderer_package_json=renderer_package_json,
         command_runner=fake_runner,
     )
     result = renderer.render_product_charts(
@@ -61,7 +104,7 @@ def test_fastmoss_visualization_renderer_invokes_node_and_writes_manifest(tmp_pa
         str(result.input_path),
         str(tmp_path),
     ]
-    assert captured["env"]["RENDERER_PACKAGE_JSON"] == "/tmp/test-renderer/package.json"
+    assert captured["env"]["RENDERER_PACKAGE_JSON"] == str(renderer_package_json)
 
 
 def test_fastmoss_visualization_renderer_rejects_unknown_chart(tmp_path: Path) -> None:
@@ -125,6 +168,36 @@ def test_fastmoss_visualization_renderer_skips_single_sku_chart(tmp_path: Path) 
     )
 
     assert captured["charts"] == ["marketing_strategy", "overview_trend"]
+    assert set(result.files) == {"marketing_strategy", "overview_trend"}
+
+
+def test_fastmoss_visualization_renderer_renders_overview_charts_with_empty_sku_payload(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
+        del cwd, env, check, capture_output, text, timeout
+        input_payload = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
+        captured["charts"] = input_payload["charts"]
+        captured["productSku"] = input_payload["productSku"]
+        output_dir = Path(command[-1])
+        outputs = {}
+        for chart_name in input_payload["charts"]:
+            output_path = output_dir / f"{chart_name}.png"
+            output_path.write_bytes(b"png")
+            outputs[chart_name] = str(output_path)
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"outputs": outputs}), stderr="")
+
+    result = FastMossVisualizationRenderer(command_runner=fake_runner).render_product_charts(
+        product_id=PRODUCT_ID,
+        overview_payload=_overview_payload(),
+        product_sku_payload={"d_type": 28},
+        output_dir=tmp_path,
+    )
+
+    assert captured["charts"] == ["marketing_strategy", "overview_trend"]
+    assert captured["productSku"] == {"d_type": 28}
     assert set(result.files) == {"marketing_strategy", "overview_trend"}
 
 

@@ -63,6 +63,24 @@ def merge_key_value_file(path: Path, managed: dict[str, str]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def remove_key_value_file(path: Path, keys: list[str]) -> None:
+    if not path.exists():
+        return
+
+    removed = set(keys)
+    output_lines: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        parsed = _parse_key_value_line(raw_line)
+        if parsed is not None and parsed[0] in removed:
+            continue
+        output_lines.append(raw_line)
+
+    text = "".join(output_lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
+
+
 def write_deploy_state_file(
     path: Path,
     *,
@@ -199,6 +217,10 @@ def _build_parser() -> argparse.ArgumentParser:
     merge_parser.add_argument("--path", required=True)
     merge_parser.add_argument("--managed", action="append", default=[], metavar="KEY=VALUE")
 
+    remove_parser = subparsers.add_parser("remove-key-value-file")
+    remove_parser.add_argument("--path", required=True)
+    remove_parser.add_argument("--key", action="append", default=[], required=True)
+
     deploy_state_parser = subparsers.add_parser("write-deploy-state")
     deploy_state_parser.add_argument("--path", required=True)
     deploy_state_parser.add_argument("--repo-url", required=True)
@@ -239,6 +261,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "merge-key-value-file":
         merge_key_value_file(Path(args.path), _parse_managed_pairs(args.managed))
+        return 0
+    if args.command == "remove-key-value-file":
+        remove_key_value_file(Path(args.path), list(args.key))
         return 0
 
     if args.command == "write-deploy-state":

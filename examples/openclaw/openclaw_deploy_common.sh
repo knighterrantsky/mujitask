@@ -180,6 +180,52 @@ ensure_python_311() {
   [[ -x "$PYTHON_BIN" ]] || fail "Resolved Python 3.11 is not executable: $PYTHON_BIN"
 }
 
+ensure_node_runtime() {
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    log "Installing Node.js runtime with Homebrew"
+    brew install node
+  fi
+  command -v node >/dev/null 2>&1 || fail "node is required for FastMoss chart rendering."
+  command -v npm >/dev/null 2>&1 || fail "npm is required for FastMoss chart rendering dependencies."
+}
+
+install_project_node_dependencies() {
+  local install_dir="$1"
+  local package_json="$install_dir/package.json"
+  [[ -f "$package_json" ]] || return 0
+
+  ensure_node_runtime
+  if [[ -f "$install_dir/package-lock.json" ]]; then
+    log "Installing project Node.js runtime dependencies with npm ci"
+    (cd "$install_dir" && npm ci --omit=dev --no-audit --no-fund)
+  else
+    log "Installing project Node.js runtime dependencies with npm install"
+    (cd "$install_dir" && npm install --omit=dev --no-audit --no-fund)
+  fi
+}
+
+validate_project_node_dependencies() {
+  local install_dir="$1"
+  local python_bin="$2"
+  local package_json="$install_dir/package.json"
+  [[ -f "$package_json" ]] || fail "Smoke check failed: $package_json is missing."
+
+  ensure_node_runtime
+  NODE_BINARY="$(command -v node)" \
+  FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON="$package_json" \
+    "$python_bin" - <<'PY'
+from automation_business_scaffold.infrastructure.fastmoss.visualization_renderer import (
+    FastMossVisualizationRenderer,
+)
+
+FastMossVisualizationRenderer().validate_runtime_dependencies()
+print("OK")
+PY
+}
+
 python_json_get() {
   local query="$1"
   local input_file="$2"
@@ -469,6 +515,74 @@ merge_key_value_file() {
   "$PYTHON_BIN" "${args[@]}"
 }
 
+remove_key_value_file() {
+  local file_path="$1"
+  shift
+
+  local args=(
+    "$OPENCLAW_DEPLOY_UTILS"
+    remove-key-value-file
+    --path
+    "$file_path"
+  )
+
+  local key
+  for key in "$@"; do
+    args+=(--key "$key")
+  done
+
+  "$PYTHON_BIN" "${args[@]}"
+}
+
+remove_skill_runtime_config_keys() {
+  local skill_env="$1"
+
+  remove_key_value_file \
+    "$skill_env" \
+    "BROWSER_PROFILE_REF" \
+    "BROWSER_PROVIDER_NAME" \
+    "BROWSER_PROFILE_ID" \
+    "BROWSER_WORKSPACE_ID" \
+    "BROWSER_PROFILES_FILE" \
+    "DEFAULT_PROFILE_REF" \
+    "MUJITASK_BROWSER_PROFILE_REF" \
+    "MUJITASK_DB_URL" \
+    "MUJITASK_FACT_DB_URL" \
+    "MUJITASK_ARTIFACT_ROOT" \
+    "MUJITASK_ARTIFACT_BUCKET" \
+    "MUJITASK_ARTIFACT_STORE_PROVIDER" \
+    "MUJITASK_MINIO_BUCKET" \
+    "EXECUTION_CONTROL_DB_URL" \
+    "EXECUTION_CONTROL_FACT_DB_URL" \
+    "EXECUTION_CONTROL_ARTIFACT_ROOT" \
+    "EXECUTION_CONTROL_ARTIFACT_BUCKET" \
+    "EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER" \
+    "EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX" \
+    "EXECUTION_CONTROL_MINIO_ENDPOINT" \
+    "EXECUTION_CONTROL_MINIO_ACCESS_KEY" \
+    "EXECUTION_CONTROL_MINIO_SECRET_KEY" \
+    "EXECUTION_CONTROL_MINIO_REGION" \
+    "EXECUTION_CONTROL_MINIO_SECURE" \
+    "EXECUTION_CONTROL_MINIO_CREATE_BUCKET" \
+    "EXECUTION_CONTROL_SYNC_REFERENCED_FILES" \
+    "EXECUTION_CONTROL_REQUESTED_BY" \
+    "BUSINESS_EXECUTION_CONTROL_DB_URL" \
+    "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER" \
+    "BUSINESS_EXECUTION_CONTROL_ARTIFACT_OBJECT_PREFIX" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_REGION" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_SECURE" \
+    "BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET" \
+    "BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES" \
+    "BUSINESS_EXECUTION_CONTROL_REQUESTED_BY" \
+    "TK_FACT_DB_URL"
+}
+
 seed_key_value_file_from_example() {
   local file_path="$1"
   local example_path="$2"
@@ -496,18 +610,14 @@ write_skill_local_env() {
   local tk_hot_video_table_id="${12}"
   local tk_hot_video_view_id="${13}"
   local token="${14}"
-  local browser_profile_ref="${15}"
-  local fastmoss_phone="${16}"
-  local fastmoss_password="${17}"
-  local db_url="${18}"
-  local artifact_root="${19}"
-  local artifact_bucket="${20}"
-  local requested_by="${21}"
-  local notification_channel_code="${22}"
-  local openclaw_agent_id="${23}"
-  local openclaw_state_dir="${24}"
+  local fastmoss_phone="${15}"
+  local fastmoss_password="${16}"
+  local notification_channel_code="${17}"
+  local openclaw_agent_id="${18}"
+  local openclaw_state_dir="${19}"
 
   seed_key_value_file_from_example "$skill_dir/skill.local.env" "$skill_dir/skill.local.env.example"
+  remove_skill_runtime_config_keys "$skill_dir/skill.local.env"
 
   merge_key_value_file \
     "$skill_dir/skill.local.env" \
@@ -524,13 +634,8 @@ write_skill_local_env() {
     "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "$tk_hot_video_table_id")" \
     "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "$tk_hot_video_view_id")" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "$token")" \
-    "BROWSER_PROFILE_REF=$(quote_env_value "$browser_profile_ref")" \
     "FASTMOSS_PHONE=$(quote_env_value "$fastmoss_phone")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "$fastmoss_password")" \
-    "EXECUTION_CONTROL_DB_URL=$(quote_env_value "$db_url")" \
-    "EXECUTION_CONTROL_ARTIFACT_ROOT=$(quote_env_value "$artifact_root")" \
-    "EXECUTION_CONTROL_ARTIFACT_BUCKET=$(quote_env_value "$artifact_bucket")" \
-    "EXECUTION_CONTROL_REQUESTED_BY=$(quote_env_value "$requested_by")" \
     "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "$notification_channel_code")" \
     "OPENCLAW_AGENT_ID=$(quote_env_value "$openclaw_agent_id")" \
     "OPENCLAW_STATE_DIR=$(quote_env_value "$openclaw_state_dir")"
@@ -728,6 +833,8 @@ PY
 
   check_skill_frontmatter "$target_skill_dir/SKILL.md" \
     || fail "Smoke check failed: $target_skill_dir/SKILL.md frontmatter is invalid."
+  validate_project_node_dependencies "$install_dir" "$python_bin" \
+    || fail "Smoke check failed: FastMoss visualization renderer dependencies are unavailable."
 
   local required_runtime_files=(
     "$install_dir/scripts/execution_control/install_launch_agents.sh"

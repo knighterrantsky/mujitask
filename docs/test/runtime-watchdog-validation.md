@@ -80,9 +80,9 @@ Expected:
 Check:
 
 ```bash
-tail -f runtime/phase1_daemons/api_worker.launchd.stderr.log
-tail -f runtime/phase1_daemons/watchdog.launchd.stderr.log
-tail -f runtime/phase1_daemons/watchdog.launchd.stdout.log
+tail -f runtime/daemons/api_worker.launchd.stderr.log
+tail -f runtime/daemons/watchdog.launchd.stderr.log
+tail -f runtime/daemons/watchdog.launchd.stdout.log
 ```
 
 Look for:

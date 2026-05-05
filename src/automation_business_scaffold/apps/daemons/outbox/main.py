@@ -15,7 +15,7 @@ from automation_business_scaffold.control_plane.outbox.dispatcher import (
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="automation-business-scaffold-outbox-dispatcher",
-        description="Run the Phase 1 notification outbox dispatcher.",
+        description="Run the browser runtime notification outbox dispatcher.",
     )
     parser.add_argument("--once", action="store_true", help="Dispatch at most one outbox message.")
     parser.add_argument("--db-url")

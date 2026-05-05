@@ -14,6 +14,7 @@ from automation_business_scaffold.domains.tiktok.projections.feishu_influencer_p
     influencer_pool_projection_mapper,
 )
 from automation_business_scaffold.domains.tiktok.projections.feishu_selection_projection import (
+    selection_seed_projection_mapper,
     selection_table_projection_mapper,
     selection_writeback_records,
 )
@@ -39,6 +40,7 @@ PROJECTION_MAPPERS = MappingProxyType(
         "competitor_table_projection_mapper": competitor_table_projection_mapper,
         "influencer_pool_projection_mapper": influencer_pool_projection_mapper,
         "competitor_influencer_status_projection_mapper": competitor_influencer_status_projection_mapper,
+        "selection_seed_projection_mapper": selection_seed_projection_mapper,
         "selection_table_projection_mapper": selection_table_projection_mapper,
     }
 )

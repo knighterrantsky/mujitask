@@ -15,7 +15,7 @@ from automation_business_scaffold.control_plane.executor.runner import (
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="automation-business-scaffold-browser-runloop",
-        description="Run the Phase 1 browser leaf queue consumer.",
+        description="Run the browser runtime browser leaf queue consumer.",
     )
     parser.add_argument("--once", action="store_true", help="Process at most one browser leaf task.")
     parser.add_argument("--db-url")

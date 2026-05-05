@@ -35,6 +35,21 @@
 - 直接发送最终通知。
 - 持有只能存在于进程内存中的任务状态。
 
+### 2.1 Skill / CLI submit payload 边界
+
+正式 Skill submit 的 payload 只承载业务输入和可追踪回执信息。业务输入包括商品 URL、关键词、飞书表 ref / table URL、字段筛选、采集范围、FastMoss / 飞书账号 env ref、通知目标等。
+
+正式 Skill submit 不承载项目运行配置:
+
+- 不传 `run_mode`。`run_mode` 只属于本地调试或测试 submit override，不是正式 Skill 契约。
+- 不传 Runtime DB、Fact DB、MinIO/S3 endpoint、access key、secret key、bucket 等真实运行配置。
+- 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key` 这类连接或密钥字段。
+- 不从 `skill.local.env` 读取浏览器固定资源配置；`BROWSER_PROFILE_REF`、`BROWSER_PROVIDER_NAME`、`BROWSER_PROFILE_ID`、`BROWSER_WORKSPACE_ID`、`BROWSER_PROFILES_FILE`、`DEFAULT_PROFILE_REF` 这类默认值属于项目运行配置。正式 Skill 只允许用户通过 CLI 参数显式覆盖本次业务使用的 `profile_ref`。
+
+正式 submit 由 Runtime 控制面从项目运行配置解析 Runtime DB、Fact DB 和对象存储，并在创建 `task_request` 前做 preflight。缺 Runtime DB、Fact DB、artifact provider、bucket 或 MinIO/S3 必填配置时，submit 必须被拒绝，不能让后续 handler 退化成 `dry_run` 或本地 `local` 成功。
+
+测试可以直接调用 submit 入口并携带显式 test-only override，用于隔离测试数据库、MinIO/S3 或本地 fixture；这类 override 不能由正式 Skill 自动注入，也不能成为长期业务 payload 字段。
+
 ## 3. 同步返回契约
 
 入口层同步返回必须短小、可机读、可追踪。

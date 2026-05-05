@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 TEMPLATE_DIR="${ROOT_DIR}/config/deployment/launchd"
-LOG_DIR="${ROOT_DIR}/runtime/phase1_daemons"
+LOG_DIR="${ROOT_DIR}/runtime/daemons"
 ENV_FILE="${ROOT_DIR}/scripts/execution_control/executor.local.env"
 UID_VALUE="$(id -u)"
 
