@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 
 from automation_business_scaffold.config import get_execution_control_defaults
-from automation_business_scaffold.project_env import load_project_env_files
+from automation_business_scaffold.project_env import load_project_env_files, parse_env_file
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_get_execution_control_defaults_accepts_legacy_execution_control_env_names(monkeypatch):
@@ -82,6 +85,13 @@ def test_execution_control_defaults_observes_idle_transactions_without_rejecting
     defaults = get_execution_control_defaults()
 
     assert defaults.db_health_max_idle_in_transaction == -1
+
+
+def test_executor_local_env_example_declares_fact_db_url():
+    values = parse_env_file(REPO_ROOT / "scripts/execution_control/executor.local.env.example")
+
+    assert values["BUSINESS_EXECUTION_CONTROL_DB_URL"].strip()
+    assert values["TK_FACT_DB_URL"].strip()
 
 
 def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(monkeypatch, tmp_path: Path):

@@ -6,6 +6,7 @@ from typing import Any
 
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
+    HandlerNextAction,
     HandlerResult,
 )
 from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
@@ -15,6 +16,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     coerce_mapping,
     compact_dict,
     failed_result,
+    fallback_required_result,
     first_non_empty,
     merge_fact_bundles,
     normalize_product_identity,
@@ -25,24 +27,12 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
-from automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler import (
-    tiktok_product_browser_fetch_handler,
-)
-from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
-    fastmoss_security_browser_resolve_handler,
-)
-from automation_business_scaffold.control_plane.supervisor.child_runner import ChildRunnerConfig
-from automation_business_scaffold.control_plane.supervisor import (
-    execution_supervisor as supervisor_runtime,
-)
 
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
 media_asset_sync_handler = api_handler_callable("media_asset_sync")
 fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
 tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_request_fetch")
-run_supervised_handler = supervisor_runtime.run_supervised_handler
-ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
 
 def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
@@ -148,14 +138,24 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         )
 
     effective_tiktok_payload = dict(tiktok_payload)
-    browser_result: HandlerResult | None = None
-    browser_supervisor: dict[str, Any] = {}
     if tiktok_result.status == "fallback_required" or bool(tiktok_payload.get("fallback_required")):
         runtime_evidence["browser_fallback_used"] = True
-        browser_context = _child_context(
+        step_timeline.append(
+            {
+                "step": "browser_fallback",
+                "status": "fallback_required",
+                "fallback_handler": "tiktok_product_browser_fetch",
+            }
+        )
+        return _browser_fallback_required_pipeline_result(
             context,
-            handler_code="tiktok_product_browser_fetch",
-            payload={
+            identity=identity,
+            source_record_id=source_record_id,
+            business_key=business_key,
+            step_timeline=step_timeline,
+            runtime_evidence=runtime_evidence,
+            fallback_handler="tiktok_product_browser_fetch",
+            fallback_payload={
                 **request_payload,
                 **payload,
                 "request_payload": request_payload,
@@ -166,47 +166,21 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
                 "source_context": source_context,
                 "fallback_source_job_id": first_non_empty(tiktok_payload.get("fallback_source_job_id"), context.job_id),
             },
-            step_code="browser_fallback",
-            worker_type="browser_worker",
-            runtime_table="task_execution",
-            item_code="tiktok_product_browser_fetch",
+            fallback_reason=first_non_empty(tiktok_payload.get("fallback_reason"), "tiktok_request_fallback_required"),
         )
-        browser_outcome = run_supervised_handler(
-            context=browser_context,
-            dispatch=tiktok_product_browser_fetch_handler,
-            heartbeat_interval_seconds=0.0,
-            callbacks=ExecutionSupervisorCallbacks(
-                on_progress=lambda event: _forward_browser_progress(context, event),
-            ),
-            child_runner_config=_browser_child_runner_config(payload, request_payload=request_payload),
-        )
-        browser_result = browser_outcome.worker_result
-        browser_supervisor = browser_outcome.to_dict()
-        runtime_evidence["browser_supervisor"] = browser_supervisor
-        if browser_outcome.child_runner is not None:
-            runtime_evidence["browser_child_runner"] = browser_outcome.child_runner.to_dict()
+    elif (
+        coerce_bool(payload.get("browser_fallback_resolved"))
+        and first_non_empty(payload.get("browser_fallback_handler")) == "tiktok_product_browser_fetch"
+    ):
+        runtime_evidence["browser_fallback_used"] = True
         step_timeline.append(
-            _timeline_entry(
-                "browser_fallback",
-                browser_result,
-                detail={
-                    "execution_mode": browser_outcome.execution_mode,
-                    "progress_stage": browser_outcome.progress_stage,
-                },
-            )
+            {
+                "step": "browser_fallback",
+                "status": "success",
+                "fallback_handler": "tiktok_product_browser_fetch",
+                "browser_execution_id": first_non_empty(payload.get("browser_execution_id")),
+            }
         )
-        if browser_result.status == "failed":
-            return _failed_pipeline_result(
-                context,
-                identity=identity,
-                source_record_id=source_record_id,
-                business_key=business_key,
-                step_timeline=step_timeline,
-                failed_step="browser_fallback",
-                error=browser_result.error,
-                runtime_evidence=runtime_evidence,
-            )
-        effective_tiktok_payload = dict(browser_result.result)
     else:
         step_timeline.append(_skipped_timeline_entry("browser_fallback", reason="not_required"))
 
@@ -304,38 +278,49 @@ def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
         fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
         step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
         if fastmoss_result.status == "fallback_required":
-            fallback_result, fallback_supervisor = _run_fastmoss_security_browser_fallback(
-                context,
-                fallback_payload=dict(fastmoss_result.result),
-                request_payload=request_payload,
-                source_record_id=source_record_id,
-                identity=identity,
-                payload=payload,
-            )
-            runtime_evidence["fastmoss_security_browser_fallback"] = fallback_supervisor
-            step_timeline.append(
-                _timeline_entry(
-                    "fastmoss_security_browser_fallback",
-                    fallback_result,
-                    detail={
-                        "execution_mode": fallback_supervisor.get("execution_mode"),
-                        "progress_stage": fallback_supervisor.get("progress_stage"),
-                    },
+            if not _fastmoss_security_browser_fallback_attempted(payload, request_payload):
+                step_timeline.append(
+                    {
+                        "step": "fastmoss_security_browser_fallback",
+                        "status": "fallback_required",
+                        "fallback_handler": "fastmoss_security_browser_resolve",
+                    }
                 )
-            )
-            if fallback_result.status == "success":
-                retry_context = _child_context(
+                return _browser_fallback_required_pipeline_result(
                     context,
-                    handler_code="fastmoss_product_fetch",
-                    payload={
-                        **fastmoss_context.payload,
-                        "fastmoss_security_browser_fallback_attempt": 1,
-                        "fallback_source_job_id": fastmoss_context.job_id,
+                    identity=identity,
+                    source_record_id=source_record_id,
+                    business_key=business_key,
+                    step_timeline=step_timeline,
+                    runtime_evidence=runtime_evidence,
+                    normalized_product_result=normalized_product_result,
+                    media_result=media_result_payload,
+                    fallback_handler="fastmoss_security_browser_resolve",
+                    fallback_payload={
+                        **dict(request_payload),
+                        **dict(payload),
+                        **dict(fastmoss_result.result),
+                        "request_payload": dict(request_payload),
+                        "source_record_id": source_record_id,
+                        "product_identity": dict(identity),
+                        "fallback_source_job_id": first_non_empty(
+                            fastmoss_result.result.get("fallback_source_job_id"),
+                            fastmoss_context.job_id,
+                        ),
                     },
-                    step_code="fastmoss_fetch.retry_after_security_browser_fallback",
+                    fallback_reason="fastmoss_api_security_verification",
                 )
-                fastmoss_result = fastmoss_product_fetch_handler(retry_context)
-                step_timeline.append(_timeline_entry("fastmoss_fetch_retry", fastmoss_result))
+            runtime_evidence["fastmoss_security_browser_fallback"] = {
+                "status": "already_attempted",
+                "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
+            }
+            step_timeline.append(
+                {
+                    "step": "fastmoss_security_browser_fallback",
+                    "status": "skipped",
+                    "reason": "already_attempted",
+                }
+            )
         fastmoss_payload = dict(fastmoss_result.result)
         if fastmoss_result.status in {"failed", "fallback_required"}:
             optional_step_failed = True
@@ -533,79 +518,6 @@ def _child_context(
     )
 
 
-def _browser_child_runner_config(payload: Mapping[str, Any], *, request_payload: Mapping[str, Any]) -> ChildRunnerConfig | None:
-    mode = first_non_empty(
-        payload.get("browser_child_runner_mode"),
-        request_payload.get("browser_child_runner_mode"),
-        "inline",
-    ).lower()
-    if mode != "child_process":
-        return None
-    timeout_seconds = _optional_float(
-        first_non_empty(
-            payload.get("browser_child_runner_timeout_seconds"),
-            request_payload.get("browser_child_runner_timeout_seconds"),
-        )
-    )
-    return ChildRunnerConfig(
-        mode="child_process",
-        timeout_seconds=timeout_seconds,
-    )
-
-
-def _run_fastmoss_security_browser_fallback(
-    parent: HandlerContext,
-    *,
-    fallback_payload: Mapping[str, Any],
-    request_payload: Mapping[str, Any],
-    source_record_id: str,
-    identity: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> tuple[HandlerResult, dict[str, Any]]:
-    browser_context = _child_context(
-        parent,
-        handler_code="fastmoss_security_browser_resolve",
-        payload={
-            **dict(request_payload),
-            **dict(payload),
-            **dict(fallback_payload),
-            "request_payload": dict(request_payload),
-            "source_record_id": source_record_id,
-            "product_identity": dict(identity),
-            "fallback_source_job_id": first_non_empty(
-                fallback_payload.get("fallback_source_job_id"),
-                parent.job_id,
-            ),
-        },
-        step_code="fastmoss_security_browser_fallback",
-        worker_type="browser_worker",
-        runtime_table="task_execution",
-        item_code="fastmoss_security_browser_resolve",
-    )
-    outcome = run_supervised_handler(
-        context=browser_context,
-        dispatch=fastmoss_security_browser_resolve_handler,
-        heartbeat_interval_seconds=0.0,
-        callbacks=ExecutionSupervisorCallbacks(
-            on_progress=lambda event: _forward_browser_progress(parent, event),
-        ),
-        child_runner_config=_browser_child_runner_config(payload, request_payload=request_payload),
-    )
-    return outcome.worker_result, outcome.to_dict()
-
-
-def _forward_browser_progress(
-    parent: HandlerContext,
-    event: supervisor_runtime.ExecutionProgressEvent,
-) -> None:
-    _emit_progress(
-        parent,
-        f"browser.{event.progress_stage}",
-        message=event.message,
-        details=event.details,
-    )
-
-
 def _emit_progress(
     context: HandlerContext,
     progress_stage: str,
@@ -758,11 +670,95 @@ def _failed_pipeline_result(
     )
 
 
+def _browser_fallback_required_pipeline_result(
+    context: HandlerContext,
+    *,
+    identity: Mapping[str, Any],
+    source_record_id: str,
+    business_key: str,
+    step_timeline: list[dict[str, Any]],
+    runtime_evidence: Mapping[str, Any],
+    fallback_handler: str,
+    fallback_payload: Mapping[str, Any],
+    fallback_reason: str,
+    normalized_product_result: Mapping[str, Any] | None = None,
+    media_result: Mapping[str, Any] | None = None,
+) -> HandlerResult:
+    compact_fallback_payload = compact_dict(dict(fallback_payload))
+    result = compact_dict(
+        {
+            "source_record_id": source_record_id,
+            "business_entity_key": business_key,
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": fallback_handler,
+            "fallback_reason": fallback_reason,
+            "browser_fallback_payload": compact_fallback_payload,
+            "product_identity": dict(identity),
+            "normalized_product_result": dict(normalized_product_result or {}),
+            "media_result": dict(media_result or {}),
+            "step_timeline": step_timeline,
+            "runtime_evidence": dict(runtime_evidence),
+        }
+    )
+    return fallback_required_result(
+        context,
+        error=build_error(
+            error_type="browser_fallback_required",
+            error_code=f"{fallback_handler}_required",
+            message=(
+                "Competitor row refresh requires browser fallback; workflow must dispatch "
+                f"{fallback_handler} through task_execution."
+            ),
+            retryable=False,
+            fallback_allowed=True,
+            fallback_reason=fallback_reason,
+            details={
+                "fallback_handler": fallback_handler,
+                "source_record_id": source_record_id,
+                "business_entity_key": business_key,
+            },
+        ),
+        summary={
+            "source_record_id": source_record_id,
+            "product_business_key": business_key,
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": fallback_handler,
+            "fallback_reason": fallback_reason,
+            "browser_fallback_used": True,
+        },
+        result=result,
+        next_action=HandlerNextAction(
+            type="browser_fallback",
+            payload={
+                "handler_code": fallback_handler,
+                "payload": compact_fallback_payload,
+            },
+        ),
+    )
+
+
 def _request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     request_payload = coerce_mapping(payload.get("request_payload"))
     if request_payload:
         return request_payload
     return dict(payload)
+
+
+def _fastmoss_security_browser_fallback_attempted(*sources: Mapping[str, Any]) -> bool:
+    for source in sources:
+        try:
+            attempt_count = int(
+                first_non_empty(source.get("fastmoss_security_browser_fallback_attempt"), 0) or "0"
+            )
+        except ValueError:
+            attempt_count = 0
+        if attempt_count > 0:
+            return True
+        if first_non_empty(source.get("fallback_source_job_id")):
+            return True
+    return False
 
 
 def _source_context(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1014,16 +1010,6 @@ def _number_value(*values: Any) -> float | None:
         except ValueError:
             continue
     return None
-
-
-def _optional_float(value: str) -> float | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 __all__ = ["run_competitor_row_refresh_flow"]

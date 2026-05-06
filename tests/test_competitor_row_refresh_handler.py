@@ -248,7 +248,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     assert write_payloads[0]["records"][0]["projection_fields"]["图片"]["local_path"] == "/tmp/main.jpg"
 
 
-def test_competitor_row_refresh_handler_uses_browser_fallback_inside_row_job(
+def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_tiktok(context: HandlerContext) -> HandlerResult:
@@ -275,62 +275,13 @@ def test_competitor_row_refresh_handler_uses_browser_fallback_inside_row_job(
             },
         )
 
-    class _BrowserOutcome:
-        def __init__(self, context: HandlerContext) -> None:
-            self.worker_result = HandlerResult.success(
-                context,
-                result={
-                    "normalized_product_result": {
-                        "product": {
-                            "product_id": "123456789",
-                            "product_url": "https://www.tiktok.com/shop/pdp/123456789",
-                            "normalized_url": "https://www.tiktok.com/shop/pdp/123456789",
-                            "title": "Recovered Product",
-                            "price_text": "$10.00",
-                        },
-                        "logical_fields": {
-                            "title": "Recovered Product",
-                            "price_text": "$10.00",
-                        },
-                        "fact_bundle": {"products": [{"product_id": "123456789"}]},
-                    }
-                },
-            )
-            self.execution_mode = "child_process"
-            self.progress_stage = "browser_ready"
-            self.child_runner = None
-
-        def to_dict(self) -> dict:
-            return {
-                "execution_mode": self.execution_mode,
-                "progress_stage": self.progress_stage,
-            }
-
-    def fake_run_supervised_handler(**kwargs):  # noqa: ANN003
-        return _BrowserOutcome(kwargs["context"])
-
-    def fake_fastmoss(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.failed(
-            context,
-            error=HandlerError(
-                error_type="transport_failure",
-                error_code="fastmoss_http_failure",
-                message="temporary fastmoss issue",
-                retryable=True,
-            ),
-        )
-
-    def fake_fact(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"upserted_entities": ["product:123456789"]})
-
-    def fake_write(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"written_count": 1})
+    def fail_if_called(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} should not run after fallback_required")
 
     monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
-    monkeypatch.setattr(flow_module, "run_supervised_handler", fake_run_supervised_handler)
-    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
-    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
-    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fail_if_called)
 
     result = handler_module.competitor_row_refresh_handler(
         _context(
@@ -346,17 +297,24 @@ def test_competitor_row_refresh_handler_uses_browser_fallback_inside_row_job(
         )
     )
 
-    assert result.status == "partial_success"
-    assert result.result["runtime_evidence"]["browser_fallback_used"] is True
-    assert result.result["step_timeline"][1]["status"] == "success"
-    assert result.result["step_timeline"][3]["status"] == "failed"
+    assert result.status == "fallback_required"
+    assert result.next_action.type == "browser_fallback"
+    assert result.summary["fallback_handler"] == "tiktok_product_browser_fetch"
+    assert result.result["row_status"] == "fallback_required"
+    assert result.result["browser_fallback_payload"]["fallback_source_job_id"].endswith(
+        ":tiktok_request"
+    )
+    assert result.result["step_timeline"][1] == {
+        "step": "browser_fallback",
+        "status": "fallback_required",
+        "fallback_handler": "tiktok_product_browser_fetch",
+    }
 
 
-def test_competitor_row_refresh_retries_fastmoss_after_security_browser_fallback(
+def test_competitor_row_refresh_returns_fastmoss_security_browser_fallback_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fastmoss_calls: list[dict] = []
-    write_payloads: list[dict] = []
 
     def fake_tiktok(context: HandlerContext) -> HandlerResult:
         return HandlerResult.success(
@@ -409,37 +367,14 @@ def test_competitor_row_refresh_retries_fastmoss_after_security_browser_fallback
             },
         )
 
-    class _BrowserOutcome:
-        def __init__(self, context: HandlerContext) -> None:
-            assert context.handler_code == "fastmoss_security_browser_resolve"
-            assert context.payload["verification_request"]["path"] == "/api/goods/v3/base"
-            self.worker_result = HandlerResult.success(
-                context,
-                result={
-                    "verified_path": "/api/goods/v3/base",
-                    "cookie_cache": {"status": "saved", "cookie_count": 1, "has_fd_tk": True},
-                },
-            )
-            self.execution_mode = "inline"
-            self.progress_stage = "success"
-            self.child_runner = None
-
-        def to_dict(self) -> dict:
-            return {"execution_mode": self.execution_mode, "progress_stage": self.progress_stage}
-
-    def fake_run_supervised_handler(**kwargs):  # noqa: ANN003
-        return _BrowserOutcome(kwargs["context"])
-
     def fake_fact(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"upserted_entities": ["product:123456789"]})
+        raise AssertionError(f"{context.handler_code} should wait for browser fallback")
 
     def fake_write(context: HandlerContext) -> HandlerResult:
-        write_payloads.append(dict(context.payload))
-        return HandlerResult.success(context, result={"written_count": 1})
+        raise AssertionError(f"{context.handler_code} should wait for browser fallback")
 
     monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
     monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
-    monkeypatch.setattr(flow_module, "run_supervised_handler", fake_run_supervised_handler)
     monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
     monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
 
@@ -457,21 +392,18 @@ def test_competitor_row_refresh_retries_fastmoss_after_security_browser_fallback
         )
     )
 
-    assert result.status == "success"
-    assert len(fastmoss_calls) == 2
-    assert fastmoss_calls[1]["fastmoss_security_browser_fallback_attempt"] == 1
+    assert result.status == "fallback_required"
+    assert len(fastmoss_calls) == 1
+    assert result.summary["fallback_handler"] == "fastmoss_security_browser_resolve"
+    assert result.result["browser_fallback_payload"]["verification_request"]["path"] == "/api/goods/v3/base"
+    assert result.result["normalized_product_result"]["product"]["product_id"] == "123456789"
     assert [step["step"] for step in result.result["step_timeline"]] == [
         "tiktok_request",
         "browser_fallback",
         "media_sync",
         "fastmoss_fetch",
         "fastmoss_security_browser_fallback",
-        "fastmoss_fetch_retry",
-        "fact_db_upsert",
-        "feishu_writeback",
     ]
-    assert result.result["writeback_projection"]["fields"]["近7天销量"] == "412"
-    assert write_payloads[0]["records"][0]["projection_fields"]["近7天销量"] == "412"
 
 
 def test_competitor_row_refresh_unavailable_skips_browser_media_and_fastmoss(

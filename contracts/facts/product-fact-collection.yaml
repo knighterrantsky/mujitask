@@ -11,20 +11,26 @@ principles:
   - business flows decide what products to collect and which projection mapper to use
   - fact collection does not decide Feishu fields
   - Feishu projection does not decide fact persistence
+  - row-level browser fallback is isolated in task_execution/browser-runloop; API worker row pipelines may only request fallback and resume after browser output is persisted
 
 required_pipeline_roles:
   - fact_source_handler
+  - browser_fallback_task_execution
   - media_asset_sync
   - mapper
   - fact_bundle_upsert
 
 business_job_usage:
   tiktok_fastmoss_product_ingest:
-    - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request/browser fallback, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
+    - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
+    - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must return fallback_required with browser_fallback_payload; workflow owns enqueue_task_executions(), waits for browser-runloop completion, then resumes selection_row_refresh with browser output before media/fact persistence continues.
     - fact_bundle_upsert must resolve Fact DB persistence from project runtime config or an explicit test-only submit override; missing configuration is a failed configuration state, not dry_run success.
     - media_asset_sync must resolve non-local object storage configuration from project runtime config or an explicit test-only submit override before product media is considered persisted; missing configuration or provider=local is a failed configuration state, not linked_local success.
     - unavailable/off-shelf/region-unavailable products are terminal product facts; selection_row_refresh must still persist the terminal fact bundle, but must skip media_asset_sync, FastMoss fetch, and chart-render writeback gates before Feishu terminal status projection.
     - writeback_enabled only controls Feishu projection writes and must not disable product fact collection or Fact DB persistence.
+  refresh_current_competitor_table:
+    - competitor_row_refresh is the row-level product fact collection boundary for TK competitor table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
+    - when competitor_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must return fallback_required with browser_fallback_payload; workflow owns enqueue_task_executions(), waits for browser-runloop completion, then resumes competitor_row_refresh with browser output before media/fact persistence continues.
   sync_tk_influencer_pool:
     - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.
     - influencer_creator_sync may call fact_bundle_upsert and media_asset_sync internally for one unique creator; product media facts still follow the same object storage materialization rules.

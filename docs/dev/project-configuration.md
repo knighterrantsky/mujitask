@@ -116,7 +116,7 @@
 
 ## 4. 推荐本地准备方式
 
-### 4.1 Runtime / MinIO
+### 4.1 Runtime / Fact / MinIO
 
 ```bash
 cp scripts/execution_control/executor.local.env.example scripts/execution_control/executor.local.env
@@ -124,7 +124,8 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 
 填写：
 
-- Postgres 连接串
+- Runtime DB 连接串
+- Fact DB 连接串；本地共库时也要显式填写 `TK_FACT_DB_URL`
 - MinIO endpoint / access key / secret key
 - artifact bucket / object prefix
 

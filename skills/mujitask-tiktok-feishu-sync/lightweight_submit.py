@@ -58,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     params = json.loads(args.params_json)
     if not isinstance(params, dict):
         raise ValueError("--params-json must decode to a JSON object.")
+    control_action = str(params.get("control_action") or "submit").strip()
+    if control_action != "submit":
+        raise ValueError("Lightweight skill submit only supports control_action=submit.")
 
     submitter = _load_submitter(install_dir, args.task_name)
     payload = submitter(params)

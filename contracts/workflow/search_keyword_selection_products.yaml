@@ -44,7 +44,17 @@ stages:
   - stage_code: refresh_selection_rows
     job_code: selection_row_refresh
     flow_code: selection_row_pipeline
-    invariant: Downstream collection uses the same row-level selection pipeline as tiktok_fastmoss_product_ingest.
+    invariant: Downstream collection uses the same row-level selection pipeline and may only return fallback_required; it must not execute browser fallback inline in the API worker.
+  - stage_code: selection_row_browser_fallback
+    job_code:
+      - tiktok_product_browser_fetch
+      - fastmoss_security_browser_resolve
+    runtime_table: task_execution
+    invariant: Row-level browser fallback is owned by task_execution/browser-runloop, never by inline API worker execution.
+  - stage_code: resume_selection_rows_after_browser_fallback
+    job_code: selection_row_refresh
+    flow_code: selection_row_pipeline
+    invariant: Only rows with successful browser fallback executions are retried, with the browser result or FastMoss verification evidence injected into the row payload.
   - stage_code: ready_for_summary
     job_code: task_completed_notification
 
@@ -58,6 +68,8 @@ protected_invariants:
   - If FastMoss returns a price range, the maximum price in that range is used for the price threshold.
   - Price filtering is a candidate filter, not a pagination early-stop condition.
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.
+  - selection_row_refresh may report fallback_required with fallback_handler and browser_fallback_payload, but must not import browser capability handlers or call supervisor/runloop inline.
+  - selection_row_browser_fallback must enqueue task_execution rows and wait for browser-runloop terminal results before resume_selection_rows_after_browser_fallback.
 
 payload_defaults:
   sales_7d_threshold: 500

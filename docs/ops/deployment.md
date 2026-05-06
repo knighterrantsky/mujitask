@@ -156,6 +156,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 至少需要：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `TK_FACT_DB_URL` 或 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
@@ -292,6 +293,7 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 推荐把 Runtime 相关变量只维护在这份文件：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
+- `TK_FACT_DB_URL`
 - `TEST_DATABASE_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
@@ -399,6 +401,7 @@ scripts/execution_control/run_local_postgres_tests.sh
 createdb -O mujitask automation_business_scaffold_test
 
 BUSINESS_EXECUTION_CONTROL_DB_URL=postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold
+TK_FACT_DB_URL=postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold
 TEST_DATABASE_URL=postgresql+psycopg://mujitask:mujitask@127.0.0.1:5432/automation_business_scaffold_test
 ```
 
