@@ -56,6 +56,21 @@ def _load_run_skill_step_module():
     return module
 
 
+def _load_lightweight_submit_module():
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills"
+        / "mujitask-tiktok-feishu-sync"
+        / "lightweight_submit.py"
+    )
+    spec = importlib.util.spec_from_file_location("mujitask_lightweight_submit", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_resolve_browser_target_module():
     module_path = (
         Path(__file__).resolve().parents[1]
@@ -109,6 +124,17 @@ def test_skill_entry_files_do_not_own_runtime_or_browser_config():
 
     assert not any(token in skill_example for token in forbidden_skill_env_tokens)
     assert not any(token in run_skill_step for token in forbidden_run_step_tokens)
+
+
+def test_lightweight_submitter_supports_selection_keyword_search():
+    module = _load_lightweight_submit_module()
+    root = Path(__file__).resolve().parents[1]
+
+    from automation_business_scaffold.control_plane.executor import runner
+
+    submitter = module._load_submitter(root, "search_keyword_selection_products")
+
+    assert submitter is runner.run_search_keyword_selection_products_request
 
 
 def test_resolve_browser_target_ignores_skill_local_browser_defaults(tmp_path, monkeypatch):
@@ -639,6 +665,51 @@ def test_main_product_url_complete_submit_uses_selection_table_without_runtime_c
     assert not any(item.startswith(forbidden_prefixes) for item in params)
 
 
+def test_main_selection_table_complete_submit_uses_selection_table_without_product_url(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            **STRICT_RUNTIME_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (0, {"status": "success", "request_id": "req-selection-table-123", "request_status": "pending"})
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: 0)
+
+    exit_code = module.main(["selection-table-complete-submit"])
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "tiktok_fastmoss_product_ingest"
+    params = list(captured_calls[0]["params"])
+    assert "source_table_ref=feishu://mujitask/tk_selection" in params
+    assert "selection_table_ref=feishu://mujitask/tk_selection" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_selection']}" in params
+    assert not any(item.startswith("product_url=") for item in params)
+    assert "fallback_allowed=true" in params
+
+
 def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
@@ -698,6 +769,76 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     assert "control_action=submit" in captured_calls[0]["params"]
     assert "search_keyword=Easter Basket Stuffers" in captured_calls[0]["params"]
     assert emitted["request_id"] == "req-keyword-123"
+    assert emitted["request_status"] == "pending"
+
+
+def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-selection-keyword-123",
+                "request_status": "pending",
+                "summary": {"total": 1, "counts": {"queued": 1}},
+            },
+        )
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    exit_code = module.main(
+        [
+            "selection-keyword-search-submit",
+            "--search-keyword",
+            "east egg",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "search_keyword_selection_products"
+    params = list(captured_calls[0]["params"])
+    assert "control_action=submit" in params
+    assert "selection_table_ref=feishu://mujitask/tk_selection" in params
+    assert "seed_table_ref=feishu://mujitask/tk_selection" in params
+    assert "target_table_ref=feishu://mujitask/tk_selection" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_selection']}" in params
+    assert "search_keyword=east egg" in params
+    assert "sales_7d_threshold=500" in params
+    assert "product_price_threshold=10.99" in params
+    assert "keyword_workflow_mode=selection" in params
+    assert emitted["request_id"] == "req-selection-keyword-123"
     assert emitted["request_status"] == "pending"
 
 

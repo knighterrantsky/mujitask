@@ -93,7 +93,7 @@ def test_influencer_source_adapter_honors_explicit_source_record_ids() -> None:
     assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-target"]
 
 
-def test_selection_source_adapter_treats_default_parent_spec_as_missing() -> None:
+def test_selection_source_adapter_skips_complete_required_fields_even_when_optional_missing() -> None:
     rows = [
         {
             "record_id": "rec-default-parent",
@@ -101,19 +101,43 @@ def test_selection_source_adapter_treats_default_parent_spec_as_missing() -> Non
                 "商品ID": "1732295206515806399",
                 "商品链接": "https://www.tiktok.com/shop/pdp/1732295206515806399",
                 "店铺名称": "Yuxilio",
-                "商品标题": "Pin",
-                "商品当前价格": "7.99",
-                "商品评论数": "15",
-                "商品评分": "5.0",
-                "商品描述": "desc",
+                "标题": "Pin",
+                "当前价格": "7.99",
+                "评论数": "15",
+                "评分": "5.0",
                 "商品主图": [{"file_token": "main"}],
                 "商品侧边栏图片": [{"file_token": "gallery"}],
                 "今年总销量": "986",
                 "出单种类占比图": [{"file_token": "distribution"}],
                 "销量趋势图": [{"file_token": "trend"}],
-                "SKU销量占比图": [{"file_token": "sku"}],
                 "父体规格": "Default",
-                "父体图片": [{"file_token": "parent"}],
+            },
+        }
+    ]
+
+    result = selection_table_source_adapter(rows, {"source_table_ref": "feishu://selection"})
+
+    assert result["adapter_summary"]["source_row_count"] == 0
+    assert result["adapter_summary"]["skipped_all_filled_count"] == 1
+    assert result["source_rows"] == []
+
+
+def test_selection_source_adapter_queues_rows_missing_required_fields() -> None:
+    rows = [
+        {
+            "record_id": "rec-missing-trend",
+            "fields": {
+                "商品ID": "1732295206515806399",
+                "商品链接": "https://www.tiktok.com/shop/pdp/1732295206515806399",
+                "店铺名称": "Yuxilio",
+                "标题": "Pin",
+                "当前价格": "7.99",
+                "评论数": "15",
+                "评分": "5.0",
+                "商品主图": [{"file_token": "main"}],
+                "商品侧边栏图片": [{"file_token": "gallery"}],
+                "今年总销量": "986",
+                "出单种类占比图": [{"file_token": "distribution"}],
             },
         }
     ]
@@ -121,7 +145,7 @@ def test_selection_source_adapter_treats_default_parent_spec_as_missing() -> Non
     result = selection_table_source_adapter(rows, {"source_table_ref": "feishu://selection"})
 
     assert result["adapter_summary"]["source_row_count"] == 1
-    assert result["source_rows"][0]["source_record_id"] == "rec-default-parent"
+    assert result["source_rows"][0]["source_record_id"] == "rec-missing-trend"
 
 
 def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:

@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-04-23`
+更新时间：`2026-05-05`
 
 ## 1. 文档目的
 
@@ -16,7 +16,7 @@
 当前阶段已经明确的业务目标主要有三类：
 
 1. 通过定时任务持续更新飞书中的 `TK竞品收集` 数据，保证已有竞品信息保持最新。
-2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品数据。
+2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品或选品数据。
 3. 通过定时任务把 `TK竞品收集` 中的商品继续扩展到 `TK达人池`，形成达人画像与运营沉淀。
 
 ## 3. 客户当前飞书多维表
@@ -44,14 +44,14 @@
 
 - `文本`
 - `商品链接`
+- `记录日期`
 - `关键词`
 - `商品ID`
 - `店铺名称`
-- `商品标题`
-- `商品当前价格`
-- `商品评论数`
-- `商品描述`
-- `商品评分`
+- `标题`
+- `当前价格`
+- `评论数`
+- `评分`
 - `商品主图`
 - `商品侧边栏图片`
 - `出单种类占比图`
@@ -192,22 +192,29 @@
 
 #### 3.3.3 TK选品收集
 
-现阶段系统自动维护的字段固定为以下 17 个：
+现阶段系统自动维护字段按用途分层：必填补全字段参与表级候选判断；系统运行字段由流程维护但不参与候选判断；可选补充字段有有效数据时写入，缺失时不阻塞采集、不触发候选。
+
+必填补全字段固定为以下 11 个：
 
 - `商品ID`
-- `商品链接`
-- `记录日期`
 - `店铺名称`
-- `商品标题`
-- `商品当前价格`
-- `商品评论数`
-- `商品评分`
-- `商品描述`
+- `标题`
+- `当前价格`
+- `评论数`
+- `评分`
 - `商品主图`
 - `商品侧边栏图片`
 - `今年总销量`
 - `出单种类占比图`
 - `销量趋势图`
+
+系统运行字段为：
+
+- `商品链接`
+- `记录日期`
+
+可选补充字段为：
+
 - `SKU销量占比图`
 - `父体规格`
 - `父体图片`
@@ -215,12 +222,12 @@
 补充说明：
 
 - `商品ID` 是 `TK选品收集` 的 upsert 主键；系统新建选品行时必须写入，每次写回始终刷新。
-- `商品链接` 每次写回始终刷新，保持与最新采集结果一致。
+- `商品链接` 是选品表商品入口，表级扫描默认已有；每次写回始终刷新，保持与最新采集结果一致，但不作为候选判断字段。
 - `今年总销量` 字段名不变，实际写入近 28 天销量数据；来源为 FastMoss `goods.overview(d_type=28).overview.sold_count`，与销量趋势图 `inc_sold_count` 口径一致，不使用 `real_sold_count`。
 - `父体规格` 和 `父体图片` 只来源于 FastMoss SKU 分析中的有效 `best_sku`（`sku_value` 有业务值且 `sold_count > 0`）；`父体规格` 可单独写入，`父体图片` 仅在能匹配到该 `best_sku` 对应图片时写入。
-- 没有有效 `best_sku` 时跳过 `SKU销量占比图`、`父体规格`、`父体图片`；不得使用单 SKU、`Default`、`默认`、`Specification`、空 SKU 或第一条 SKU 兜底生成父体字段。
+- 没有有效 `best_sku` 时跳过 `SKU销量占比图`、`父体规格`、`父体图片`；不得使用单 SKU、`Default`、`默认`、`Specification`、空 SKU 或第一条 SKU 兜底生成父体字段；这些字段缺失不参与候选判断。
 - `出单种类占比图`、`销量趋势图`、`SKU销量占比图` 在写回前按需渲染为 PNG 插入飞书单元格，DB 只保存元数据，不入 MinIO。
-- 所有新增自动维护字段统一采用 `fill_missing_only` 策略：已有值的字段不覆盖。
+- 除 `商品ID`、`商品链接` 这类身份字段外，自动维护字段统一采用 `fill_missing_only` 策略：已有值的字段不覆盖。
 - `记录日期` 只在本次确实产生至少一个字段写入时才刷新。
 
 ### 3.4 已明确需求表的非自动维护字段
@@ -276,7 +283,7 @@
 其中：
 
 - `文本` 是客户自行维护的标记字段，系统绝不写入。
-- `关键词` 保留已有值，不覆盖。
+- `关键词` 保留已有值，不覆盖；关键词新增选品流程创建种子行时可写入初始关键词来源。
 - `商品状态` 仅在 URL 校验失败时写入"链接不可访问"，或商品不可访问时写入"已下架/区域不可售"，不参与待更新判断。
 - `差评整理` 需人工分析，不纳入自动采集。
 
@@ -289,7 +296,8 @@
 | 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
-| 选品表自动采集扩展 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md) | [workflow-selection-analysis-design.md](../arch/workflow-selection-analysis-design.md) |
+| 选品表数据采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md) | [workflow-selection-analysis-design.md](../arch/workflow-selection-analysis-design.md) |
+| 关键词新增选品 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-expand-design.md](../arch/workflow-selection-table-expand-design.md) |
 
 ### 4.2 变更隔离规则
 
@@ -306,7 +314,7 @@
 
 | 需求标题 | 来源 | 涉及表 | 目标说明 | 待澄清点 | 当前假设 | 状态 | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `TK选品收集表扩展` | `2026-04-14 新增四表需求` | `TK选品收集` | 扫描选品表全部记录，对自动维护字段存在空值的商品触发 TikTok + FastMoss 采集并补齐字段；URL 无效时标记”链接不可访问”；图表类字段在写回前按需渲染 PNG。 | 关键词搜索/店铺入口等独立选品入口需求仍待后续澄清。 | 已提升为正式流程需求文档 [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md)。 | `已澄清` | `P1` |
+| `TK选品收集表数据采集` | `2026-04-14 新增四表需求` | `TK选品收集` | 扫描选品表记录，对自动维护字段存在空值的商品触发 TikTok + FastMoss 采集并补齐字段；URL 无效时标记"链接不可访问"；图表类字段在写回前按需渲染 PNG。 | 店铺入口等独立选品入口需求仍待后续澄清。 | 已提升为正式流程需求文档 [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md)；关键词搜索入口已提升为 [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)。 | `已澄清` | `P1` |
 | `TK达人池表扩展` | `2026-04-14 新增四表需求` | `TK达人池` | 基于 `TK竞品收集` 中可跳转到 FastMoss 商品详情的商品行，筛选并沉淀满足条件的达人，同时维护达人画像与关联商品字段。 | 当前范围内无新增待澄清点；如后续要求“达人联系方式必须非空”或“合作店铺自动新增新选项”，再单独开启下一轮澄清。 | `TK达人池` 保持一人一行，按 `达人ID` 做 upsert；筛选口径固定为“商品页达人销量 `sold_count > 50` 且粉丝数 `> 5000`”；同一达人命中多个商品时，在原行累加 `带货商品图`、`关联商品销量`、`关联节日`，并合并 `合作店铺`；`合作商品数` 不作为本期更新字段；`粉丝数`、`带货视频 GMV`、`带货直播 GMV` 写入飞书时按整数 `W` 单位四舍五入展示，小于 `10000` 显示 `小于1W`；`达人联系方式` 有多个时优先邮箱，否则第一个有效联系方式，没有则不写入；首次插入达人行时同时写 `记录日期` 和 `更新日期`，后续新商品合并时只刷新 `更新日期`；`检查达人名称是否重复` 不参与写入。 | `已澄清` | `P1` |
 | `TK达人建联表扩展` | `2026-04-14 新增四表需求` | `TK达人建联表` | 以商品与达人建联为入口，跟踪达人是否按约发布视频，并补充视频播放量。 | 是否需要新增 `达人ID` 作为硬键未定；30 天未履约规则的起算点未定；视频监控频率未定；TikTok 视频链接播放量获取方式未定。 | 先按建联事件粒度理解，一行代表一次“商品建联达人”记录，后续应补 `达人ID` 再做稳定自动化。 | `待澄清` | `P1` |
 | `TK合作爆款视频表扩展` | `2026-04-14 新增四表需求` | `TK合作爆款视频` | 根据客户提供的 `skuid` 进入 FastMoss 商品详情页，沉淀播放量大于 20 万的关联视频。 | 客户提供的 `skuid` 是商品 ID 还是变体 SKU 未定；关联视频筛选范围未定；回写字段口径未定。 | 先按商品详情页维度理解，一行代表一条满足阈值的视频记录，后续再确认 `skuid` 的真实定义。 | `待澄清` | `P1` |
@@ -327,9 +335,9 @@
 ## 7. 版本信息
 
 - 需求版本：`v3.3`
-- 文档版本：`v3.4.0`
-- 版本日期：`2026-04-23`
-- 本次变更：仅做需求文档结构拆分；没有调整业务需求、字段口径或验收标准。
+- 文档版本：`v3.5.0`
+- 版本日期：`2026-05-05`
+- 本次变更：补充关键词新增选品正式流程文档；将选品表自动采集文档口径调整为稳定的数据采集需求。
 
 ## 8. 关联文档
 
@@ -337,4 +345,6 @@
 - [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md)
 - [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md)
 - [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md)
+- [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md)
+- [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)
 - [../arch/README.md](../arch/README.md)

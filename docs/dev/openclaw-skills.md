@@ -51,7 +51,25 @@ skill 不再负责：
 
 ## 3. 当前正式入口
 
-### 3.1 竞品表刷新入口
+### 3.1 TK 选品表补全入口
+
+用户语义示例：
+
+- `帮我补全 TK 选品表`
+- `TK 选品表补全`
+- `补全 TK 选品收集`
+
+对应入口：
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_selection_table_complete_step.sh
+```
+
+对应顶层任务：
+
+- `tiktok_fastmoss_product_ingest`
+
+### 3.2 竞品表刷新入口
 
 用户语义示例：
 
@@ -69,7 +87,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_refresh_current_competitor_table_ste
 
 - `refresh_current_competitor_table`
 
-### 3.2 关键词搜索入口
+### 3.3 关键词搜索入口
 
 用户语义示例：
 
@@ -92,11 +110,13 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 当前只从用户输入中提取：
 
+- `TikTok 商品 URL`
 - `关键词`
 - `7日销量阈值`
 
 规则：
 
+- 不要把“选品表”理解成“竞品表”；`补全 TK 选品表` 且没有 URL 时，走整张选品表补全入口。
 - 如果用户没有明确给出 `7日销量阈值`，默认使用 `200`
 - `MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_TK_*_TABLE_ID`、`MUJITASK_FEISHU_TK_*_VIEW_ID`、`MUJITASK_FEISHU_ACCESS_TOKEN`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
 - Runtime DB / Fact DB / MinIO-S3 / 浏览器 profile 默认配置来自项目自动加载的运行配置，不放在 `skill.local.env`
@@ -128,8 +148,11 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 当前 skill 包中应至少包含：
 
+- `skill.spec.yaml`
+- `examples.eval.yaml`
 - `SKILL.md`
 - `skill.local.env`
+- `run_selection_table_complete_step.sh`
 - `run_refresh_current_competitor_table_step.sh`
 - `run_competitor_row_by_url_step.sh`
 - `run_product_url_complete_step.sh`
@@ -138,6 +161,8 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 - `run_skill_step.py`
 - `lightweight_submit.py`
 - `openclaw_result.py`
+
+`skill.spec.yaml` 是人工维护源，`SKILL.md` 是 `tools/render_skill.py` 的生成产物。修改入口、意图路由、输入抽取、输出契约或失败处理时，必须先改 spec，再重新生成并运行 `tools/validate_skill.py`。
 
 这些文件是部署产物源。部署脚本会把它们复制到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync` 或等价 agent skills 目录。
 

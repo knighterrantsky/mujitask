@@ -8,7 +8,7 @@
 
 重构 `tiktok_fastmoss_product_ingest` workflow，从按 API 步骤拆分 job 的旧模型迁移到行级 pipeline 模型。每一条选品表候选行只创建一个行级主 job（`selection_row_refresh`），内部串行完成 TikTok 采集 → FastMoss 采集 → 事实入库 → 飞书写回。
 
-本次重构同时扩展写回字段从 3 个到 17 个，并补齐 URL 验证、`missing_auto_fields` 扫描、父体数据写入、图表渲染等能力。
+本次重构同时扩展写回字段，并按必填补全字段、系统运行字段和可选补充字段分层，补齐 URL 验证、必填字段缺失扫描、父体数据写入、图表渲染等能力。
 
 关联需求文档：[../../business/requirements/tk-selection-collection-expand.md](../../business/requirements/tk-selection-collection-expand.md)
 
@@ -24,7 +24,7 @@
 | 执行 worker | `api_worker`（主），`browser_worker`（TikTok/FastMoss fallback） |
 | 触发方式 | `manual` / `schedule` / `webhook` / `cli` |
 | 输入 | `product_url`、`product_id`、`selection_table_ref`、`selection_record_id`、`writeback_enabled`、`fallback_allowed` |
-| 最终结果 | 商品事实、FastMoss 数据、媒体资产、17 字段飞书写回、summary/outbox |
+| 最终结果 | 商品事实、FastMoss 数据、媒体资产、选品字段分层飞书写回、summary/outbox |
 
 ## 3. Workflow
 
@@ -34,7 +34,7 @@
 
 | Stage code | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
-| `read_selection_rows` | 开启 TK selection table mode | 派发飞书读取 job，`selection_table_source_adapter` 执行 `missing_auto_fields` 扫描和 URL 格式/域名校验 | `feishu_table_read` | 得到候选行 / 跳过 / 失败 |
+| `read_selection_rows` | 开启 TK selection table mode | 派发飞书读取 job，`selection_table_source_adapter` 执行必填补全字段缺失扫描和 URL 格式/域名校验 | `feishu_table_read` | 得到候选行 / 跳过 / 失败 |
 | `dispatch_selection_row_refresh` | 存在候选行 | 为每条候选行创建一个 `selection_row_refresh` job | `selection_row_refresh` | 行级 job 全部创建完成 |
 | `collect_selection_rows` | 行级 job 已派发 | 等待所有 `selection_row_refresh` 完成，回收结果 | 无（等待阶段） | 全部行级 job 终态 |
 | `ready_for_summary` | 子任务全部终态 | 汇总 result，写 outbox | `notification_outbox` | `completed` / `partial_success` / `failed` |
@@ -44,7 +44,7 @@
 ```mermaid
 flowchart TD
     A["Task: tiktok_fastmoss_product_ingest"] --> B{"selection_table_ref?"}
-    B -->|是| C["read_selection_rows<br/>feishu_table_read<br/>+ missing_auto_fields 扫描<br/>+ 候选筛选"]
+    B -->|是| C["read_selection_rows<br/>feishu_table_read<br/>+ 必填字段缺失扫描<br/>+ 候选筛选"]
     B -->|否 direct-ingest| D["dispatch_selection_row_refresh<br/>单行 selection_row_refresh"]
     C --> C1{"有候选行?"}
     C1 -->|是| D
@@ -79,7 +79,7 @@ flowchart TD
     F3 -->|否| G["6. Fact DB upsert<br/>FastMoss 失败不影响 TikTok 侧"]
     F1 -->|成功| G
     F1 -->|失败| G
-    G --> H["7. Feishu writeback<br/>17 字段 fill_missing_only<br/>可售商品先渲染必填图表"]
+    G --> H["7. Feishu writeback<br/>必填/可选字段 fill_missing_only<br/>可售商品先渲染必填图表"]
     H --> I["返回 success / partial_success"]
 ```
 
@@ -145,15 +145,15 @@ flowchart TD
 
 | 组件 | Code | 所有权 |
 | --- | --- | --- |
-| Source Adapter | `selection_table_source_adapter` | 选品表业务语义（`missing_auto_fields` 扫描、身份字段、跳过规则） |
-| Projection Mapper | `selection_table_projection_mapper` | 17 字段映射、`fill_missing_only` 策略、图表渲染 |
+| Source Adapter | `selection_table_source_adapter` | 选品表业务语义（必填补全字段缺失扫描、身份字段、跳过规则） |
+| Projection Mapper | `selection_table_projection_mapper` | 必填补全字段、系统运行字段、可选补充字段映射、`fill_missing_only` 策略、图表渲染 |
 | Row Refresh Flow | `run_selection_row_refresh_flow` | 行级 pipeline 串行编排 |
 
 ### 5.3 Adapter / Mapper 默认业务语义
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `missing_auto_fields` | 17 个（见需求文档 3.3 节） | 全部已填充则跳过 |
+| `required_candidate_fields` | 11 个必填补全字段（见需求文档 3.4 节） | 全部已填充则跳过；可选补充字段缺失不触发候选 |
 | `skip_statuses` | `["已下架/区域不可售", "链接不可访问"]` | 不可访问记录跳过 |
 | `upsert_key` | `商品ID` | 写回主键 |
 | `fill_missing_only` | `true` | 所有新增字段不覆盖已有值 |
@@ -192,7 +192,7 @@ sequenceDiagram
         Exec->>DB: enqueue api_worker_job(feishu_table_read)
         API->>DB: claim feishu_table_read
         API->>Feishu: read TK selection rows
-        Note over API: selection_table_source_adapter:<br/>missing_auto_fields 扫描<br/>skip_statuses 过滤
+        Note over API: selection_table_source_adapter:<br/>必填字段缺失扫描<br/>skip_statuses 过滤
         API->>DB: mark read job terminal
         Exec->>DB: reconcile candidate rows
     end
@@ -210,7 +210,7 @@ sequenceDiagram
         Note over API: 4. FastMoss fetch + fallback
         API->>Fact: upsert entities / relations
         Note over API: 5. 图表渲染（按需）
-        API->>Feishu: write 17 fields (fill_missing_only)
+        API->>Feishu: write required/optional fields (fill_missing_only)
         API->>DB: mark row job terminal
     end
 
@@ -231,7 +231,7 @@ sequenceDiagram
 - 商品、店铺、SKU、媒体资产、关系、指标快照、每日指标、分布快照（统一走 `fact_bundle_upsert`）
 
 ### 7.3 Feishu
-- `TK选品收集`：17 个自动维护字段，`fill_missing_only` 策略
+- `TK选品收集`：必填补全字段、系统运行字段和可选补充字段，`fill_missing_only` 策略
 - `商品状态`：仅在不可访问时写入"链接不可访问"或"已下架/区域不可售"
 
 ### 7.4 MinIO / Object Store
@@ -429,9 +429,9 @@ stateDiagram-v2
 | `domains/tiktok/flows/selection_row_refresh.py` | **新增** | 行级 pipeline flow（参照 `competitor_row_refresh.py`） |
 | `fact_sources/tiktok/product_request_fetch_handler.py` | 修改 | 新增 URL 域名/格式验证，扩展 `logical_fields`（review_count, rating, description, gallery_images, **sku_images**） |
 | `fact_sources/fastmoss/product_fetch_handler.py` | 修改 | 新增 FastMoss browser fallback 返回信号 |
-| `mappers/feishu_selection_row_mapper.py` | 修改 | 新增 `missing_auto_fields` 扫描、`skip_statuses` 过滤 |
-| `projections/feishu_selection_projection.py` | **重写** | 从 3 字段扩展到 17 字段，新增图表渲染、`fill_missing_only` 策略 |
-| `contracts/fields/feishu-tk-selection.yaml` | 修改 | 14 个字段从 `not_written_by_current_ingest` 改为 `fill_missing_only` |
+| `mappers/feishu_selection_row_mapper.py` | 修改 | 新增必填补全字段缺失扫描、`skip_statuses` 过滤 |
+| `projections/feishu_selection_projection.py` | **重写** | 从 3 字段扩展到选品字段分层写回，新增图表渲染、`fill_missing_only` 策略 |
+| `contracts/fields/feishu-tk-selection.yaml` | 修改 | 明确必填补全字段、系统运行字段和可选补充字段 |
 | `infrastructure/facts/tk_fact_ingestion_service.py` | 修改 | `_match_fastmoss_sku_reference` 补充 `prop_value_id` 匹配键，支持规格值维度 SKU 绑定 |
 | `domains/tiktok/flows/selection_row_refresh.py` | 修改 | `fact_bundle_upsert` 步骤传入 `fact_db_url`，修复 dry_run 问题 |
 | `domains/tiktok/flows/competitor_row_refresh.py` | 修改 | 同上，`fact_bundle_upsert` 步骤传入 `fact_db_url` |

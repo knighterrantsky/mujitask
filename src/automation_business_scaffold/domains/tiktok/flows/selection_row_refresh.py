@@ -50,8 +50,15 @@ run_supervised_handler = supervisor_runtime.run_supervised_handler
 ExecutionSupervisorCallbacks = supervisor_runtime.ExecutionSupervisorCallbacks
 
 _SELECTION_REQUIRED_WRITEBACK_FIELDS = (
+    "商品ID",
+    "店铺名称",
+    "标题",
+    "当前价格",
+    "评论数",
+    "评分",
     "商品主图",
     "商品侧边栏图片",
+    "今年总销量",
     "出单种类占比图",
     "销量趋势图",
 )
@@ -1638,11 +1645,10 @@ def _build_selection_projection_fields(
             normalized_product_result.get("normalized_product_url"),
         ),
         "店铺名称": first_non_empty(logical_fields.get("shop_name"), product.get("shop_name")),
-        "商品标题": first_non_empty(logical_fields.get("title"), product.get("title")),
-        "商品当前价格": price_value if price_value is not None else "",
-        "商品评论数": review_count if review_count is not None else "",
-        "商品评分": rating if rating is not None else "",
-        "商品描述": first_non_empty(logical_fields.get("description")),
+        "标题": first_non_empty(logical_fields.get("title"), product.get("title")),
+        "当前价格": price_value if price_value is not None else "",
+        "评论数": review_count if review_count is not None else "",
+        "评分": rating if rating is not None else "",
         "商品主图": main_image,
         "商品侧边栏图片": gallery_images,
         "今年总销量": total_sales if total_sales is not None else "",

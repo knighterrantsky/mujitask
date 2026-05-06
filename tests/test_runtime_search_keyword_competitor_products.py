@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import struct
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 from automation_framework.captcha import SliderMatchResult
+from PIL import Image, ImageDraw
 
 from automation_business_scaffold.capabilities.browser import fastmoss_security_resolve_handler as fastmoss_security_module
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
@@ -45,6 +47,12 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 def _png_base64(width: int, height: int) -> str:
     return base64.b64encode(_png_bytes(width, height)).decode("ascii")
+
+
+def _image_bytes(image: Image.Image, image_format: str) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format=image_format)
+    return buffer.getvalue()
 
 
 def _read_repo_text(relative_path: str) -> str:
@@ -526,6 +534,108 @@ def test_fastmoss_slider_uses_mixed_css_resolver_and_persists_target_position_ar
     assert all(Path(ref["local_path"]).exists() for ref in result["artifact_refs"])
     target_ref = next(ref for ref in result["artifact_refs"] if ref["artifact_key"] == "slider_attempt_1_target_position_screenshot")
     assert Path(target_ref["local_path"]).read_bytes().startswith(b"\x89PNG")
+
+
+def test_fastmoss_slider_corrects_low_confidence_ocr_with_outline_bbox_anchor() -> None:
+    background = Image.new("RGB", (672, 390), (42, 58, 72))
+    draw = ImageDraw.Draw(background)
+    target_outline = [
+        (420, 182),
+        (452, 182),
+        (452, 169),
+        (476, 169),
+        (476, 182),
+        (508, 182),
+        (508, 246),
+        (420, 246),
+        (420, 182),
+    ]
+    draw.line(target_outline, fill=(226, 226, 226), width=5, joint="curve")
+    background_bytes = _image_bytes(background, "JPEG")
+
+    piece = Image.new("RGB", (60, 60), (46, 58, 68))
+    piece_draw = ImageDraw.Draw(piece)
+    piece_draw.line(
+        [
+            (8, 10),
+            (26, 10),
+            (26, 2),
+            (42, 2),
+            (42, 10),
+            (54, 10),
+            (54, 52),
+            (8, 52),
+            (8, 10),
+        ],
+        fill=(235, 235, 235),
+        width=4,
+        joint="curve",
+    )
+    piece_bytes = _image_bytes(piece, "PNG")
+
+    ocr_result = SliderMatchResult(
+        target_x=508,
+        target_y=214,
+        confidence=0.18,
+        raw={"target": [508, 214], "confidence": 0.18},
+    )
+    anchored = fastmoss_security_module._select_fastmoss_shape_anchor_slider_result(
+        ocr_result,
+        background_image=background_bytes,
+        piece_image=piece_bytes,
+        background_box={"x": 100.0, "y": 50.0, "width": 336.0, "height": 195.0},
+        piece_box={"x": 118.0, "y": 200.0, "width": 60.0, "height": 60.0},
+    )
+
+    assert anchored.target_x != ocr_result.target_x
+    assert anchored.target_x == 464
+    shape_anchor = anchored.raw["fastmoss_shape_anchor"]
+    assert shape_anchor["selected_box"]["x"] == 418.0
+    assert shape_anchor["target_interpretation"] == "fastmoss_outline_bbox_center_minus_piece_outline_anchor"
+
+    mapping = fastmoss_security_module._build_fastmoss_mixed_slider_mapping(
+        SimpleNamespace(),
+        slider_result=anchored,
+        background_box={"x": 100.0, "y": 50.0, "width": 336.0, "height": 195.0},
+        background_image_size=(672, 390),
+        piece_box={"x": 118.0, "y": 200.0, "width": 60.0, "height": 60.0},
+        handle_box={"x": 114.0, "y": 270.0, "width": 48.0, "height": 48.0},
+        drag_scale=1.0,
+        drag_offset_x=0.0,
+    )
+
+    direct_ocr_css_target_x = ocr_result.target_x / 672 * 336
+    assert mapping["css_target_x"] < direct_ocr_css_target_x
+    assert mapping["target_interpretation"] == "fastmoss_outline_bbox_center_minus_piece_outline_anchor"
+    assert mapping["fastmoss_shape_anchor"]["source_target_x"] == 508.0
+
+
+def test_fastmoss_slider_keeps_ocr_when_outline_candidate_is_far_away() -> None:
+    background = Image.new("RGB", (672, 390), (42, 58, 72))
+    draw = ImageDraw.Draw(background)
+    draw.rectangle((52, 150, 84, 194), outline=(226, 226, 226), width=5)
+    background_bytes = _image_bytes(background, "JPEG")
+
+    piece = Image.new("RGB", (60, 60), (46, 58, 68))
+    piece_draw = ImageDraw.Draw(piece)
+    piece_draw.rectangle((8, 8, 54, 52), outline=(235, 235, 235), width=4)
+    piece_bytes = _image_bytes(piece, "PNG")
+
+    ocr_result = SliderMatchResult(
+        target_x=568,
+        target_y=222,
+        confidence=0.31,
+        raw={"target": [568, 222], "confidence": 0.31},
+    )
+    anchored = fastmoss_security_module._select_fastmoss_shape_anchor_slider_result(
+        ocr_result,
+        background_image=background_bytes,
+        piece_image=piece_bytes,
+        background_box={"x": 430.0, "y": 358.0, "width": 330.0, "height": 235.7},
+        piece_box={"x": 454.5, "y": 427.2, "width": 58.9, "height": 58.9},
+    )
+
+    assert anchored is ocr_result
 
 
 def test_fastmoss_slider_waits_for_loading_to_finish_before_retry(monkeypatch, tmp_path: Path) -> None:

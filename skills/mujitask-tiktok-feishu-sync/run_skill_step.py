@@ -353,7 +353,10 @@ def _keyword_search_submit_params(
     fallback_profile_ref: str = "",
     search_keyword: str,
     sales_7d_threshold: str,
-    skip_fastmoss_login_validation: bool,
+    max_candidates: str = "",
+    product_price_threshold: str = "",
+    keyword_workflow_mode: str = "",
+    skip_fastmoss_login_validation: bool = False,
     ensure_ready: bool = False,
 ) -> list[str]:
     resolved_profile_ref = _resolve_profile_ref_for_task(
@@ -370,6 +373,12 @@ def _keyword_search_submit_params(
         "fastmoss_phone_env=FASTMOSS_PHONE",
         "fastmoss_password_env=FASTMOSS_PASSWORD",
     ]
+    if max_candidates != "":
+        params.append(f"max_candidates={max_candidates}")
+    if product_price_threshold != "":
+        params.append(f"product_price_threshold={product_price_threshold}")
+    if keyword_workflow_mode:
+        params.append(f"keyword_workflow_mode={keyword_workflow_mode}")
     if skip_fastmoss_login_validation:
         params.append("verify_fastmoss_login=false")
     return params
@@ -660,6 +669,9 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh_parser = subparsers.add_parser("refresh-current-competitor-table-submit")
     _add_profile_arg(refresh_parser)
 
+    selection_parser = subparsers.add_parser("selection-table-complete-submit")
+    _add_profile_arg(selection_parser)
+
     product_parser = subparsers.add_parser("product-url-complete-submit")
     _add_profile_arg(product_parser)
     product_parser.add_argument("--product-url", required=True)
@@ -672,7 +684,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_profile_arg(keyword_parser)
     keyword_parser.add_argument("--search-keyword", required=True)
     keyword_parser.add_argument("--sales-7d-threshold", default="200")
+    keyword_parser.add_argument("--max-candidates", default="20")
     keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    selection_keyword_parser = subparsers.add_parser("selection-keyword-search-submit")
+    _add_profile_arg(selection_keyword_parser)
+    selection_keyword_parser.add_argument("--search-keyword", required=True)
+    selection_keyword_parser.add_argument("--sales-7d-threshold", default="500")
+    selection_keyword_parser.add_argument("--price-range-max-threshold", default="10.99")
+    selection_keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
     influencer_parser = subparsers.add_parser("influencer-pool-sync-submit")
     influencer_parser.add_argument("--max-source-rows", type=int, default=0)
@@ -775,6 +795,37 @@ def main(argv: list[str] | None = None) -> int:
             accepted_message="Refresh task accepted for asynchronous execution.",
         )
 
+    if args.command == "selection-table-complete-submit":
+        params = _append_runtime_params(
+            _append_feishu_table_refs(
+                [
+                    f"source_table_ref={selection_table_ref}",
+                    f"selection_table_ref={selection_table_ref}",
+                    f"table_url={selection_table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
+            skill_env,
+        )
+        params.extend(
+            _product_url_complete_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+            )
+        )
+        return _submit(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="tiktok_fastmoss_product_ingest",
+            params=params,
+            stdout_prefix="selection-table-complete-submit-step",
+            extra_env=extra_env,
+            accepted_message="Selection table completion task accepted for asynchronous execution.",
+        )
+
     if args.command == "product-url-complete-submit":
         params = _append_runtime_params(
             _append_feishu_table_refs(
@@ -860,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested_profile_ref=args.profile_ref,
                 search_keyword=args.search_keyword,
                 sales_7d_threshold=args.sales_7d_threshold,
+                max_candidates=args.max_candidates,
                 skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
             )
         )
@@ -871,6 +923,43 @@ def main(argv: list[str] | None = None) -> int:
             stdout_prefix="keyword-search-submit-step",
             extra_env=extra_env,
             accepted_message="Keyword search task accepted for asynchronous execution.",
+        )
+
+    if args.command == "selection-keyword-search-submit":
+        params = _append_runtime_params(
+            _append_feishu_table_refs(
+                [
+                    f"selection_table_ref={selection_table_ref}",
+                    f"seed_table_ref={selection_table_ref}",
+                    f"target_table_ref={selection_table_ref}",
+                    f"table_url={selection_table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
+            skill_env,
+        )
+        params.extend(
+            _keyword_search_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=args.profile_ref,
+                search_keyword=args.search_keyword,
+                sales_7d_threshold=args.sales_7d_threshold,
+                product_price_threshold=args.price_range_max_threshold,
+                keyword_workflow_mode="selection",
+                skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
+            )
+        )
+        return _submit(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="search_keyword_selection_products",
+            params=params,
+            stdout_prefix="selection-keyword-search-submit-step",
+            extra_env=extra_env,
+            accepted_message="Selection keyword search task accepted for asynchronous execution.",
         )
 
     if args.command == "influencer-pool-sync-submit":

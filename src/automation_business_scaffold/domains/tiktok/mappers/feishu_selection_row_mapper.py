@@ -10,28 +10,21 @@ _PRODUCT_ID_PATTERNS = (
     re.compile(r"\b(\d{8,})\b"),
 )
 
-AUTO_MAINTAINED_FIELDS = (
+REQUIRED_CANDIDATE_FIELDS = (
     "商品ID",
-    "商品链接",
-    "记录日期",
     "店铺名称",
-    "商品标题",
-    "商品当前价格",
-    "商品评论数",
-    "商品评分",
-    "商品描述",
+    "标题",
+    "当前价格",
+    "评论数",
+    "评分",
     "商品主图",
     "商品侧边栏图片",
     "今年总销量",
     "出单种类占比图",
     "销量趋势图",
-    "SKU销量占比图",
-    "父体规格",
-    "父体图片",
 )
 
 SKIP_STATUSES = ("已下架/区域不可售", "链接不可访问")
-_INVALID_PARENT_SPEC_VALUES = {"default", "默认", "specification"}
 
 
 def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -71,7 +64,7 @@ def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[st
             dropped_empty += 1
             continue
 
-        if not _has_missing_auto_fields(fields):
+        if not _has_missing_required_candidate_fields(fields):
             skipped_all_filled += 1
             continue
 
@@ -187,22 +180,24 @@ def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
     return f"artifact://{namespace}/{request_id}/{safe_key}.json"
 
 
-def _has_missing_auto_fields(fields: Mapping[str, Any]) -> bool:
-    for field_name in AUTO_MAINTAINED_FIELDS:
-        if field_name in ("商品ID", "商品链接", "记录日期"):
-            continue
+def _has_missing_required_candidate_fields(fields: Mapping[str, Any]) -> bool:
+    for field_name in REQUIRED_CANDIDATE_FIELDS:
         value = fields.get(field_name)
-        if field_name == "父体规格" and _is_invalid_parent_spec_value(value):
-            return True
-        text = _text_value(value)
-        if not text:
+        if not _field_has_value(value):
             return True
     return False
 
 
-def _is_invalid_parent_spec_value(value: Any) -> bool:
-    text = _text_value(value).strip().lower()
-    return bool(text and text in _INVALID_PARENT_SPEC_VALUES)
+def _field_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, list):
+        return any(_field_has_value(item) for item in value)
+    return True
 
 
 def _product_identity_from_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
