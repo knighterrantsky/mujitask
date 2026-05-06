@@ -21,6 +21,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
         run_refresh_competitor_row_by_url_request,
         run_refresh_current_competitor_table_request,
         run_search_keyword_competitor_products_request,
+        run_search_keyword_selection_products_request,
         run_sync_tk_influencer_pool_request,
         run_tiktok_fastmoss_product_ingest_request,
     )
@@ -29,6 +30,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
         "refresh_competitor_row_by_url": run_refresh_competitor_row_by_url_request,
         "refresh_current_competitor_table": run_refresh_current_competitor_table_request,
         "search_keyword_competitor_products": run_search_keyword_competitor_products_request,
+        "search_keyword_selection_products": run_search_keyword_selection_products_request,
         "sync_tk_influencer_pool": run_sync_tk_influencer_pool_request,
         "tiktok_fastmoss_product_ingest": run_tiktok_fastmoss_product_ingest_request,
     }

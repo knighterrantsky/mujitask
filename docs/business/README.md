@@ -1,6 +1,6 @@
 # Business 文档索引
 
-更新时间：`2026-04-23`
+更新时间：`2026-05-05`
 
 `docs/business` 只承载客户需求、业务规则、飞书表口径和验收口径。系统架构、Runtime 状态机、数据库 schema、Storage、部署运维、开发调试、外部接口研究不再作为本目录的 active truth source。
 
@@ -24,10 +24,10 @@
 | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | 竞品表定时刷新需求 |
 | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | 关键词新增竞品需求 |
 | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | 竞品到达人池同步需求 |
+| [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md) | 选品表数据采集需求 |
+| [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | 关键词新增选品需求 |
 | [requirements-backlog.md](./requirements-backlog.md) | 原始待澄清需求和需求候选记录；不能改写原始表述，也不能作为实现事实来源 |
 | [feishu-five-table-relationship-analysis.md](./feishu-five-table-relationship-analysis.md) | 飞书业务表结构事实和需求依据 |
-
-`tiktok_fastmoss_product_ingest` 当前已有系统入口和设计文档，但主需求文档中尚未沉淀为正式流程需求；待客户需求确认后再补独立需求文档。
 
 ## 已迁出或删除的旧文档
 
@@ -61,6 +61,7 @@
 - `search_keyword_competitor_products`
 - `sync_tk_influencer_pool`
 - `tiktok_fastmoss_product_ingest`
+- `search_keyword_selection_products`
 
 ## README 实践
 

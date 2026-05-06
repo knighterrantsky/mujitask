@@ -29,7 +29,9 @@
 从一个 agent skill 定位正式业务入口时，按下面路径查:
 
 ```text
-skills/{skill_code}/SKILL.md
+skills/{skill_code}/skill.spec.yaml
+  -> tools/render_skill.py
+  -> skills/{skill_code}/SKILL.md
   -> skills/{skill_code}/run_*_step.sh
   -> skills/{skill_code}/run_skill_step.py 或 lightweight_submit.py
   -> src/automation_business_scaffold/apps/rpc_agent/server.py 或 apps/cli/main.py
@@ -98,6 +100,8 @@ feishu_table_write
 
 ```text
 skills/{skill_code}/
+  skill.spec.yaml
+  examples.eval.yaml
   SKILL.md
   run_*_step.sh
   run_skill_step.py
@@ -115,6 +119,7 @@ skills/{skill_code}/
 边界约束:
 
 - Agent skill 只负责意图识别、少量参数提取、提交顶层 `task_request`、返回 `request_id`。
+- `skill.spec.yaml` 是 agent skill 的人工维护源；`SKILL.md` 必须由 `tools/render_skill.py` 生成并通过 `tools/validate_skill.py`。
 - Agent skill 不负责 workflow 主编排、worker retry、浏览器 runloop、最终 outbox 分发。
 - 多个业务可以拥有多个 `skills/{skill_code}` bundle；bundle 名称应表达业务入口，不表达内部 handler/job。
 - `skill.local.env` 是 agent skill 的部署配置，不是 Runtime DB / Fact DB / Object Store contract 的事实来源。
@@ -159,7 +164,7 @@ skills/{skill_code}/
 
 | code | 文件位置 | 必须导出 |
 | --- | --- | --- |
-| `skill_code` | `skills/{skill_code}/` | `SKILL.md`、入口脚本、`skill.local.env.example` |
+| `skill_code` | `skills/{skill_code}/` | `skill.spec.yaml`、`examples.eval.yaml`、生成的 `SKILL.md`、入口脚本、`skill.local.env.example` |
 | `task_code` | `domains/{domain}/tasks/{task_code}.py` | task class 或 task entry |
 | `workflow_code` | `domains/{domain}/workflows/{workflow_code}.py` | build definition 函数 |
 | `job_code` | `domains/{domain}/jobs/{job_code}.py` | `JOB_CODE`、`HANDLER_CODE`、`JOB_DEFINITION` |
@@ -180,11 +185,13 @@ skills/{skill_code}/
 
 新增 agent skill bundle:
 
-1. 在 `skills/{skill_code}/` 新增 `SKILL.md`、入口脚本和 `skill.local.env.example`。
-2. `SKILL.md` 只描述 agent 触发条件、参数提取、提交入口和首条回执契约。
-3. 入口脚本只提交顶层 task，不串联 runtime 内部 leaf steps。
-4. 如果需要部署安装，更新 `scripts/deploy/**` 或部署文档中的复制目标和配置生成规则。
-5. 如果新增业务入口，同步新增或复用 `domains/{domain}/tasks/{task_code}.py` 和 `domains/{domain}/workflows/{workflow_code}.py`。
+1. 在 `skills/{skill_code}/` 新增 `skill.spec.yaml`、`examples.eval.yaml`、入口脚本和 `skill.local.env.example`。
+2. 运行 `uv run --extra dev python tools/render_skill.py` 生成 `SKILL.md`。
+3. `SKILL.md` 只描述 agent 触发条件、参数提取、提交入口和首条回执契约，不作为人工维护源。
+4. 运行 `uv run --extra dev python tools/validate_skill.py` 校验生成产物、spec 和 eval examples。
+5. 入口脚本只提交顶层 task，不串联 runtime 内部 leaf steps。
+6. 如果需要部署安装，更新 `scripts/deploy/**` 或部署文档中的复制目标和配置生成规则。
+7. 如果新增业务入口，同步新增或复用 `domains/{domain}/tasks/{task_code}.py` 和 `domains/{domain}/workflows/{workflow_code}.py`。
 
 新增正式 workflow:
 

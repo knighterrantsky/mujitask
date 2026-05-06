@@ -4,6 +4,9 @@ workflow_code: search_keyword_selection_products
 task_code: search_keyword_selection_products
 owner: business
 
+business_requirement: docs/business/requirements/search-keyword-selection-products.md
+business_requirement_note: 关键词新增选品 — FastMoss 搜索过滤后写入 TK选品收集种子行，再复用选品表行级数据采集。
+
 purpose: >
   Search FastMoss products by keyword, filter candidates before insertion, seed matching rows into
   TK选品收集, then refresh only newly inserted rows through the existing selection row pipeline.

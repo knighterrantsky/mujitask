@@ -336,7 +336,14 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
     assert result.error is not None
     assert result.error.error_code == "selection_writeback_required_fields_missing"
     assert result.result["failed_step"] == "writeback_required_fields"
-    assert result.error.details["missing_required_fields"] == ["商品主图", "商品侧边栏图片"]
+    assert result.error.details["missing_required_fields"] == [
+        "当前价格",
+        "评论数",
+        "评分",
+        "商品主图",
+        "商品侧边栏图片",
+        "今年总销量",
+    ]
     assert called["feishu_write"] == 0
 
 

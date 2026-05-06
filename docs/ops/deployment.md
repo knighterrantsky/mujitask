@@ -74,8 +74,11 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 部署和运行主要依赖这些文件：
 
 - skill 包：
+  - `skills/mujitask-tiktok-feishu-sync/skill.spec.yaml`
+  - `skills/mujitask-tiktok-feishu-sync/examples.eval.yaml`
   - `skills/mujitask-tiktok-feishu-sync/SKILL.md`
   - `skills/mujitask-tiktok-feishu-sync/skill.local.env`
+  - `skills/mujitask-tiktok-feishu-sync/run_selection_table_complete_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_refresh_current_competitor_table_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_competitor_row_by_url_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_product_url_complete_step.sh`
@@ -364,8 +367,11 @@ bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh
    - `refresh_current_competitor_table`
    - `search_keyword_competitor_products`
 3. 目标 agent skills 根目录中 skill 目录存在且包含：
+   - `skill.spec.yaml`
+   - `examples.eval.yaml`
    - `SKILL.md`
    - `skill.local.env`
+   - `run_selection_table_complete_step.sh`
    - `run_refresh_current_competitor_table_step.sh`
    - `run_competitor_row_by_url_step.sh`
    - `run_product_url_complete_step.sh`

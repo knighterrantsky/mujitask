@@ -1,0 +1,97 @@
+schema_version: 1
+skill: mujitask-tiktok-feishu-sync
+
+cases:
+  - id: competitor-table-refresh
+    user: 手动跑一次当前 TK 竞品表刷新
+    expected_intent: competitor_table_refresh
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "competitor_table_refresh"
+    expected_task_code: refresh_current_competitor_table
+    must_not_include:
+      - keyword_selection_search
+      - selection_table_ingest
+
+  - id: keyword-competitor-search
+    user: 帮我查询关键字 east egg 的 7日销量大于200的 TK 商品，写入 TK竞品收集
+    expected_intent: keyword_competitor_search
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --max-candidates <max_candidates>
+    expected_task_code: search_keyword_competitor_products
+    expected_defaults:
+      sales_7d_threshold: 200
+      max_candidates: 20
+    must_not_include:
+      - keyword_selection_search
+      - TK选品收集
+
+  - id: keyword-selection-search
+    user: 帮我按关键词 east egg 搜索 7日销量大于500 且价格大于10.99 的 TK 商品，写入 TK选品表
+    expected_intent: keyword_selection_search
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
+    expected_task_code: search_keyword_selection_products
+    expected_defaults:
+      sales_7d_threshold: 500
+      price_range_max_threshold: 10.99
+    must_not_include:
+      - keyword_competitor_search
+      - TK竞品收集
+
+  - id: selection-table-ingest
+    user: 补全TK选品表
+    expected_intent: selection_table_ingest
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "selection_table_ingest"
+    expected_task_code: tiktok_fastmoss_product_ingest
+    must_not_include:
+      - competitor_table_refresh
+      - keyword_competitor_search
+
+  - id: influencer-pool-sync
+    user: 达人池同步
+    expected_intent: influencer_pool_sync
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync"
+    expected_task_code: sync_tk_influencer_pool
+    must_not_include:
+      - keyword_competitor_search
+      - competitor_table_refresh
+
+  - id: product-url-complete
+    user: 补全这个商品 https://www.tiktok.com/shop/pdp/123
+    expected_intent: product_url_complete
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "product_url_complete" --product-url "<product_url>"
+    expected_parent_task_code: tiktok_fastmoss_product_ingest
+    must_not_include:
+      - competitor_row_by_url
+      - refresh_current_competitor_table
+
+  - id: competitor-row-by-url
+    user: 竞品表单行补全 https://www.tiktok.com/shop/pdp/123
+    expected_intent: competitor_row_by_url
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "competitor_row_by_url" --product-url "<product_url>"
+    expected_parent_task_code: refresh_current_competitor_table
+    must_not_include:
+      - product_url_complete
+      - TK选品收集
+
+  - id: concept-question-negative
+    user: FastMoss 是什么？
+    expected_intent: do_not_use_skill
+    expected_action: answer_conceptually_without_task_submission
+
+  - id: strategy-negative
+    user: TikTok竞品分析一般怎么做？
+    expected_intent: do_not_use_skill
+    expected_action: answer_strategy_without_task_submission
+
+  - id: skill-review-negative
+    user: 帮我分析这个 skill 的问题
+    expected_intent: do_not_use_skill
+    expected_action: review_skill_without_task_submission
+
+  - id: table-design-negative
+    user: TK选品表字段怎么设计？
+    expected_intent: do_not_use_skill
+    expected_action: answer_design_without_task_submission
+
+  - id: ambiguous-fastmoss-target-table
+    user: 搜索 FastMoss 商品并写入飞书
+    expected_intent: ask_target_table
+    expected_action: ask_whether_to_write_to_TK竞品收集_or_TK选品收集

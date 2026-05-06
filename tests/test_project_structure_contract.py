@@ -109,8 +109,11 @@ def test_agent_skill_bundle_source_exists() -> None:
     skill_root = SKILLS_ROOT / skill_code
     required_files = (
         "SKILL.md",
+        "skill.spec.yaml",
+        "examples.eval.yaml",
         "skill.local.env.example",
         "run_refresh_current_competitor_table_step.sh",
+        "run_selection_table_complete_step.sh",
         "run_competitor_row_by_url_step.sh",
         "run_product_url_complete_step.sh",
         "run_keyword_search_step.sh",
