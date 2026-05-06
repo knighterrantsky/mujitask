@@ -5,9 +5,9 @@ domain: product_fact_ingest
 task_code: tiktok_fastmoss_product_ingest
 status: complete
 
-business_requirement: docs/business/requirements/tk-selection-collection-expand.md
-business_requirement_note: TK 选品表数据采集 — 必填补全字段驱动候选，系统运行字段和可选补充字段不触发候选，行级 pipeline 模型
-architecture_design: docs/arch/workflow-selection-table-expand-design.md
+business_requirement: docs/business/requirements/tk-selection-collection.md
+business_requirement_note: 选品采集 — 必填补全字段驱动候选，系统运行字段和可选补充字段不触发候选，行级 pipeline 模型
+architecture_design: docs/arch/workflow-selection-table-design.md
 implementation_manifest: src/automation_business_scaffold/contracts/workflow/tiktok_fastmoss_product_ingest.yaml
 field_contracts:
   - contracts/fields/feishu-tk-selection.yaml
@@ -39,19 +39,28 @@ stages:
     purpose: TK selection table 模式下读取候选行，扫描必填补全字段缺失情况与 URL 校验
   - stage_code: dispatch_selection_row_refresh
     handler_code: selection_row_refresh
-    purpose: 为每条候选行创建一个 selection_row_refresh 行级 pipeline job
+    purpose: 初始化 row cursor，并按 workflow concurrency 派发 selection_row_refresh 行级 pipeline job；客户可见选品表采集默认 row_pipeline_concurrency=1
   - stage_code: collect_selection_rows
     handler_code: selection_row_refresh
-    purpose: 等待所有 selection_row_refresh 行级 job 终态并回收结果
+    purpose: 等待 active selection_row_refresh 形成最终 row_status；存在 row-level fallback_required 时不得进入 ready_for_summary
+  - stage_code: selection_row_browser_fallback
+    handler_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
+    purpose: 由 workflow 将 row-level fallback_required 显式派发到 task_execution，等待 browser-runloop claim 并完成浏览器生命周期
+    invariant: Row-level browser fallback is owned by task_execution/browser-runloop, never by inline API worker execution.
+  - stage_code: resume_selection_rows_after_browser_fallback
+    handler_code: selection_row_refresh
+    purpose: browser fallback 成功后只恢复对应 selection_row_refresh 行级 pipeline，继续 media/fact/writeback 串行链路
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总 result 并写 outbox
 
 protected_invariants:
-  - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据
+  - 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品采集专有数据
   - 行级 pipeline 内部串行：URL 校验 → TikTok request → media sync → FastMoss fetch → fact upsert → 飞书必填补全字段、系统运行字段和可选补充字段写回；商品不可售/区域不可售终态必须跳过 media/FastMoss/图表门禁，但仍写 Fact DB 并回写 商品状态
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - Browser 只作为 fallback，用于 request 失效或风控阻断；request 已明确不可售时直接产出不可售终态
+  - selection_row_refresh 返回 fallback_required 时，collect_selection_rows 不得直接进入 ready_for_summary；必须先进入 selection_row_browser_fallback，等待 task_execution/browser-runloop terminal 后再进入 resume_selection_rows_after_browser_fallback 或汇总失败原因
+  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总 resume 后的最终 row_status，且不得存在 active browser execution 或 active resume job
   - 必填补全字段缺失才触发表级候选；SKU销量占比图、父体规格、父体图片属于可选补充字段，缺失不触发候选；商品ID/商品链接 始终刷新
 
 known_architecture_gaps: []

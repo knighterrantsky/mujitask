@@ -334,7 +334,7 @@ launchctl list | grep 'com.happyzhao.mujitask'
 
 当前默认对外入口：
 
-- 竞品表刷新：
+- 竞品采集：
 
 ```bash
 bash skills/mujitask-tiktok-feishu-sync/run_refresh_current_competitor_table_step.sh

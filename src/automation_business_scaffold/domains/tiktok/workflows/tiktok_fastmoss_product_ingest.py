@@ -4,9 +4,11 @@ from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
+    FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
     FEISHU_TABLE_READ_JOB,
     SELECTION_ROW_REFRESH_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
+    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
@@ -102,6 +104,39 @@ def build_tiktok_fastmoss_product_ingest_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
+                stage_code="selection_row_browser_fallback",
+                description="Dispatch browser fallback executions requested by selection row refresh jobs.",
+                execution_mode="worker_jobs",
+                enter_condition="selection_row_refresh jobs returned fallback_required",
+                exit_condition="selection row browser fallback task_executions are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="tiktok_product_browser_fetch",
+                        flow_code="tiktok_product_browser_fetch",
+                        result_consumer="normalized product result for row refresh resume",
+                    ),
+                    StageJobBinding(
+                        job_code="fastmoss_security_browser_resolve",
+                        flow_code="fastmoss_security_browser_resolve",
+                        result_consumer="cookie cache metadata for row refresh resume",
+                    ),
+                ),
+            ),
+            StageDefinition(
+                stage_code="resume_selection_rows_after_browser_fallback",
+                description="Retry selection row refresh jobs whose browser fallback execution succeeded.",
+                execution_mode="worker_jobs",
+                enter_condition="selection row browser fallback produced resumable results",
+                exit_condition="resumed selection row refresh jobs are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="selection_row_refresh",
+                        flow_code="selection_row_pipeline",
+                        result_consumer="row terminal result after browser fallback",
+                    ),
+                ),
+            ),
+            StageDefinition(
                 stage_code="ready_for_summary",
                 description="Aggregate row outcomes and enqueue the final notification payload.",
                 execution_mode="summary",
@@ -119,6 +154,8 @@ def build_tiktok_fastmoss_product_ingest_definition() -> WorkflowDefinition:
         job_defs=(
             FEISHU_TABLE_READ_JOB,
             SELECTION_ROW_REFRESH_JOB,
+            TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
+            FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
@@ -134,8 +171,28 @@ def build_tiktok_fastmoss_product_ingest_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="collect_selection_rows",
+                to_stage_code="selection_row_browser_fallback",
+                condition="selection row pipeline jobs requested browser fallback",
+            ),
+            TransitionDefinition(
+                from_stage_code="collect_selection_rows",
                 to_stage_code="ready_for_summary",
-                condition="selection row pipeline jobs are terminal",
+                condition="selection row pipeline jobs are terminal and no browser fallback is required",
+            ),
+            TransitionDefinition(
+                from_stage_code="selection_row_browser_fallback",
+                to_stage_code="resume_selection_rows_after_browser_fallback",
+                condition="browser fallback task_executions produced row-resumable outputs",
+            ),
+            TransitionDefinition(
+                from_stage_code="selection_row_browser_fallback",
+                to_stage_code="ready_for_summary",
+                condition="browser fallback task_executions are terminal but no row can be resumed",
+            ),
+            TransitionDefinition(
+                from_stage_code="resume_selection_rows_after_browser_fallback",
+                to_stage_code="ready_for_summary",
+                condition="resumed selection row refresh jobs are terminal",
             ),
         ),
         summary_policy=notification_summary_policy(
@@ -166,6 +223,7 @@ def build_tiktok_fastmoss_product_ingest_definition() -> WorkflowDefinition:
         notes=(
             "Direct ingest and selection-table mode share the same workflow definition; executor should skip read/dispatch stages when they are not applicable.",
             "Each selection row runs a full serial pipeline (TikTok → FastMoss → fact DB → Feishu writeback) inside selection_row_refresh.",
+            "Row browser fallback is owned by task_execution/browser-runloop; selection_row_refresh may only request fallback and must be resumed after browser output is persisted.",
         ),
     )
 

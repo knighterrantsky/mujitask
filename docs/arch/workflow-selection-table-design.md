@@ -1,43 +1,51 @@
-# 选品表自动采集扩展 Workflow 设计
+# 选品采集与关键词搜索选品写入 Workflow 设计
 
 日期: 2026-04-30
 
-状态: 实施设计文档
+状态: 当前架构设计文档
 
 ## 1. 流程定位
 
-重构 `tiktok_fastmoss_product_ingest` workflow，从按 API 步骤拆分 job 的旧模型迁移到行级 pipeline 模型。每一条选品表候选行只创建一个行级主 job（`selection_row_refresh`），内部串行完成 TikTok 采集 → FastMoss 采集 → 事实入库 → 飞书写回。
+本设计是 `TK选品收集` 的 workflow 设计事实源，覆盖两类正式流程：
 
-本次重构同时扩展写回字段，并按必填补全字段、系统运行字段和可选补充字段分层，补齐 URL 验证、必填字段缺失扫描、父体数据写入、图表渲染等能力。
+- 选品采集（`tiktok_fastmoss_product_ingest`）：扫描或手动提交选品表商品，补齐 `TK选品收集` 自动维护字段。
+- 关键词搜索选品写入（`search_keyword_selection_products`）：按关键词搜索 FastMoss 商品，新增选品种子行，再复用同一行级采集 pipeline 补齐详情。
 
-关联需求文档：[../../business/requirements/tk-selection-collection-expand.md](../../business/requirements/tk-selection-collection-expand.md)
+每一条选品表候选行只创建一个行级主 job（`selection_row_refresh`），内部串行完成 TikTok 采集 → FastMoss 采集 → 事实入库 → 飞书写回。`search_keyword_selection_products` 的详情补齐阶段必须复用这条行级 pipeline，不能另写一套 fallback 或 summary 规则。
+
+当前设计按必填补全字段、系统运行字段和可选补充字段分层，补齐 URL 验证、必填字段缺失扫描、父体数据写入、图表渲染等能力。
+
+关联需求文档:
+
+- [../../business/requirements/tk-selection-collection.md](../../business/requirements/tk-selection-collection.md)
+- [../../business/requirements/search-keyword-selection-products.md](../../business/requirements/search-keyword-selection-products.md)
 
 ## 2. Task
 
-| 字段 | 设计 |
-| --- | --- |
-| Task 名称 | 选品分析 / TikTok + FastMoss 商品采集 |
-| task_code | `tiktok_fastmoss_product_ingest`（保持不变） |
-| workflow_code | `tiktok_fastmoss_product_ingest`（保持不变） |
-| 顶层表 | `task_request` |
-| 编排者 | `executor_daemon` |
-| 执行 worker | `api_worker`（主），`browser_worker`（TikTok/FastMoss fallback） |
-| 触发方式 | `manual` / `schedule` / `webhook` / `cli` |
-| 输入 | `product_url`、`product_id`、`selection_table_ref`、`selection_record_id`、`writeback_enabled`、`fallback_allowed` |
-| 最终结果 | 商品事实、FastMoss 数据、媒体资产、选品字段分层飞书写回、summary/outbox |
+| task_code | 作用 | 执行形态 |
+| --- | --- | --- |
+| `tiktok_fastmoss_product_ingest` | 选品采集 | 读取候选行或 direct ingest，进入 `selection_row_refresh` 行级 pipeline |
+| `search_keyword_selection_products` | 关键词搜索选品写入 | `keyword_seed_import` 新增种子行后，只对新增成功行派发 `selection_row_refresh` |
+
+共同运行边界:
+
+- 顶层表: `task_request`
+- 编排者: `executor_daemon`
+- 执行 worker: `api_worker`（主），`browser_worker`（TikTok/FastMoss fallback）
+- 最终结果: 商品事实、FastMoss 数据、媒体资产、选品字段分层飞书写回、summary/outbox
 
 ## 3. Workflow
 
 ### 3.1 Stage 设计
 
-从当前 7 个 stage 收敛到 4 个：
+选品表 workflow 使用 4 个 stage：
 
 | Stage code | 进入条件 | 编排动作 | 派生 Job | 退出条件 |
 | --- | --- | --- | --- | --- |
 | `read_selection_rows` | 开启 TK selection table mode | 派发飞书读取 job，`selection_table_source_adapter` 执行必填补全字段缺失扫描和 URL 格式/域名校验 | `feishu_table_read` | 得到候选行 / 跳过 / 失败 |
-| `dispatch_selection_row_refresh` | 存在候选行 | 为每条候选行创建一个 `selection_row_refresh` job | `selection_row_refresh` | 行级 job 全部创建完成 |
-| `collect_selection_rows` | 行级 job 已派发 | 等待所有 `selection_row_refresh` 完成，回收结果 | 无（等待阶段） | 全部行级 job 终态 |
-| `ready_for_summary` | 子任务全部终态 | 汇总 result，写 outbox | `notification_outbox` | `completed` / `partial_success` / `failed` |
+| `dispatch_selection_row_refresh` | 存在候选行 | 初始化 row cursor，按 `row_pipeline_concurrency` 派发第一批行级主 job；客户可见选品表采集默认 `row_pipeline_concurrency=1` | `selection_row_refresh` | 至少一个 active row pipeline 已创建，或候选全部跳过 |
+| `collect_selection_rows` | 存在 active / queued row pipeline | 等待 active 行级 pipeline 产出最终 `row_status`；当前行终态后再放行下一行 | `selection_row_refresh`（后续行）/ browser child execution | 所有候选行都有最终行级结果 |
+| `ready_for_summary` | 所有候选行都有最终行级结果，且不存在未回灌 fallback | 汇总 row result，写 outbox | `notification_outbox` | `completed` / `partial_success` / `failed` |
 
 ### 3.2 流程图
 
@@ -49,7 +57,7 @@ flowchart TD
     C --> C1{"有候选行?"}
     C1 -->|是| D
     C1 -->|否| E["ready_for_summary<br/>全部已填充，跳过"]
-    D --> F["collect_selection_rows<br/>等待行级 job 终态"]
+    D --> F["collect_selection_rows<br/>按 row cursor 等待当前行终态<br/>再放行下一行"]
     F --> E
     E --> G["summary / outbox"]
 ```
@@ -63,17 +71,18 @@ flowchart TD
     B1 -->|域名/格式无效| B2["回写 商品状态=链接不可访问<br/>返回 skipped"]
     B1 -->|有效| C["2. TikTok request fetch"]
     C --> C1{"采集成功?"}
-    C1 -->|fallback_required| D["3. TikTok browser fallback"]
+    C1 -->|fallback_required| D["3. 创建/等待 TikTok browser task_execution<br/>行级状态=waiting_browser_fallback"]
     D --> D1{"browser 成功?"}
     D1 -->|否| D2["返回 failed"]
     C1 -->|失败且不可 fallback| D2
     C1 -->|成功| E["4. Media sync"]
-    D1 -->|成功| E
+    D1 -->|成功| D3["resume selection_row_refresh<br/>回灌 browser normalized result"]
+    D3 --> E
     C1 -->|商品不可访问| C2["跳过 media/FastMoss/图表<br/>Fact DB upsert + 回写 商品状态=已下架/区域不可售"]
     C2 --> G
     E --> F["5. FastMoss fetch"]
     F --> F1{"API 成功?"}
-    F1 -->|风控/MSG_SAFE_0001| F2["5b. FastMoss browser fallback<br/>刷新 cookie → 重试 API"]
+    F1 -->|风控/MSG_SAFE_0001| F2["5b. FastMoss browser task_execution<br/>刷新 cookie → resume 原 API 验证"]
     F2 --> F3{"重试成功?"}
     F3 -->|是| G
     F3 -->|否| G["6. Fact DB upsert<br/>FastMoss 失败不影响 TikTok 侧"]
@@ -83,12 +92,61 @@ flowchart TD
     H --> I["返回 success / partial_success"]
 ```
 
+### 3.4 行级逻辑阻塞与 Browser Fallback 通信
+
+`selection_row_refresh` 是业务上的行级主执行单元。它可以物理拆出 `task_execution` 给 `browser_worker`，但浏览器子任务只是当前行 pipeline 的一个中间步骤，不是独立业务结果。
+
+约束:
+
+- `fallback_required` 只能表示当前行正在等待 browser fallback 或等待 browser result 回灌，不能计入行级 `success`，也不能计入父任务 `success`。
+- Browser `task_execution` 成功后，必须把 normalized result、artifact evidence 和 fallback metadata 回灌到原 `selection_row_refresh`，由原行 pipeline 继续执行 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终 `row_status`。
+- Browser `task_execution` 失败时，当前行按业务规则标记 `failed` 或 `partial_success`，然后 row cursor 才能放行下一行；失败不能被父任务 summary 当成成功吞掉。
+- 客户现场 / 生产默认 `row_pipeline_concurrency=1`。当前行未形成最终 `row_status` 前，workflow 不应推进下一条候选行的采集。后续如需提升吞吐，只能通过 workflow contract 显式声明 bounded concurrency、FIFO/lane、幂等边界和 summary gate。
+- `ready_for_summary` 的入口条件是所有候选行都有最终 `row_status`，且不存在未处理的 `fallback_required`、未回灌的 browser success、active browser execution 或 active resume job。
+- 父任务汇总必须使用行级业务结果，不得只按 `api_worker_job.status` 或 `task_execution.status` 汇总。Browser 子任务 success 只能作为当前行 resume 的输入证据。
+
+### 3.5 关键词搜索选品写入入口
+
+`search_keyword_selection_products` 是同一张 `TK选品收集` 的上游写入入口，不拥有独立详情采集模型。
+
+```mermaid
+flowchart TD
+    A["Task: search_keyword_selection_products"] --> B["keyword_seed_import<br/>FastMoss search + selection_seed_projection_mapper"]
+    B --> C{"FastMoss search fallback_required?"}
+    C -->|是| D["fastmoss_security_browser_resolve<br/>task_execution"]
+    D --> E["resume keyword_seed_import<br/>重试原 /api/goods/V2/search"]
+    C -->|否| F["seed rows insert_if_absent"]
+    E --> F
+    F --> G{"新增成功行?"}
+    G -->|否| H["ready_for_summary<br/>只汇总搜索/跳过结果"]
+    G -->|是| I["dispatch_selection_row_refresh_jobs"]
+    I --> J["refresh_selection_rows<br/>复用 selection_row_refresh"]
+    J --> K{"row fallback_required?"}
+    K -->|是| L["selection_row_browser_fallback<br/>task_execution"]
+    L --> M["resume_selection_rows_after_browser_fallback"]
+    M --> J
+    K -->|否| N{"全部新增行有最终 row_status?"}
+    N -->|否| J
+    N -->|是| H
+    H --> O["summary / outbox"]
+```
+
+约束:
+
+- `keyword_seed_import` 遇到 FastMoss `MSG_SAFE_0001` 时，`fallback_required` 也是中间态；FastMoss browser `task_execution` success 只允许 resume 原始搜索请求，不能直接让关键词任务进入 success summary。
+- 已存在选品行按 `insert_if_absent` 跳过，不能触发 `selection_row_refresh`。
+- 新增成功的选品行进入与 `tiktok_fastmoss_product_ingest` 完全相同的 `selection_row_refresh` pipeline；TikTok / FastMoss row-level fallback 必须通过 `selection_row_browser_fallback` 和 `resume_selection_rows_after_browser_fallback` 回灌到原行。
+- `ready_for_summary` 必须同时等待 seed import 终态和所有新增行最终 `row_status`；不存在未处理 `fallback_required`、active browser execution 或 active resume job 时才允许汇总。
+- 关键词选品 summary 的详情成功 / 失败数必须来自最终行级业务结果，不能把 browser 子任务 success 或 seed write success 当成详情采集 success。
+
 ## 4. Job 设计
 
 | Job | Runtime 表 | Worker | Handler | 说明 |
 | --- | --- | --- | --- | --- |
 | `feishu_table_read` | `api_worker_job` | `api_worker` | `feishu_table_read` | 读取选品表全部记录，`selection_table_source_adapter` 执行候选筛选 |
-| `selection_row_refresh` | `api_worker_job` | `api_worker` | `selection_row_refresh`（**新**） | 行级 pipeline 主 job，内部串行执行完整采集链路 |
+| `selection_row_refresh` | `api_worker_job` | `api_worker` | `selection_row_refresh` | 行级 pipeline 主 job，内部串行执行完整采集链路 |
+| `tiktok_product_browser_fetch` | `task_execution` | `browser_worker` | `tiktok_product_browser_fetch` | TikTok request 需要兜底时由当前行 pipeline 创建；结果必须 resume 回原行 |
+| `fastmoss_security_browser_resolve` | `task_execution` | `browser_worker` | `fastmoss_security_browser_resolve` | FastMoss 风控解除；成功判据必须回到原 FastMoss API 或等价业务验证 |
 | `notification_outbox` | `notification_outbox` | `outbox_dispatcher` | `outbox_dispatch` | 最终通知 |
 
 ### 4.1 `selection_row_refresh` Payload
@@ -197,14 +255,20 @@ sequenceDiagram
         Exec->>DB: reconcile candidate rows
     end
 
-    Exec->>DB: enqueue api_worker_job(selection_row_refresh) x N
+    Exec->>DB: initialize row cursor / candidate queue
     loop 每条候选行
+        Exec->>DB: enqueue current api_worker_job(selection_row_refresh)
         API->>DB: claim selection_row_refresh
         Note over API: 1. URL 验证（handler 内部）<br/>2. TikTok request fetch
         opt TikTok browser fallback
+            API->>DB: mark row waiting_browser_fallback
+            Exec->>DB: enqueue task_execution(tiktok_product_browser_fetch)
             Browser->>DB: claim task_execution
             Browser->>Obj: store page artifacts
             Browser->>DB: mark browser job terminal
+            Exec->>DB: enqueue/resume selection_row_refresh with browser result
+            API->>DB: claim resumed selection_row_refresh
+            Note over API: 回灌 browser normalized result
         end
         Note over API: 3. Media sync → Obj
         Note over API: 4. FastMoss fetch + fallback
@@ -212,9 +276,10 @@ sequenceDiagram
         Note over API: 5. 图表渲染（按需）
         API->>Feishu: write required/optional fields (fill_missing_only)
         API->>DB: mark row job terminal
+        Exec->>DB: release next row only after current row terminal
     end
 
-    Exec->>DB: reconcile row jobs
+    Exec->>DB: reconcile final row results
     Exec->>DB: finalize task_request and insert notification_outbox
     Outbox->>DB: claim notification_outbox
     Outbox->>Entry: send summary
@@ -324,12 +389,12 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 ### 8.6 best_sku 接口要求
 
-`best_sku`（最佳 SKU）字段**仅存在于旧版 SKU 分布接口**，v3 版本不返回。
+`best_sku`（最佳 SKU）字段**仅由 SKU Distribution 接口返回**，v3 SKU List 接口不返回。
 
 | 接口 | 路径 | 返回 best_sku | 说明 |
 | --- | --- | --- | --- |
 | SKU List (v3) | `GET /api/goods/v3/productSku` | 否 | 返回 `sku_list`、`sku_detail`，无销量分布 |
-| SKU Distribution (旧版) | `GET /api/goods/productSku` | **是** | 返回 `sku_list`、`sku_detail`、`best_sku`、`sku_gmv`、`sku_units_sold` |
+| SKU Distribution | `GET /api/goods/productSku` | **是** | 返回 `sku_list`、`sku_detail`、`best_sku`、`sku_gmv`、`sku_units_sold` |
 
 `best_sku` 结构：
 
@@ -344,7 +409,7 @@ FastMoss sku_list[0].sku_sale_props[0]:
 }
 ```
 
-**必须同时调用两个接口**：v3 获取 `sku_sale_props`（含 `prop_value_id` 绑定键），旧版获取 `best_sku`（含销量分布）。
+**必须同时调用两个接口**：v3 SKU List 获取 `sku_sale_props`（含 `prop_value_id` 绑定键），SKU Distribution 获取 `best_sku`（含销量分布）。
 
 ### 8.7 无有效 best_sku 处理
 
@@ -387,8 +452,13 @@ stateDiagram-v2
     waiting_read --> waiting_dispatch: read terminal
     running --> waiting_dispatch: direct ingest mode
     waiting_dispatch --> waiting_rows: dispatch complete
-    waiting_rows --> waiting_rows: row jobs running
-    waiting_rows --> ready_for_summary: all row jobs terminal
+    waiting_rows --> waiting_browser_fallback: current row fallback_required
+    waiting_browser_fallback --> waiting_row_resume: browser task_execution success
+    waiting_browser_fallback --> row_terminal: browser task_execution failed
+    waiting_row_resume --> row_terminal: resumed row job terminal
+    waiting_rows --> row_terminal: current row terminal without browser
+    row_terminal --> waiting_rows: queued rows remain
+    row_terminal --> ready_for_summary: all candidate rows have final row_status
     ready_for_summary --> success: executor finalize
     ready_for_summary --> partial_success: some rows partial/failed
     ready_for_summary --> failed: all rows failed
@@ -410,6 +480,8 @@ stateDiagram-v2
 | 场景 | 策略 |
 | --- | --- |
 | URL 格式/域名无效 | 回写 `商品状态=链接不可访问`，行级 job 标记 `skipped`，不阻塞其他行 |
+| TikTok request 返回 `fallback_required` | 标记当前行等待 browser fallback；该状态不是行级终态，不进入父任务 success 计数 |
+| TikTok browser fallback 成功但尚未 resume | 继续等待 / 派发 resume；不得进入 `ready_for_summary` |
 | TikTok request 失败 + browser fallback 失败 | 行级 job 标记 `failed`，不执行写回 |
 | 商品已下架/区域不可售 | 回写 `商品状态=已下架/区域不可售`，行级 job 标记 `skipped` |
 | FastMoss API 失败 | 行级 job 继续执行，TikTok 侧 8 个字段仍正常写回，标记 `partial_success` |
@@ -420,32 +492,24 @@ stateDiagram-v2
 | best_sku 不存在、销量为 0、规格值为空或为 `Default`/`默认`/`Specification` | 跳过 `SKU销量占比图`、`父体规格`、`父体图片` 三个字段，其余字段正常写回 |
 | best_sku 有效但无法匹配 SKU 图片 | 写入 `父体规格`，跳过 `父体图片`，其余字段正常写回 |
 
-## 11. 源码变更清单
+## 11. 实现所有权
 
-| 文件 | 变更类型 | 说明 |
-| --- | --- | --- |
-| `domains/tiktok/workflows/tiktok_fastmoss_product_ingest.py` | **重写** | Stage 从 7 个收敛到 4 个，新增 `selection_row_refresh` job 定义 |
-| `domains/tiktok/flows/tiktok_fastmoss_product_ingest.py` | **重写** | 按行级 pipeline 重写 stage 推进逻辑 |
-| `domains/tiktok/flows/selection_row_refresh.py` | **新增** | 行级 pipeline flow（参照 `competitor_row_refresh.py`） |
-| `fact_sources/tiktok/product_request_fetch_handler.py` | 修改 | 新增 URL 域名/格式验证，扩展 `logical_fields`（review_count, rating, description, gallery_images, **sku_images**） |
-| `fact_sources/fastmoss/product_fetch_handler.py` | 修改 | 新增 FastMoss browser fallback 返回信号 |
-| `mappers/feishu_selection_row_mapper.py` | 修改 | 新增必填补全字段缺失扫描、`skip_statuses` 过滤 |
-| `projections/feishu_selection_projection.py` | **重写** | 从 3 字段扩展到选品字段分层写回，新增图表渲染、`fill_missing_only` 策略 |
-| `contracts/fields/feishu-tk-selection.yaml` | 修改 | 明确必填补全字段、系统运行字段和可选补充字段 |
-| `infrastructure/facts/tk_fact_ingestion_service.py` | 修改 | `_match_fastmoss_sku_reference` 补充 `prop_value_id` 匹配键，支持规格值维度 SKU 绑定 |
-| `domains/tiktok/flows/selection_row_refresh.py` | 修改 | `fact_bundle_upsert` 步骤传入 `fact_db_url`，修复 dry_run 问题 |
-| `domains/tiktok/flows/competitor_row_refresh.py` | 修改 | 同上，`fact_bundle_upsert` 步骤传入 `fact_db_url` |
-| `domains/tiktok/jobs/__init__.py` | 修改 | 注册 `selection_row_refresh` job |
+| 文件/模块 | 职责 |
+| --- | --- |
+| `domains/tiktok/workflows/tiktok_fastmoss_product_ingest.py` | 定义选品采集 workflow stage 与 `selection_row_refresh` job 编排 |
+| `domains/tiktok/workflows/search_keyword_selection_products.py` | 定义关键词搜索选品写入 workflow stage 与新增行详情采集 gate |
+| `domains/tiktok/flows/tiktok_fastmoss_product_ingest.py` | 推进行级队列、等待 browser fallback resume、汇总最终 row result |
+| `domains/tiktok/flows/selection_row_refresh.py` | 串行执行 TikTok request、browser resume、media sync、FastMoss、Fact DB、飞书写回 |
+| `fact_sources/tiktok/product_request_fetch_handler.py` | 商品 URL 校验、TikTok 商品详情提取和 browser fallback 信号 |
+| `fact_sources/fastmoss/product_fetch_handler.py` | FastMoss 商品数据提取和风控 fallback 信号 |
+| `mappers/feishu_selection_row_mapper.py` | 选品候选扫描、`skip_statuses` 过滤和来源行标准化 |
+| `projections/feishu_selection_projection.py` | 选品字段分层写回、图表渲染和 `fill_missing_only` 策略 |
+| `contracts/fields/feishu-tk-selection.yaml` | 选品字段契约、必填补全字段、系统运行字段和可选补充字段 |
+| `infrastructure/facts/tk_fact_ingestion_service.py` | 商品事实 upsert、SKU 绑定和 `prop_value_id` 匹配 |
 
-## 12. 竞品表同步变更
+## 12. 关联文档
 
-| 文件 | 变更类型 | 说明 |
-| --- | --- | --- |
-| `flows/competitor_row_refresh.py` | 修改 | 接入 URL 验证结果处理（tiktok handler 返回 `url_invalid` 时回写 `商品状态=链接不可访问`） |
-
-## 13. 关联文档
-
-- [../../business/requirements/tk-selection-collection-expand.md](../../business/requirements/tk-selection-collection-expand.md)
+- [../../business/requirements/tk-selection-collection.md](../../business/requirements/tk-selection-collection.md)
 - [../../business/business-requirements.md](../../business/business-requirements.md)
 - [workflow-design-guidelines.md](./workflow-design-guidelines.md)
 - [workflow-competitor-table-design.md](./workflow-competitor-table-design.md)

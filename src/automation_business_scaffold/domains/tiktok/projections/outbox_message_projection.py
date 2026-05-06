@@ -284,7 +284,7 @@ def _render_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
 def _render_keyword_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     rows = [dict(item) for item in payload.get("rows", []) if isinstance(item, dict)]
-    title = "关键词选品入库完成" if payload.get("task_code") == SELECTION_KEYWORD_TASK_CODE else "关键词竞品入库完成"
+    title = "关键词搜索选品写入完成" if payload.get("task_code") == SELECTION_KEYWORD_TASK_CODE else "关键词搜索竞品写入完成"
     lines = [
         title,
         "",
@@ -322,7 +322,7 @@ def _render_selection_ingest_plain_text(payload: dict[str, Any], *, include_rows
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     rows = [dict(item) for item in payload.get("rows", []) if isinstance(item, dict)]
     lines = [
-        "TK选品表采集完成",
+        "选品采集完成",
         "",
         f"任务：{payload.get('task_code') or '-'}",
         f"请求：{payload.get('request_id') or '-'}",
@@ -403,7 +403,7 @@ def _render_refresh_plain_text(payload: dict[str, Any], *, include_rows: bool) -
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     rows = [dict(item) for item in payload.get("rows", []) if isinstance(item, dict)]
     lines = [
-        "TK竞品表刷新完成",
+        "竞品采集完成",
         "",
         f"任务：{payload.get('task_code') or '-'}",
         f"请求：{payload.get('request_id') or '-'}",

@@ -107,6 +107,14 @@ def test_runtime_control_plane_entrypoint_files_exist() -> None:
     assert missing == [], "runtime control plane files are missing:\n" + "\n".join(missing)
 
 
+def test_launchd_wrapper_exposes_homebrew_node_path_to_daemons() -> None:
+    wrapper = _read(REPO_ROOT / "scripts" / "execution_control" / "run_launchd_agent.sh")
+
+    assert "export PATH=" in wrapper
+    assert "/opt/homebrew/bin" in wrapper
+    assert "/usr/local/bin" in wrapper
+
+
 def test_runtime_control_plane_console_scripts_are_declared() -> None:
     pyproject = tomllib.loads(_read(REPO_ROOT / "pyproject.toml"))
     scripts = pyproject["project"]["scripts"]
@@ -122,6 +130,22 @@ def test_runtime_control_plane_console_scripts_are_declared() -> None:
     }
 
     assert {name: scripts.get(name) for name in expected_scripts} == expected_scripts
+
+
+def test_browser_runloop_launchd_uses_child_process_supervision() -> None:
+    browser_plist = _read(
+        REPO_ROOT / "config" / "deployment" / "launchd" / "com.happyzhao.mujitask.browser-runloop.plist.template"
+    )
+    api_worker_plist = _read(
+        REPO_ROOT / "config" / "deployment" / "launchd" / "com.happyzhao.mujitask.api-worker.plist.template"
+    )
+
+    assert "automation_business_scaffold.apps.daemons.browser_worker.main" in browser_plist
+    assert "<string>--supervisor-mode</string>" in browser_plist
+    assert "<string>child_process</string>" in browser_plist
+    assert "<string>inline</string>" not in browser_plist
+    assert "automation_business_scaffold.apps.daemons.api_worker.main" in api_worker_plist
+    assert "<string>inline</string>" in api_worker_plist
 
 
 def test_project_configuration_contract_matches_loader_files() -> None:

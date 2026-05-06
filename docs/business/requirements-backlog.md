@@ -12,7 +12,7 @@
 
 | item_id | title | source | affected_tables | decision_status | current_assumption | required_confirmation | promote_to | last_reviewed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| REQ-BACKLOG-001 | TK选品收集表数据采集 | 2026-04-14 新增四表需求 | `TK选品收集` | promoted | 已提升为正式需求文档 | 数据采集口径已写入 `docs/business/requirements/tk-selection-collection-expand.md`；关键词搜索入口已写入 `docs/business/requirements/search-keyword-selection-products.md`；店铺入口等独立选品入口仍待后续确认 | `docs/business/requirements/tk-selection-collection-expand.md`、`docs/business/requirements/search-keyword-selection-products.md` | 2026-05-05 |
+| REQ-BACKLOG-001 | 选品采集 | 2026-04-14 新增四表需求 | `TK选品收集` | promoted | 已提升为正式需求文档 | 数据采集口径已写入 `docs/business/requirements/tk-selection-collection.md`；关键词搜索选品写入已写入 `docs/business/requirements/search-keyword-selection-products.md`；店铺入口等独立选品入口仍待后续确认 | `docs/business/requirements/tk-selection-collection.md`、`docs/business/requirements/search-keyword-selection-products.md` | 2026-05-05 |
 | REQ-BACKLOG-002 | TK达人池表扩展 | 2026-04-14 新增四表需求 | `TK达人池` | partially_promoted | 一人一行，按 `达人ID` upsert；筛选为商品页达人销量 `>50` 且粉丝数 `>5000` | 后续如要求联系方式必填、自动新增店铺选项，再单独确认 | `docs/business/requirements/sync-tk-influencer-pool.md` | 2026-04-25 |
 | REQ-BACKLOG-003 | TK达人建联表扩展 | 2026-04-14 新增四表需求 | `TK达人建联表` | pending_confirmation | 先按建联事件粒度理解，一行代表一次商品建联达人 | 是否新增 `达人ID`、30 天未履约起算点、监控频率、播放量获取方式 | `docs/business/requirements/*.md` | 2026-04-25 |
 | REQ-BACKLOG-004 | TK合作爆款视频表扩展 | 2026-04-14 新增四表需求 | `TK合作爆款视频` | pending_confirmation | 先按商品详情页维度理解，一行代表一条满足阈值的视频 | `skuid` 真实定义、关联视频筛选范围、回写字段口径 | `docs/business/requirements/*.md` | 2026-04-25 |

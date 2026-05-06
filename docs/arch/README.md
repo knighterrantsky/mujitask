@@ -40,9 +40,18 @@
 
 ## 业务流程设计
 
-- [选品分析 Workflow 设计](./workflow-selection-analysis-design.md)
+- [选品采集与关键词搜索选品写入 Workflow 设计](./workflow-selection-table-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
-- [竞品表 Workflow 设计](./workflow-competitor-table-design.md)
+- [竞品采集与关键词搜索竞品写入 Workflow 设计](./workflow-competitor-table-design.md)
+
+正式商品流程命名:
+
+| 业务流程 | task_code | 设计文档 |
+| --- | --- | --- |
+| 竞品采集 | `refresh_current_competitor_table` | [workflow-competitor-table-design.md](./workflow-competitor-table-design.md) |
+| 选品采集 | `tiktok_fastmoss_product_ingest` | [workflow-selection-table-design.md](./workflow-selection-table-design.md) |
+| 关键词搜索竞品写入 | `search_keyword_competitor_products` | [workflow-competitor-table-design.md](./workflow-competitor-table-design.md) |
+| 关键词搜索选品写入 | `search_keyword_selection_products` | [workflow-selection-table-design.md](./workflow-selection-table-design.md) |
 
 ## 策略与设计草案
 

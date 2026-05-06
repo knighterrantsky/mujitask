@@ -64,6 +64,7 @@ protected_invariants:
   - Row-level browser fallback is owned by task_execution/browser-runloop; competitor_row_refresh 只能返回 fallback_required，不允许直接 import browser capability 或 run_supervised_handler inline fallback
   - API worker 不允许以 worker_type=browser_worker 或 ChildRunnerConfig 内联执行 tiktok_product_browser_fetch / fastmoss_security_browser_resolve
   - workflow 必须通过 RuntimeStore.enqueue_task_executions() 派发 browser fallback，并等待 “Waiting for browser fallback executions to finish.”
+  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总 resume 后的最终 competitor_row_refresh 结果，且不得存在 active browser execution 或 active resume job
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch / fastmoss_security_browser_resolve child task_execution
   - 商品状态不是 12 个自动维护字段，不参与 pending 判断

@@ -120,7 +120,7 @@ def test_refresh_outbox_message_defaults_to_readable_plain_text_detail() -> None
 
     assert message == "\n".join(
         [
-            "TK竞品表刷新完成",
+            "竞品采集完成",
             "",
             "任务：refresh_current_competitor_table",
             "请求：req-readable",

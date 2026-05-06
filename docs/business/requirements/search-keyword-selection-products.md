@@ -1,4 +1,4 @@
-# 关键词新增选品需求
+# 关键词搜索选品写入需求
 
 更新时间：`2026-05-05`
 
@@ -59,9 +59,9 @@
 
 1. 只有 `seed_status=success` 的新增选品行会进入后续详情采集。
 2. 已跳过的已有商品不触发采集 fan-out。
-3. 新增选品行复用 `TK选品收集表数据采集需求` 中的行级采集逻辑。
+3. 新增选品行复用 `选品采集需求` 中的行级采集逻辑。
 4. 后续采集补齐 `TK选品收集` 的自动维护字段。
-5. 如果新商品在详情采集阶段被判定为链接不可访问、下架或区域不可售，系统保留已写入的种子字段，并按选品表数据采集口径写入 `商品状态`。
+5. 如果新商品在详情采集阶段被判定为链接不可访问、下架或区域不可售，系统保留已写入的种子字段，并按选品采集口径写入 `商品状态`。
 
 ### 3.4 FastMoss 风控处理
 
@@ -89,7 +89,7 @@ skills 需要支持用户在 OpenClaw 对话中输入类似下面的指令：
 4. 判断候选商品是否已存在于 `TK选品收集`。
 5. 已存在商品直接跳过。
 6. 新商品写入 `商品ID`、`商品链接`、`关键词`、`备注` 和 `记录日期`。
-7. 对新写入商品触发选品表数据采集。
+7. 对新写入商品触发选品采集。
 
 ## 5. 验收口径
 
@@ -101,7 +101,7 @@ skills 需要支持用户在 OpenClaw 对话中输入类似下面的指令：
 6. 新增选品行写入 `商品ID`、`商品链接`、`关键词`、`备注` 和 `记录日期`。
 7. 关键词来源备注格式为 `通过搜索关键字：{关键词}`。
 8. 只有新增成功的选品行触发后续数据采集。
-9. 后续详情采集复用 `TK选品收集表数据采集需求` 的字段、状态和写回口径。
+9. 后续详情采集复用 `选品采集需求` 的字段、状态和写回口径。
 
 ## 6. 变更影响边界
 
@@ -118,11 +118,12 @@ skills 需要支持用户在 OpenClaw 对话中输入类似下面的指令：
 1. `TK选品收集` 表结构变化。
 2. 自动维护字段或非自动维护字段的共用口径变化。
 3. 新增或废弃正式业务流程。
-4. 本流程变更影响选品表数据采集流程。
+4. 本流程变更影响选品采集流程。
 
 ## 7. 关联文档
 
 - [../business-requirements.md](../business-requirements.md)
-- [tk-selection-collection-expand.md](./tk-selection-collection-expand.md)
+- [tk-selection-collection.md](./tk-selection-collection.md)
+- [../../arch/workflow-selection-table-design.md](../../arch/workflow-selection-table-design.md)
 - [../../contracts/workflow/search_keyword_selection_products.yaml](../../contracts/workflow/search_keyword_selection_products.yaml)
 - [../../contracts/fields/feishu-tk-selection.yaml](../../contracts/fields/feishu-tk-selection.yaml)

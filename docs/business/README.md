@@ -21,11 +21,11 @@
 | --- | --- |
 | [business-requirements.md](./business-requirements.md) | 客户需求总览、飞书表字段口径、正式流程索引 |
 | [requirements/README.md](./requirements/README.md) | 流程需求索引 |
-| [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | 竞品表定时刷新需求 |
-| [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | 关键词新增竞品需求 |
+| [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | 竞品采集需求 |
+| [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | 关键词搜索竞品写入需求 |
 | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | 竞品到达人池同步需求 |
-| [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md) | 选品表数据采集需求 |
-| [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | 关键词新增选品需求 |
+| [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | 选品采集需求 |
+| [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | 关键词搜索选品写入需求 |
 | [requirements-backlog.md](./requirements-backlog.md) | 原始待澄清需求和需求候选记录；不能改写原始表述，也不能作为实现事实来源 |
 | [feishu-five-table-relationship-analysis.md](./feishu-five-table-relationship-analysis.md) | 飞书业务表结构事实和需求依据 |
 

@@ -52,7 +52,7 @@ tiktok_fastmoss_product_ingest
 search_keyword_selection_products
 ```
 
-不允许再使用 generic `keyword_search` 同时代表竞品和选品。关键词新增竞品必须使用 `keyword_competitor_search`，关键词新增选品必须使用 `keyword_selection_search`。
+不允许再使用 generic `keyword_search` 同时代表竞品和选品。关键词搜索竞品写入必须使用 `keyword_competitor_search`，关键词搜索选品写入必须使用 `keyword_selection_search`。
 
 ## 3. Side-Effect Skills
 

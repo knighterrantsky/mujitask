@@ -601,7 +601,7 @@ def test_selection_keyword_executor_dispatches_selection_row_refresh(
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["result"]["stage_summary"]["refresh_selection_rows"]["total_count"] == 1
     message_text = finalized["outbox"][0]["payload"]["message_text"]
-    assert "关键词选品入库完成" in message_text
+    assert "关键词搜索选品写入完成" in message_text
     assert f"关键词：{SEARCH_QUERY}" in message_text
     assert "候选：1 条" in message_text
     assert "详情成功：1 条" in message_text
@@ -775,7 +775,9 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     )
     assert len(fallback_executions) == 1
 
-    browser_worker = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
+    browser_worker = runtime_orchestrator.execute_browser_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SEED_RECORD_ID

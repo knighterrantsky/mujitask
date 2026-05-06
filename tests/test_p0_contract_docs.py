@@ -43,10 +43,10 @@ def test_workflow_docs_include_refresh_keyword_and_influencer_contract_examples(
 
     competitor_tokens = (
         "## 7. P0 Contract Payload / Result 样例",
-        "### 7.1 竞品表刷新: `feishu_table_read`",
-        "### 7.2 竞品表刷新: Fact projection 到详情写回",
-        "### 7.3 关键词竞品入库: `keyword_seed_import`",
-        "### 7.4 关键词竞品入库: 种子写入 mapper",
+        "### 7.1 竞品采集: `feishu_table_read`",
+        "### 7.2 竞品采集: Fact projection 到详情写回",
+        "### 7.3 关键词搜索竞品写入: `keyword_seed_import`",
+        "### 7.4 关键词搜索竞品写入: 种子写入 mapper",
         "competitor_seed_projection_mapper",
         "competitor_table_projection_mapper",
     )
