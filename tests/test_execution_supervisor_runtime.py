@@ -176,7 +176,7 @@ def test_outbox_dispatcher_can_use_child_process_runner(
     assert payload["supervisor"]["progress_stage"] == "dispatching"
 
 
-def test_runtime_workers_default_to_inline_supervision() -> None:
+def test_runtime_workers_keep_browser_supervision_isolated_by_default() -> None:
     api_config = build_child_runner_config(
         {},
         worker_type="api_worker",
@@ -196,7 +196,9 @@ def test_runtime_workers_default_to_inline_supervision() -> None:
     )
 
     assert api_config is None
-    assert browser_config is None
+    assert browser_config is not None
+    assert browser_config.mode == "child_process"
+    assert browser_config.timeout_seconds == 600.0
     assert outbox_config is None
 
 

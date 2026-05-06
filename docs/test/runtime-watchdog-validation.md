@@ -30,7 +30,7 @@ launchctl kickstart -k "gui/$(id -u)/com.<user>.mujitask.watchdog"
 launchctl list | grep 'mujitask'
 ```
 
-The api-worker and browser-runloop plists pass `--supervisor-mode inline`.
+The api-worker plist passes `--supervisor-mode inline`. The browser-runloop plist passes `--supervisor-mode child_process` so browser handlers that use Sync Playwright run outside any host asyncio loop.
 
 ## Submit Test Jobs
 
@@ -87,7 +87,7 @@ tail -f runtime/daemons/watchdog.launchd.stdout.log
 
 Look for:
 
-- worker claimed `job_id/run_id` with `supervisor_mode=inline` in the JSON payload.
+- worker claimed `job_id/run_id` with `supervisor_mode=inline` for api-worker jobs, or `execution_mode=child_process` for browser-runloop task executions, in the JSON payload.
 - watchdog detected timeout.
 - watchdog marked the job failed.
 - watchdog sent `SIGTERM` or `SIGKILL`.

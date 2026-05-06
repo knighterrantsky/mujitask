@@ -379,7 +379,9 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert len(fallback_executions) == 1
     assert fallback_executions[0]["item_code"] == "tiktok_product_browser_fetch"
 
-    browser_worker = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
+    browser_worker = runtime_orchestrator.execute_browser_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SOURCE_RECORD_ID

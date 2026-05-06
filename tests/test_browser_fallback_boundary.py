@@ -20,6 +20,17 @@ ROW_FLOW_FILES = (
     / "flows"
     / "competitor_row_refresh.py",
 )
+BROWSER_RUNLOOP_PLIST = (
+    REPO_ROOT / "config" / "deployment" / "launchd" / "com.happyzhao.mujitask.browser-runloop.plist.template"
+)
+EXECUTOR_LOOPING = (
+    REPO_ROOT
+    / "src"
+    / "automation_business_scaffold"
+    / "control_plane"
+    / "executor"
+    / "looping.py"
+)
 
 
 def test_row_refresh_flows_do_not_inline_browser_fallback() -> None:
@@ -79,6 +90,42 @@ def test_selection_keyword_workflow_owns_row_browser_fallback_stage() -> None:
     assert missing == [], "selection row browser fallback boundary is missing:\n" + "\n".join(missing)
 
 
+def test_product_ingest_workflow_owns_row_browser_fallback_stage() -> None:
+    workflow_source = (
+        REPO_ROOT
+        / "src"
+        / "automation_business_scaffold"
+        / "domains"
+        / "tiktok"
+        / "workflows"
+        / "tiktok_fastmoss_product_ingest.py"
+    ).read_text(encoding="utf-8")
+    runtime_source = (
+        REPO_ROOT
+        / "src"
+        / "automation_business_scaffold"
+        / "domains"
+        / "tiktok"
+        / "flows"
+        / "tiktok_fastmoss_product_ingest.py"
+    ).read_text(encoding="utf-8")
+    contract_source = (
+        REPO_ROOT / "contracts" / "workflow" / "tiktok_fastmoss_product_ingest.yaml"
+    ).read_text(encoding="utf-8")
+
+    required_tokens = (
+        "selection_row_browser_fallback",
+        "resume_selection_rows_after_browser_fallback",
+        "enqueue_task_executions",
+        "Waiting for selection row browser fallback executions to finish.",
+        "Row-level browser fallback is owned by task_execution/browser-runloop",
+    )
+    combined = "\n".join((workflow_source, runtime_source, contract_source))
+    missing = [token for token in required_tokens if token not in combined]
+
+    assert missing == [], "product ingest row browser fallback boundary is missing:\n" + "\n".join(missing)
+
+
 def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
     workflow_source = (
         REPO_ROOT
@@ -122,3 +169,14 @@ def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
     missing = [token for token in required_tokens if token not in combined]
 
     assert missing == [], "competitor row browser fallback boundary is missing:\n" + "\n".join(missing)
+
+
+def test_browser_runloop_never_defaults_to_inline_supervision() -> None:
+    plist_source = BROWSER_RUNLOOP_PLIST.read_text(encoding="utf-8")
+    looping_source = EXECUTOR_LOOPING.read_text(encoding="utf-8")
+
+    assert "<string>--supervisor-mode</string>" in plist_source
+    assert "<string>child_process</string>" in plist_source
+    assert "<string>inline</string>" not in plist_source
+    assert 'worker_type == "browser_worker"' in looping_source
+    assert 'return "child_process"' in looping_source

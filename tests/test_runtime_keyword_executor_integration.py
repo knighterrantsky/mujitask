@@ -775,7 +775,9 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     )
     assert len(fallback_executions) == 1
 
-    browser_worker = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
+    browser_worker = runtime_orchestrator.execute_browser_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SEED_RECORD_ID

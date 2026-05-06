@@ -12,6 +12,7 @@ principles:
   - fact collection does not decide Feishu fields
   - Feishu projection does not decide fact persistence
   - row-level browser fallback is isolated in task_execution/browser-runloop; API worker row pipelines may only request fallback and resume after browser output is persisted
+  - browser-runloop must execute browser handlers through child_process supervision, not inline supervision, so Sync Playwright never runs inside a host asyncio loop
 
 required_pipeline_roles:
   - fact_source_handler
@@ -23,7 +24,7 @@ required_pipeline_roles:
 business_job_usage:
   tiktok_fastmoss_product_ingest:
     - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
-    - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must return fallback_required with browser_fallback_payload; workflow owns enqueue_task_executions(), waits for browser-runloop completion, then resumes selection_row_refresh with browser output before media/fact persistence continues.
+    - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must return fallback_required with browser_fallback_payload; workflow owns selection_row_browser_fallback enqueue_task_executions(), waits for browser-runloop completion, then resumes selection_row_refresh in resume_selection_rows_after_browser_fallback with browser output before media/fact persistence continues.
     - fact_bundle_upsert must resolve Fact DB persistence from project runtime config or an explicit test-only submit override; missing configuration is a failed configuration state, not dry_run success.
     - media_asset_sync must resolve non-local object storage configuration from project runtime config or an explicit test-only submit override before product media is considered persisted; missing configuration or provider=local is a failed configuration state, not linked_local success.
     - unavailable/off-shelf/region-unavailable products are terminal product facts; selection_row_refresh must still persist the terminal fact bundle, but must skip media_asset_sync, FastMoss fetch, and chart-render writeback gates before Feishu terminal status projection.

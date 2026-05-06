@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Mapping
@@ -9,7 +10,20 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     PRODUCT_INGEST_TASK_CODE,
     build_request_payload,
 )
+from automation_business_scaffold.contracts.handler.shared import compact_dict
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    any_browser_executions_active as _any_browser_executions_active,
+    browser_executions_for_stage as _browser_executions_for_stage,
+    build_stage_local_dedupe_key,
+    extract_effective_result_payload,
+    has_active_records as _has_active_children,
+    is_fallback_required,
+    render_job_keys,
+    stage_child_records as _stage_child_records,
+    timeout_seconds_for_workflow as _timeout_seconds,
+    update_request_stage_cursor as _update_request_cursor,
+)
 from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
     build_tiktok_outbox_message_text as build_outbox_message_text,
 )
@@ -27,6 +41,29 @@ ARTIFACT_PASSTHROUGH_KEYS = (
     "artifact_store",
     "require_object_storage",
     "requires_object_storage",
+)
+RUNTIME_DB_PASSTHROUGH_KEYS = (
+    "execution_control_db_url",
+    "db_url",
+)
+FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
+    "browser_profile_ref",
+    "browser_profile_id",
+    "browser_provider_name",
+    "browser_workspace_id",
+    "browser_headless",
+    "browser_force_open",
+    "browser_timeout_ms",
+    "fastmoss_browser_profile_ref",
+    "fastmoss_browser_profile_id",
+    "fastmoss_browser_provider_name",
+    "fastmoss_browser_workspace_id",
+    "fastmoss_browser_timeout_ms",
+    "fastmoss_slider_max_attempts",
+    "fastmoss_slider_appear_timeout_ms",
+    "fastmoss_slider_settle_ms",
+    "fastmoss_slider_confirm_ms",
+    "mock_fastmoss_security_browser_resolve",
 )
 
 
@@ -50,6 +87,14 @@ def advance_stage(
         return _advance_collect_selection_rows(
             store=store, request=request, workflow=workflow, stage_code=stage_code
         )
+    if stage.stage_code == "selection_row_browser_fallback":
+        return _advance_selection_row_browser_fallback(
+            store=store, request=request, workflow=workflow, stage_code=stage_code
+        )
+    if stage.stage_code == "resume_selection_rows_after_browser_fallback":
+        return _advance_resume_selection_rows_after_browser_fallback(
+            store=store, request=request, workflow=workflow, stage_code=stage_code
+        )
     if stage.stage_code == workflow.summary_policy.summary_stage_code:
         return {"action": "finalize"}
     return {
@@ -69,39 +114,39 @@ def finalize_request(
     force_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del workflow
-    row_jobs = _api_jobs_for_stage(
-        store, request_id=request.request_id, stage_code="collect_selection_rows"
-    )
+    row_jobs = _row_refresh_jobs_for_summary(store=store, request_id=request.request_id)
     read_job = _latest_api_job_by_code(
         _api_jobs_for_stage(store, request_id=request.request_id, stage_code="read_selection_rows"),
         "feishu_table_read",
     )
 
-    row_results = []
+    row_results_by_key: dict[str, dict[str, Any]] = {}
     for job in row_jobs:
         handler_result = _job_handler_result(job)
         handler_summary = _mapping(handler_result.get("summary"))
         row_result = _mapping(handler_result.get("result"))
-        row_results.append(
-            {
-                "source_record_id": (
-                    row_result.get("source_record_id")
-                    or handler_result.get("source_record_id")
-                    or handler_summary.get("source_record_id")
-                    or (job.get("payload") or {}).get("source_record_id", "")
-                ),
-                "product_id": (
-                    row_result.get("product_business_key")
-                    or row_result.get("business_entity_key")
-                    or handler_result.get("product_business_key")
-                    or handler_summary.get("product_business_key")
-                    or ""
-                ),
-                "row_status": row_result.get("row_status")
-                or handler_result.get("row_status")
-                or job.get("status", ""),
-            }
+        source_record_id = (
+            row_result.get("source_record_id")
+            or handler_result.get("source_record_id")
+            or handler_summary.get("source_record_id")
+            or (job.get("payload") or {}).get("source_record_id", "")
         )
+        product_id = (
+            row_result.get("product_business_key")
+            or row_result.get("business_entity_key")
+            or handler_result.get("product_business_key")
+            or handler_summary.get("product_business_key")
+            or ""
+        )
+        row_key = _first_non_empty(source_record_id, product_id, job.get("business_key"), job.get("job_id"))
+        row_results_by_key[row_key] = {
+            "source_record_id": source_record_id,
+            "product_id": product_id,
+            "row_status": row_result.get("row_status")
+            or handler_result.get("row_status")
+            or job.get("status", ""),
+        }
+    row_results = list(row_results_by_key.values())
 
     counts = _aggregate_request_children(store, request_id=request.request_id)
     final_status = _determine_final_status(
@@ -163,29 +208,66 @@ def release_request_after_child_completion(
     current_stage = str(request.current_stage or "").strip()
     if not current_stage:
         return []
+    if (
+        current_stage == workflow.summary_policy.summary_stage_code
+        and _selection_row_browser_resume_candidates(store=store, request_id=request_id)
+        and not _api_jobs_for_stage(
+            store,
+            request_id=request_id,
+            stage_code="resume_selection_rows_after_browser_fallback",
+        )
+    ):
+        next_stage = "resume_selection_rows_after_browser_fallback"
+        store.update_task_request(
+            request_id=request_id,
+            status="pending",
+            current_stage=next_stage,
+            progress_stage=next_stage,
+            worker_id="",
+            lease_until=0.0,
+            heartbeat_at=0.0,
+            last_progress_at=time.time(),
+        )
+        _refresh_request_aggregate_counts(store, request_id=request_id)
+        return [
+            {
+                "request_id": request_id,
+                "stage_code": next_stage,
+                "released": True,
+                "next_executor_status": "pending",
+            }
+        ]
     stage = workflow.require_stage(current_stage)
     if stage.execution_mode != "worker_jobs":
         return []
 
-    api_jobs = _api_jobs_for_stage(store, request_id=request_id, stage_code=current_stage)
-    if not api_jobs:
+    child_records = _stage_child_records(store, request_id=request_id, stage_code=current_stage)
+    if not child_records:
         return []
-    if _any_api_jobs_active(api_jobs):
+    if _has_active_children(child_records):
         return []
+    next_stage = current_stage
+    if current_stage == "selection_row_browser_fallback" and _selection_row_browser_resume_candidates(
+        store=store,
+        request_id=request_id,
+    ):
+        next_stage = "resume_selection_rows_after_browser_fallback"
 
     store.update_task_request(
         request_id=request_id,
         status="pending",
-        current_stage=current_stage,
+        current_stage=next_stage,
+        progress_stage=next_stage,
         worker_id="",
         lease_until=0.0,
         heartbeat_at=0.0,
+        last_progress_at=time.time(),
     )
     _refresh_request_aggregate_counts(store, request_id=request_id)
     return [
         {
             "request_id": request_id,
-            "stage_code": current_stage,
+            "stage_code": next_stage,
             "released": True,
             "next_executor_status": "pending",
         }
@@ -394,7 +476,6 @@ def _advance_collect_selection_rows(
     workflow: WorkflowDefinition,
     stage_code: str,
 ) -> dict[str, Any]:
-    del workflow
     stage_jobs = _api_jobs_for_stage(store, request_id=request.request_id, stage_code=stage_code)
     if not stage_jobs:
         return {
@@ -411,12 +492,513 @@ def _advance_collect_selection_rows(
             "message": "Selection row refresh jobs are still running.",
         }
 
+    fallback_candidates = _selection_row_browser_fallback_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={
+            "collect_job_count": len(stage_jobs),
+            "fallback_candidate_count": len(fallback_candidates),
+        },
+    )
+    if fallback_candidates:
+        workflow.require_stage("selection_row_browser_fallback")
+        return {
+            "action": "advance",
+            "next_stage": "selection_row_browser_fallback",
+            "details": {"fallback_candidate_count": len(fallback_candidates)},
+        }
+
     return {"action": "advance", "next_stage": "ready_for_summary"}
+
+
+def _advance_selection_row_browser_fallback(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+) -> dict[str, Any]:
+    executions = _browser_executions_for_stage(
+        store,
+        request_id=request.request_id,
+        stage_code=stage_code,
+    )
+    fallback_candidates = _selection_row_browser_fallback_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
+    if not fallback_candidates and not executions:
+        return {
+            "action": "advance",
+            "next_stage": "ready_for_summary",
+            "details": {"fallback_candidate_count": 0},
+        }
+    if not executions and fallback_candidates:
+        dispatches: dict[str, Any] = {}
+        for fallback_handler in sorted(
+            {str(candidate.get("fallback_handler") or "") for candidate in fallback_candidates}
+        ):
+            if not fallback_handler:
+                continue
+            job_def = workflow.require_job(fallback_handler)
+            items: list[dict[str, Any]] = []
+            for candidate in fallback_candidates:
+                if str(candidate.get("fallback_handler") or "") != fallback_handler:
+                    continue
+                payload = _selection_row_browser_execution_payload(
+                    request_payload=request.payload,
+                    stage_code=stage_code,
+                    candidate=candidate,
+                )
+                keys = render_job_keys(
+                    job_def,
+                    request.payload,
+                    candidate,
+                    payload,
+                    request_id=request.request_id,
+                    task_code=request.task_code,
+                    workflow_code=workflow.workflow_code,
+                    stage_code=stage_code,
+                    item_code=job_def.job_code,
+                )
+                items.append(
+                    {
+                        "business_key": keys["business_key"]
+                        or str(candidate.get("business_entity_key") or ""),
+                        "dedupe_key": build_stage_local_dedupe_key(
+                            keys["dedupe_key"],
+                            job_def.job_code,
+                            stage_scope=stage_code,
+                        ),
+                        "resource_code": _row_browser_resource_code(
+                            fallback_handler=fallback_handler,
+                            payload=payload,
+                            candidate=candidate,
+                        ),
+                        "payload": payload,
+                        "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
+                    }
+                )
+            if items:
+                dispatches[fallback_handler] = store.enqueue_task_executions(
+                    request_id=request.request_id,
+                    item_code=job_def.job_code,
+                    workflow_code=workflow.workflow_code,
+                    items=items,
+                )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "browser_dispatches": dispatches,
+                "fallback_candidate_count": len(fallback_candidates),
+            },
+        )
+        return {
+            "action": "waiting",
+            "current_stage": stage_code,
+            "message": "Enqueued selection row browser fallback executions.",
+            "details": {
+                "created_count": sum(
+                    int(dispatch.get("created_count") or 0) for dispatch in dispatches.values()
+                ),
+                "fallback_candidate_count": len(fallback_candidates),
+            },
+        }
+    if _any_browser_executions_active(executions):
+        return {
+            "action": "waiting",
+            "current_stage": stage_code,
+            "message": "Waiting for selection row browser fallback executions to finish.",
+        }
+    resumable = _selection_row_browser_resume_candidates(store=store, request_id=request.request_id)
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={
+            "execution_count": len(executions),
+            "resumable_count": len(resumable),
+            "status": "success" if resumable else "failed",
+        },
+    )
+    if resumable:
+        return {
+            "action": "advance",
+            "next_stage": "resume_selection_rows_after_browser_fallback",
+            "details": {"resumable_count": len(resumable)},
+        }
+    return {
+        "action": "advance",
+        "next_stage": "ready_for_summary",
+        "details": {"execution_count": len(executions), "resumable_count": 0},
+    }
+
+
+def _advance_resume_selection_rows_after_browser_fallback(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+) -> dict[str, Any]:
+    jobs = _api_jobs_for_stage(store, request_id=request.request_id, stage_code=stage_code)
+    candidates = _selection_row_browser_resume_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
+    if candidates:
+        row_job_def = workflow.require_job("selection_row_refresh")
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=row_job_def.job_code,
+            jobs=[
+                _selection_row_resume_job(
+                    request=request,
+                    workflow=workflow,
+                    stage_code=stage_code,
+                    row_job_def=row_job_def,
+                    candidate=candidate,
+                )
+                for candidate in candidates
+            ],
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "resumable_count": len(candidates),
+                "existing_job_count": len(jobs),
+                "row_dispatch": dispatch,
+            },
+        )
+        if int(dispatch["created_count"]) > 0:
+            return {
+                "action": "waiting",
+                "current_stage": stage_code,
+                "message": "Enqueued missing selection row refresh retries after browser fallback.",
+                "details": {
+                    "created_count": int(dispatch["created_count"]),
+                    "resumable_count": len(candidates),
+                    "existing_job_count": len(jobs),
+                },
+            }
+    elif not jobs:
+        return {
+            "action": "advance",
+            "next_stage": "ready_for_summary",
+            "details": {"resumable_count": 0},
+        }
+
+    jobs = _api_jobs_for_stage(store, request_id=request.request_id, stage_code=stage_code)
+    if _any_api_jobs_active(jobs):
+        return {
+            "action": "waiting",
+            "current_stage": stage_code,
+            "message": "Waiting for selection row refresh retries after browser fallback to finish.",
+        }
+    _update_request_cursor(
+        store=store,
+        request=request,
+        stage_code=stage_code,
+        payload={"resumed_job_count": len(jobs)},
+    )
+    return {"action": "advance", "next_stage": "ready_for_summary", "details": {"resumed_job_count": len(jobs)}}
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _row_refresh_jobs_for_summary(*, store: RuntimeStore, request_id: str) -> list[dict[str, Any]]:
+    return [
+        *_api_jobs_for_stage(store, request_id=request_id, stage_code="collect_selection_rows"),
+        *_api_jobs_for_stage(
+            store,
+            request_id=request_id,
+            stage_code="resume_selection_rows_after_browser_fallback",
+        ),
+    ]
+
+
+def _selection_row_browser_fallback_candidates(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for job in _api_jobs_for_stage(
+        store,
+        request_id=request_id,
+        stage_code="collect_selection_rows",
+    ):
+        if str(job.get("job_code") or "") != "selection_row_refresh":
+            continue
+        if not is_fallback_required(job):
+            continue
+        row_payload = dict(job.get("payload") or {})
+        handler_result = _job_handler_result(job)
+        handler_summary = _mapping(handler_result.get("summary"))
+        result_payload = extract_effective_result_payload(job)
+        fallback_handler = _first_non_empty(
+            result_payload.get("fallback_handler"),
+            handler_summary.get("fallback_handler"),
+        )
+        if fallback_handler not in {"tiktok_product_browser_fetch", "fastmoss_security_browser_resolve"}:
+            continue
+        browser_payload = _mapping(result_payload.get("browser_fallback_payload"))
+        if not browser_payload:
+            next_action_payload = _mapping(_mapping(handler_result.get("next_action")).get("payload"))
+            browser_payload = _mapping(next_action_payload.get("payload")) or next_action_payload
+        source_record_id = _first_non_empty(
+            result_payload.get("source_record_id"),
+            row_payload.get("source_record_id"),
+        )
+        business_entity_key = _first_non_empty(
+            result_payload.get("business_entity_key"),
+            row_payload.get("business_key"),
+            job.get("business_key"),
+            source_record_id,
+        )
+        fallback_source_job_id = _first_non_empty(
+            browser_payload.get("fallback_source_job_id"),
+            result_payload.get("fallback_source_job_id"),
+            job.get("job_id"),
+        )
+        browser_payload = {
+            **browser_payload,
+            "source_record_id": source_record_id,
+            "business_entity_key": business_entity_key,
+            "fallback_source_job_id": fallback_source_job_id,
+        }
+        product_identity = _mapping(result_payload.get("product_identity")) or _mapping(
+            row_payload.get("product_identity")
+        )
+        candidates.append(
+            {
+                "fallback_key": _row_fallback_key(
+                    source_record_id=source_record_id,
+                    business_entity_key=business_entity_key,
+                    fallback_handler=fallback_handler,
+                ),
+                "fallback_handler": fallback_handler,
+                "fallback_reason": _first_non_empty(result_payload.get("fallback_reason")),
+                "source_record_id": source_record_id,
+                "business_entity_key": business_entity_key,
+                "candidate_key": business_entity_key,
+                "row_job_id": str(job.get("job_id") or ""),
+                "row_payload": row_payload,
+                "row_result": result_payload,
+                "browser_fallback_payload": compact_dict(browser_payload),
+                "product_identity": product_identity,
+                "normalized_product_url": _first_non_empty(
+                    browser_payload.get("normalized_product_url"),
+                    row_payload.get("normalized_product_url"),
+                    product_identity.get("normalized_product_url"),
+                ),
+                "normalized_product_result": _mapping(
+                    result_payload.get("normalized_product_result")
+                ),
+            }
+        )
+    return candidates
+
+
+def _selection_row_browser_execution_payload(
+    *,
+    request_payload: Mapping[str, Any],
+    stage_code: str,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    fallback_handler = str(candidate.get("fallback_handler") or "")
+    payload = {
+        **_payload_subset(request_payload, FASTMOSS_BROWSER_PASSTHROUGH_KEYS + RUNTIME_DB_PASSTHROUGH_KEYS),
+        **_mapping(candidate.get("browser_fallback_payload")),
+        "stage_code": stage_code,
+        "source_record_id": str(candidate.get("source_record_id") or ""),
+        "business_entity_key": str(candidate.get("business_entity_key") or ""),
+        "candidate_key": str(candidate.get("candidate_key") or ""),
+        "fallback_handler": fallback_handler,
+        "fallback_source_job_id": _first_non_empty(
+            _mapping(candidate.get("browser_fallback_payload")).get("fallback_source_job_id"),
+            candidate.get("row_job_id"),
+        ),
+        "product_identity": _mapping(candidate.get("product_identity")),
+        "normalized_product_url": str(candidate.get("normalized_product_url") or ""),
+    }
+    if fallback_handler == "fastmoss_security_browser_resolve":
+        payload.setdefault("search_query", str(candidate.get("business_entity_key") or ""))
+        payload.setdefault("search_digest", _search_digest_for_row_fallback(candidate))
+        payload.setdefault("search_request", _mapping(payload.get("search_request")))
+        payload.setdefault("verification_request", _mapping(payload.get("verification_request")))
+    return compact_dict(payload)
+
+
+def _selection_row_browser_resume_candidates(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+) -> list[dict[str, Any]]:
+    fallback_by_key = {
+        str(candidate.get("fallback_key") or ""): candidate
+        for candidate in _selection_row_browser_fallback_candidates(store=store, request_id=request_id)
+    }
+    candidates: list[dict[str, Any]] = []
+    for execution in _browser_executions_for_stage(
+        store,
+        request_id=request_id,
+        stage_code="selection_row_browser_fallback",
+    ):
+        if _handler_status_from_execution(execution) != "success":
+            continue
+        payload = dict(execution.payload or {})
+        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
+        source_record_id = _first_non_empty(payload.get("source_record_id"))
+        business_entity_key = _first_non_empty(payload.get("business_entity_key"))
+        fallback_key = _row_fallback_key(
+            source_record_id=source_record_id,
+            business_entity_key=business_entity_key,
+            fallback_handler=fallback_handler,
+        )
+        fallback_candidate = fallback_by_key.get(fallback_key)
+        if not fallback_candidate:
+            continue
+        execution_payload = extract_effective_result_payload(execution)
+        if fallback_handler == "tiktok_product_browser_fetch" and not _mapping(
+            execution_payload.get("normalized_product_result")
+        ):
+            continue
+        candidates.append(
+            {
+                **dict(fallback_candidate),
+                "browser_execution_id": str(execution.execution_id),
+                "browser_execution_payload": execution_payload,
+            }
+        )
+    return candidates
+
+
+def _selection_row_resume_job(
+    *,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+    row_job_def: Any,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _selection_row_resume_payload(stage_code=stage_code, candidate=candidate)
+    product_identity = _mapping(candidate.get("product_identity"))
+    resume_key = _first_non_empty(
+        candidate.get("source_record_id"),
+        candidate.get("business_entity_key"),
+        candidate.get("candidate_key"),
+        product_identity.get("product_id"),
+        product_identity.get("normalized_product_url"),
+    )
+    candidate_context = {
+        **dict(candidate),
+        "source_record_id_or_product_id": resume_key,
+    }
+    payload_context = {
+        **payload,
+        "source_record_id_or_product_id": resume_key,
+    }
+    keys = render_job_keys(
+        row_job_def,
+        request.payload,
+        candidate_context,
+        payload_context,
+        request_id=request.request_id,
+        task_code=request.task_code,
+        workflow_code=workflow.workflow_code,
+        stage_code=stage_code,
+        job_code=row_job_def.job_code,
+    )
+    dedupe_base = keys["dedupe_key"] or f"{request.request_id}:{stage_code}:{resume_key}"
+    return {
+        "business_key": keys["business_key"] or resume_key,
+        "dedupe_key": build_stage_local_dedupe_key(
+            f"{dedupe_base}:after-browser-fallback",
+            row_job_def.job_code,
+        ),
+        "payload": payload,
+        "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
+    }
+
+
+def _selection_row_resume_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
+    fallback_handler = str(candidate.get("fallback_handler") or "")
+    payload = dict(_mapping(candidate.get("row_payload")))
+    browser_payload = _mapping(candidate.get("browser_execution_payload"))
+    payload.update(
+        {
+            "stage_code": stage_code,
+            "browser_fallback_resolved": True,
+            "browser_fallback_handler": fallback_handler,
+            "browser_execution_id": str(candidate.get("browser_execution_id") or ""),
+            "fallback_source_job_id": str(candidate.get("row_job_id") or ""),
+            "force_fallback": False,
+            "fallback_reason": "",
+        }
+    )
+    if fallback_handler == "tiktok_product_browser_fetch":
+        payload["normalized_product_result"] = _mapping(
+            browser_payload.get("normalized_product_result")
+        )
+    elif fallback_handler == "fastmoss_security_browser_resolve":
+        payload["fastmoss_security_browser_fallback_attempt"] = 1
+        normalized_product = _mapping(candidate.get("normalized_product_result"))
+        if normalized_product:
+            payload["normalized_product_result"] = normalized_product
+    return compact_dict(payload)
+
+
+def _row_fallback_key(*, source_record_id: str, business_entity_key: str, fallback_handler: str) -> str:
+    row_key = _first_non_empty(source_record_id, business_entity_key)
+    return f"{fallback_handler}:{row_key}"
+
+
+def _row_browser_resource_code(
+    *,
+    fallback_handler: str,
+    payload: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> str:
+    if fallback_handler == "fastmoss_security_browser_resolve":
+        return _fastmoss_browser_resource_code(payload)
+    return _browser_resource_code(candidate)
+
+
+def _browser_resource_code(candidate: Mapping[str, Any]) -> str:
+    business_key = str(candidate.get("business_entity_key") or candidate.get("candidate_key") or "")
+    return f"tiktok_product:{business_key}" if business_key else ""
+
+
+def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
+    return _first_non_empty(
+        payload.get("fastmoss_browser_profile_ref"),
+        payload.get("browser_profile_ref"),
+        payload.get("profile_ref"),
+        "fastmoss:browser",
+    )
+
+
+def _search_digest_for_row_fallback(candidate: Mapping[str, Any]) -> str:
+    value = _first_non_empty(
+        candidate.get("source_record_id"),
+        candidate.get("business_entity_key"),
+        candidate.get("row_job_id"),
+    )
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16] if value else ""
 
 
 def _resolve_candidate_rows(

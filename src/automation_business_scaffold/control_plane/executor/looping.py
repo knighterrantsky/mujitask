@@ -116,7 +116,9 @@ def build_child_runner_config(
 
 
 def _default_child_runner_mode(*, worker_type: str, handler_code: str) -> str:
-    del worker_type, handler_code
+    del handler_code
+    if worker_type == "browser_worker":
+        return "child_process"
     return "inline"
 
 

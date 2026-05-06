@@ -13,6 +13,10 @@ ENV_FILE="${ROOT_DIR}/scripts/execution_control/executor.local.env"
 cd "${ROOT_DIR}"
 mkdir -p "${ROOT_DIR}/runtime/daemons"
 
+# launchd does not inherit interactive shell PATH/nvm/asdf setup. Keep
+# Homebrew Node and system tools visible to daemon handlers.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:${PATH}}"
+
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090
