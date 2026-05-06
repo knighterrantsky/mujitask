@@ -7,7 +7,9 @@ from typing import Any
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
 KEYWORD_TASK_CODE = "search_keyword_competitor_products"
+SELECTION_KEYWORD_TASK_CODE = "search_keyword_selection_products"
 INFLUENCER_TASK_CODE = "sync_tk_influencer_pool"
+PRODUCT_INGEST_TASK_CODE = "tiktok_fastmoss_product_ingest"
 DEFAULT_MESSAGE_FORMAT = "plain_text_detail"
 SUPPORTED_MESSAGE_FORMATS = {"json", "plain_text_summary", "plain_text_detail", "template"}
 
@@ -30,8 +32,16 @@ def build_tiktok_outbox_message_text(
             result=result,
         )
         return _render_message_payload(payload, message_format=selected_format, message_template=message_template)
-    if task_code == KEYWORD_TASK_CODE:
+    if task_code in {KEYWORD_TASK_CODE, SELECTION_KEYWORD_TASK_CODE}:
         payload = _build_keyword_outbox_message(
+            request_id=request_id,
+            task_code=task_code,
+            summary=summary,
+            result=result,
+        )
+        return _render_message_payload(payload, message_format=selected_format, message_template=message_template)
+    if task_code == PRODUCT_INGEST_TASK_CODE:
+        payload = _build_selection_ingest_outbox_message(
             request_id=request_id,
             task_code=task_code,
             summary=summary,
@@ -146,6 +156,35 @@ def _build_keyword_outbox_message(
     }
 
 
+def _build_selection_ingest_outbox_message(
+    *,
+    request_id: str,
+    task_code: str,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    raw_rows = result.get("rows") if isinstance(result.get("rows"), list) else result.get("row_results")
+    row_results = [dict(item) for item in raw_rows if isinstance(item, dict)] if isinstance(raw_rows, list) else []
+    rows = [_build_refresh_competitor_outbox_row(item) for item in row_results]
+    success_count = sum(1 for item in rows if item.get("status") == "success")
+    failed_count = sum(1 for item in rows if item.get("status") == "fail")
+    return {
+        "request_id": request_id,
+        "task_code": task_code,
+        "summary": summary,
+        "final_status": str(summary.get("final_status") or result.get("final_status") or "").strip(),
+        "total_count": int(result.get("row_count") or len(rows)),
+        "updated_count": success_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "child_total_count": int(summary.get("child_total_count") or summary.get("total") or 0),
+        "child_success_count": int(summary.get("child_success_count") or 0),
+        "child_failed_count": int(summary.get("child_failed_count") or 0),
+        "child_skipped_count": int(summary.get("child_skipped_count") or 0),
+        "rows": rows,
+    }
+
+
 def _keyword_row_should_appear_in_detail(row: dict[str, Any]) -> bool:
     failure_reason = _refresh_competitor_failure_reason(row)
     row_status = str(row.get("row_status") or row.get("status") or "").strip()
@@ -223,8 +262,10 @@ def _render_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
     task_code = str(payload.get("task_code") or "").strip()
     if task_code == REFRESH_TASK_CODE:
         return _render_refresh_plain_text(payload, include_rows=include_rows)
-    if task_code == KEYWORD_TASK_CODE:
+    if task_code in {KEYWORD_TASK_CODE, SELECTION_KEYWORD_TASK_CODE}:
         return _render_keyword_plain_text(payload, include_rows=include_rows)
+    if task_code == PRODUCT_INGEST_TASK_CODE:
+        return _render_selection_ingest_plain_text(payload, include_rows=include_rows)
     if task_code == INFLUENCER_TASK_CODE:
         return _render_influencer_plain_text(payload, include_rows=include_rows)
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -243,8 +284,9 @@ def _render_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
 def _render_keyword_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     rows = [dict(item) for item in payload.get("rows", []) if isinstance(item, dict)]
+    title = "关键词选品入库完成" if payload.get("task_code") == SELECTION_KEYWORD_TASK_CODE else "关键词竞品入库完成"
     lines = [
-        "关键词竞品入库完成",
+        title,
         "",
         f"任务：{payload.get('task_code') or '-'}",
         f"请求：{payload.get('request_id') or '-'}",
@@ -270,6 +312,43 @@ def _render_keyword_plain_text(payload: dict[str, Any], *, include_rows: bool) -
         lines.append(f"{index}. SKU {row.get('sku') or row.get('product_id') or '-'}")
         lines.append(f"   record: {row.get('source_record_id') or '-'}")
         lines.append(f"   status: {row.get('status') or '-'}")
+        failure_reason = str(row.get("failure_reason") or "").strip()
+        if failure_reason:
+            lines.append(f"   failure_reason: {failure_reason}")
+    return "\n".join(lines).strip()
+
+
+def _render_selection_ingest_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    rows = [dict(item) for item in payload.get("rows", []) if isinstance(item, dict)]
+    lines = [
+        "TK选品表采集完成",
+        "",
+        f"任务：{payload.get('task_code') or '-'}",
+        f"请求：{payload.get('request_id') or '-'}",
+        f"状态：{payload.get('final_status') or summary.get('final_status') or '-'}",
+        f"总数：{payload.get('total_count', 0)} 条",
+        f"更新：{payload.get('updated_count', 0)} 条",
+        f"成功：{payload.get('success_count', 0)} 条",
+        f"失败：{payload.get('failed_count', 0)} 条",
+        f"子任务：{payload.get('child_success_count', 0)}/{payload.get('child_total_count', 0)} 成功",
+    ]
+    skipped_count = int(payload.get("child_skipped_count") or 0)
+    if skipped_count:
+        lines.append(f"子任务跳过：{skipped_count} 条")
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    if warnings:
+        lines.append(f"警告：{len(warnings)} 条")
+    if not include_rows or not rows:
+        return "\n".join(lines).strip()
+    lines.extend(["", "明细："])
+    for index, row in enumerate(rows, start=1):
+        lines.append(f"{index}. SKU {row.get('sku') or row.get('product_id') or '-'}")
+        lines.append(f"   record: {row.get('source_record_id') or '-'}")
+        lines.append(f"   status: {row.get('status') or '-'}")
+        row_status = str(row.get("row_status") or "").strip()
+        if row_status:
+            lines.append(f"   row_status: {row_status}")
         failure_reason = str(row.get("failure_reason") or "").strip()
         if failure_reason:
             lines.append(f"   failure_reason: {failure_reason}")

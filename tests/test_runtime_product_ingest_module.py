@@ -325,6 +325,7 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
     assert payload["final_status"] == "success"
     assert updated_request.status == "success"
     assert updated_request.current_stage == "completed"
+    assert updated_request.summary["final_status"] == "success"
     assert updated_request.summary["child_success_count"] == 1
     assert updated_request.result["row_count"] == 1
     assert updated_request.result["rows"][0] == {
@@ -335,6 +336,13 @@ def test_finalize_request_updates_request_and_creates_outbox() -> None:
     assert len(store.outbox) == 1
     assert store.outbox[0]["ref_id"] == request.request_id
     assert store.outbox[0]["payload"]["task_code"] == PRODUCT_INGEST_TASK_CODE
+    message_text = store.outbox[0]["payload"]["message_text"]
+    assert "TK选品表采集完成" in message_text
+    assert "状态：success" in message_text
+    assert "总数：1 条" in message_text
+    assert "成功：1 条" in message_text
+    assert "失败：0 条" in message_text
+    assert "1. SKU 1234567890" in message_text
 
 
 def test_finalize_request_uses_nested_row_result_status() -> None:
