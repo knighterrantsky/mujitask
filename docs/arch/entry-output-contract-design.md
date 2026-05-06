@@ -108,12 +108,14 @@ CLI / OpenClaw 兼容输出可继续使用 `__OPENCLAW_RESULT__` 作为最终一
 
 各 workflow 的 `ready_for_summary` 必须通过领域 projection 生成 `message_text`，不能在 flow 中手写压缩 JSON，也不能让 outbox channel handler 反向理解业务 result 结构。
 
-当前 TikTok 三个主流程的默认文案约束:
+当前 TikTok 主流程的默认文案约束:
 
 | task_code | 默认标题 | 必须包含 |
 | --- | --- | --- |
 | `refresh_current_competitor_table` | `TK竞品表刷新完成` | request、final_status、总数、更新/成功/失败数、每条 SKU/record/status/失败原因 |
 | `search_keyword_competitor_products` | `关键词竞品入库完成` | request、final_status、关键词、候选数、种子写入/跳过/失败数、详情成功/失败数、每条 SKU/record/status/失败原因 |
+| `search_keyword_selection_products` | `关键词选品入库完成` | request、final_status、关键词、候选数、种子写入/跳过/失败数、详情成功/失败数、每条 SKU/record/status/失败原因 |
+| `tiktok_fastmoss_product_ingest` | `TK选品表采集完成` | request、final_status、总数、更新/成功/失败数、子任务成功数、每条 SKU/record/status/失败原因 |
 | `sync_tk_influencer_pool` | `TK达人池同步完成` | request、final_status、商品组数、商品组状态计数、子任务成功数、每个商品组 SKU/record/status/creator/pool write 摘要 |
 
 推荐最终 result 包含:

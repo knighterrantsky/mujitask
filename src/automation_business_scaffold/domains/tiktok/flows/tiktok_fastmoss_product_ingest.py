@@ -104,7 +104,11 @@ def finalize_request(
         )
 
     counts = _aggregate_request_children(store, request_id=request.request_id)
+    final_status = _determine_final_status(
+        force_result=force_result, row_jobs=row_jobs, counts=counts
+    )
     summary = {
+        "final_status": final_status,
         "total": counts["total"],
         "counts": counts["counts"],
         "child_success_count": counts["success_count"],
@@ -122,9 +126,6 @@ def finalize_request(
     if force_result and isinstance(force_result.get("result"), Mapping):
         final_result.update(dict(force_result.get("result") or {}))
 
-    final_status = _determine_final_status(
-        force_result=force_result, row_jobs=row_jobs, counts=counts
-    )
     error_text = "" if final_status != "failed" else str(final_result.get("message") or "")
     store.update_task_request(
         request_id=request.request_id,
