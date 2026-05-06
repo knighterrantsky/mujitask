@@ -11,6 +11,7 @@ from automation_business_scaffold.domains.tiktok.jobs import (
     KEYWORD_SEED_IMPORT_JOB,
     SELECTION_ROW_REFRESH_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
+    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
@@ -112,6 +113,39 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
+                stage_code="selection_row_browser_fallback",
+                description="Dispatch browser fallback executions requested by selection row refresh jobs.",
+                execution_mode="worker_jobs",
+                enter_condition="selection row refresh jobs returned fallback_required",
+                exit_condition="selection row browser fallback task_executions are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="tiktok_product_browser_fetch",
+                        flow_code="tiktok_product_browser_fetch",
+                        result_consumer="normalized product result for row refresh resume",
+                    ),
+                    StageJobBinding(
+                        job_code="fastmoss_security_browser_resolve",
+                        flow_code="fastmoss_security_browser_resolve",
+                        result_consumer="cookie cache metadata for row refresh resume",
+                    ),
+                ),
+            ),
+            StageDefinition(
+                stage_code="resume_selection_rows_after_browser_fallback",
+                description="Retry only selection row refresh jobs whose browser fallback execution succeeded.",
+                execution_mode="worker_jobs",
+                enter_condition="selection row browser fallback produced resumable results",
+                exit_condition="resumed selection row refresh jobs are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="selection_row_refresh",
+                        flow_code="selection_row_pipeline",
+                        result_consumer="row terminal result after browser fallback",
+                    ),
+                ),
+            ),
+            StageDefinition(
                 stage_code="ready_for_summary",
                 description="Aggregate search, seed, and detail outcomes and enqueue the final notification.",
                 execution_mode="summary",
@@ -129,6 +163,7 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
         job_defs=(
             KEYWORD_SEED_IMPORT_JOB,
             FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
+            TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
             SELECTION_ROW_REFRESH_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
@@ -155,8 +190,23 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="refresh_selection_rows",
+                to_stage_code="selection_row_browser_fallback",
+                condition="one or more selection row refresh jobs returned fallback_required",
+            ),
+            TransitionDefinition(
+                from_stage_code="selection_row_browser_fallback",
+                to_stage_code="resume_selection_rows_after_browser_fallback",
+                condition="browser fallback task_executions produced resumable results",
+            ),
+            TransitionDefinition(
+                from_stage_code="resume_selection_rows_after_browser_fallback",
                 to_stage_code="ready_for_summary",
-                condition="selection row refresh jobs are terminal",
+                condition="resumed selection row refresh jobs are terminal",
+            ),
+            TransitionDefinition(
+                from_stage_code="refresh_selection_rows",
+                to_stage_code="ready_for_summary",
+                condition="selection row refresh jobs are terminal without browser fallback requirement",
             ),
         ),
         summary_policy=notification_summary_policy(

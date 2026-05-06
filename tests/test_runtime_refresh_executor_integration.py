@@ -10,6 +10,10 @@ from automation_business_scaffold.contracts.handler.api import (
     build_api_handler_registry,
     register_api_handler,
 )
+from automation_business_scaffold.contracts.handler.browser import (
+    build_browser_handler_registry,
+    register_browser_handler,
+)
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
     HandlerError,
@@ -117,6 +121,14 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
         )
 
     def fake_tiktok_product_request_fetch(context: HandlerContext) -> HandlerResult:
+        normalized = context.payload.get("normalized_product_result")
+        if isinstance(normalized, dict) and normalized:
+            _emit_progress(context, "tiktok_request_fetch_from_browser_result")
+            return HandlerResult.success(
+                context,
+                summary={"transport": "browser_resume"},
+                result={"normalized_product_result": normalized},
+            )
         if request_mode == "fallback":
             _emit_progress(context, "tiktok_request_blocked")
             error = HandlerError(
@@ -222,7 +234,12 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
 
 
 def _bind_refresh_browser_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = build_browser_handler_registry()
+
     def fake_tiktok_product_browser_fetch(context: HandlerContext) -> HandlerResult:
+        assert context.runtime_table == "task_execution"
+        assert context.worker_type == "browser_worker"
+        assert context.payload["stage_code"] == "browser_fallback"
         _emit_progress(context, "browser_fallback_collected")
         return HandlerResult.success(
             context,
@@ -243,7 +260,9 @@ def _bind_refresh_browser_handler(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
 
-    monkeypatch.setattr(row_flow_module, "tiktok_product_browser_fetch_handler", fake_tiktok_product_browser_fetch)
+    register_browser_handler(registry, "tiktok_product_browser_fetch", fake_tiktok_product_browser_fetch)
+    monkeypatch.setattr(runtime_orchestrator, "build_browser_handler_registry", lambda: registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "BROWSER_HANDLER_REGISTRY", registry, raising=False)
 
 
 def _emit_progress(context: HandlerContext, stage_code: str) -> None:
@@ -345,9 +364,50 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_worker["request_id"] == request_id
     assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
     assert row_worker["api_worker_job"]["status"] == "success"
-    assert row_worker["api_worker_job"]["result"]["row_status"] == "success"
+    assert row_worker["api_worker_job"]["result"]["handler_result"]["status"] == "fallback_required"
     assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_fallback_used"] is True
-    assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_supervisor"]["execution_mode"] == "inline"
+
+    fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert fallback_wait["request_id"] == request_id
+    assert fallback_wait["request_status"] == "waiting_children"
+    assert fallback_wait["current_stage"] == "browser_fallback"
+    fallback_executions = [
+        execution
+        for execution in fallback_wait.get("executions", [])
+        if str((execution.get("payload") or {}).get("stage_code") or "") == "browser_fallback"
+    ]
+    assert len(fallback_executions) == 1
+    assert fallback_executions[0]["item_code"] == "tiktok_product_browser_fetch"
+
+    browser_worker = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
+    assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
+    assert browser_worker["execution_status"] == "success"
+    assert browser_worker["execution"]["payload"]["source_record_id"] == SOURCE_RECORD_ID
+    assert browser_worker["parent_updates"] == [
+        {
+            "request_id": request_id,
+            "stage_code": "resume_competitor_rows_after_browser_fallback",
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]
+
+    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert resume_wait["request_id"] == request_id
+    assert resume_wait["request_status"] == "waiting_children"
+    assert resume_wait["current_stage"] == "resume_competitor_rows_after_browser_fallback"
+    resume_jobs = _stage_jobs(
+        resume_wait,
+        stage_code="resume_competitor_rows_after_browser_fallback",
+        job_code="competitor_row_refresh",
+    )
+    assert len(resume_jobs) == 1
+    assert resume_jobs[0]["payload"]["normalized_product_result"]["source"] == "browser"
+    assert resume_jobs[0]["payload"]["force_fallback"] is False
+
+    resumed_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert resumed_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
+    assert resumed_row["api_worker_job"]["result"]["row_status"] == "success"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -358,12 +418,13 @@ def test_refresh_executor_integration_browser_fallback_path(
     status_payload = _status(runtime_db_url, request_id)
     row_result = status_payload["result"]["row_results"][0]
     assert row_result["row_status"] == "success"
-    assert row_result["tiktok_status"] == "fallback_required"
+    assert row_result["tiktok_status"] == "success"
     assert row_result["browser_status"] == "success"
     assert row_result["media_status"] == "success"
     assert row_result["fact_status"] == "success"
     assert row_result["writeback_status"] == "success"
     assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["browser_fallback"]["total_count"] == 1
 
 
 def test_refresh_executor_real_business_e2e_with_bound_handlers(

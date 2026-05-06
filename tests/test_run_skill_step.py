@@ -137,6 +137,32 @@ def test_lightweight_submitter_supports_selection_keyword_search():
     assert submitter is runner.run_search_keyword_selection_products_request
 
 
+def test_lightweight_submit_rejects_worker_control_actions(tmp_path, monkeypatch):
+    module = _load_lightweight_submit_module()
+    result_file = tmp_path / "result.json"
+
+    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("worker control action crossed the skill submit boundary")
+
+    monkeypatch.setattr(module, "_load_submitter", fail_if_called)
+
+    with pytest.raises(ValueError, match="control_action=submit"):
+        module.main(
+            [
+                "--install-dir",
+                str(tmp_path),
+                "--task-name",
+                "search_keyword_selection_products",
+                "--params-json",
+                json.dumps({"control_action": "api_worker_once"}),
+                "--result-file",
+                str(result_file),
+            ]
+        )
+
+    assert not result_file.exists()
+
+
 def test_resolve_browser_target_ignores_skill_local_browser_defaults(tmp_path, monkeypatch):
     module = _load_resolve_browser_target_module()
     skill_env = tmp_path / "skills" / "mujitask-tiktok-feishu-sync" / "skill.local.env"

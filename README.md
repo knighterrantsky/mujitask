@@ -215,7 +215,7 @@ automation-business-scaffold-run run \
 | --- | --- |
 | `.env` | 本地 agent / browser profile / 通用调试配置 |
 | `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
-| `scripts/execution_control/executor.local.env` | Runtime DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
+| `scripts/execution_control/executor.local.env` | Runtime DB、Fact DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
 | `skills/mujitask-tiktok-feishu-sync/skill.local.env` | skill 固定业务输入配置；正式 skill submit 不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
 
 当前代码自动加载的优先级是：

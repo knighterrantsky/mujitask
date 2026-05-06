@@ -612,6 +612,221 @@ def test_selection_keyword_executor_dispatches_selection_row_refresh(
     assert status_payload["result"]["row_results"][0]["feishu_row"]["fields"]["备注"] == f"通过搜索关键字：{SEARCH_QUERY}"
 
 
+def test_selection_keyword_executor_dispatches_row_browser_fallback_task_execution(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = build_api_handler_registry()
+    browser_registry = build_browser_handler_registry()
+
+    def fake_keyword_seed_import(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            summary={"candidate_count": 1, "written_count": 1},
+            result={
+                "search_parameters": dict(context.payload.get("search_request") or {}),
+                "normalized_candidates": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "source_context": {"product_id": PRODUCT_ID},
+                    }
+                ],
+                "seed_contexts": [
+                    {
+                        "candidate_key": f"product:{PRODUCT_ID}",
+                        "business_entity_key": f"product:{PRODUCT_ID}",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "product_url": PRODUCT_URL,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                        "product_id": PRODUCT_ID,
+                        "product_url": PRODUCT_URL,
+                        "normalized_product_url": PRODUCT_URL,
+                        "source_record_id": SEED_RECORD_ID,
+                        "seed_status": "success",
+                        "feishu_row": {"record_id": SEED_RECORD_ID, "fields": {"商品ID": PRODUCT_ID}},
+                        "target_record_ids": [SEED_RECORD_ID],
+                    }
+                ],
+                "seed_write_results": [{"source_record_id": SEED_RECORD_ID, "status": "success"}],
+            },
+        )
+
+    def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
+        if context.payload["stage_code"] == "refresh_selection_rows":
+            error = HandlerError(
+                error_type="browser_fallback_required",
+                error_code="tiktok_product_browser_fetch_required",
+                message="browser fallback required",
+                retryable=False,
+                fallback_allowed=True,
+                fallback_reason="request_blocked",
+            )
+            browser_payload = {
+                "product_identity": dict(context.payload["product_identity"]),
+                "normalized_product_url": context.payload["normalized_product_url"],
+                "source_record_id": context.payload["source_record_id"],
+                "fallback_source_job_id": context.job_id,
+            }
+            return HandlerResult.fallback_required(
+                context,
+                error=error,
+                summary={
+                    "row_status": "fallback_required",
+                    "fallback_required": True,
+                    "fallback_handler": "tiktok_product_browser_fetch",
+                },
+                result={
+                    "source_record_id": context.payload["source_record_id"],
+                    "business_entity_key": context.payload["business_key"],
+                    "row_status": "fallback_required",
+                    "fallback_required": True,
+                    "fallback_handler": "tiktok_product_browser_fetch",
+                    "fallback_reason": "request_blocked",
+                    "browser_fallback_payload": browser_payload,
+                    "step_timeline": [
+                        {"step": "tiktok_request", "status": "fallback_required"},
+                        {"step": "browser_fallback", "status": "fallback_required"},
+                    ],
+                    "runtime_evidence": {"browser_fallback_used": True},
+                },
+                next_action=HandlerNextAction(type="browser_fallback", payload=browser_payload),
+            )
+        assert context.payload["stage_code"] == "resume_selection_rows_after_browser_fallback"
+        assert context.payload["normalized_product_result"]["source"] == "browser"
+        return HandlerResult.success(
+            context,
+            summary={"row_status": "success"},
+            result={
+                "row_status": "success",
+                "step_timeline": [
+                    {"step": "tiktok_request", "status": "success"},
+                    {"step": "browser_fallback", "status": "success"},
+                    {"step": "media_sync", "status": "success"},
+                    {"step": "fastmoss_fetch", "status": "success"},
+                    {"step": "fact_db_upsert", "status": "success"},
+                    {"step": "feishu_writeback", "status": "success"},
+                ],
+            },
+        )
+
+    def fake_tiktok_product_browser_fetch(context: HandlerContext) -> HandlerResult:
+        assert context.runtime_table == "task_execution"
+        assert context.worker_type == "browser_worker"
+        assert context.payload["stage_code"] == "selection_row_browser_fallback"
+        return HandlerResult.success(
+            context,
+            summary={"transport": "browser"},
+            result={
+                "normalized_product_result": {
+                    "product_id": PRODUCT_ID,
+                    "product_url": PRODUCT_URL,
+                    "source": "browser",
+                }
+            },
+        )
+
+    register_api_handler(registry, "keyword_seed_import", fake_keyword_seed_import)
+    register_api_handler(registry, "selection_row_refresh", fake_selection_row_refresh)
+    register_browser_handler(browser_registry, "tiktok_product_browser_fetch", fake_tiktok_product_browser_fetch)
+    monkeypatch.setattr(runtime_orchestrator, "build_api_handler_registry", lambda: registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "build_browser_handler_registry", lambda: browser_registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "BROWSER_HANDLER_REGISTRY", browser_registry, raising=False)
+
+    task = SearchKeywordSelectionProductsTask()
+    submitted = task.run_runtime_request(
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            search_query=SEARCH_QUERY,
+            selection_table_ref=SELECTION_TABLE_REF,
+            reply_target="reply://selection-browser-fallback",
+            source_channel_code="console",
+        )
+    )
+    request_id = str(submitted["request_id"])
+
+    runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    first_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert first_row["api_worker_job"]["status"] == "success"
+    assert first_row["api_worker_job"]["result"]["handler_result"]["status"] == "fallback_required"
+
+    fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert fallback_wait["current_stage"] == "selection_row_browser_fallback"
+    status_after_fallback_wait = _selection_status(runtime_db_url, request_id)
+    assert status_after_fallback_wait["current_stage"] == "selection_row_browser_fallback"
+    fallback_executions = _stage_executions(
+        fallback_wait,
+        stage_code="selection_row_browser_fallback",
+        item_code="tiktok_product_browser_fetch",
+    )
+    assert len(fallback_executions) == 1
+
+    browser_worker = runtime_orchestrator.execute_browser_once(_runtime_params(runtime_db_url))
+    assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
+    assert browser_worker["execution_status"] == "success"
+    assert browser_worker["execution"]["payload"]["source_record_id"] == SEED_RECORD_ID
+    assert browser_worker["parent_updates"] == [
+        {
+            "request_id": request_id,
+            "stage_code": "resume_selection_rows_after_browser_fallback",
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]
+    status_after_browser = _selection_status(runtime_db_url, request_id)
+    assert status_after_browser["current_stage"] == "resume_selection_rows_after_browser_fallback"
+    stored_execution = _stage_executions(
+        status_after_browser,
+        stage_code="selection_row_browser_fallback",
+        item_code="tiktok_product_browser_fetch",
+    )[0]
+    assert stored_execution["result"]["handler_result"]["result"]["normalized_product_result"]["source"] == "browser"
+    selection_runtime = importlib.import_module(
+        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products"
+    )
+    settings = runtime_orchestrator.build_runtime_settings(_runtime_params(runtime_db_url))
+    store = runtime_orchestrator.create_runtime_store(settings)
+    assert selection_runtime._selection_row_browser_fallback_candidates(  # noqa: SLF001
+        store=store,
+        request_id=request_id,
+    )
+    assert selection_runtime._selection_row_browser_resume_candidates(  # noqa: SLF001
+        store=store,
+        request_id=request_id,
+    )
+    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert resume_wait["current_stage"] == "resume_selection_rows_after_browser_fallback"
+    resume_jobs = _stage_jobs(
+        resume_wait,
+        stage_code="resume_selection_rows_after_browser_fallback",
+        job_code="selection_row_refresh",
+    )
+    assert len(resume_jobs) == 1
+
+    resumed_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert resumed_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
+    finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert finalized["request_id"] == request_id
+    assert finalized["request_status"] == "success"
+    assert finalized["summary"]["final_status"] == "success"
+    assert finalized["result"]["row_results"][0]["row_status"] == "success"
+    assert finalized["result"]["row_results"][0]["browser_status"] == "success"
+
+
 def test_keyword_executor_passes_zero_candidate_limit_to_seed_import(
     runtime_db_url: str,
     monkeypatch: pytest.MonkeyPatch,

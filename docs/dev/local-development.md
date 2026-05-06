@@ -47,6 +47,7 @@ cp skills/mujitask-tiktok-feishu-sync/skill.local.env.example \
 至少需要确认这些变量:
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`（Runtime DB 连接）
+- `TK_FACT_DB_URL`（Fact DB 连接；本地可和 Runtime DB 指向同一个 Postgres database）
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`（产物根目录）
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`（MinIO bucket）
 - `BUSINESS_EXECUTION_CONTROL_WORKER_ID`（Worker 标识）

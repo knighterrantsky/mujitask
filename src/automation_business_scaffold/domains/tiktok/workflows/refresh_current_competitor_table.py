@@ -5,9 +5,11 @@ from automation_framework.runtime import WorkflowSpec
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
     COMPETITOR_ROW_REFRESH_JOB,
+    FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
     FEISHU_TABLE_READ_JOB,
     FEISHU_TABLE_WRITE_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
+    TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
     DEFAULT_CONTRACT_REVISION,
@@ -98,6 +100,39 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
+                stage_code="browser_fallback",
+                description="Dispatch browser fallback executions requested by competitor row refresh jobs.",
+                execution_mode="worker_jobs",
+                enter_condition="competitor_row_refresh jobs returned fallback_required",
+                exit_condition="browser fallback task_executions are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="tiktok_product_browser_fetch",
+                        flow_code="tiktok_product_browser_fetch",
+                        result_consumer="normalized product result for competitor row refresh resume",
+                    ),
+                    StageJobBinding(
+                        job_code="fastmoss_security_browser_resolve",
+                        flow_code="fastmoss_security_browser_resolve",
+                        result_consumer="cookie cache metadata for competitor row refresh resume",
+                    ),
+                ),
+            ),
+            StageDefinition(
+                stage_code="resume_competitor_rows_after_browser_fallback",
+                description="Retry only competitor row refresh jobs whose browser fallback execution succeeded.",
+                execution_mode="worker_jobs",
+                enter_condition="browser fallback produced resumable row inputs",
+                exit_condition="resumed competitor row refresh jobs are terminal",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="competitor_row_refresh",
+                        flow_code="competitor_row_pipeline",
+                        result_consumer="row terminal result after browser fallback",
+                    ),
+                ),
+            ),
+            StageDefinition(
                 stage_code="ready_for_summary",
                 description="Aggregate row outcomes and enqueue the final notification payload.",
                 execution_mode="summary",
@@ -116,6 +151,8 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             FEISHU_TABLE_READ_JOB,
             FEISHU_TABLE_WRITE_JOB,
             COMPETITOR_ROW_REFRESH_JOB,
+            TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
+            FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
@@ -131,8 +168,23 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="collect_product_data",
+                to_stage_code="browser_fallback",
+                condition="one or more competitor row refresh jobs returned fallback_required",
+            ),
+            TransitionDefinition(
+                from_stage_code="browser_fallback",
+                to_stage_code="resume_competitor_rows_after_browser_fallback",
+                condition="browser fallback task_executions produced resumable row inputs",
+            ),
+            TransitionDefinition(
+                from_stage_code="resume_competitor_rows_after_browser_fallback",
                 to_stage_code="ready_for_summary",
-                condition="competitor row pipeline jobs are terminal",
+                condition="resumed competitor row refresh jobs are terminal",
+            ),
+            TransitionDefinition(
+                from_stage_code="collect_product_data",
+                to_stage_code="ready_for_summary",
+                condition="competitor row pipeline jobs are terminal without browser fallback requirement",
             ),
         ),
         summary_policy=notification_summary_policy(

@@ -78,6 +78,14 @@ jobs:
       system: fastmoss
       module: automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler
       export: fastmoss_security_browser_resolve_handler
+  - code: tiktok_product_browser_fetch
+    module: automation_business_scaffold.domains.tiktok.jobs.tiktok_product_browser_fetch
+    handler_code: tiktok_product_browser_fetch
+    capability:
+      role: browser
+      system: tiktok
+      module: automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler
+      export: tiktok_product_browser_fetch_handler
   - code: task_completed_notification
     module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification
     handler_code: outbox_dispatch
