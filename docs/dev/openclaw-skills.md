@@ -51,12 +51,12 @@ skill 不再负责：
 
 ## 3. 当前正式入口
 
-### 3.1 TK 选品表补全入口
+### 3.1 TK 选品采集入口
 
 用户语义示例：
 
 - `帮我补全 TK 选品表`
-- `TK 选品表补全`
+- `TK 选品采集`
 - `补全 TK 选品收集`
 
 对应入口：
@@ -69,7 +69,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_selection_table_complete_step.sh
 
 - `tiktok_fastmoss_product_ingest`
 
-### 3.2 竞品表刷新入口
+### 3.2 竞品采集入口
 
 用户语义示例：
 
@@ -116,7 +116,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 规则：
 
-- 不要把“选品表”理解成“竞品表”；`补全 TK 选品表` 且没有 URL 时，走整张选品表补全入口。
+- 不要把“选品表”理解成“竞品表”；`补全 TK 选品表` 且没有 URL 时，走整张选品采集入口。
 - 如果用户没有明确给出 `7日销量阈值`，默认使用 `200`
 - `MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_TK_*_TABLE_ID`、`MUJITASK_FEISHU_TK_*_VIEW_ID`、`MUJITASK_FEISHU_ACCESS_TOKEN`、`FASTMOSS_PHONE`、`FASTMOSS_PASSWORD` 固定来自 `skill.local.env`
 - Runtime DB / Fact DB / MinIO-S3 / 浏览器 profile 默认配置来自项目自动加载的运行配置，不放在 `skill.local.env`
@@ -194,13 +194,13 @@ Agent workspace 与项目安装目录的边界:
 
 ### 7.1 `run_skill_step.py` 现状约束
 
-`run_skill_step.py` 当前只保留正式 submit wrapper 职责：命令解析、飞书表路由、OpenClaw 回执、profile ref 解析调用、业务 payload 拼装和 lightweight submit。旧 direct run、status/result、worker、cleanup、seed 等兼容入口已经移除。
+`run_skill_step.py` 当前只保留正式 submit wrapper 职责：命令解析、飞书表路由、OpenClaw 回执、profile ref 解析调用、业务 payload 拼装和 lightweight submit。direct run、status/result、worker、cleanup、seed 等非正式入口不属于当前 skill 职责。
 
 - 该文件不得再成为 Runtime DB、Fact DB、对象存储或浏览器 provider/profile_id/workspace_id 的配置 owner。
 - 新增正式入口时，只能在这里做业务参数组装和 submit 调用；workflow 编排、handler fallback、事实持久化、对象存储同步和结果 projection 必须落到 domain / capability / control_plane owner。
 - 浏览器默认 profile 只能通过项目配置解析；`skill.local.env` 不再保存 `BROWSER_*`。
 - 运行资源 preflight 必须由 Task Request Entry / Runtime 控制面执行，不能在 skill wrapper 中以参数透传绕过。
-- 后续如果继续拆分，只能按“命令解析、业务 payload builder、OpenClaw 回执”分离，而不是恢复兼容入口或新增跨层 helper / workflow 旁路。
+- 后续如果继续拆分，只能按“命令解析、业务 payload builder、OpenClaw 回执”分离，不恢复旁路入口，也不新增跨层 helper / workflow 旁路。
 
 ## 8. 当前推荐排障顺序
 

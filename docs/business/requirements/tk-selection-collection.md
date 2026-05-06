@@ -1,9 +1,9 @@
-# TK选品收集表数据采集需求
+# 选品采集需求
 
 更新时间：`2026-05-05`
 
 - 入口任务：`tiktok_fastmoss_product_ingest`
-- 触发方式：OpenClaw 定时或手动触发；关键词新增选品流程写入新行后也复用同一行级采集口径
+- 触发方式：OpenClaw 定时或手动触发；关键词搜索选品写入流程写入新行后也复用同一行级采集口径
 - 业务主表：`TK选品收集`
 - 共用口径：表结构、自动维护字段、非自动维护字段以 [../business-requirements.md](../business-requirements.md) 为准。
 
@@ -11,7 +11,7 @@
 
 本流程描述 `TK选品收集` 的商品数据采集需求：系统从选品表中的商品身份信息出发，采集 TikTok 商品详情、FastMoss 商品数据、商品媒体与图表素材，并按选品表字段口径写回。
 
-该流程不是一次性“扩展需求”。它是 `TK选品收集` 的稳定数据采集口径，服务两类入口：
+该流程是 `TK选品收集` 的稳定数据采集口径，服务两类入口：
 
 1. 扫描 `TK选品收集` 中已有记录，补齐自动维护字段。
 2. 其他选品入口新建选品行后，复用同一行级采集逻辑补齐详情字段。
@@ -40,7 +40,7 @@
 4. 至少一个必填补全字段为空的记录进入候选队列。
 5. `商品状态` 为"已下架/区域不可售"或"链接不可访问"的记录跳过。
 6. `商品链接`、`记录日期`、可选补充字段、`文本`、`关键词`、`差评整理` 不参与空值判断。
-7. 关键词新增选品流程新建的选品行，直接进入同一行级采集逻辑；已存在行不触发采集 fan-out。
+7. 关键词搜索选品写入流程新建的选品行，直接进入同一行级采集逻辑；已存在行不触发采集 fan-out。
 
 ### 3.2 商品定位与 URL 校验
 
@@ -141,7 +141,7 @@
 
 1. 用户可以通过 OpenClaw 手动触发 `TK选品收集` 数据采集。
 2. OpenClaw 可以按配置定时触发整张选品表扫描。
-3. 关键词新增选品流程写入新选品行后，自动复用本流程的行级数据采集逻辑。
+3. 关键词搜索选品写入流程写入新选品行后，自动复用本流程的行级数据采集逻辑。
 4. 每条候选记录独立采集、独立写回；单行失败不应阻塞其他行。
 
 ## 5. 验收口径
@@ -182,6 +182,5 @@
 
 - [../business-requirements.md](../business-requirements.md)
 - [search-keyword-selection-products.md](./search-keyword-selection-products.md)
-- [../../arch/workflow-selection-analysis-design.md](../../arch/workflow-selection-analysis-design.md)
-- [../../arch/workflow-selection-table-expand-design.md](../../arch/workflow-selection-table-expand-design.md)
+- [../../arch/workflow-selection-table-design.md](../../arch/workflow-selection-table-design.md)
 - [../../contracts/fields/feishu-tk-selection.yaml](../../contracts/fields/feishu-tk-selection.yaml)

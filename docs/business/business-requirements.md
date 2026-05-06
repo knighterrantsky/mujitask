@@ -283,7 +283,7 @@
 其中：
 
 - `文本` 是客户自行维护的标记字段，系统绝不写入。
-- `关键词` 保留已有值，不覆盖；关键词新增选品流程创建种子行时可写入初始关键词来源。
+- `关键词` 保留已有值，不覆盖；关键词搜索选品写入流程创建种子行时可写入初始关键词来源。
 - `商品状态` 仅在 URL 校验失败时写入"链接不可访问"，或商品不可访问时写入"已下架/区域不可售"，不参与待更新判断。
 - `差评整理` 需人工分析，不纳入自动采集。
 
@@ -293,11 +293,11 @@
 
 | 业务流程 | task_code | 触发方式 | 涉及表 | 独立需求文档 | 关联设计文档 |
 | --- | --- | --- | --- | --- | --- |
-| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
-| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
+| 竞品采集 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
+| 关键词搜索竞品写入 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
-| 选品表数据采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md) | [workflow-selection-analysis-design.md](../arch/workflow-selection-analysis-design.md) |
-| 关键词新增选品 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-expand-design.md](../arch/workflow-selection-table-expand-design.md) |
+| 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
+| 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 
 ### 4.2 变更隔离规则
 
@@ -314,7 +314,7 @@
 
 | 需求标题 | 来源 | 涉及表 | 目标说明 | 待澄清点 | 当前假设 | 状态 | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `TK选品收集表数据采集` | `2026-04-14 新增四表需求` | `TK选品收集` | 扫描选品表记录，对自动维护字段存在空值的商品触发 TikTok + FastMoss 采集并补齐字段；URL 无效时标记"链接不可访问"；图表类字段在写回前按需渲染 PNG。 | 店铺入口等独立选品入口需求仍待后续澄清。 | 已提升为正式流程需求文档 [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md)；关键词搜索入口已提升为 [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)。 | `已澄清` | `P1` |
+| `选品采集` | `2026-04-14 新增四表需求` | `TK选品收集` | 扫描选品表记录，对自动维护字段存在空值的商品触发 TikTok + FastMoss 采集并补齐字段；URL 无效时标记"链接不可访问"；图表类字段在写回前按需渲染 PNG。 | 店铺入口等独立选品入口需求仍待后续澄清。 | 已提升为正式流程需求文档 [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)；关键词搜索选品写入已提升为 [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)。 | `已澄清` | `P1` |
 | `TK达人池表扩展` | `2026-04-14 新增四表需求` | `TK达人池` | 基于 `TK竞品收集` 中可跳转到 FastMoss 商品详情的商品行，筛选并沉淀满足条件的达人，同时维护达人画像与关联商品字段。 | 当前范围内无新增待澄清点；如后续要求“达人联系方式必须非空”或“合作店铺自动新增新选项”，再单独开启下一轮澄清。 | `TK达人池` 保持一人一行，按 `达人ID` 做 upsert；筛选口径固定为“商品页达人销量 `sold_count > 50` 且粉丝数 `> 5000`”；同一达人命中多个商品时，在原行累加 `带货商品图`、`关联商品销量`、`关联节日`，并合并 `合作店铺`；`合作商品数` 不作为本期更新字段；`粉丝数`、`带货视频 GMV`、`带货直播 GMV` 写入飞书时按整数 `W` 单位四舍五入展示，小于 `10000` 显示 `小于1W`；`达人联系方式` 有多个时优先邮箱，否则第一个有效联系方式，没有则不写入；首次插入达人行时同时写 `记录日期` 和 `更新日期`，后续新商品合并时只刷新 `更新日期`；`检查达人名称是否重复` 不参与写入。 | `已澄清` | `P1` |
 | `TK达人建联表扩展` | `2026-04-14 新增四表需求` | `TK达人建联表` | 以商品与达人建联为入口，跟踪达人是否按约发布视频，并补充视频播放量。 | 是否需要新增 `达人ID` 作为硬键未定；30 天未履约规则的起算点未定；视频监控频率未定；TikTok 视频链接播放量获取方式未定。 | 先按建联事件粒度理解，一行代表一次“商品建联达人”记录，后续应补 `达人ID` 再做稳定自动化。 | `待澄清` | `P1` |
 | `TK合作爆款视频表扩展` | `2026-04-14 新增四表需求` | `TK合作爆款视频` | 根据客户提供的 `skuid` 进入 FastMoss 商品详情页，沉淀播放量大于 20 万的关联视频。 | 客户提供的 `skuid` 是商品 ID 还是变体 SKU 未定；关联视频筛选范围未定；回写字段口径未定。 | 先按商品详情页维度理解，一行代表一条满足阈值的视频记录，后续再确认 `skuid` 的真实定义。 | `待澄清` | `P1` |
@@ -337,7 +337,7 @@
 - 需求版本：`v3.3`
 - 文档版本：`v3.5.0`
 - 版本日期：`2026-05-05`
-- 本次变更：补充关键词新增选品正式流程文档；将选品表自动采集文档口径调整为稳定的数据采集需求。
+- 本次变更：补充关键词搜索选品写入正式流程文档；将选品采集文档口径调整为稳定的数据采集需求。
 
 ## 8. 关联文档
 
@@ -345,6 +345,6 @@
 - [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md)
 - [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md)
 - [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md)
-- [requirements/tk-selection-collection-expand.md](./requirements/tk-selection-collection-expand.md)
+- [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)
 - [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)
 - [../arch/README.md](../arch/README.md)

@@ -601,7 +601,7 @@ def test_selection_keyword_executor_dispatches_selection_row_refresh(
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["result"]["stage_summary"]["refresh_selection_rows"]["total_count"] == 1
     message_text = finalized["outbox"][0]["payload"]["message_text"]
-    assert "关键词选品入库完成" in message_text
+    assert "关键词搜索选品写入完成" in message_text
     assert f"关键词：{SEARCH_QUERY}" in message_text
     assert "候选：1 条" in message_text
     assert "详情成功：1 条" in message_text

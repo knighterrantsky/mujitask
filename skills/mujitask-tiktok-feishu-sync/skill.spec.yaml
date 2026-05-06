@@ -104,8 +104,8 @@ inputs:
 intents:
   - id: competitor_table_refresh
     kind: formal_workflow
-    title: 竞品表刷新
-    business_flow_name: 竞品表定时刷新
+    title: 竞品采集
+    business_flow_name: 竞品采集
     task_code: refresh_current_competitor_table
     target_tables:
       - TK竞品收集
@@ -130,8 +130,8 @@ intents:
 
   - id: keyword_competitor_search
     kind: formal_workflow
-    title: 关键词新增竞品
-    business_flow_name: 关键词新增竞品
+    title: 关键词搜索竞品写入
+    business_flow_name: 关键词搜索竞品写入
     task_code: search_keyword_competitor_products
     target_tables:
       - TK竞品收集
@@ -187,18 +187,17 @@ intents:
 
   - id: selection_table_ingest
     kind: formal_workflow
-    title: 选品表数据采集
-    business_flow_name: 选品表数据采集
+    title: 选品采集
+    business_flow_name: 选品采集
     task_code: tiktok_fastmoss_product_ingest
     target_tables:
       - TK选品收集
     trigger_mode_from_requirements: OpenClaw scheduled or manual trigger
     source_documents:
       requirements:
-        - docs/business/requirements/tk-selection-collection-expand.md
+        - docs/business/requirements/tk-selection-collection.md
       design:
-        - docs/arch/workflow-selection-analysis-design.md
-        - docs/arch/workflow-selection-table-expand-design.md
+        - docs/arch/workflow-selection-table-design.md
     description: Use when the user asks to complete, ingest, update, or scan `TK选品收集`.
     behavior_summary:
       - This workflow scans existing selection records and fills missing automatically maintained fields.
@@ -214,8 +213,8 @@ intents:
 
   - id: keyword_selection_search
     kind: formal_workflow
-    title: 关键词新增选品
-    business_flow_name: 关键词新增选品
+    title: 关键词搜索选品写入
+    business_flow_name: 关键词搜索选品写入
     task_code: search_keyword_selection_products
     target_tables:
       - TK选品收集
@@ -224,7 +223,7 @@ intents:
       requirements:
         - docs/business/requirements/search-keyword-selection-products.md
       design:
-        - docs/arch/workflow-selection-table-expand-design.md
+        - docs/arch/workflow-selection-table-design.md
     description: Use when the user asks to search keyword products and write new selection seed rows to `TK选品收集`.
     command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
     required_inputs:
@@ -350,7 +349,7 @@ final_checks:
   - Failure reply uses `任务提交失败：<short safe reason>`.
 
 examples:
-  - user: 手动跑一次当前 TK 竞品表刷新
+  - user: 手动跑一次竞品采集
     intent: competitor_table_refresh
     reply: "request_id: <request_id>"
   - user: 帮我查询关键字 east egg 的 7日销量大于200的 TK 商品，写入 TK竞品收集

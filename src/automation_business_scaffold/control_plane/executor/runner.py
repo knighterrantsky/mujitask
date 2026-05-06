@@ -270,6 +270,13 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
         current_stage = str(request.current_stage or "").strip() or workflow.entry_stage_code
 
         if current_stage == workflow.summary_policy.summary_stage_code:
+            parent_updates = runtime.release_request_after_child_completion(
+                store=store,
+                request_id=request.request_id,
+            )
+            if parent_updates:
+                details["parent_updates"] = parent_updates
+                continue
             payload = runtime.finalize_request(store=store, request=request, workflow=workflow)
             payload.update(
                 {
@@ -1036,7 +1043,9 @@ def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict
             active_count += 1
         elif handler_status == "skipped":
             skipped_count += 1
-        elif handler_status in {"success", "partial_success", "fallback_required"}:
+        elif handler_status == "fallback_required":
+            pass
+        elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
             failed_count += 1
@@ -1049,7 +1058,9 @@ def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict
             active_count += 1
         elif handler_status == "skipped":
             skipped_count += 1
-        elif handler_status in {"success", "partial_success", "fallback_required"}:
+        elif handler_status == "fallback_required":
+            pass
+        elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
             failed_count += 1

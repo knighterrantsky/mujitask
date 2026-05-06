@@ -165,8 +165,8 @@
 
 - Runtime workflow 和 handler contract 的稳定路由键不通过名称表达版本。
 - 兼容新增字段可以随代码同步，但必须有默认行为。
-- 破坏性变更需要先说明旧 Runtime job、旧 payload/result 消费方和迁移/回滚策略。
-- 当前代码中的历史兼容 ID 可以作为实现事实记录，但新的架构设计和新增 workflow 必须使用稳定语义 code。
+- 破坏性变更需要先说明既有 Runtime job、既有 payload/result 消费方和迁移/回滚策略。
+- 架构设计、新增 workflow 和对外文档只使用当前稳定语义 code；非正式入口 ID 不作为设计事实或对外名称。
 
 ### 4.1.2 生产数据库 DDL 约束
 
@@ -313,7 +313,7 @@ framework 相关 contract 不在本仓库维护。
 应同步:
 
 - `docs/arch/handler-contract-design.md`
-- `docs/arch/workflow-selection-analysis-design.md`
+- `docs/arch/workflow-selection-table-design.md`
 - 如影响 Fact 写入，更新 `docs/arch/fact-db-schema-design.md`
 
 不应同步:

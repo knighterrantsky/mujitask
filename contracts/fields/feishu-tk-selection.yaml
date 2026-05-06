@@ -11,12 +11,11 @@ business_truth:
   overview: docs/business/business-requirements.md
   reference:
     - docs/business/feishu-five-table-relationship-analysis.md
-    - docs/business/requirements/tk-selection-collection-expand.md
+    - docs/business/requirements/tk-selection-collection.md
     - docs/business/requirements/search-keyword-selection-products.md
-  requirement_note: TK 选品表数据采集按必填补全字段、系统运行字段和可选补充字段分层落地；关键词新增选品按 docs/business/requirements/search-keyword-selection-products.md 写入种子字段并复用行级采集。
+  requirement_note: 选品采集按必填补全字段、系统运行字段和可选补充字段分层落地；关键词搜索选品写入按 docs/business/requirements/search-keyword-selection-products.md 写入种子字段并复用行级采集。
 arch_truth:
-  - docs/arch/workflow-selection-table-expand-design.md
-  - docs/arch/workflow-selection-analysis-design.md
+  - docs/arch/workflow-selection-table-design.md
   - docs/arch/handler-contract-design.md
 
 identity_fields:

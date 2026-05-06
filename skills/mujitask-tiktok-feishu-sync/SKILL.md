@@ -34,7 +34,7 @@ Formal workflow requirements:
 - `refresh_current_competitor_table` -> `docs/business/requirements/refresh-current-competitor-table.md`
 - `search_keyword_competitor_products` -> `docs/business/requirements/search-keyword-competitor-products.md`
 - `sync_tk_influencer_pool` -> `docs/business/requirements/sync-tk-influencer-pool.md`
-- `tiktok_fastmoss_product_ingest` -> `docs/business/requirements/tk-selection-collection-expand.md`
+- `tiktok_fastmoss_product_ingest` -> `docs/business/requirements/tk-selection-collection.md`
 - `search_keyword_selection_products` -> `docs/business/requirements/search-keyword-selection-products.md`
 
 Design documents:
@@ -42,8 +42,8 @@ Design documents:
 - `refresh_current_competitor_table` -> `docs/arch/workflow-competitor-table-design.md`
 - `search_keyword_competitor_products` -> `docs/arch/workflow-competitor-table-design.md`
 - `sync_tk_influencer_pool` -> `docs/arch/workflow-influencer-pool-sync-design.md`
-- `tiktok_fastmoss_product_ingest` -> `docs/arch/workflow-selection-analysis-design.md`, `docs/arch/workflow-selection-table-expand-design.md`
-- `search_keyword_selection_products` -> `docs/arch/workflow-selection-table-expand-design.md`
+- `tiktok_fastmoss_product_ingest` -> `docs/arch/workflow-selection-table-design.md`
+- `search_keyword_selection_products` -> `docs/arch/workflow-selection-table-design.md`
 
 Do not copy detailed business rules, Runtime internals, credentials, table IDs, browser profiles, or troubleshooting runbooks into this skill. Use this skill as the routing and task-submission layer.
 
@@ -381,7 +381,7 @@ Before replying, verify:
 
 ## Examples
 
-User: 手动跑一次当前 TK 竞品表刷新
+User: 手动跑一次竞品采集
 Intent: `competitor_table_refresh`
 Reply:
 

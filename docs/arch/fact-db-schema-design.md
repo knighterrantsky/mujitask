@@ -339,7 +339,7 @@ raw response 通常不做覆盖式 upsert，因为它表达的是“某次采集
 
 ## 6. Workflow 写入路径
 
-### 6.1 选品分析 Workflow
+### 6.1 选品采集 Workflow
 
 ```mermaid
 flowchart TD

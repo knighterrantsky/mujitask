@@ -150,7 +150,10 @@ def finalize_request(
 
     counts = _aggregate_request_children(store, request_id=request.request_id)
     final_status = _determine_final_status(
-        force_result=force_result, row_jobs=row_jobs, counts=counts
+        force_result=force_result,
+        row_jobs=row_jobs,
+        row_results=row_results,
+        counts=counts,
     )
     summary = {
         "final_status": final_status,
@@ -1108,7 +1111,9 @@ def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict
             active_count += 1
         elif handler_status == "skipped":
             skipped_count += 1
-        elif handler_status in {"success", "partial_success", "fallback_required"}:
+        elif handler_status == "fallback_required":
+            pass
+        elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
             failed_count += 1
@@ -1121,7 +1126,9 @@ def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict
             active_count += 1
         elif handler_status == "skipped":
             skipped_count += 1
-        elif handler_status in {"success", "partial_success", "fallback_required"}:
+        elif handler_status == "fallback_required":
+            pass
+        elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
             failed_count += 1
@@ -1145,6 +1152,7 @@ def _determine_final_status(
     *,
     force_result: Mapping[str, Any] | None,
     row_jobs: list[dict[str, Any]],
+    row_results: list[dict[str, Any]],
     counts: Mapping[str, Any],
 ) -> str:
     if force_result and str(force_result.get("final_status") or "") in {
@@ -1153,6 +1161,15 @@ def _determine_final_status(
         "failed",
     }:
         return str(force_result["final_status"])
+    if row_results:
+        row_statuses = {str(row.get("row_status") or "") for row in row_results}
+        if row_statuses <= {"success", "skipped"} and "success" in row_statuses:
+            return "success"
+        if row_statuses <= {"skipped"}:
+            return "success"
+        if row_statuses & {"success", "partial_success", "skipped"}:
+            return "partial_success"
+        return "failed"
     if not row_jobs:
         return "failed"
     failed_count = int(counts.get("failed_count") or 0)

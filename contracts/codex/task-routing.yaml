@@ -90,7 +90,6 @@ routing:
       - tests/
     avoid_by_default:
       - docs/business/
-      - docs/arch/workflow-selection-analysis-design.md
     allowed_when:
       docs/business/: "Only read or edit when formal customer requirements are being added or changed."
       docs/arch/: "Read long architecture docs only when changing architecture boundaries, runtime contracts, or ownership."

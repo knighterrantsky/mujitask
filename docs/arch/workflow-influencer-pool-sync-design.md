@@ -25,7 +25,7 @@
 
 ## 3. Workflow
 
-正式 workflow_code 为 `sync_tk_influencer_pool`。正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；历史 framework 兼容入口不作为项目架构设计元素。
+正式 workflow_code 为 `sync_tk_influencer_pool`。正式 workflow contract 只描述 Runtime stage、job 和通用 handler 映射；非正式 framework 入口不作为项目架构设计元素。
 
 架构归一后，该 workflow 可表达为:
 

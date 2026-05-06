@@ -1049,6 +1049,79 @@ def _mark_api_job_fastmoss_security_fallback_required(
     )
 
 
+def _mark_competitor_row_refresh_fallback_required(
+    store: RuntimeStore,
+    *,
+    job_id: str,
+) -> None:
+    job = store.load_api_worker_job(job_id=job_id)
+    stage_code = str((job.get("payload") or {}).get("stage_code") or "")
+    payload = dict(job.get("payload") or {})
+    store.update_task_request(
+        request_id=str(job["request_id"]),
+        status="waiting_children",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=str(job["request_id"]),
+        job_code=str(job["job_code"]),
+    )
+    assert claimed is not None and claimed["job_id"] == job_id
+    browser_payload = {
+        "product_identity": dict(payload.get("product_identity") or {}),
+        "normalized_product_url": payload.get("normalized_product_url") or PRODUCT_URL,
+        "source_record_id": payload.get("source_record_id") or "seed-row-1",
+        "business_entity_key": payload.get("business_key") or f"product:{PRODUCT_ID}",
+        "fallback_source_job_id": job_id,
+    }
+    handler_result = {
+        "status": "fallback_required",
+        "handler_code": "competitor_row_refresh",
+        "request_id": str(job["request_id"]),
+        "job_id": job_id,
+        "summary": {
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": "tiktok_product_browser_fetch",
+        },
+        "result": {
+            "source_record_id": payload.get("source_record_id") or "seed-row-1",
+            "business_entity_key": payload.get("business_key") or f"product:{PRODUCT_ID}",
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": "tiktok_product_browser_fetch",
+            "fallback_reason": "request_blocked",
+            "browser_fallback_payload": browser_payload,
+            "step_timeline": [
+                {"step": "tiktok_request", "status": "fallback_required"},
+                {"step": "browser_fallback", "status": "fallback_required"},
+            ],
+            "runtime_evidence": {"browser_fallback_used": True},
+        },
+        "warnings": [],
+        "next_action": {"type": "browser_fallback", "payload": browser_payload},
+        "contract_revision": "product_fact_contract",
+        "error": {
+            "error_type": "browser_fallback_required",
+            "error_code": "tiktok_product_browser_fetch_required",
+            "message": "browser fallback required",
+            "retryable": False,
+            "fallback_allowed": True,
+            "fallback_reason": "request_blocked",
+        },
+    }
+    store.mark_api_worker_job_success(
+        job_id=job_id,
+        run_id=str(claimed["run_id"]),
+        summary=handler_result["summary"],
+        result={"handler_result": handler_result, **handler_result["result"]},
+        stage="browser_fallback_required",
+    )
+
+
 def _mark_browser_execution_success(
     store: RuntimeStore,
     *,
@@ -1293,7 +1366,7 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["outbox"][0]["event_type"] == "task_request.completed"
     message_text = finalized["outbox"][0]["payload"]["message_text"]
-    assert "关键词竞品入库完成" in message_text
+    assert "关键词搜索竞品写入完成" in message_text
     assert f"关键词：{SEARCH_QUERY}" in message_text
     assert "候选：1 条" in message_text
     assert "详情成功：1 条" in message_text
@@ -1458,6 +1531,113 @@ def test_keyword_runtime_fastmoss_security_browser_fallback_retries_original_sea
     seed_done = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
     assert seed_done["next_stage"] == "dispatch_row_refresh_jobs"
     assert seed_done["details"]["candidate_total_count"] == 1
+
+
+def test_keyword_runtime_row_browser_fallback_resumes_before_summary(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_keyword_request(runtime_db_url)
+    request, row_job = _advance_to_refresh_stage(store, request, workflow)
+
+    _mark_competitor_row_refresh_fallback_required(store, job_id=str(row_job["job_id"]))
+
+    request = store.load_task_request(request_id=request.request_id)
+    refresh_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="refresh_competitor_rows")
+    assert refresh_advance["next_stage"] == "browser_fallback"
+
+    request = store.load_task_request(request_id=request.request_id)
+    browser_wait = advance_stage(store=store, request=request, workflow=workflow, stage_code="browser_fallback")
+    assert browser_wait["action"] == "waiting"
+    execution = _latest_stage_execution(
+        store,
+        request_id=request.request_id,
+        stage_code="browser_fallback",
+        item_code="tiktok_product_browser_fetch",
+    )
+    assert execution.payload["source_record_id"] == "seed-row-1"
+    assert execution.payload["business_entity_key"] == f"product:{PRODUCT_ID}"
+
+    _mark_browser_execution_success(
+        store,
+        execution_id=execution.execution_id,
+        summary={"transport": "browser"},
+        result={
+            "normalized_product_result": {
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+                "source": "browser",
+            }
+        },
+    )
+
+    store.update_task_request(
+        request_id=request.request_id,
+        status="pending",
+        current_stage="ready_for_summary",
+        progress_stage="ready_for_summary",
+    )
+    recovered = release_request_after_child_completion(store, request_id=request.request_id)
+    assert recovered == [
+        {
+            "request_id": request.request_id,
+            "stage_code": "resume_competitor_rows_after_browser_fallback",
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]
+
+    request = store.load_task_request(request_id=request.request_id)
+    resume_wait = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="resume_competitor_rows_after_browser_fallback",
+    )
+    assert resume_wait["action"] == "waiting"
+    resume_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="resume_competitor_rows_after_browser_fallback",
+        job_code="competitor_row_refresh",
+    )
+    assert resume_job["payload"]["normalized_product_result"]["source"] == "browser"
+    assert resume_job["payload"]["browser_fallback_resolved"] is True
+
+    _mark_api_job_success(
+        store,
+        job_id=str(resume_job["job_id"]),
+        summary={"row_status": "success"},
+        result={
+            "row_status": "success",
+            "step_timeline": [
+                {"step": "tiktok_request", "status": "success"},
+                {"step": "browser_fallback", "status": "success"},
+                {"step": "media_sync", "status": "success"},
+                {"step": "fastmoss_fetch", "status": "success"},
+                {"step": "fact_db_upsert", "status": "success"},
+                {"step": "feishu_writeback", "status": "success"},
+            ],
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    resume_done = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="resume_competitor_rows_after_browser_fallback",
+    )
+    assert resume_done["next_stage"] == "ready_for_summary"
+
+    request = store.update_task_request(
+        request_id=request.request_id,
+        current_stage="ready_for_summary",
+        progress_stage="ready_for_summary",
+    )
+    finalized = finalize_request(store=store, request=request, workflow=workflow)
+    assert finalized["request_status"] == "success"
+    assert finalized["summary"]["final_status"] == "success"
+    assert finalized["result"]["row_results"][0]["row_status"] == "success"
+    assert finalized["result"]["row_results"][0]["browser_status"] == "success"
+    assert finalized["result"]["stage_summary"]["refresh_competitor_rows"]["statuses"]["fallback_required"] == 1
 
 
 def test_keyword_runtime_browser_fallback_path_finalizes(runtime_db_url: str) -> None:

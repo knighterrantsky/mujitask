@@ -14,11 +14,11 @@
 
 | 业务流程 | task_code | 触发方式 | 需求文档 |
 | --- | --- | --- | --- |
-| 竞品表定时刷新 | `refresh_current_competitor_table` | 每天定时任务 | [refresh-current-competitor-table.md](./refresh-current-competitor-table.md) |
-| 关键词新增竞品 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [search-keyword-competitor-products.md](./search-keyword-competitor-products.md) |
+| 竞品采集 | `refresh_current_competitor_table` | 每天定时任务 | [refresh-current-competitor-table.md](./refresh-current-competitor-table.md) |
+| 关键词搜索竞品写入 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [search-keyword-competitor-products.md](./search-keyword-competitor-products.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | [sync-tk-influencer-pool.md](./sync-tk-influencer-pool.md) |
-| 选品表数据采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | [tk-selection-collection-expand.md](./tk-selection-collection-expand.md) |
-| 关键词新增选品 | `search_keyword_selection_products` | OpenClaw 对话输入 | [search-keyword-selection-products.md](./search-keyword-selection-products.md) |
+| 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | [tk-selection-collection.md](./tk-selection-collection.md) |
+| 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | [search-keyword-selection-products.md](./search-keyword-selection-products.md) |
 
 ## 维护规则
 

@@ -165,7 +165,7 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             worker_type="api_worker",
             runtime_table="api_worker_job",
             purpose="Search FastMoss products and write keyword competitor seed rows as one business job.",
-            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词竞品入库-keyword_seed_import",
+            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词搜索竞品写入-keyword_seed_import",
             side_effects=("fastmoss.request", "feishu.write"),
         ),
         "product_creator_discovery": _contract(
@@ -253,7 +253,7 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             worker_type="api_worker",
             runtime_table="api_worker_job",
             purpose="Refresh one selection row as a serial pipeline that reuses existing step handlers.",
-            contract_reference="docs/arch/workflow-selection-table-expand-design.md#4-job-设计",
+            contract_reference="docs/arch/workflow-selection-table-design.md#4-job-设计",
             side_effects=("runtime_db", "feishu.write", "fact_db.write", "artifact.write", "fastmoss.request", "tiktok.request"),
         ),
     }
@@ -274,7 +274,7 @@ BROWSER_HANDLER_CONTRACTS = MappingProxyType(
             worker_type="browser_worker",
             runtime_table="task_execution",
             purpose="Resolve FastMoss search security verification in a real browser and refresh the cookie cache.",
-            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词竞品入库-keyword_seed_import",
+            contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词搜索竞品写入-keyword_seed_import",
             side_effects=("browser.security_resolve", "fastmoss.cookie_cache.write"),
         ),
     }

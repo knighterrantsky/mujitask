@@ -5,7 +5,8 @@ task_code: search_keyword_selection_products
 owner: business
 
 business_requirement: docs/business/requirements/search-keyword-selection-products.md
-business_requirement_note: 关键词新增选品 — FastMoss 搜索过滤后写入 TK选品收集种子行，再复用选品表行级数据采集。
+architecture_design: docs/arch/workflow-selection-table-design.md
+business_requirement_note: 关键词搜索选品写入 — FastMoss 搜索过滤后写入 TK选品收集种子行，再复用选品采集行级 pipeline。
 
 purpose: >
   Search FastMoss products by keyword, filter candidates before insertion, seed matching rows into
@@ -70,6 +71,7 @@ protected_invariants:
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.
   - selection_row_refresh may report fallback_required with fallback_handler and browser_fallback_payload, but must not import browser capability handlers or call supervisor/runloop inline.
   - selection_row_browser_fallback must enqueue task_execution rows and wait for browser-runloop terminal results before resume_selection_rows_after_browser_fallback.
+  - fallback_required, browser task_execution success, and seed write success are not detail refresh terminal statuses; ready_for_summary requires final row_status for every newly inserted seed row and no active browser/resume jobs.
 
 payload_defaults:
   sales_7d_threshold: 500

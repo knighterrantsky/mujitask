@@ -3,7 +3,7 @@ skill: mujitask-tiktok-feishu-sync
 
 cases:
   - id: competitor-table-refresh
-    user: 手动跑一次当前 TK 竞品表刷新
+    user: 手动跑一次竞品采集
     expected_intent: competitor_table_refresh
     expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "competitor_table_refresh"
     expected_task_code: refresh_current_competitor_table

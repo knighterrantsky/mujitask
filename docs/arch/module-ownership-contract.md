@@ -129,7 +129,7 @@ handler-to-handler 实现复用禁止规则:
 
 - 显式 re-export mapper / projection / handler / job / workflow 主函数。
 - 维护 `__all__` 作为业务导出面。
-- import 旧路径以制造兼容入口。
+- import 非正式路径以制造旁路入口。
 - 注册 handler、注册 mapper、连接外部 client 或读取配置。
 - 用 `__getattr__`、lazy import、module alias 隐藏真实实现位置。
 

@@ -3,6 +3,7 @@
 ## 本域覆盖
 
 - `tiktok_fastmoss_product_ingest`
+- `search_keyword_selection_products`
 - TikTok 商品 request-first 采集
 - FastMoss 商品详情采集
 - 媒体同步、Fact DB upsert、可选飞书写回
@@ -25,9 +26,9 @@
 
 ## 本域不可破坏的不变量
 
-- 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品分析专有数据。
+- 商品、店铺、达人、视频、媒体资产属于通用事实，不属于选品表投影专有数据。
 - TikTok 商品数据采集优先走 request/API 路径。
 - Browser 只作为 fallback，用于 request 失效、关键字段缺失或被风控阻断的场景。
-- `tiktok_fastmoss_product_ingest` 当前不是已沉淀的正式客户流程需求；不要从设计文档反推业务验收。
+- `tiktok_fastmoss_product_ingest` 与 `search_keyword_selection_products` 的正式客户口径以 `docs/business/requirements/` 下对应需求文档为准。
 - 新实现落在 `src/automation_business_scaffold/domains/tiktok/**`、`capabilities/**` 或 `control_plane/**`，legacy `business/` 目录已删除。
 - 完成本任务后遵守 `AGENTS.md` 的 Stop Protocol，不输出无关下一步建议。
