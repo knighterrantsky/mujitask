@@ -1,6 +1,63 @@
 from __future__ import annotations
 
-from .context import *
+from automation_business_scaffold.control_plane.reconciler.views import (
+    build_request_child_views,
+    summarize_child_status_counts,
+)
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text,
+)
+
+from .context.models import *  # noqa: F403
+from .context.runtime_views import *  # noqa: F403
+from .context.stage_inputs import *  # noqa: F403
+from .context.decision_models import *  # noqa: F403
+from .context.summary_inputs import *  # noqa: F403
+
+
+def _refresh_request_counts(*, store: RuntimeStore, request_id: str) -> None:
+    request = store.load_task_request(request_id=request_id)
+    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
+    executions = store.list_task_executions(request_id=request_id)
+    child_summary = summarize_child_status_counts(
+        build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions)
+    )
+    store.update_task_request(
+        request_id=request_id,
+        child_total_count=child_summary.total_count,
+        child_terminal_count=child_summary.terminal_count,
+        child_success_count=child_summary.success_count,
+        child_failed_count=child_summary.failed_count,
+        child_skipped_count=child_summary.skipped_count,
+        progress_stage=_current_stage(request),
+    )
+
+
+def _build_payload(*, store: RuntimeStore, request_id: str, action: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    _refresh_request_counts(store=store, request_id=request_id)
+    request = store.load_task_request(request_id=request_id)
+    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
+    executions = [execution.to_dict() for execution in store.list_task_executions(request_id=request_id)]
+    outbox = [record.to_dict() for record in store.list_request_outbox(request_id=request_id)]
+    child_summary = summarize_child_status_counts(
+        build_request_child_views(api_worker_jobs=api_jobs, task_executions=store.list_task_executions(request_id=request_id))
+    )
+    payload = {
+        "action": action,
+        "message": message,
+        "request_id": request.request_id,
+        "request_status": request.status,
+        "current_stage": request.current_stage,
+        "request": request.to_dict(),
+        "child_summary": child_summary.to_dict(),
+        "api_worker_jobs": api_jobs,
+        "executions": executions,
+        "outbox": outbox,
+    }
+    if details:
+        payload.update(details)
+    return payload
+
 
 def finalize_request(
     *,

@@ -50,7 +50,8 @@ def test_selection_and_competitor_exemplars_are_package_structured() -> None:
 
     for flow_package in (SELECTION_FLOW, COMPETITOR_FLOW):
         assert (flow_package / "orchestrator.py").is_file()
-        assert (flow_package / "context.py").is_file()
+        assert (flow_package / "context").is_dir()
+        assert not (flow_package / "context.py").exists()
         assert (flow_package / "summary.py").is_file()
 
 

@@ -1,6 +1,29 @@
 from __future__ import annotations
 
-from .context import *
+import time
+
+from automation_business_scaffold.control_plane.runtime_config.settings import build_request_payload
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
+)
+
+from .context.models import *  # noqa: F403
+from .context.runtime_views import *  # noqa: F403
+from .context.stage_inputs import *  # noqa: F403
+from .context.decision_models import *  # noqa: F403
+from .context.summary_inputs import *  # noqa: F403
+
+
+def _refresh_request_aggregate_counts(store: RuntimeStore, *, request_id: str) -> None:
+    counts = _aggregate_request_children(store, request_id=request_id)
+    store.update_task_request(
+        request_id=request_id,
+        child_total_count=counts["total"],
+        child_terminal_count=counts["terminal_count"],
+        child_success_count=counts["success_count"],
+        child_failed_count=counts["failed_count"],
+        child_skipped_count=counts["skipped_count"],
+    )
 
 def finalize_request(
     *,

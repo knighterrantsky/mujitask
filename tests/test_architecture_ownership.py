@@ -148,6 +148,49 @@ def test_refactored_tiktok_flow_packages_do_not_import_runtime_repositories_or_p
     assert violations == []
 
 
+def test_refactored_flow_context_submodules_do_not_import_forbidden_runtime_layers() -> None:
+    guarded_flow_packages = (
+        TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
+        TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
+        TIKTOK_FLOW_ROOT / "refresh_current_competitor_table",
+        TIKTOK_FLOW_ROOT / "sync_tk_influencer_pool",
+        TIKTOK_FLOW_ROOT / "tiktok_fastmoss_product_ingest",
+    )
+    forbidden_import_prefixes = (
+        "automation_business_scaffold.infrastructure",
+        "automation_business_scaffold.capabilities",
+        "automation_business_scaffold.control_plane",
+    )
+
+    violations: list[str] = []
+    for flow_package in guarded_flow_packages:
+        for path in _python_sources(flow_package / "context"):
+            for imported in _imports(path):
+                if imported.startswith(forbidden_import_prefixes):
+                    violations.append(f"{path.relative_to(REPO_ROOT)} imports {imported}")
+
+    assert violations == []
+
+
+def test_refactored_stages_do_not_import_context_package_export_surface() -> None:
+    guarded_flow_packages = (
+        TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
+        TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
+        TIKTOK_FLOW_ROOT / "refresh_current_competitor_table",
+        TIKTOK_FLOW_ROOT / "sync_tk_influencer_pool",
+        TIKTOK_FLOW_ROOT / "tiktok_fastmoss_product_ingest",
+    )
+
+    violations: list[str] = []
+    for flow_package in guarded_flow_packages:
+        for path in _python_sources(flow_package / "stages"):
+            source = path.read_text(encoding="utf-8")
+            if "from ..context import" in source:
+                violations.append(str(path.relative_to(REPO_ROOT)))
+
+    assert violations == []
+
+
 def test_capabilities_do_not_import_tiktok_business_modules() -> None:
     violations: list[str] = []
     for path in _python_sources(CAPABILITIES_ROOT):

@@ -359,7 +359,17 @@ def test_tiktok_domain_files_must_not_reexport_business_modules() -> None:
         found = [fragment for fragment in forbidden_fragments if fragment in source]
         if found:
             violations.append(f"{path.relative_to(REPO_ROOT)}: forbidden {', '.join(found)}")
-        if "def " not in source and "class " not in source and "JOB_DEFINITION" not in source:
+        is_context_model_surface = "context" in path.parts and path.name in {
+            "models.py",
+            "summary_inputs.py",
+        }
+        has_typed_context_content = is_context_model_surface and "=" in source
+        if (
+            "def " not in source
+            and "class " not in source
+            and "JOB_DEFINITION" not in source
+            and not has_typed_context_content
+        ):
             violations.append(f"{path.relative_to(REPO_ROOT)}: no domain implementation content")
 
     assert violations == [], "domain files must own real business implementation:\n" + "\n".join(

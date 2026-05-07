@@ -6,9 +6,11 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
 )
 
-from ..context import (
-    _dispatch_next_selection_row_refresh_job,
+from ..context.runtime_views import (
     _successful_seed_contexts,
+)
+from ..context.stage_inputs import (
+    _selection_row_refresh_job_item,
 )
 
 
@@ -47,3 +49,29 @@ def advance(
             "row_refresh_created_count": int(row_dispatch["created_count"]),
         },
     }
+
+
+def _dispatch_next_selection_row_refresh_job(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+    seed_contexts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not seed_contexts:
+        return {"created_count": 0, "updated_count": 0, "skipped_count": 0}
+    row_job_def = workflow.require_job("selection_row_refresh")
+    seed = dict(seed_contexts[0])
+    return store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code=request.task_code,
+        job_code=row_job_def.job_code,
+        jobs=[
+            _selection_row_refresh_job_item(
+                request=request,
+                workflow=workflow,
+                row_job_def=row_job_def,
+                seed=seed,
+            )
+        ],
+    )

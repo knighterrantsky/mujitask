@@ -46,7 +46,8 @@ def test_competitor_keyword_flow_is_stage_oriented_package() -> None:
     assert COMPETITOR_FLOW_PACKAGE.is_dir()
     assert not COMPETITOR_FLOW_PACKAGE.with_suffix(".py").exists()
     assert (COMPETITOR_FLOW_PACKAGE / "__init__.py").is_file()
-    assert (COMPETITOR_FLOW_PACKAGE / "context.py").is_file()
+    assert (COMPETITOR_FLOW_PACKAGE / "context").is_dir()
+    assert not (COMPETITOR_FLOW_PACKAGE / "context.py").exists()
     assert (COMPETITOR_FLOW_PACKAGE / "errors.py").is_file()
     assert COMPETITOR_ORCHESTRATOR.is_file()
     assert COMPETITOR_SUMMARY.is_file()
@@ -75,7 +76,8 @@ def test_competitor_stage_modules_own_stage_logic() -> None:
         assert "orchestrator._advance" not in stage_source
         assert "return _advance_" not in stage_source
 
-    assert "def _advance_" not in _read(COMPETITOR_FLOW_PACKAGE / "context.py")
+    for context_module in (COMPETITOR_FLOW_PACKAGE / "context").glob("*.py"):
+        assert "def _advance_" not in _read(context_module)
 
 
 def test_competitor_summary_owns_final_assembly() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..context import DEFAULT_COMPETITOR_FILTER_SPEC
+from ..context.models import DEFAULT_COMPETITOR_FILTER_SPEC
 
 
 def default_row_filter() -> dict[str, object]:

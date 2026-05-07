@@ -2,99 +2,47 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
-from automation_business_scaffold.contracts.handler.shared import coerce_mapping
-from automation_business_scaffold.control_plane.runtime_config.settings import (
-    KEYWORD_TASK_CODE,
+from automation_business_scaffold.contracts.handler.shared import (
+    bundle_entity_keys,
+    coerce_mapping,
+    compact_dict,
+    merge_fact_bundles,
 )
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    all_child_records as _all_child_records,
+    any_api_jobs_active as _any_api_jobs_active,
+    any_browser_executions_active as _any_browser_executions_active,
     api_jobs_for_stage as _api_jobs_for_stage,
     browser_executions_for_stage as _browser_executions_for_stage,
+    build_projection_record,
+    build_projection_write_payload,
+    build_stage_local_dedupe_key,
+    compute_final_status,
     extract_effective_result_payload,
     extract_handler_result_status,
+    has_active_records as _has_active_children,
+    is_fallback_required,
+    recover_browser_fallback_resume_stage,
+    render_job_keys,
     select_latest_successful_api_job,
+    select_latest_successful_api_job_result,
+    stage_child_records as _stage_child_records,
+    summarize_child_outcomes,
+    summarize_stage_children,
+    timeout_seconds_for_workflow as _timeout_seconds,
 )
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import (
     keyword_search_parameter_mapper,
 )
-
-OPTIONAL_FINAL_STATUS_CODES = ("tiktok_product_browser_fetch",)
-FASTMOSS_SEARCH_PASSTHROUGH_KEYS = (
-    "fastmoss_search_response",
-    "product_search_response",
-    "search_response",
-    "mock_fastmoss_search_response",
-    "fastmoss_search_pages",
-    "product_search_pages",
-    "search_pages",
-    "mock_fastmoss_search_pages",
-)
-TIKTOK_REQUEST_PASSTHROUGH_KEYS = (
-    "fallback_reason",
-    "force_failure",
-    "force_fallback",
-    "mock_response",
-    "normalized_product_result",
-    "raw_request_result",
-    "request_result",
-    "source_payload",
-    "tiktok_request_result",
-)
-FASTMOSS_PRODUCT_PASSTHROUGH_KEYS = (
-    "fastmoss_bundle",
-    "fastmoss_result",
-    "mock_fastmoss_bundle",
-    "product_fact_bundle",
-    "required",
-)
-RUNTIME_DB_PASSTHROUGH_KEYS = (
-    "execution_control_db_url",
-    "db_url",
-)
-FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
-    "browser_profile_ref",
-    "browser_profile_id",
-    "browser_provider_name",
-    "browser_workspace_id",
-    "browser_headless",
-    "browser_force_open",
-    "browser_timeout_ms",
-    "fastmoss_browser_profile_ref",
-    "fastmoss_browser_profile_id",
-    "fastmoss_browser_provider_name",
-    "fastmoss_browser_workspace_id",
-    "fastmoss_browser_timeout_ms",
-    "fastmoss_slider_max_attempts",
-    "fastmoss_slider_appear_timeout_ms",
-    "fastmoss_slider_settle_ms",
-    "fastmoss_slider_confirm_ms",
-    "mock_fastmoss_security_browser_resolve",
-)
-FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
-    "db_url",
-    "fact_db_url",
-    "persistence",
-)
-ARTIFACT_PASSTHROUGH_KEYS = (
-    "artifact_bucket",
-    "artifact_object_prefix",
-    "artifact_root",
-    "artifact_store",
-    "artifact_store_provider",
-    "db_url",
-    "execution_control_fact_db_url",
-    "fact_db_url",
-    "minio_access_key",
-    "minio_create_bucket",
-    "minio_endpoint",
-    "minio_region",
-    "minio_secret_key",
-    "minio_secure",
-    "persistence",
-)
+from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+from .models import *
 
 
 def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -143,22 +91,6 @@ def _keyword_seed_import_retry_after_fastmoss_browser_exists(jobs: list[dict[str
         for job in jobs
     )
 
-def _fastmoss_security_browser_fallback_cursor(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
-    request = store.load_task_request(request_id=request_id)
-    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
-    return dict(stage_results.get("fastmoss_security_browser_fallback") or {})
-
-def _fastmoss_security_browser_fallback_attempted(*, store: RuntimeStore, request_id: str) -> bool:
-    if _fastmoss_security_browser_fallback_cursor(store=store, request_id=request_id):
-        return True
-    return bool(
-        _browser_executions_for_stage(
-            store=store,
-            request_id=request_id,
-            stage_code="fastmoss_security_browser_fallback",
-        )
-    )
-
 def _fastmoss_security_fallback_payload_from_job(import_job: Mapping[str, Any]) -> dict[str, Any]:
     job_payload = coerce_mapping(import_job.get("payload"))
     result_payload = extract_effective_result_payload(import_job)
@@ -174,24 +106,6 @@ def _fastmoss_security_fallback_payload_from_job(import_job: Mapping[str, Any]) 
         "search_request": search_request,
         "security_context": security_context,
         "fallback_source_job_id": _first_text(result_payload.get("fallback_source_job_id"), import_job.get("job_id")),
-    }
-
-def _finalize_fastmoss_security_required(
-    import_job: Mapping[str, Any],
-    *,
-    details: Mapping[str, Any],
-) -> dict[str, Any]:
-    result_payload = extract_effective_result_payload(import_job)
-    return {
-        "action": "finalize",
-        "final_status": "failed",
-        "details": {
-            "error_code": "fastmoss_security_verification_required",
-            "fallback_required": True,
-            "fallback_reason": "fastmoss_search_security_verification",
-            "security_context": dict(result_payload.get("security_context") or {}),
-            **dict(details),
-        },
     }
 
 def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
@@ -246,69 +160,6 @@ def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[s
 
 def _compact_mapping(values: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): value for key, value in values.items() if value not in (None, "", [], {})}
-
-def _candidate_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
-    request = store.load_task_request(request_id=request_id)
-    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
-    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
-    import_candidates = keyword_import.get("candidate_contexts")
-    if isinstance(import_candidates, list):
-        return [dict(item) for item in import_candidates if isinstance(item, Mapping)]
-
-    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
-    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
-    candidates = import_payload.get("normalized_candidates")
-    if isinstance(candidates, list):
-        return [dict(item) for item in candidates if isinstance(item, Mapping)]
-
-    processed = dict(stage_results.get("process_product_candidates") or {})
-    legacy_candidates = processed.get("candidate_contexts")
-    if isinstance(legacy_candidates, list):
-        return [dict(item) for item in legacy_candidates if isinstance(item, Mapping)]
-
-    search_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="search_product_candidates")
-    search_job = select_latest_successful_api_job(search_jobs, "fastmoss_product_search")
-    search_payload = extract_effective_result_payload(search_job)
-    return _normalize_search_candidates(
-        search_payload.get("candidates"),
-        search_query=str(request.payload.get("search_query") or ""),
-        output_conditions=dict(request.payload.get("output_conditions") or {}),
-        max_candidates=int(request.payload.get("max_candidates") or 0),
-    )
-
-def _keyword_seed_import_payload(store: RuntimeStore, *, request_id: str) -> dict[str, Any]:
-    request = store.load_task_request(request_id=request_id)
-    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
-    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
-    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
-    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
-    return {**import_payload, **keyword_import}
-
-def _seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
-    request = store.load_task_request(request_id=request_id)
-    stage_results = dict((request.stage_cursor or {}).get("stage_results") or {})
-    keyword_import = dict(stage_results.get("keyword_seed_import") or {})
-    import_seeds = keyword_import.get("seed_contexts")
-    if isinstance(import_seeds, list):
-        return [dict(item) for item in import_seeds if isinstance(item, Mapping)]
-
-    import_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="keyword_seed_import")
-    import_payload = extract_effective_result_payload(_latest_job(import_jobs, job_code="keyword_seed_import"))
-    seeds = import_payload.get("seed_contexts")
-    if isinstance(seeds, list):
-        return [dict(item) for item in seeds if isinstance(item, Mapping)]
-
-    inserted = dict(stage_results.get("insert_seed_rows") or {})
-    seeds = inserted.get("seed_contexts")
-    if isinstance(seeds, list):
-        return [dict(item) for item in seeds if isinstance(item, Mapping)]
-    return _build_seed_contexts(
-        candidates=_candidate_contexts(store=store, request_id=request_id),
-        jobs=_api_jobs_for_stage(store=store, request_id=request_id, stage_code="insert_seed_rows"),
-    )
-
-def _seed_context_by_candidate_key(store: RuntimeStore, *, request_id: str) -> dict[str, dict[str, Any]]:
-    return {str(item.get("candidate_key") or ""): item for item in _seed_contexts(store=store, request_id=request_id)}
 
 def _build_seed_contexts(*, candidates: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     job_by_candidate = {
@@ -489,14 +340,6 @@ def _collect_asset_refs(product_result: Mapping[str, Any]) -> list[dict[str, Any
         )
     return normalized
 
-def _is_fallback_required(job: Mapping[str, Any] | None) -> bool:
-    if not isinstance(job, Mapping):
-        return False
-    if extract_handler_result_status(job) == "fallback_required":
-        return True
-    payload = extract_effective_result_payload(job)
-    return bool(payload.get("fallback_required"))
-
 def _record_effective_status(record: Any) -> str:
     if record is None:
         return ""
@@ -508,27 +351,12 @@ def _record_effective_status(record: Any) -> str:
     handler_status = extract_handler_result_status(record)
     return handler_status or status
 
-
 def _first_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()
         if text:
             return text
     return ""
-
-
-def _waiting(*, stage_code: str, message: str, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    return {
-        "action": "waiting",
-        "current_stage": stage_code,
-        "message": message,
-        "details": dict(details or {}),
-    }
-
-def _require_keyword_workflow() -> WorkflowDefinition:
-    from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
-
-    return get_workflow_definition(KEYWORD_TASK_CODE)
 
 def _browser_resource_code(candidate: Mapping[str, Any]) -> str:
     business_key = str(candidate.get("business_entity_key") or candidate.get("candidate_key") or "")
@@ -624,3 +452,5 @@ def _minimal_seed_context(payload: Mapping[str, Any]) -> dict[str, Any]:
         "normalized_product_url": str(product_identity.get("normalized_product_url") or payload.get("normalized_product_url") or ""),
         "source_context": dict(payload.get("source_context") or {}),
     }
+
+__all__ = [name for name in globals() if not name.startswith('__')]

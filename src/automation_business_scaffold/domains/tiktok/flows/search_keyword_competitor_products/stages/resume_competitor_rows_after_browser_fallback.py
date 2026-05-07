@@ -11,7 +11,7 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
 )
 
-from ..context import _waiting
+from ..context.decision_models import _waiting
 from .browser_fallback import (
     _browser_resume_candidates,
     _resume_row_payload,

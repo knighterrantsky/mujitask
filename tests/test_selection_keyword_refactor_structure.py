@@ -10,7 +10,7 @@ SELECTION_FLOW_PACKAGE = PACKAGE_ROOT / "domains" / "tiktok" / "flows" / "search
 SELECTION_TASK = PACKAGE_ROOT / "domains" / "tiktok" / "tasks" / "search_keyword_selection_products.py"
 SELECTION_WORKFLOW = PACKAGE_ROOT / "domains" / "tiktok" / "workflows" / "search_keyword_selection_products.py"
 SELECTION_ORCHESTRATOR = SELECTION_FLOW_PACKAGE / "orchestrator.py"
-SELECTION_CONTEXT = SELECTION_FLOW_PACKAGE / "context.py"
+SELECTION_CONTEXT = SELECTION_FLOW_PACKAGE / "context"
 SELECTION_SUMMARY = SELECTION_FLOW_PACKAGE / "summary.py"
 RUNTIME_STORE = PACKAGE_ROOT / "infrastructure" / "runtime" / "runtime_store.py"
 RUNTIME_BOOTSTRAP = PACKAGE_ROOT / "infrastructure" / "runtime" / "bootstrap.py"
@@ -77,7 +77,11 @@ def test_selection_keyword_stage_modules_own_stage_logic() -> None:
 def test_selection_keyword_new_package_files_remain_scoped() -> None:
     max_lines = {
         "orchestrator.py": 220,
-        "context.py": 650,
+        "context/models.py": 180,
+        "context/runtime_views.py": 260,
+        "context/stage_inputs.py": 300,
+        "context/decision_models.py": 100,
+        "context/summary_inputs.py": 60,
         "summary.py": 340,
         "stages/keyword_seed_import.py": 220,
         "stages/fastmoss_security_browser_fallback.py": 180,

@@ -14,7 +14,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     stage_child_records as _stage_child_records,
 )
 
-from .context import _require_keyword_workflow
 from .stages.browser_fallback import (
     _browser_fallback_candidates,
     _browser_resume_candidates,
@@ -73,7 +72,9 @@ def release_request_after_child_completion(
     request = store.load_task_request(request_id=request_id)
     if request.task_code != KEYWORD_TASK_CODE:
         return []
-    workflow = _require_keyword_workflow()
+    from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+
+    workflow = get_workflow_definition(KEYWORD_TASK_CODE)
     current_stage = str(request.current_stage or "").strip()
     if current_stage == workflow.summary_policy.summary_stage_code:
         recovery_stage = recover_browser_fallback_resume_stage(

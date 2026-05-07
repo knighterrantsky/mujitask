@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import time
 from importlib import import_module
 from typing import Any
 
-from .context import *  # noqa: F403
+from .context.models import *  # noqa: F403
+from .context.runtime_views import *  # noqa: F403
+from .context.stage_inputs import *  # noqa: F403
+from .context.decision_models import *  # noqa: F403
+from .context.summary_inputs import *  # noqa: F403
 
 _STAGE_MODULES = {
     "read_competitor_rows": "read_competitor_rows",
@@ -30,6 +35,15 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
     from .summary import finalize_request as _finalize_request
 
     return _finalize_request(store=store, request=request, workflow=workflow, force_result=force_result)
+
+
+def _require_refresh_workflow(task_code: str) -> WorkflowDefinition:
+    from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+
+    workflow = get_workflow_definition(task_code)
+    if workflow.workflow_code not in SUPPORTED_REFRESH_TASK_CODES:
+        raise ValueError(f"Expected refresh workflow definition, got {workflow.workflow_code}")
+    return workflow
 
 def release_request_after_child_completion(
     store: RuntimeStore,

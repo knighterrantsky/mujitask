@@ -3,19 +3,15 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from .context import (
-    COLLECT_CREATOR_STAGE_CODE,
-    FINALIZE_PRODUCT_STAGE_CODE,
-    PERSIST_FACTS_STAGE_CODE,
-    SUMMARY_STAGE_CODE,
-    TASK_CODE,
-    WRITE_POOL_STAGE_CODE,
-    _advance_stage_collect_creator_detail,
-    _advance_stage_finalize_product,
-    _advance_stage_persist_creator_facts,
-    _advance_stage_write_influencer_pool,
+from automation_business_scaffold.control_plane.reconciler.views import (
+    build_request_child_views,
+    summarize_child_status_counts,
 )
-from .context import *  # noqa: F403
+from .context.models import *  # noqa: F403
+from .context.runtime_views import *  # noqa: F403
+from .context.stage_inputs import *  # noqa: F403
+from .context.decision_models import *  # noqa: F403
+from .context.summary_inputs import *  # noqa: F403
 
 _STAGE_MODULES = {
     "read_competitor_candidates": "read_competitor_candidates",
@@ -23,6 +19,10 @@ _STAGE_MODULES = {
     "discover_related_creators": "discover_related_creators",
     "sync_influencer_pool": "sync_influencer_pool",
     "writeback_competitor_status": "writeback_competitor_status",
+    "collect_creator_detail": "collect_creator_detail",
+    "persist_creator_facts": "persist_creator_facts",
+    "write_influencer_pool": "write_influencer_pool",
+    "finalize_product": "finalize_product",
 }
 
 
@@ -32,14 +32,6 @@ def advance_stage(*, store: Any, request: Any, workflow: Any, stage_code: str) -
     if module_name:
         stage_module = import_module(f"{__package__}.stages.{module_name}")
         return stage_module.advance(store=store, request=request, workflow=None)
-    if stage_code == COLLECT_CREATOR_STAGE_CODE:
-        return _advance_stage_collect_creator_detail(store=store, request=request)
-    if stage_code == PERSIST_FACTS_STAGE_CODE:
-        return _advance_stage_persist_creator_facts(store=store, request=request)
-    if stage_code == WRITE_POOL_STAGE_CODE:
-        return _advance_stage_write_influencer_pool(store=store, request=request)
-    if stage_code == FINALIZE_PRODUCT_STAGE_CODE:
-        return _advance_stage_finalize_product(store=store, request=request)
     if stage_code == SUMMARY_STAGE_CODE:
         stage_module = import_module(f"{__package__}.stages.ready_for_summary")
         return stage_module.advance(store=store, request=request, workflow=None)
@@ -111,39 +103,45 @@ def advance_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: 
 def dispatch_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
     request = _load_request(store=store, request_id=request_id)
     current_stage = _current_stage(request)
-    if current_stage == READ_STAGE_CODE:
-        return _dispatch_read_competitor_candidates(store=store, request=request)
-    if current_stage == DISPATCH_PRODUCT_STAGE_CODE:
-        return _dispatch_product_jobs(store=store, request=request)
-    if current_stage == FINALIZE_PRODUCT_STAGE_CODE:
-        return _finalize_product_groups(store=store, request=request)
     if current_stage == SUMMARY_STAGE_CODE:
         return finalize_sync_tk_influencer_pool_request(store=store, request_id=request_id)
+    module_name = _STAGE_MODULES.get(current_stage)
+    if module_name:
+        stage_module = import_module(f"{__package__}.stages.{module_name}")
+        return stage_module.advance(store=store, request=request, workflow=None)
     return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
 
 def release_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
     request = _load_request(store=store, request_id=request_id)
     current_stage = _current_stage(request)
-    if current_stage == READ_STAGE_CODE:
-        return _release_read_competitor_candidates(store=store, request=request)
-    if current_stage == DISCOVER_CREATORS_STAGE_CODE:
-        return _release_discover_related_creators(store=store, request=request)
-    if current_stage == SYNC_INFLUENCER_POOL_STAGE_CODE:
-        return _release_sync_influencer_pool(store=store, request=request)
-    if current_stage == COLLECT_CREATOR_STAGE_CODE:
-        return _release_collect_creator_detail(store=store, request=request)
-    if current_stage == PERSIST_FACTS_STAGE_CODE:
-        return _release_persist_creator_facts(store=store, request=request)
-    if current_stage == WRITE_POOL_STAGE_CODE:
-        return _release_write_influencer_pool(store=store, request=request)
-    if current_stage == WRITEBACK_STAGE_CODE:
-        return _release_writeback_competitor_status(store=store, request=request)
     if current_stage == SUMMARY_STAGE_CODE:
         return finalize_sync_tk_influencer_pool_request(store=store, request_id=request_id)
-    return _build_payload(
-        store=store,
+    module_name = _STAGE_MODULES.get(current_stage)
+    if module_name:
+        stage_module = import_module(f"{__package__}.stages.{module_name}")
+        return stage_module.advance(store=store, request=request, workflow=None)
+    return {
+        "action": "noop",
+        "request_id": request_id,
+        "current_stage": current_stage,
+        "message": f"Stage {current_stage} has no release action.",
+        "details": {"stage_code": current_stage},
+    }
+
+
+def _refresh_request_counts(*, store: RuntimeStore, request_id: str) -> None:
+    request = store.load_task_request(request_id=request_id)
+    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
+    executions = store.list_task_executions(request_id=request_id)
+    child_summary = summarize_child_status_counts(
+        build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions)
+    )
+    store.update_task_request(
         request_id=request_id,
-        action="noop",
-        message=f"Stage {current_stage} has no release action.",
-        details={"stage_code": current_stage},
+        child_total_count=child_summary.total_count,
+        child_terminal_count=child_summary.terminal_count,
+        child_success_count=child_summary.success_count,
+        child_failed_count=child_summary.failed_count,
+        child_skipped_count=child_summary.skipped_count,
+        progress_stage=_current_stage(request),
     )

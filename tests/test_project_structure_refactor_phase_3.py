@@ -38,6 +38,10 @@ FLOW_STAGE_CODES = {
         "dispatch_product_jobs",
         "discover_related_creators",
         "sync_influencer_pool",
+        "collect_creator_detail",
+        "persist_creator_facts",
+        "write_influencer_pool",
+        "finalize_product",
         "writeback_competitor_status",
         "ready_for_summary",
     },
@@ -66,7 +70,8 @@ def test_all_formal_top_level_tiktok_flows_are_package_structured() -> None:
         assert flow_package.is_dir(), flow_name
         assert not flow_package.with_suffix(".py").exists(), flow_name
         assert (flow_package / "orchestrator.py").is_file()
-        assert (flow_package / "context.py").is_file()
+        assert (flow_package / "context").is_dir()
+        assert not (flow_package / "context.py").exists()
         assert (flow_package / "errors.py").is_file()
         assert (flow_package / "summary.py").is_file()
         assert _stage_modules(flow_package) == stage_codes
@@ -79,4 +84,3 @@ def test_phase_3_did_not_package_row_level_leaf_flows_or_create_shared_kernel() 
     assert not (FLOWS / "keyword_shared").exists()
     assert not (REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "tiktok" / "shared").exists()
     assert not (FLOWS / "row_shared").exists()
-

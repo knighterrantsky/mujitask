@@ -39,8 +39,10 @@ def _stage_modules() -> set[str]:
 def test_refresh_current_competitor_table_is_package_flow() -> None:
     assert FLOW_ROOT.is_dir()
     assert not FLOW_ROOT.with_suffix(".py").exists()
-    for filename in ("__init__.py", "orchestrator.py", "context.py", "errors.py", "summary.py"):
+    for filename in ("__init__.py", "orchestrator.py", "errors.py", "summary.py"):
         assert (FLOW_ROOT / filename).is_file()
+    assert (FLOW_ROOT / "context").is_dir()
+    assert not (FLOW_ROOT / "context.py").exists()
     assert _stage_modules() == STAGE_CODES
 
 
@@ -74,4 +76,3 @@ def test_refresh_package_has_no_dumping_ground_or_shared_kernel() -> None:
     assert forbidden_names.isdisjoint({path.name for path in FLOW_ROOT.rglob("*.py")})
     forbidden_dirs = {"shared", "row_shared", "keyword_shared"}
     assert forbidden_dirs.isdisjoint({path.name for path in FLOW_ROOT.rglob("*") if path.is_dir()})
-

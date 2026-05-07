@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import time
 from importlib import import_module
 from typing import Any
 
 from automation_business_scaffold.control_plane.runtime_config.settings import PRODUCT_INGEST_TASK_CODE
 
-from .context import *  # noqa: F403
+from .context.models import *  # noqa: F403
+from .context.runtime_views import *  # noqa: F403
+from .context.stage_inputs import *  # noqa: F403
+from .context.decision_models import *  # noqa: F403
+from .context.summary_inputs import *  # noqa: F403
 
 _STAGE_MODULES = {
     "read_selection_rows": "read_selection_rows",
@@ -39,6 +44,18 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
     from .summary import finalize_request as _finalize_request
 
     return _finalize_request(store=store, request=request, workflow=workflow, force_result=force_result)
+
+
+def _refresh_request_aggregate_counts(store: RuntimeStore, *, request_id: str) -> None:
+    counts = _aggregate_request_children(store, request_id=request_id)
+    store.update_task_request(
+        request_id=request_id,
+        child_total_count=counts["total"],
+        child_terminal_count=counts["terminal_count"],
+        child_success_count=counts["success_count"],
+        child_failed_count=counts["failed_count"],
+        child_skipped_count=counts["skipped_count"],
+    )
 
 def release_request_after_child_completion(
     store: RuntimeStore,
