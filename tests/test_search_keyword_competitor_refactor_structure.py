@@ -147,7 +147,9 @@ def test_competitor_flow_package_does_not_import_transport_or_runtime_repositori
 
 
 def test_competitor_stages_do_not_import_sibling_workflow_packages() -> None:
-    sibling_flow_prefix = "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products"
+    sibling_flow_prefix = (
+        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products."
+    )
     violations: list[str] = []
     for path in _python_sources(COMPETITOR_FLOW_PACKAGE / "stages"):
         for imported in _imports(path):

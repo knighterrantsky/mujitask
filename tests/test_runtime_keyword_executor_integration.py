@@ -800,16 +800,19 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
         item_code="tiktok_product_browser_fetch",
     )[0]
     assert stored_execution["result"]["handler_result"]["result"]["normalized_product_result"]["source"] == "browser"
-    selection_runtime = importlib.import_module(
-        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products"
+    selection_fallback_stage = importlib.import_module(
+        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.selection_row_browser_fallback"
+    )
+    selection_resume_stage = importlib.import_module(
+        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.resume_selection_rows_after_browser_fallback"
     )
     settings = runtime_orchestrator.build_runtime_settings(_runtime_params(runtime_db_url))
     store = runtime_orchestrator.create_runtime_store(settings)
-    assert selection_runtime._selection_row_browser_fallback_candidates(  # noqa: SLF001
+    assert selection_fallback_stage._selection_row_browser_fallback_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )
-    assert selection_runtime._selection_row_browser_resume_candidates(  # noqa: SLF001
+    assert selection_resume_stage._selection_row_browser_resume_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
+from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table.orchestrator import (
     advance_stage,
-    finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table.summary import (
+    finalize_request,
 )
 from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
     build_tiktok_outbox_message_text as build_outbox_message_text,
@@ -253,7 +255,7 @@ def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_d
     runtime = load_workflow_runtime(REFRESH_TASK_CODE)
     assert runtime is not None
     assert runtime.advance_stage is advance_stage
-    assert runtime.finalize_request is finalize_request
+    assert runtime.finalize_request.__module__.endswith(".refresh_current_competitor_table.orchestrator")
     assert runtime.release_request_after_child_completion is release_request_after_child_completion
 
     store, request, workflow = _submit_refresh_request(runtime_db_url)

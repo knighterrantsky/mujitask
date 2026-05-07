@@ -17,6 +17,13 @@ LEAF_ROW_FLOW_PACKAGES = (
     TIKTOK_FLOW_ROOT / "selection_row_refresh",
     TIKTOK_FLOW_ROOT / "competitor_row_refresh",
 )
+TOP_LEVEL_FLOW_PACKAGES_WITH_CLEAN_INIT = (
+    TIKTOK_FLOW_ROOT / "refresh_current_competitor_table",
+    TIKTOK_FLOW_ROOT / "sync_tk_influencer_pool",
+    TIKTOK_FLOW_ROOT / "tiktok_fastmoss_product_ingest",
+    TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
+    TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
+)
 
 
 def _load_checker() -> ModuleType:
@@ -246,6 +253,31 @@ def test_leaf_row_packages_do_not_introduce_package_level_exports() -> None:
                     continue
                 violations.append(str(init_file.relative_to(REPO_ROOT)))
                 break
+
+    assert violations == []
+
+
+def test_touched_top_level_flow_packages_do_not_export_business_symbols() -> None:
+    violations: list[str] = []
+    forbidden_tokens = (
+        "__all__",
+        " import *",
+        ".orchestrator import",
+        ".summary import",
+        ".context.",
+    )
+    for flow_package in TOP_LEVEL_FLOW_PACKAGES_WITH_CLEAN_INIT:
+        init_file = flow_package / "__init__.py"
+        source = init_file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(init_file))
+        for node in tree.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                continue
+            violations.append(f"{init_file.relative_to(REPO_ROOT)} contains executable package export surface")
+            break
+        for token in forbidden_tokens:
+            if token in source:
+                violations.append(f"{init_file.relative_to(REPO_ROOT)} contains {token}")
 
     assert violations == []
 

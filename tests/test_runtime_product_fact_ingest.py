@@ -538,15 +538,18 @@ def test_product_fact_resume_stage_backfills_missing_resume_jobs(runtime_db_url:
                 }
             },
         )
-    from automation_business_scaffold.domains.tiktok.flows import (
-        tiktok_fastmoss_product_ingest as ingest_runtime,
+    from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.runtime_views import (
+        _selection_row_browser_resume_candidates,
+    )
+    from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.stage_inputs import (
+        _selection_row_resume_job,
     )
     from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     request = store.load_task_request(request_id=request_id)
     workflow = get_workflow_definition("tiktok_fastmoss_product_ingest")
     row_job_def = workflow.require_job("selection_row_refresh")
-    candidates = ingest_runtime._selection_row_browser_resume_candidates(  # noqa: SLF001
+    candidates = _selection_row_browser_resume_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )
@@ -556,7 +559,7 @@ def test_product_fact_resume_stage_backfills_missing_resume_jobs(runtime_db_url:
         task_code="tiktok_fastmoss_product_ingest",
         job_code="selection_row_refresh",
         jobs=[
-            ingest_runtime._selection_row_resume_job(  # noqa: SLF001
+            _selection_row_resume_job(  # noqa: SLF001
                 request=request,
                 workflow=workflow,
                 stage_code="resume_selection_rows_after_browser_fallback",

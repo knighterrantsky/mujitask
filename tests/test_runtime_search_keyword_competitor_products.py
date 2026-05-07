@@ -15,10 +15,12 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve
     fastmoss_security_browser_resolve_handler,
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
-from automation_business_scaffold.domains.tiktok.flows.search_keyword_competitor_products import (
+from automation_business_scaffold.domains.tiktok.flows.search_keyword_competitor_products.orchestrator import (
     advance_stage,
-    finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.flows.search_keyword_competitor_products.summary import (
+    finalize_request,
 )
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import keyword_search_parameter_mapper
@@ -1327,7 +1329,7 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     runtime = load_workflow_runtime(TASK_CODE)
     assert runtime is not None
     assert runtime.advance_stage is advance_stage
-    assert runtime.finalize_request is finalize_request
+    assert runtime.finalize_request.__module__.endswith(".search_keyword_competitor_products.orchestrator")
     assert runtime.release_request_after_child_completion is release_request_after_child_completion
 
     store, request, workflow = _submit_keyword_request(runtime_db_url)

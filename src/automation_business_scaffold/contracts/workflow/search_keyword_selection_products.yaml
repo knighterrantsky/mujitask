@@ -18,7 +18,7 @@ workflow:
   exports:
     - SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION
 runtime_flow:
-  module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products
+  module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.orchestrator
   exports:
     - advance_stage
     - finalize_request

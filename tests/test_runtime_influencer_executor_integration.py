@@ -4,7 +4,7 @@ from typing import Iterable
 import pytest
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
-from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     READ_STAGE_CODE,
     SYNC_INFLUENCER_POOL_STAGE_CODE,

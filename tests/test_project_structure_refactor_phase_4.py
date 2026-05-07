@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,3 +44,18 @@ def test_flow_package_boundaries_still_hold() -> None:
         assert (flow_package / "summary.py").is_file(), flow_name
         assert (flow_package / "stages").is_dir(), flow_name
         assert not (FLOWS / f"{flow_name}.py").exists(), flow_name
+
+
+def test_package_refactored_top_level_flow_init_files_are_not_export_surfaces() -> None:
+    for flow_name in PACKAGE_REFACTORED_FLOWS:
+        init_file = FLOWS / flow_name / "__init__.py"
+        source = init_file.read_text(encoding="utf-8").strip()
+        if not source:
+            continue
+        tree = ast.parse(source, filename=str(init_file))
+        assert (
+            len(tree.body) == 1
+            and isinstance(tree.body[0], ast.Expr)
+            and isinstance(tree.body[0].value, ast.Constant)
+            and isinstance(tree.body[0].value.value, str)
+        ), flow_name

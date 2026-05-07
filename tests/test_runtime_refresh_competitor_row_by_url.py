@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table import (
+from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table.orchestrator import (
     advance_stage,
-    finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table.summary import (
+    finalize_request,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
@@ -88,7 +90,7 @@ def test_runtime_module_is_loadable_for_refresh_competitor_row_by_url(runtime_db
     runtime = load_workflow_runtime(TASK_CODE)
     assert runtime is not None
     assert runtime.advance_stage is advance_stage
-    assert runtime.finalize_request is finalize_request
+    assert runtime.finalize_request.__module__.endswith(".refresh_current_competitor_table.orchestrator")
     assert runtime.release_request_after_child_completion is release_request_after_child_completion
 
     store, request, workflow = _submit_request(runtime_db_url)

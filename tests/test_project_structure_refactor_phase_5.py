@@ -80,3 +80,10 @@ def test_new_leaf_package_init_files_are_not_export_surfaces() -> None:
             init_file = package / "__init__.py"
             assert init_file.is_file(), package
             assert _is_empty_or_docstring_only(init_file), init_file.relative_to(REPO_ROOT)
+
+
+def test_top_level_flow_init_files_remain_empty_or_docstring_only() -> None:
+    for flow_name in PACKAGE_REFACTORED_FLOWS:
+        init_file = FLOWS / flow_name / "__init__.py"
+        assert init_file.is_file(), flow_name
+        assert _is_empty_or_docstring_only(init_file), init_file.relative_to(REPO_ROOT)
