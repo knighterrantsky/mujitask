@@ -190,7 +190,7 @@ def adapt_source_rows(
                 "source_row_count": 0,
             },
         }
-    from automation_business_scaffold.domains.tiktok.mappers.registry import (
+    from automation_business_scaffold.contracts.handler.domain_mapping import (
         adapt_source_rows as run_source_adapter,
     )
 
@@ -200,7 +200,7 @@ def adapt_source_rows(
 def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     records = _mapping_list(payload.get("records"))
     if not records:
-        from automation_business_scaffold.domains.tiktok.projections.registry import (
+        from automation_business_scaffold.contracts.handler.domain_mapping import (
             selection_writeback_records,
         )
 
@@ -214,7 +214,7 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         if _mapping(record.get("fields")):
             mapped.append(_normalize_write_record(record, payload))
             continue
-        from automation_business_scaffold.domains.tiktok.projections.registry import (
+        from automation_business_scaffold.contracts.handler.domain_mapping import (
             map_projection_record,
         )
 

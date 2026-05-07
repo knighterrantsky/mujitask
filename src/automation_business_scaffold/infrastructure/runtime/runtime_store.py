@@ -16,7 +16,13 @@ from automation_business_scaffold.infrastructure.runtime.runtime_records import 
     RuntimeTaskExecutionRecord,
     RuntimeTaskRequestRecord,
 )
-from automation_business_scaffold.infrastructure.schemas.runtime_schema import ensure_runtime_schema
+from automation_business_scaffold.infrastructure.runtime.bootstrap import bootstrap_runtime_schema
+from automation_business_scaffold.infrastructure.runtime.queries import RequestStatusQuery, WatchdogQuery
+from automation_business_scaffold.infrastructure.runtime.repositories import (
+    NotificationOutboxRepository,
+    ResourceLeaseRepository,
+    TaskRequestRepository,
+)
 
 
 ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
@@ -138,8 +144,14 @@ class RuntimeStore:
             pool_pre_ping=True,
             poolclass=NullPool,
         )
+        self._request_status_query = RequestStatusQuery(self)
+        self._watchdog_query = WatchdogQuery(self)
+        self._task_request_repo = TaskRequestRepository(self)
+        self._notification_outbox_repo = NotificationOutboxRepository(self)
+        self._resource_lease_repo = ResourceLeaseRepository(self)
+
     def bootstrap_schema(self) -> None:
-        ensure_runtime_schema(self._engine)
+        bootstrap_runtime_schema(self._engine)
 
     def collect_db_connection_health(
         self,
@@ -476,76 +488,16 @@ class RuntimeStore:
         return self.load_task_request(request_id=request_id)
 
     def load_task_request(self, *, request_id: str) -> RuntimeTaskRequestRecord:
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT * FROM task_request WHERE request_id = :request_id LIMIT 1"),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ValueError("Task request not found.")
-            return self._request_from_row(row)
+        return self._task_request_repo.load(request_id=request_id)
 
     def list_task_executions(self, *, request_id: str) -> list[RuntimeTaskExecutionRecord]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM task_execution
-                        WHERE request_id = :request_id
-                        ORDER BY queue_seq ASC, created_at ASC
-                        """
-                    ),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .all()
-            )
-            return [self._execution_from_row(row) for row in rows]
+        return self._request_status_query.list_task_executions(request_id=request_id)
 
     def list_request_outbox(self, *, request_id: str) -> list[NotificationOutboxRecord]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM notification_outbox
-                        WHERE ref_type = 'task_request'
-                          AND ref_id = :request_id
-                        ORDER BY created_at ASC
-                        """
-                    ),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .all()
-            )
-            return [self._outbox_from_row(row) for row in rows]
+        return self._request_status_query.list_request_outbox(request_id=request_id)
 
     def list_artifacts(self, *, run_id: str) -> list[ArtifactObjectRecord]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM artifact_object
-                        WHERE run_id = :run_id
-                        ORDER BY created_at ASC, kind ASC
-                        """
-                    ),
-                    {"run_id": run_id},
-                )
-                .mappings()
-                .all()
-            )
-            return [self._artifact_from_row(row) for row in rows]
+        return self._request_status_query.list_artifacts(run_id=run_id)
 
     def _requeue_expired_task_request_claims(self, connection: Any, *, now: float) -> None:
         expired_rows = (
@@ -1687,28 +1639,7 @@ class RuntimeStore:
             )
 
     def _requeue_expired_leases(self, connection: Any, *, now: float) -> None:
-        expired_rows = (
-            connection.execute(
-                self._text(
-                    """
-                    SELECT lease.resource_code, lease.execution_id, lease.request_id, execution.status AS execution_status
-                    FROM resource_lease lease
-                    LEFT JOIN task_execution execution ON execution.execution_id = lease.execution_id
-                    WHERE lease.lease_until <= :now
-                    """
-                ),
-                {"now": now},
-            )
-            .mappings()
-            .all()
-        )
-        for row in expired_rows:
-            if str(row["execution_status"] or "") == "running":
-                continue
-            connection.execute(
-                self._text("DELETE FROM resource_lease WHERE resource_code = :resource_code"),
-                {"resource_code": row["resource_code"]},
-            )
+        self._resource_lease_repo.requeue_expired_leases(connection, now=now)
 
     def claim_next_browser_execution(
         self,
@@ -2345,28 +2276,14 @@ class RuntimeStore:
         limit: int,
         order_by_sql: str,
     ) -> list[dict[str, Any]]:
-        normalized_statuses = tuple(str(status or "").strip() for status in statuses if str(status or "").strip())
-        if not normalized_statuses:
-            return []
-        placeholders, status_params = _build_bind_placeholders("status", normalized_statuses)
-        query = f"""
-            SELECT *
-            FROM {table_name}
-            WHERE status IN ({placeholders})
-              AND {predicate_sql}
-            ORDER BY {order_by_sql}
-            LIMIT :limit
-        """
-        params = dict(predicate_params)
-        params.update(status_params)
-        params["limit"] = max(int(limit or 1), 1)
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(self._text(query), params)
-                .mappings()
-                .all()
-            )
-        return [dict(row) for row in rows]
+        return self._watchdog_query.scan_runtime_rows(
+            table_name=table_name,
+            statuses=statuses,
+            predicate_sql=predicate_sql,
+            predicate_params=predicate_params,
+            limit=limit,
+            order_by_sql=order_by_sql,
+        )
 
     def scan_stale_task_requests(
         self,
@@ -3590,74 +3507,18 @@ class RuntimeStore:
         dedupe_key: str,
         max_execution_seconds: float = 0.0,
     ) -> NotificationOutboxRecord:
-        outbox_id = uuid.uuid4().hex
-        now = time.time()
-        with self._engine.begin() as connection:
-            if dedupe_key:
-                existing = (
-                    connection.execute(
-                        self._text(
-                            """
-                            SELECT *
-                            FROM notification_outbox
-                            WHERE dedupe_key = :dedupe_key
-                            LIMIT 1
-                            """
-                        ),
-                        {"dedupe_key": dedupe_key},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if existing is not None:
-                    return self._outbox_from_row(existing)
-            connection.execute(
-                self._text(
-                    """
-                    INSERT INTO notification_outbox (
-                        outbox_id, channel_code, event_type, ref_type, ref_id,
-                        reply_target, dedupe_key, payload_json, status, progress_stage, retry_count,
-                        max_retry_count, max_execution_seconds, next_retry_at, last_error_text,
-                        error_type, error_code, dead_letter_reason, sent_at, last_progress_at,
-                        created_at, updated_at
-                    ) VALUES (
-                        :outbox_id, :channel_code, :event_type, 'task_request', :ref_id,
-                        :reply_target, :dedupe_key, :payload_json, 'pending', 'queued', 0,
-                        10, :max_execution_seconds, NULL, '',
-                        '', '', '', NULL, :last_progress_at,
-                        :created_at, :updated_at
-                    )
-                    """
-                ),
-                {
-                    "outbox_id": outbox_id,
-                    "channel_code": channel_code,
-                    "event_type": event_type,
-                    "ref_id": ref_id,
-                    "reply_target": reply_target,
-                    "dedupe_key": dedupe_key,
-                    "payload_json": _json_dumps(payload),
-                    "max_execution_seconds": _coerce_non_negative_float(max_execution_seconds),
-                    "last_progress_at": now,
-                    "created_at": now,
-                    "updated_at": now,
-                },
-            )
-        return self.load_outbox(outbox_id=outbox_id)
+        return self._notification_outbox_repo.create(
+            channel_code=channel_code,
+            event_type=event_type,
+            ref_id=ref_id,
+            reply_target=reply_target,
+            payload=payload,
+            dedupe_key=dedupe_key,
+            max_execution_seconds=max_execution_seconds,
+        )
 
     def load_outbox(self, *, outbox_id: str) -> NotificationOutboxRecord:
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT * FROM notification_outbox WHERE outbox_id = :outbox_id LIMIT 1"),
-                    {"outbox_id": outbox_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ValueError("Outbox record not found.")
-            return self._outbox_from_row(row)
+        return self._notification_outbox_repo.load(outbox_id=outbox_id)
 
     def _requeue_expired_outbox_claims(self, connection: Any, *, now: float) -> None:
         rows = (

@@ -33,7 +33,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     timeout_seconds_for_workflow as _timeout_seconds,
     update_request_stage_cursor as _update_request_cursor,
 )
-from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
     build_tiktok_outbox_message_text as build_outbox_message_text,
 )
@@ -115,21 +114,33 @@ def advance_stage(
     if request.task_code != SELECTION_KEYWORD_TASK_CODE:
         raise ValueError(f"Unsupported task_code for keyword runtime: {request.task_code}")
     if stage_code == "keyword_seed_import":
-        return _advance_keyword_seed_import(store=store, request=request, workflow=workflow)
+        from .stages.keyword_seed_import import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == "fastmoss_security_browser_fallback":
-        return _advance_fastmoss_security_browser_fallback(store=store, request=request, workflow=workflow)
+        from .stages.fastmoss_security_browser_fallback import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == "dispatch_selection_row_refresh_jobs":
-        return _advance_dispatch_selection_row_refresh_jobs(store=store, request=request, workflow=workflow)
+        from .stages.dispatch_selection_row_refresh_jobs import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == "refresh_selection_rows":
-        return _advance_refresh_selection_rows(store=store, request=request, workflow=workflow)
+        from .stages.refresh_selection_rows import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == "selection_row_browser_fallback":
-        return _advance_selection_row_browser_fallback(store=store, request=request, workflow=workflow)
+        from .stages.selection_row_browser_fallback import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == "resume_selection_rows_after_browser_fallback":
-        return _advance_resume_selection_rows_after_browser_fallback(
-            store=store, request=request, workflow=workflow
-        )
+        from .stages.resume_selection_rows_after_browser_fallback import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     if stage_code == workflow.summary_policy.summary_stage_code:
-        return {"action": "advance", "next_stage": workflow.summary_policy.summary_stage_code}
+        from .stages.ready_for_summary import advance
+
+        return advance(store=store, request=request, workflow=workflow)
     raise KeyError(f"Unsupported stage_code for keyword runtime: {stage_code}")
 
 
@@ -2126,7 +2137,9 @@ def _selection_row_resume_payload(*, stage_code: str, candidate: Mapping[str, An
 
 
 def _row_fallback_key(*, source_record_id: str, fallback_handler: str) -> str:
-    return f"{fallback_handler}:{source_record_id}"
+    from .policies.fallback import row_fallback_key
+
+    return row_fallback_key(source_record_id=source_record_id, fallback_handler=fallback_handler)
 
 
 def _search_digest_for_row_fallback(candidate: Mapping[str, Any]) -> str:
@@ -2259,58 +2272,20 @@ def _normalize_search_candidates(
     output_conditions: Mapping[str, Any],
     max_candidates: int,
 ) -> list[dict[str, Any]]:
-    if not isinstance(raw_candidates, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, row in enumerate(raw_candidates, start=1):
-        if not isinstance(row, Mapping):
-            continue
-        product_identity = _resolve_product_identity(row)
-        raw_entity_key = str(
-            product_identity.get("product_id")
-            or product_identity.get("normalized_product_url")
-            or product_identity.get("product_url")
-            or product_identity.get("product_key")
-            or row.get("candidate_key")
-            or index
-        )
-        business_entity_key = _product_business_entity_key(raw_entity_key)
-        if not business_entity_key or business_entity_key in seen:
-            continue
-        candidate_context = {
-            "candidate_key": business_entity_key,
-            "business_entity_key": business_entity_key,
-            "product_identity": product_identity,
-            "product_id": str(product_identity.get("product_id") or ""),
-            "product_url": str(product_identity.get("product_url") or ""),
-            "normalized_product_url": str(product_identity.get("normalized_product_url") or ""),
-            "search_query": search_query,
-            "search_rank": int(row.get("rank") or index),
-            "source_context": dict(row),
-        }
-        if not _candidate_allowed(candidate_context, output_conditions):
-            continue
-        normalized.append(candidate_context)
-        seen.add(business_entity_key)
-        if max_candidates > 0 and len(normalized) >= max_candidates:
-            break
-    return normalized
+    from .policies.candidate_filter import normalize_search_candidates
+
+    return normalize_search_candidates(
+        raw_candidates,
+        search_query=search_query,
+        output_conditions=output_conditions,
+        max_candidates=max_candidates,
+    )
 
 
 def _candidate_allowed(candidate: Mapping[str, Any], conditions: Mapping[str, Any]) -> bool:
-    allowed_ids = {str(item) for item in conditions.get("allowed_product_ids") or [] if str(item)}
-    excluded_ids = {str(item) for item in conditions.get("exclude_product_ids") or [] if str(item)}
-    require_url = bool(conditions.get("require_product_url", False))
-    product_id = str(candidate.get("product_id") or "")
-    normalized_product_url = str(candidate.get("normalized_product_url") or "")
-    if allowed_ids and product_id not in allowed_ids:
-        return False
-    if excluded_ids and product_id in excluded_ids:
-        return False
-    if require_url and not normalized_product_url:
-        return False
-    return True
+    from .policies.candidate_filter import candidate_allowed
+
+    return candidate_allowed(candidate, conditions)
 
 
 def _build_row_result(
@@ -2746,84 +2721,39 @@ def _browser_resource_code(candidate: Mapping[str, Any]) -> str:
 
 
 def _search_digest(*, search_query: str, filters: Mapping[str, Any]) -> str:
-    payload = json.dumps(
-        {
-            "search_query": str(search_query or "").strip(),
-            "filters": dict(filters or {}),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    from .policies.dedupe import search_digest
+
+    return search_digest(search_query=search_query, filters=filters)
 
 
 def _resolve_product_identity(row: Mapping[str, Any]) -> dict[str, Any]:
-    nested = row.get("product_identity")
-    if isinstance(nested, Mapping):
-        base = dict(nested)
-    else:
-        base = {}
-    product_url = str(
-        base.get("product_url")
-        or row.get("product_url")
-        or row.get("url")
-        or row.get("normalized_product_url")
-        or ""
-    ).strip()
-    normalized_product_url = _normalize_product_url(product_url)
-    product_id = str(
-        base.get("product_id")
-        or row.get("product_id")
-        or row.get("id")
-        or row.get("productId")
-        or _extract_tiktok_product_id(normalized_product_url)
-        or ""
-    ).strip()
-    if not normalized_product_url and product_id:
-        normalized_product_url = _tiktok_product_url(product_id)
-    if not product_url and normalized_product_url:
-        product_url = normalized_product_url
-    product_key = str(base.get("product_key") or row.get("product_key") or row.get("fastmoss_product_key") or "").strip()
-    return {
-        "product_id": product_id,
-        "product_key": product_key or product_id or normalized_product_url,
-        "product_url": product_url,
-        "normalized_product_url": normalized_product_url,
-    }
+    from .policies.dedupe import resolve_product_identity
+
+    return resolve_product_identity(row)
 
 
 def _normalize_product_url(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    normalized = re.sub(r"[?#].*$", "", text)
-    product_id = _extract_tiktok_product_id(normalized)
-    if product_id:
-        return _tiktok_product_url(product_id)
-    return normalized
+    from .policies.dedupe import normalize_product_url
+
+    return normalize_product_url(value)
 
 
 def _extract_tiktok_product_id(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    match = re.search(r"/(?:pdp|product|detail)/(\d+)", text)
-    if match:
-        return str(match.group(1))
-    return ""
+    from .policies.dedupe import extract_tiktok_product_id
+
+    return extract_tiktok_product_id(value)
 
 
 def _product_business_entity_key(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if text.startswith("product:"):
-        return text
-    return f"product:{text}"
+    from .policies.dedupe import product_business_entity_key
+
+    return product_business_entity_key(value)
 
 
 def _tiktok_product_url(product_id: str) -> str:
-    return f"https://www.tiktok.com/shop/pdp/{product_id}" if product_id else ""
+    from .policies.dedupe import tiktok_product_url
+
+    return tiktok_product_url(product_id)
 
 
 def _asset_source(asset: Mapping[str, Any]) -> str:

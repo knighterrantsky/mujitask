@@ -33,6 +33,16 @@ EXECUTOR_LOOPING = (
 )
 
 
+def _source_text(path: Path) -> str:
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return "\n".join(
+        item.read_text(encoding="utf-8")
+        for item in sorted(path.rglob("*.py"))
+        if "__pycache__" not in item.parts
+    )
+
+
 def test_row_refresh_flows_do_not_inline_browser_fallback() -> None:
     forbidden_tokens = (
         "capabilities.browser",
@@ -64,15 +74,15 @@ def test_selection_keyword_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "search_keyword_selection_products.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
+    runtime_source = _source_text(
         REPO_ROOT
         / "src"
         / "automation_business_scaffold"
         / "domains"
         / "tiktok"
         / "flows"
-        / "search_keyword_selection_products.py"
-    ).read_text(encoding="utf-8")
+        / "search_keyword_selection_products"
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "search_keyword_selection_products.yaml"
     ).read_text(encoding="utf-8")

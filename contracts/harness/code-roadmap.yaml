@@ -252,6 +252,83 @@ features:
       - FastMoss raw payload to fact bundle mapping must live under capabilities/fact_sources/fastmoss/mappers.
       - This phase must not modify domains/tiktok/flows or slim long flow files.
 
+  - feature_code: selection_keyword_structural_refactor_phase_1
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - docs/arch/refactor-search-keyword-selection-products.md
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_selection_products.py
+      - src/automation_business_scaffold/domains/tiktok/workflows/search_keyword_selection_products.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - src/automation_business_scaffold/infrastructure/runtime/bootstrap.py
+      - src/automation_business_scaffold/infrastructure/runtime/repositories
+      - src/automation_business_scaffold/infrastructure/runtime/queries
+      - tests/test_selection_keyword_refactor_structure.py
+      - tests/test_runtime_keyword_executor_integration.py
+      - tests/test_runtime_store.py
+    source_contracts:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - contracts/workflow/search_keyword_selection_products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
+    allowed_paths:
+      - contracts/harness/code-roadmap.yaml
+      - contracts/workflow/search_keyword_selection_products.yaml
+      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/dev/module-guide.md
+      - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
+      - src/automation_business_scaffold/contracts/handler/domain_mapping.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/table_common.py
+      - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_selection_products.py
+      - src/automation_business_scaffold/domains/tiktok/workflows/search_keyword_selection_products.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products/**
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - src/automation_business_scaffold/infrastructure/runtime/bootstrap.py
+      - src/automation_business_scaffold/infrastructure/runtime/schema_version.py
+      - src/automation_business_scaffold/infrastructure/runtime/persistence_primitives.py
+      - src/automation_business_scaffold/infrastructure/runtime/repositories/**
+      - src/automation_business_scaffold/infrastructure/runtime/queries/**
+      - tests/test_browser_fallback_boundary.py
+      - tests/test_project_structure_refactor_phase_1.py
+      - tests/test_selection_keyword_refactor_structure.py
+      - tests/test_runtime_keyword_executor_integration.py
+      - tests/test_runtime_store.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/apps/**
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/**
+      - src/automation_business_scaffold/capabilities/browser/**
+    done_gate:
+      tests:
+        - tests/test_selection_keyword_refactor_structure.py
+        - tests/test_browser_fallback_boundary.py
+        - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_runtime_store.py
+        - tests/test_project_structure_refactor_phase_1.py
+      commands:
+        - uv run --extra dev pytest tests/test_selection_keyword_refactor_structure.py tests/test_browser_fallback_boundary.py
+        - uv run --extra dev pytest tests/test_runtime_keyword_executor_integration.py tests/test_runtime_store.py
+        - uv run --extra dev pytest tests/test_project_structure_refactor_phase_1.py tests/test_harness_code_roadmap.py
+    completion_rules:
+      - search_keyword_selection_products flow implementation must be a same-name package with stage modules anchored by stable stage_code values.
+      - Task and workflow modules must remain thin shells and keep stable task_code/workflow_code/stage_code/job_code/handler_code values.
+      - Selection keyword flow package must not import concrete provider clients or infrastructure runtime persistence modules directly.
+      - RuntimeStore constructor must not execute schema DDL; bootstrap must be explicit.
+      - RuntimeStore must delegate at least task request status reads, outbox create/load, resource lease cleanup, and watchdog row scans to repository/query modules.
+
   - feature_code: system_architecture_baseline_alignment
     status: complete
     feature_type: repository_governance
