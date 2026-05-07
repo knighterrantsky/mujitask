@@ -603,79 +603,28 @@ def _advance_dispatch_selection_row_refresh_jobs(
     workflow: WorkflowDefinition,
 ) -> dict[str, Any]:
     stage_code = "dispatch_selection_row_refresh_jobs"
-    seed_contexts = [item for item in _seed_contexts(store=store, request_id=request.request_id) if item.get("seed_status") == "success"]
+    seed_contexts = _successful_seed_contexts(store=store, request_id=request.request_id)
     if not seed_contexts:
         _update_request_cursor(store=store, request=request, stage_code=stage_code, payload={"dispatched_row_count": 0})
         return {"action": "advance", "next_stage": "refresh_selection_rows", "details": {"dispatched_row_count": 0}}
 
-    row_job_def = workflow.require_job("selection_row_refresh")
-    source_table_ref = str(request.payload.get("selection_table_ref") or request.payload.get("seed_table_ref") or request.payload.get("target_table_ref") or request.payload.get("table_url") or "")
-    row_jobs: list[dict[str, Any]] = []
-    for seed in seed_contexts:
-        product_identity = dict(seed.get("product_identity") or {})
-        row_payload = {
-            **_payload_subset(
-                request.payload,
-                TIKTOK_REQUEST_PASSTHROUGH_KEYS
-                + FASTMOSS_PRODUCT_PASSTHROUGH_KEYS
-                + FACT_PERSISTENCE_PASSTHROUGH_KEYS
-                + ARTIFACT_PASSTHROUGH_KEYS
-                + ("table_refs", "access_token", "access_token_env", "validate_schema"),
-            ),
-            "request_payload": dict(request.payload or {}),
-            "stage_code": "refresh_selection_rows",
-            "source_record_id": seed["source_record_id"],
-            "source_record_id_or_product_id": _first_text(seed.get("source_record_id"), seed.get("product_id")),
-            "business_key": seed.get("business_entity_key") or seed.get("candidate_key") or "",
-            "product_identity": product_identity,
-            "normalized_product_url": seed.get("normalized_product_url") or product_identity.get("normalized_product_url") or "",
-            "source_table_ref": source_table_ref,
-            "target_table_ref": source_table_ref,
-            "source_context": dict(seed.get("source_context") or {}),
-            "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
-            "writeback_enabled": bool(request.payload.get("writeback_enabled", True)),
-        }
-        row_payload["requires_fact_db"] = True
-        row_payload["requires_object_storage"] = True
-        row_payload["require_database_persistence"] = True
-        row_payload["require_object_storage"] = True
-        row_keys = render_job_keys(
-            row_job_def,
-            request.payload,
-            seed,
-            row_payload,
-            request_id=request.request_id,
-            task_code=request.task_code,
-            workflow_code=workflow.workflow_code,
-            stage_code="refresh_selection_rows",
-            job_code=row_job_def.job_code,
-        )
-        row_jobs.append(
-            {
-                "business_key": row_keys["business_key"],
-                "dedupe_key": build_stage_local_dedupe_key(row_keys["dedupe_key"], row_job_def.job_code),
-                "payload": row_payload,
-                "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
-            }
-        )
-
-    row_dispatch = store.enqueue_api_worker_jobs(
-        request_id=request.request_id,
-        task_code=request.task_code,
-        job_code=row_job_def.job_code,
-        jobs=row_jobs,
+    row_dispatch = _dispatch_next_selection_row_refresh_job(
+        store=store,
+        request=request,
+        workflow=workflow,
+        seed_contexts=seed_contexts,
     )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
-        payload={"dispatched_row_count": len(seed_contexts), "row_dispatch": row_dispatch},
+        payload={"eligible_row_count": len(seed_contexts), "row_dispatch": row_dispatch},
     )
     return {
         "action": "advance",
         "next_stage": "refresh_selection_rows",
         "details": {
-            "dispatched_row_count": len(seed_contexts),
+            "eligible_row_count": len(seed_contexts),
             "row_refresh_created_count": int(row_dispatch["created_count"]),
         },
     }
@@ -689,8 +638,6 @@ def _advance_refresh_selection_rows(
 ) -> dict[str, Any]:
     stage_code = "refresh_selection_rows"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
-    if not jobs:
-        return {"action": "advance", "next_stage": "ready_for_summary", "details": {"dispatched_row_count": 0}}
     if _any_api_jobs_active(jobs):
         return _waiting(stage_code=stage_code, message="Waiting for selection row refresh jobs to finish.")
     fallback_candidates = _selection_row_browser_fallback_candidates(
@@ -713,6 +660,32 @@ def _advance_refresh_selection_rows(
             "next_stage": "selection_row_browser_fallback",
             "details": {"fallback_candidate_count": len(fallback_candidates)},
         }
+    next_seed_contexts = _pending_selection_seed_contexts(store=store, request_id=request.request_id)
+    if next_seed_contexts:
+        row_dispatch = _dispatch_next_selection_row_refresh_job(
+            store=store,
+            request=request,
+            workflow=workflow,
+            seed_contexts=next_seed_contexts,
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "collect_job_count": len(jobs),
+                "pending_row_count": len(next_seed_contexts),
+                "row_dispatch": row_dispatch,
+            },
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Enqueued next selection row refresh job.",
+            details={
+                "created_count": int(row_dispatch["created_count"]),
+                "pending_row_count": len(next_seed_contexts),
+            },
+        )
     return {"action": "advance", "next_stage": "ready_for_summary", "details": {"collect_job_count": len(jobs)}}
 
 
@@ -914,7 +887,11 @@ def _advance_resume_selection_rows_after_browser_fallback(
         stage_code=stage_code,
         payload={"resumed_job_count": len(jobs)},
     )
-    return {"action": "advance", "next_stage": "ready_for_summary", "details": {"resumed_job_count": len(jobs)}}
+    next_stage = "refresh_selection_rows" if _pending_selection_seed_contexts(
+        store=store,
+        request_id=request.request_id,
+    ) else "ready_for_summary"
+    return {"action": "advance", "next_stage": next_stage, "details": {"resumed_job_count": len(jobs)}}
 
 
 def _advance_search_product_candidates(
@@ -1796,6 +1773,147 @@ def _seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, An
     )
 
 
+def _successful_seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in _seed_contexts(store=store, request_id=request_id)
+        if str(item.get("seed_status") or "") == "success"
+    ]
+
+
+def _selection_row_source_record_id(seed: Mapping[str, Any]) -> str:
+    return _first_text(seed.get("source_record_id"), seed.get("product_id"), seed.get("candidate_key"))
+
+
+def _all_selection_row_refresh_jobs(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+    return [
+        *_api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_selection_rows"),
+        *_api_jobs_for_stage(
+            store=store,
+            request_id=request_id,
+            stage_code="resume_selection_rows_after_browser_fallback",
+        ),
+    ]
+
+
+def _selection_row_has_final_status(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        _all_selection_row_refresh_jobs(store=store, request_id=request_id),
+        source_record_id=source_record_id,
+        job_code="selection_row_refresh",
+    )
+    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
+
+
+def _selection_row_has_successful_resume(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        _api_jobs_for_stage(
+            store=store,
+            request_id=request_id,
+            stage_code="resume_selection_rows_after_browser_fallback",
+        ),
+        source_record_id=source_record_id,
+        job_code="selection_row_refresh",
+    )
+    return _record_effective_status(row_job) in {"success", "partial_success", "skipped"}
+
+
+def _pending_selection_seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+    return [
+        seed
+        for seed in _successful_seed_contexts(store=store, request_id=request_id)
+        if not _selection_row_has_final_status(
+            store=store,
+            request_id=request_id,
+            source_record_id=_selection_row_source_record_id(seed),
+        )
+    ]
+
+
+def _dispatch_next_selection_row_refresh_job(
+    *,
+    store: RuntimeStore,
+    request: Any,
+    workflow: WorkflowDefinition,
+    seed_contexts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not seed_contexts:
+        return {"created_count": 0, "updated_count": 0, "skipped_count": 0}
+    row_job_def = workflow.require_job("selection_row_refresh")
+    source_table_ref = str(
+        request.payload.get("selection_table_ref")
+        or request.payload.get("seed_table_ref")
+        or request.payload.get("target_table_ref")
+        or request.payload.get("table_url")
+        or ""
+    )
+    seed = dict(seed_contexts[0])
+    product_identity = dict(seed.get("product_identity") or {})
+    source_record_id = _selection_row_source_record_id(seed)
+    row_payload = {
+        **_payload_subset(
+            request.payload,
+            TIKTOK_REQUEST_PASSTHROUGH_KEYS
+            + FASTMOSS_PRODUCT_PASSTHROUGH_KEYS
+            + FACT_PERSISTENCE_PASSTHROUGH_KEYS
+            + ARTIFACT_PASSTHROUGH_KEYS
+            + ("table_refs", "access_token", "access_token_env", "validate_schema"),
+        ),
+        "request_payload": dict(request.payload or {}),
+        "stage_code": "refresh_selection_rows",
+        "source_record_id": source_record_id,
+        "source_record_id_or_product_id": _first_text(source_record_id, seed.get("product_id")),
+        "business_key": seed.get("business_entity_key") or seed.get("candidate_key") or "",
+        "product_identity": product_identity,
+        "normalized_product_url": seed.get("normalized_product_url")
+        or product_identity.get("normalized_product_url")
+        or "",
+        "source_table_ref": source_table_ref,
+        "target_table_ref": source_table_ref,
+        "source_context": dict(seed.get("source_context") or {}),
+        "fallback_allowed": bool(request.payload.get("fallback_allowed", True)),
+        "writeback_enabled": bool(request.payload.get("writeback_enabled", True)),
+    }
+    row_payload["requires_fact_db"] = True
+    row_payload["requires_object_storage"] = True
+    row_payload["require_database_persistence"] = True
+    row_payload["require_object_storage"] = True
+    row_keys = render_job_keys(
+        row_job_def,
+        request.payload,
+        seed,
+        row_payload,
+        request_id=request.request_id,
+        task_code=request.task_code,
+        workflow_code=workflow.workflow_code,
+        stage_code="refresh_selection_rows",
+        job_code=row_job_def.job_code,
+    )
+    return store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code=request.task_code,
+        job_code=row_job_def.job_code,
+        jobs=[
+            {
+                "business_key": row_keys["business_key"],
+                "dedupe_key": build_stage_local_dedupe_key(row_keys["dedupe_key"], row_job_def.job_code),
+                "payload": row_payload,
+                "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
+            }
+        ],
+    )
+
+
 def _seed_context_by_candidate_key(store: RuntimeStore, *, request_id: str) -> dict[str, dict[str, Any]]:
     return {str(item.get("candidate_key") or ""): item for item in _seed_contexts(store=store, request_id=request_id)}
 
@@ -1853,6 +1971,12 @@ def _selection_row_browser_fallback_candidates(
             result_payload.get("source_record_id"),
             row_payload.get("source_record_id"),
         )
+        if _selection_row_has_successful_resume(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         business_entity_key = _first_text(
             result_payload.get("business_entity_key"),
             row_payload.get("business_key"),
