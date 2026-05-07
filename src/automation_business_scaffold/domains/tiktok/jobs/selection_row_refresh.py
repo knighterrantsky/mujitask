@@ -48,7 +48,7 @@ CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
 
 def selection_row_refresh_handler(context: HandlerContext) -> HandlerResult:
-    from automation_business_scaffold.domains.tiktok.flows.selection_row_refresh import (
+    from automation_business_scaffold.domains.tiktok.flows.selection_row_refresh.orchestrator import (
         run_selection_row_refresh_flow,
     )
 

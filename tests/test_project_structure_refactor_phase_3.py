@@ -77,9 +77,7 @@ def test_all_formal_top_level_tiktok_flows_are_package_structured() -> None:
         assert _stage_modules(flow_package) == stage_codes
 
 
-def test_phase_3_did_not_package_row_level_leaf_flows_or_create_shared_kernel() -> None:
-    assert (FLOWS / "selection_row_refresh.py").is_file()
-    assert (FLOWS / "competitor_row_refresh.py").is_file()
+def test_phase_3_did_not_create_shared_kernel() -> None:
     assert not (FLOWS / "shared").exists()
     assert not (FLOWS / "keyword_shared").exists()
     assert not (REPO_ROOT / "src" / "automation_business_scaffold" / "domains" / "tiktok" / "shared").exists()

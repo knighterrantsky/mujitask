@@ -11,14 +11,14 @@ ROW_FLOW_FILES = (
     / "domains"
     / "tiktok"
     / "flows"
-    / "selection_row_refresh.py",
+    / "selection_row_refresh",
     REPO_ROOT
     / "src"
     / "automation_business_scaffold"
     / "domains"
     / "tiktok"
     / "flows"
-    / "competitor_row_refresh.py",
+    / "competitor_row_refresh",
 )
 BROWSER_RUNLOOP_PLIST = (
     REPO_ROOT / "config" / "deployment" / "launchd" / "com.happyzhao.mujitask.browser-runloop.plist.template"
@@ -56,7 +56,7 @@ def test_row_refresh_flows_do_not_inline_browser_fallback() -> None:
 
     violations: list[str] = []
     for path in ROW_FLOW_FILES:
-        source = path.read_text(encoding="utf-8")
+        source = _source_text(path)
         for token in forbidden_tokens:
             if token in source:
                 violations.append(f"{path.relative_to(REPO_ROOT)} contains {token}")

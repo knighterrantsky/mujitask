@@ -35,7 +35,7 @@ row_handler_module = importlib.import_module(
     "automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh"
 )
 row_flow_module = importlib.import_module(
-    "automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh"
+    "automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh.pipeline.finalization"
 )
 
 

@@ -54,7 +54,7 @@ _SELECTION_REQUIRED_WRITEBACK_FIELDS = (
 )
 
 
-def run_selection_row_refresh_flow(context: HandlerContext) -> HandlerResult:
+def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
@@ -1786,5 +1786,3 @@ def _number_value(*values: Any) -> float | None:
             continue
     return None
 
-
-__all__ = ["run_selection_row_refresh_flow"]

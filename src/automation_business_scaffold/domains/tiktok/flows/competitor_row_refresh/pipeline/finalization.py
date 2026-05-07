@@ -35,7 +35,7 @@ fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
 tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_request_fetch")
 
 
-def run_competitor_row_refresh_flow(context: HandlerContext) -> HandlerResult:
+def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = _request_payload(payload)
     identity = normalize_product_identity({**request_payload, **payload})
@@ -1011,5 +1011,3 @@ def _number_value(*values: Any) -> float | None:
             continue
     return None
 
-
-__all__ = ["run_competitor_row_refresh_flow"]

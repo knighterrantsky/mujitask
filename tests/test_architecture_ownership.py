@@ -13,6 +13,10 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "dev" / "check_architecture_ownership.py"
 PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
 TIKTOK_FLOW_ROOT = PACKAGE_ROOT / "domains" / "tiktok" / "flows"
 CAPABILITIES_ROOT = PACKAGE_ROOT / "capabilities"
+LEAF_ROW_FLOW_PACKAGES = (
+    TIKTOK_FLOW_ROOT / "selection_row_refresh",
+    TIKTOK_FLOW_ROOT / "competitor_row_refresh",
+)
 
 
 def _load_checker() -> ModuleType:
@@ -187,6 +191,61 @@ def test_refactored_stages_do_not_import_context_package_export_surface() -> Non
             source = path.read_text(encoding="utf-8")
             if "from ..context import" in source:
                 violations.append(str(path.relative_to(REPO_ROOT)))
+
+    assert violations == []
+
+
+def test_leaf_row_context_modules_do_not_import_forbidden_runtime_layers() -> None:
+    forbidden_prefixes = (
+        "automation_business_scaffold.infrastructure",
+        "automation_business_scaffold.capabilities",
+        "automation_business_scaffold.control_plane",
+    )
+
+    violations: list[str] = []
+    for flow_package in LEAF_ROW_FLOW_PACKAGES:
+        for path in _python_sources(flow_package / "context"):
+            for imported in _imports(path):
+                if imported.startswith(forbidden_prefixes):
+                    violations.append(f"{path.relative_to(REPO_ROOT)} imports {imported}")
+
+    assert violations == []
+
+
+def test_leaf_row_pipeline_modules_do_not_import_infrastructure_clients_directly() -> None:
+    forbidden_prefixes = (
+        "automation_business_scaffold.infrastructure.clients",
+        "automation_business_scaffold.infrastructure.runtime.repositories",
+        "automation_business_scaffold.infrastructure.feishu.client",
+        "automation_business_scaffold.infrastructure.fastmoss.client",
+        "automation_business_scaffold.infrastructure.tiktok.client",
+    )
+
+    violations: list[str] = []
+    for flow_package in LEAF_ROW_FLOW_PACKAGES:
+        for path in _python_sources(flow_package / "pipeline"):
+            for imported in _imports(path):
+                if imported.startswith(forbidden_prefixes):
+                    violations.append(f"{path.relative_to(REPO_ROOT)} imports {imported}")
+
+    assert violations == []
+
+
+def test_leaf_row_packages_do_not_introduce_package_level_exports() -> None:
+    violations: list[str] = []
+    for flow_package in LEAF_ROW_FLOW_PACKAGES:
+        for init_file in (
+            flow_package / "__init__.py",
+            flow_package / "context" / "__init__.py",
+            flow_package / "pipeline" / "__init__.py",
+            flow_package / "policies" / "__init__.py",
+        ):
+            tree = ast.parse(init_file.read_text(encoding="utf-8"), filename=str(init_file))
+            for node in tree.body:
+                if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    continue
+                violations.append(str(init_file.relative_to(REPO_ROOT)))
+                break
 
     assert violations == []
 
