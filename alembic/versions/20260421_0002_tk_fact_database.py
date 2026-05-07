@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 
-from automation_business_scaffold.infrastructure.facts.tk_fact_store import (
+from automation_business_scaffold.infrastructure.schemas.fact_schema import (
     LEGACY_ENTITY_DROP_STATEMENTS,
     TK_FACT_SCHEMA_STATEMENTS,
 )

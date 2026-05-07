@@ -23,7 +23,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     skipped_result,
     success_result,
 )
-from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.mappers.fact_bundle_mapper import (
     extract_fastmoss_data,
     map_fastmoss_goods_author,
     map_fastmoss_goods_base,

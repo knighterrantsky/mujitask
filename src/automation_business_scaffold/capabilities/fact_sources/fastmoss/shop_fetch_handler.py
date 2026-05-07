@@ -32,7 +32,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     skipped_result,
     success_result,
 )
-from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.mappers.fact_bundle_mapper import (
     map_fastmoss_shop_author,
     map_fastmoss_shop_base,
     map_fastmoss_shop_goods,

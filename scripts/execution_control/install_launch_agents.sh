@@ -31,10 +31,13 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 "${ROOT_DIR}/.venv/bin/python" - <<'PY'
 import os
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 db_url = os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL", "")
-RuntimeStore(db_url=db_url)
+runtime_store = RuntimeStore(db_url=db_url)
+runtime_store.bootstrap_schema()
+TKFactStore(runtime_store=runtime_store).bootstrap_schema()
 print("schema_ready")
 PY
 

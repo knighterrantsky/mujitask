@@ -26,7 +26,10 @@ def test_tk_fact_schema_replaces_legacy_entity_tables(runtime_db_url):
     assert "entity_snapshot" not in table_names
 
 
-def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_entities(runtime_db_url):
+def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_entities(
+    unbootstrapped_runtime_db_url,
+):
+    runtime_db_url = unbootstrapped_runtime_db_url
     config = Config("alembic.ini")
 
     command.upgrade(config, "head")

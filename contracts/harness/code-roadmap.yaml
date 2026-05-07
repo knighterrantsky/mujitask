@@ -136,6 +136,122 @@ features:
       - Side-effect skills must declare intents, extracted inputs, negative examples, failure handling, and fixed output format.
       - CI must run the same render and validation gates.
 
+  - feature_code: git_branch_protocol_gate
+    status: complete
+    feature_type: repository_governance
+    default_context:
+      - AGENTS.md
+      - docs/dev/git-workflow.md
+      - docs/ops/release-flow.md
+      - contracts/harness/code-roadmap.yaml
+      - tests/test_git_branch_protocol.py
+      - tests/test_harness_code_roadmap.py
+    source_contracts:
+      - AGENTS.md
+      - docs/dev/git-workflow.md
+      - docs/ops/release-flow.md
+    allowed_paths:
+      - AGENTS.md
+      - docs/dev/git-workflow.md
+      - docs/ops/release-flow.md
+      - contracts/harness/code-roadmap.yaml
+      - tests/test_git_branch_protocol.py
+      - tests/test_harness_code_roadmap.py
+    forbidden_paths:
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_git_branch_protocol.py
+        - tests/test_harness_code_roadmap.py
+      commands:
+        - uv run --extra dev pytest tests/test_git_branch_protocol.py tests/test_harness_code_roadmap.py
+    completion_rules:
+      - AGENTS.md must require docs/dev/git-workflow.md before branch operations.
+      - Branch names must use the project type prefixes rather than Codex app default prefixes.
+      - Branch creation or rename must be followed by a current-branch verification command.
+
+  - feature_code: project_structure_refactor_phase_1
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - AGENTS.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/project-structure-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/fact-db-schema-design.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_store.py
+      - src/automation_business_scaffold/infrastructure/schemas
+      - src/automation_business_scaffold/capabilities/input_sources/feishu
+      - src/automation_business_scaffold/capabilities/browser/tiktok
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/mappers
+      - tests/test_project_structure_refactor_phase_1.py
+      - tests/test_project_structure_contract.py
+      - tests/test_project_architecture_contract.py
+      - tests/test_architecture_ownership.py
+    source_contracts:
+      - AGENTS.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/project-structure-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/fact-db-schema-design.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/tiktok/mappers/**
+      - src/automation_business_scaffold/domains/tiktok/projections/**
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/**
+      - src/automation_business_scaffold/capabilities/browser/**
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/**
+      - src/automation_business_scaffold/capabilities/fact_sources/tiktok/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+      - src/automation_business_scaffold/infrastructure/facts/**
+      - src/automation_business_scaffold/infrastructure/fastmoss/**
+      - src/automation_business_scaffold/infrastructure/tiktok/**
+      - src/automation_business_scaffold/infrastructure/schemas/**
+      - scripts/execution_control/**
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/tiktok/flows/**
+    done_gate:
+      tests:
+        - tests/test_project_structure_refactor_phase_1.py
+        - tests/test_project_structure_contract.py
+        - tests/test_project_architecture_contract.py
+        - tests/test_architecture_ownership.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+        - tests/test_feishu_common_handlers.py
+        - tests/test_tiktok_product_request_fetch_handler.py
+        - tests/test_tiktok_product_browser_fetch_handler.py
+        - tests/test_fastmoss_fact_mappers.py
+        - tests/test_tk_fact_store.py
+        - tests/test_runtime_store.py
+        - tests/test_browser_fallback_boundary.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_git_branch_protocol.py
+      commands:
+        - uv run --extra dev pytest tests/test_project_structure_refactor_phase_1.py tests/test_project_structure_contract.py tests/test_project_architecture_contract.py tests/test_architecture_ownership.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_feishu_common_handlers.py tests/test_tiktok_product_request_fetch_handler.py tests/test_tiktok_product_browser_fetch_handler.py tests/test_fastmoss_fact_mappers.py tests/test_tk_fact_store.py tests/test_runtime_store.py tests/test_browser_fallback_boundary.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_git_branch_protocol.py
+    completion_rules:
+      - RuntimeStore and TKFactStore constructors must not execute CREATE/ALTER/DROP/CREATE INDEX DDL.
+      - Runtime and Fact DB bootstrap DDL must live under infrastructure/schemas and be invoked explicitly.
+      - Feishu input source capabilities must not own TikTok table business field semantics.
+      - TikTok browser code must live under capabilities/browser, not infrastructure/tiktok.
+      - FastMoss raw payload to fact bundle mapping must live under capabilities/fact_sources/fastmoss/mappers.
+      - This phase must not modify domains/tiktok/flows or slim long flow files.
+
   - feature_code: system_architecture_baseline_alignment
     status: complete
     feature_type: repository_governance
