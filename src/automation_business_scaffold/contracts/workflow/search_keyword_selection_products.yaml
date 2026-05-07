@@ -23,6 +23,8 @@ runtime_flow:
     - advance_stage
     - finalize_request
     - release_request_after_child_completion
+  context_module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.context
+  summary_module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.summary
   stage_modules:
     - stage_code: keyword_seed_import
       module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.keyword_seed_import

@@ -9,6 +9,9 @@ PACKAGE_ROOT = REPO_ROOT / "src" / "automation_business_scaffold"
 SELECTION_FLOW_PACKAGE = PACKAGE_ROOT / "domains" / "tiktok" / "flows" / "search_keyword_selection_products"
 SELECTION_TASK = PACKAGE_ROOT / "domains" / "tiktok" / "tasks" / "search_keyword_selection_products.py"
 SELECTION_WORKFLOW = PACKAGE_ROOT / "domains" / "tiktok" / "workflows" / "search_keyword_selection_products.py"
+SELECTION_ORCHESTRATOR = SELECTION_FLOW_PACKAGE / "orchestrator.py"
+SELECTION_CONTEXT = SELECTION_FLOW_PACKAGE / "context.py"
+SELECTION_SUMMARY = SELECTION_FLOW_PACKAGE / "summary.py"
 RUNTIME_STORE = PACKAGE_ROOT / "infrastructure" / "runtime" / "runtime_store.py"
 RUNTIME_BOOTSTRAP = PACKAGE_ROOT / "infrastructure" / "runtime" / "bootstrap.py"
 CAPABILITIES_ROOT = PACKAGE_ROOT / "capabilities"
@@ -46,12 +49,47 @@ def _imports(path: Path) -> set[str]:
 def test_selection_keyword_flow_is_stage_oriented_package() -> None:
     assert SELECTION_FLOW_PACKAGE.is_dir()
     assert not SELECTION_FLOW_PACKAGE.with_suffix(".py").exists()
+    assert SELECTION_SUMMARY.is_file()
     for stage_code in STAGE_CODES:
         stage_module = SELECTION_FLOW_PACKAGE / "stages" / f"{stage_code}.py"
         assert stage_module.is_file()
         source = _read(stage_module)
         assert f'STAGE_CODE = "{stage_code}"' in source
         assert "def advance(" in source
+
+
+def test_selection_keyword_stage_modules_own_stage_logic() -> None:
+    orchestrator_source = _read(SELECTION_ORCHESTRATOR)
+    assert "def _advance_" not in orchestrator_source
+    assert len(orchestrator_source.splitlines()) <= 220
+
+    for stage_code in STAGE_CODES:
+        stage_module = SELECTION_FLOW_PACKAGE / "stages" / f"{stage_code}.py"
+        source = _read(stage_module)
+        assert "import orchestrator" not in source
+        assert "orchestrator._advance" not in source
+
+    summary_source = _read(SELECTION_SUMMARY)
+    assert "def finalize_request(" in summary_source
+    assert "build_outbox_message_text" in summary_source
+
+
+def test_selection_keyword_new_package_files_remain_scoped() -> None:
+    max_lines = {
+        "orchestrator.py": 220,
+        "context.py": 650,
+        "summary.py": 340,
+        "stages/keyword_seed_import.py": 220,
+        "stages/fastmoss_security_browser_fallback.py": 180,
+        "stages/dispatch_selection_row_refresh_jobs.py": 80,
+        "stages/refresh_selection_rows.py": 120,
+        "stages/selection_row_browser_fallback.py": 420,
+        "stages/resume_selection_rows_after_browser_fallback.py": 140,
+        "stages/ready_for_summary.py": 40,
+    }
+    for relative_path, limit in max_lines.items():
+        path = SELECTION_FLOW_PACKAGE / relative_path
+        assert len(_read(path).splitlines()) <= limit, relative_path
 
 
 def test_selection_keyword_task_and_workflow_shells_remain_thin() -> None:

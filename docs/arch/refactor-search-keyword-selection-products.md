@@ -27,6 +27,7 @@ domains/tiktok/flows/search_keyword_selection_products/
   orchestrator.py
   context.py
   errors.py
+  summary.py
   stages/
     keyword_seed_import.py
     fastmoss_security_browser_fallback.py
@@ -43,7 +44,13 @@ domains/tiktok/flows/search_keyword_selection_products/
 
 `__init__.py` 只保留原 runtime public entrypoints 的 re-export，确保 workflow registry 的旧 import surface 可继续工作。
 
-`stages/**` 使用稳定 stage code 作为代码结构锚点。现阶段 stage 模块负责成为 per-stage 编排入口，内部仍通过 `orchestrator.py` 承接一部分兼容逻辑，避免一次性改动所有运行时行为。
+`orchestrator.py` 只负责 runtime public entrypoint、stage dispatch 和 child completion release glue，不继续承载各 stage 的内部业务实现。
+
+`stages/**` 使用稳定 stage code 作为代码结构锚点。每个 stage 模块承接自己的推进逻辑，读取 RuntimeStore façade 暴露的状态、判断业务分支、创建下一批 runtime job / browser execution，并返回下一步 stage decision。
+
+`summary.py` 承接最终 summary/result/outbox payload 组装，避免 summary aggregation 继续留在 orchestrator。
+
+涉及 Fact DB、媒体资产和 object storage 的事实沉淀边界仍以 [product-fact-collection.yaml](../../contracts/facts/product-fact-collection.yaml) 为准；本次重构只移动 selection keyword workflow 的编排 owner，不改变 product fact/media contract。
 
 `policies/**` 开始承接业务策略:
 
@@ -66,11 +73,9 @@ domains/tiktok/flows/search_keyword_selection_products/
 
 ## 本阶段保留的兼容逻辑
 
-`orchestrator.py` 仍保留部分历史 helper 和未迁出的 stage 内部细节，作为 RuntimeStore façade 类似的兼容承接层。下一阶段适合继续迁移:
+下一阶段适合继续迁移:
 
-- selection row fallback candidate 收集和 resume payload 组装。
-- summary row result 聚合。
-- legacy keyword search stage 函数。
-- RuntimeStore 中 api worker、browser execution、outbox claim/retry 的剩余 SQL。
+- `context.py` 中仍为兼容旧 cursor / job result shape 保留的 seed context 与 row state 读取逻辑。
+- RuntimeStore 中 api worker、browser execution、outbox claim/retry、influencer pool job 和 artifact persistence 的剩余 SQL。
 
 这些剩余项不改变 routing key 或 runtime topology。
