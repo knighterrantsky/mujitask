@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import time
+from importlib import import_module
+from typing import Any
+
+from automation_business_scaffold.control_plane.runtime_config.settings import (
+    KEYWORD_TASK_CODE,
+)
+from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    has_active_records as _has_active_children,
+    recover_browser_fallback_resume_stage,
+    stage_child_records as _stage_child_records,
+)
+
+from .context import _require_keyword_workflow
+from .stages.browser_fallback import (
+    _browser_fallback_candidates,
+    _browser_resume_candidates,
+)
+
+_STAGE_MODULES = {
+    "keyword_seed_import": "keyword_seed_import",
+    "fastmoss_security_browser_fallback": "fastmoss_security_browser_fallback",
+    "dispatch_row_refresh_jobs": "dispatch_row_refresh_jobs",
+    "refresh_competitor_rows": "refresh_competitor_rows",
+    "browser_fallback": "browser_fallback",
+    "resume_competitor_rows_after_browser_fallback": "resume_competitor_rows_after_browser_fallback",
+}
+
+
+def advance_stage(
+    *,
+    store: Any,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+) -> dict[str, Any]:
+    if request.task_code != KEYWORD_TASK_CODE:
+        raise ValueError(f"Unsupported task_code for keyword runtime: {request.task_code}")
+    module_name = _STAGE_MODULES.get(stage_code)
+    if stage_code == workflow.summary_policy.summary_stage_code:
+        module_name = "ready_for_summary"
+    if not module_name:
+        raise KeyError(f"Unsupported stage_code for keyword runtime: {stage_code}")
+    stage_module = import_module(f"{__package__}.stages.{module_name}")
+    return stage_module.advance(store=store, request=request, workflow=workflow)
+
+
+def finalize_request(
+    *,
+    store: Any,
+    request: Any,
+    workflow: WorkflowDefinition,
+    force_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .summary import finalize_request as _finalize_request
+
+    return _finalize_request(
+        store=store,
+        request=request,
+        workflow=workflow,
+        force_result=force_result,
+    )
+
+
+def release_request_after_child_completion(
+    store: Any,
+    *,
+    request_id: str,
+) -> list[dict[str, Any]]:
+    request = store.load_task_request(request_id=request_id)
+    if request.task_code != KEYWORD_TASK_CODE:
+        return []
+    workflow = _require_keyword_workflow()
+    current_stage = str(request.current_stage or "").strip()
+    if current_stage == workflow.summary_policy.summary_stage_code:
+        recovery_stage = recover_browser_fallback_resume_stage(
+            store,
+            request_id=request_id,
+            current_stage=current_stage,
+            summary_stage_code=workflow.summary_policy.summary_stage_code,
+            continuation_stage_codes=("resume_competitor_rows_after_browser_fallback",),
+            continuation_candidate_ready=bool(_browser_resume_candidates(store=store, request_id=request_id)),
+            browser_stage_code="browser_fallback",
+            resume_stage_code="resume_competitor_rows_after_browser_fallback",
+        )
+        if recovery_stage:
+            store.update_task_request(
+                request_id=request_id,
+                status="pending",
+                current_stage=recovery_stage,
+                progress_stage=recovery_stage,
+                worker_id="",
+                lease_until=0.0,
+                heartbeat_at=0.0,
+                last_progress_at=time.time(),
+            )
+            return [
+                {
+                    "request_id": request_id,
+                    "stage_code": recovery_stage,
+                    "released": True,
+                    "next_executor_status": "pending",
+                }
+            ]
+    if not current_stage:
+        return []
+    stage = workflow.require_stage(current_stage)
+    if stage.execution_mode != "worker_jobs":
+        return []
+
+    child_records = _stage_child_records(store=store, request_id=request_id, stage_code=current_stage)
+    if not child_records or _has_active_children(child_records):
+        return []
+
+    store.update_task_request(
+        request_id=request_id,
+        status="pending",
+        current_stage=current_stage,
+        progress_stage=current_stage,
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        last_progress_at=time.time(),
+    )
+    return [
+        {
+            "request_id": request_id,
+            "stage_code": current_stage,
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]

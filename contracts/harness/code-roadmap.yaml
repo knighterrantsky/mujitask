@@ -412,6 +412,79 @@ features:
       - Control plane must not contain product-ingest fallback orchestration or business message projection logic.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 
+  - feature_code: project_structure_refactor_phase_2
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/arch/refactor-search-keyword-competitor-products.md
+      - docs/arch/refactor-runtime-store-phase-2.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_competitor_products.py
+      - src/automation_business_scaffold/domains/tiktok/workflows/search_keyword_competitor_products.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - src/automation_business_scaffold/infrastructure/runtime/repositories
+      - src/automation_business_scaffold/infrastructure/runtime/queries
+      - tests/test_search_keyword_competitor_refactor_structure.py
+      - tests/test_runtime_store_phase_2_structure.py
+      - tests/test_project_structure_refactor_phase_2.py
+      - tests/test_architecture_ownership.py
+    source_contracts:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/arch/refactor-search-keyword-competitor-products.md
+      - docs/arch/refactor-runtime-store-phase-2.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/workflow/search_keyword_competitor_products.yaml
+    allowed_paths:
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - docs/arch/**
+      - docs/dev/module-guide.md
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/apps/**
+      - src/automation_business_scaffold/capabilities/**
+    done_gate:
+      tests:
+        - tests/test_search_keyword_competitor_refactor_structure.py
+        - tests/test_runtime_store_phase_2_structure.py
+        - tests/test_project_structure_refactor_phase_2.py
+        - tests/test_architecture_ownership.py
+        - tests/test_runtime_store.py
+        - tests/test_runtime_search_keyword_competitor_products.py
+        - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_browser_fallback_boundary.py
+      commands:
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products
+        - python3 -m compileall -q src/automation_business_scaffold/infrastructure/runtime
+        - uv run --extra dev pytest tests/test_search_keyword_competitor_refactor_structure.py tests/test_runtime_store_phase_2_structure.py tests/test_project_structure_refactor_phase_2.py tests/test_architecture_ownership.py
+        - uv run --extra dev pytest tests/test_runtime_store.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_browser_fallback_boundary.py
+    completion_rules:
+      - RuntimeStore constructor must not execute schema DDL; bootstrap must remain explicit.
+      - RuntimeStore must delegate api_worker_job, task_execution, notification_outbox, artifact_object, influencer pool jobs, db health, request status, and watchdog row scans to repository/query modules.
+      - search_keyword_competitor_products flow implementation must be a same-name package with stage modules anchored by stable stage_code values.
+      - Competitor orchestrator must stay thin; summary.py must own final summary/result/outbox assembly.
+      - This phase must not introduce a cross-workflow shared keyword kernel.
+      - New structure tests must guard against stage logic moving back into orchestrator or generic helper/common dumping-ground modules.
+
   - feature_code: runtime_watchdog_supervisor
     status: complete
     feature_area: runtime_control_plane

@@ -17,10 +17,17 @@ from automation_business_scaffold.infrastructure.runtime.runtime_records import 
     RuntimeTaskRequestRecord,
 )
 from automation_business_scaffold.infrastructure.runtime.bootstrap import bootstrap_runtime_schema
-from automation_business_scaffold.infrastructure.runtime.queries import RequestStatusQuery, WatchdogQuery
+from automation_business_scaffold.infrastructure.runtime.schema_version import (
+    missing_runtime_schema_message,
+)
+from automation_business_scaffold.infrastructure.runtime.queries import DbHealthQuery, RequestStatusQuery, WatchdogQuery
 from automation_business_scaffold.infrastructure.runtime.repositories import (
+    ApiWorkerJobRepository,
+    ArtifactObjectRepository,
+    InfluencerPoolJobRepository,
     NotificationOutboxRepository,
     ResourceLeaseRepository,
+    TaskExecutionRepository,
     TaskRequestRepository,
 )
 
@@ -146,12 +153,25 @@ class RuntimeStore:
         )
         self._request_status_query = RequestStatusQuery(self)
         self._watchdog_query = WatchdogQuery(self)
+        self._db_health_query = DbHealthQuery(self)
         self._task_request_repo = TaskRequestRepository(self)
+        self._api_worker_job_repo = ApiWorkerJobRepository(self)
+        self._task_execution_repo = TaskExecutionRepository(self)
         self._notification_outbox_repo = NotificationOutboxRepository(self)
         self._resource_lease_repo = ResourceLeaseRepository(self)
+        self._artifact_object_repo = ArtifactObjectRepository(self)
+        self._influencer_pool_job_repo = InfluencerPoolJobRepository(self)
 
     def bootstrap_schema(self) -> None:
         bootstrap_runtime_schema(self._engine)
+
+    def _ensure_runtime_schema_ready(self) -> None:
+        with self._engine.connect() as connection:
+            task_request_table = connection.execute(
+                self._text("SELECT to_regclass('task_request')")
+            ).scalar_one_or_none()
+        if not task_request_table:
+            raise RuntimeError(missing_runtime_schema_message())
 
     def collect_db_connection_health(
         self,
@@ -159,74 +179,7 @@ class RuntimeStore:
         max_connection_ratio: float = 0.8,
         max_idle_in_transaction: int = -1,
     ) -> dict[str, Any]:
-        threshold_ratio = min(max(float(max_connection_ratio or 0.8), 0.1), 1.0)
-        idle_tx_threshold = int(max_idle_in_transaction if max_idle_in_transaction is not None else -1)
-        with self._engine.connect() as connection:
-            max_connections = int(
-                connection.execute(
-                    self._text("SELECT setting::int FROM pg_settings WHERE name = 'max_connections'")
-                ).scalar_one()
-                or 0
-            )
-            state_rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT COALESCE(state, '') AS state, count(*)::int AS count
-                        FROM pg_stat_activity
-                        GROUP BY COALESCE(state, '')
-                        """
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            source_rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT COALESCE(application_name, '') AS application_name,
-                               COALESCE(state, '') AS state,
-                               count(*)::int AS count
-                        FROM pg_stat_activity
-                        GROUP BY COALESCE(application_name, ''), COALESCE(state, '')
-                        ORDER BY count(*) DESC, application_name, state
-                        LIMIT 20
-                        """
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        counts_by_state = {str(row["state"] or "unknown"): int(row["count"] or 0) for row in state_rows}
-        total_connections = sum(counts_by_state.values())
-        connection_ratio = (total_connections / max_connections) if max_connections else 0.0
-        idle_in_transaction_count = counts_by_state.get("idle in transaction", 0)
-        warnings: list[str] = []
-        if max_connections and connection_ratio >= threshold_ratio:
-            warnings.append("connection_ratio_exceeded")
-        if idle_tx_threshold >= 0 and idle_in_transaction_count > idle_tx_threshold:
-            warnings.append("idle_in_transaction_exceeded")
-        return {
-            "status": "warning" if warnings else "ok",
-            "healthy": not warnings,
-            "max_connections": max_connections,
-            "total_connections": total_connections,
-            "connection_ratio": connection_ratio,
-            "max_connection_ratio": threshold_ratio,
-            "idle_in_transaction_count": idle_in_transaction_count,
-            "max_idle_in_transaction": idle_tx_threshold,
-            "counts_by_state": counts_by_state,
-            "top_sources": [
-                {
-                    "application_name": str(row["application_name"] or ""),
-                    "state": str(row["state"] or ""),
-                    "count": int(row["count"] or 0),
-                }
-                for row in source_rows
-            ],
-            "warnings": warnings,
-        }
+        return self._db_health_query.collect_db_connection_health(max_connection_ratio=max_connection_ratio, max_idle_in_transaction=max_idle_in_transaction)
 
     def _request_from_row(self, row: Mapping[str, Any]) -> RuntimeTaskRequestRecord:
         return RuntimeTaskRequestRecord(
@@ -554,6 +507,7 @@ class RuntimeStore:
             )
 
     def claim_next_task_request(self, *, worker_id: str, lease_seconds: float) -> RuntimeTaskRequestRecord | None:
+        self._ensure_runtime_schema_ready()
         with self._engine.begin() as connection:
             now = time.time()
             self._requeue_expired_task_request_claims(connection, now=now)
@@ -773,137 +727,7 @@ class RuntimeStore:
         workflow_code: str,
         items: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        created_records: list[RuntimeTaskExecutionRecord] = []
-        skipped_records: list[dict[str, Any]] = []
-        with self._engine.begin() as connection:
-            next_queue_seq = int(
-                connection.execute(
-                    self._text("SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM task_execution")
-                ).scalar_one()
-            )
-            now = time.time()
-            for item in items:
-                business_key = str(item.get("business_key", "") or "")
-                dedupe_key = str(item.get("dedupe_key", "") or "")
-                resource_code = str(item.get("resource_code", "") or "")
-                if dedupe_key:
-                    existing = (
-                        connection.execute(
-                            self._text(
-                                """
-                                SELECT execution_id, request_id, status
-                                FROM task_execution
-                                WHERE dedupe_key = :dedupe_key
-                                  AND status IN ('pending', 'running', 'retry_wait')
-                                LIMIT 1
-                                """
-                            ),
-                            {"dedupe_key": dedupe_key},
-                        )
-                        .mappings()
-                        .first()
-                    )
-                    if existing is not None:
-                        skipped_records.append(
-                            {
-                                "business_key": business_key,
-                                "dedupe_key": dedupe_key,
-                                "existing_execution_id": str(existing["execution_id"]),
-                                "existing_request_id": str(existing["request_id"]),
-                                "status": str(existing["status"]),
-                            }
-                        )
-                        continue
-                execution_id = uuid.uuid4().hex
-                payload = dict(item.get("payload") or {})
-                max_execution_seconds = _coerce_non_negative_float(item.get("max_execution_seconds"))
-                max_idle_seconds = _resolve_runtime_seconds(
-                    item.get("max_idle_seconds"),
-                    payload,
-                    "max_idle_seconds",
-                    "max_no_progress_seconds",
-                )
-                heartbeat_timeout_seconds = _resolve_runtime_seconds(
-                    item.get("heartbeat_timeout_seconds"),
-                    payload,
-                    "heartbeat_timeout_seconds",
-                )
-                connection.execute(
-                    self._text(
-                        """
-                        INSERT INTO task_execution (
-                            execution_id, request_id, task_name, item_code, workflow_code,
-                            business_key, dedupe_key, resource_code, status, queue_seq,
-                            progress_stage, available_at, worker_id, worker_pid, attempt_count, max_attempts,
-                            max_execution_seconds, max_idle_seconds, heartbeat_timeout_seconds,
-                            payload_json, summary_json, result_json, error_text,
-                            error_type, error_code, dead_letter_reason, run_id,
-                            created_at, updated_at, started_at, finished_at, heartbeat_at, last_progress_at
-                            , progress_seq, progress_message
-                        ) VALUES (
-                            :execution_id, :request_id, :task_name, :item_code, :workflow_code,
-                            :business_key, :dedupe_key, :resource_code, 'pending', :queue_seq,
-                            'queued', :available_at, '', 0, 0, :max_attempts,
-                            :max_execution_seconds, :max_idle_seconds, :heartbeat_timeout_seconds,
-                            :payload_json, '{}', '{}', '',
-                            '', '', '', '',
-                            :created_at, :updated_at, NULL, NULL, NULL, :last_progress_at
-                            , 0, ''
-                        )
-                        """
-                    ),
-                    {
-                        "execution_id": execution_id,
-                        "request_id": request_id,
-                        "task_name": item_code,
-                        "item_code": item_code,
-                        "workflow_code": workflow_code,
-                        "business_key": business_key,
-                        "dedupe_key": dedupe_key,
-                        "resource_code": resource_code,
-                        "queue_seq": next_queue_seq,
-                        "available_at": now,
-                        "max_attempts": int(item.get("max_attempts", 3) or 3),
-                        "max_execution_seconds": max_execution_seconds,
-                        "max_idle_seconds": max_idle_seconds,
-                        "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                        "payload_json": _json_dumps(payload),
-                        "created_at": now,
-                        "updated_at": now,
-                        "last_progress_at": now,
-                    },
-                )
-                created_records.append(
-                    RuntimeTaskExecutionRecord(
-                        execution_id=execution_id,
-                        request_id=request_id,
-                        item_code=item_code,
-                        workflow_code=workflow_code,
-                        business_key=business_key,
-                        dedupe_key=dedupe_key,
-                        resource_code=resource_code,
-                        status="pending",
-                        queue_seq=next_queue_seq,
-                        progress_stage="queued",
-                        available_at=now,
-                        max_attempts=int(item.get("max_attempts", 3) or 3),
-                        max_execution_seconds=max_execution_seconds,
-                        max_idle_seconds=max_idle_seconds,
-                        heartbeat_timeout_seconds=heartbeat_timeout_seconds,
-                        payload=payload,
-                        last_progress_at=now,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                next_queue_seq += 1
-            self._refresh_request_child_counts(connection, request_id=request_id, now=now)
-        return {
-            "created_count": len(created_records),
-            "skipped_count": len(skipped_records),
-            "created_records": [record.to_dict() for record in created_records],
-            "skipped_records": skipped_records,
-        }
+        return self._task_execution_repo.enqueue_task_executions(request_id=request_id, item_code=item_code, workflow_code=workflow_code, items=items)
 
     def enqueue_api_worker_jobs(
         self,
@@ -914,182 +738,10 @@ class RuntimeStore:
         jobs: list[dict[str, Any]],
         force_refresh: bool = False,
     ) -> dict[str, Any]:
-        created_records: list[dict[str, Any]] = []
-        updated_records: list[dict[str, Any]] = []
-        skipped_records: list[dict[str, Any]] = []
-        now = time.time()
-        with self._engine.begin() as connection:
-            for job in jobs:
-                business_key = str(job.get("business_key", "") or "")
-                dedupe_key = str(job.get("dedupe_key", "") or "")
-                payload = dict(job.get("payload") or {})
-                max_attempts = int(job.get("max_attempts", 3) or 3)
-                max_execution_seconds = _coerce_non_negative_float(job.get("max_execution_seconds"))
-                max_idle_seconds = _resolve_runtime_seconds(
-                    job.get("max_idle_seconds"),
-                    payload,
-                    "max_idle_seconds",
-                    "max_no_progress_seconds",
-                )
-                heartbeat_timeout_seconds = _resolve_runtime_seconds(
-                    job.get("heartbeat_timeout_seconds"),
-                    payload,
-                    "heartbeat_timeout_seconds",
-                )
-                existing = None
-                if dedupe_key:
-                    existing = (
-                        connection.execute(
-                            self._text(
-                                """
-                                SELECT *
-                                FROM api_worker_job
-                                WHERE dedupe_key = :dedupe_key
-                                LIMIT 1
-                                """
-                            ),
-                            {"dedupe_key": dedupe_key},
-                        )
-                        .mappings()
-                        .first()
-                    )
-                if existing is not None:
-                    existing_status = str(existing["status"] or "")
-                    if existing_status in TERMINAL_API_WORKER_JOB_STATUSES and not force_refresh:
-                        skipped_records.append(
-                            {
-                                "business_key": business_key,
-                                "dedupe_key": dedupe_key,
-                                "existing_job_id": str(existing["job_id"]),
-                                "status": existing_status,
-                            }
-                        )
-                        continue
-                    connection.execute(
-                        self._text(
-                            """
-                            UPDATE api_worker_job
-                            SET request_id = :request_id,
-                                task_code = :task_code,
-                                job_code = :job_code,
-                                business_key = :business_key,
-                                status = 'pending',
-                                stage = 'queued',
-                                progress_stage = 'queued',
-                                payload_json = :payload_json,
-                                summary_json = '{}',
-                                result_json = '{}',
-                                error_text = '',
-                                error_type = '',
-                                error_code = '',
-                                dead_letter_reason = '',
-                                worker_id = '',
-                                worker_pid = 0,
-                                lease_until = NULL,
-                                available_at = :available_at,
-                                max_attempts = :max_attempts,
-                                max_execution_seconds = :max_execution_seconds,
-                                max_idle_seconds = :max_idle_seconds,
-                                heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
-                                progress_seq = 0,
-                                progress_message = '',
-                                last_progress_at = :last_progress_at,
-                                updated_at = :updated_at,
-                                finished_at = NULL,
-                                heartbeat_at = NULL
-                            WHERE job_id = :job_id
-                            """
-                        ),
-                        {
-                            "job_id": existing["job_id"],
-                            "request_id": request_id,
-                            "task_code": task_code,
-                            "job_code": job_code,
-                            "business_key": business_key,
-                            "payload_json": _json_dumps(payload),
-                            "available_at": now,
-                            "max_attempts": max_attempts,
-                            "max_execution_seconds": max_execution_seconds,
-                            "max_idle_seconds": max_idle_seconds,
-                            "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                            "last_progress_at": now,
-                            "updated_at": now,
-                        },
-                    )
-                    updated = (
-                        connection.execute(
-                            self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
-                            {"job_id": existing["job_id"]},
-                        )
-                        .mappings()
-                        .first()
-                    )
-                    if updated is not None:
-                        updated_records.append(self._api_worker_job_from_row(updated))
-                    continue
-
-                job_id = uuid.uuid4().hex
-                connection.execute(
-                    self._text(
-                        """
-                        INSERT INTO api_worker_job (
-                            job_id, request_id, task_code, job_code, business_key, dedupe_key,
-                            status, stage, progress_stage, attempt_count, max_attempts, max_execution_seconds,
-                            max_idle_seconds, heartbeat_timeout_seconds,
-                            payload_json, summary_json, result_json, error_text, error_type, error_code,
-                            dead_letter_reason, worker_id, worker_pid, lease_until,
-                            available_at, run_id, created_at, updated_at, started_at,
-                            finished_at, heartbeat_at, last_progress_at, progress_seq, progress_message
-                        ) VALUES (
-                            :job_id, :request_id, :task_code, :job_code, :business_key, :dedupe_key,
-                            'pending', 'queued', 'queued', 0, :max_attempts, :max_execution_seconds,
-                            :max_idle_seconds, :heartbeat_timeout_seconds, :payload_json,
-                            '{}', '{}', '', '', '', '', '', 0, NULL,
-                            :available_at, '', :created_at, :updated_at, NULL,
-                            NULL, NULL, :last_progress_at, 0, ''
-                        )
-                        """
-                    ),
-                    {
-                        "job_id": job_id,
-                        "request_id": request_id,
-                        "task_code": task_code,
-                        "job_code": job_code,
-                        "business_key": business_key,
-                        "dedupe_key": dedupe_key,
-                        "max_attempts": max_attempts,
-                        "max_execution_seconds": max_execution_seconds,
-                        "max_idle_seconds": max_idle_seconds,
-                        "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                        "payload_json": _json_dumps(payload),
-                        "available_at": now,
-                        "created_at": now,
-                        "updated_at": now,
-                        "last_progress_at": now,
-                    },
-                )
-                created = (
-                    connection.execute(
-                        self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
-                        {"job_id": job_id},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if created is not None:
-                    created_records.append(self._api_worker_job_from_row(created))
-        return {
-            "created_count": len(created_records),
-            "updated_count": len(updated_records),
-            "skipped_count": len(skipped_records),
-            "created_records": created_records,
-            "updated_records": updated_records,
-            "skipped_records": skipped_records,
-        }
+        return self._api_worker_job_repo.enqueue_api_worker_jobs(request_id=request_id, task_code=task_code, job_code=job_code, jobs=jobs, force_refresh=force_refresh)
 
     def _requeue_expired_api_worker_job_claims(self, connection: Any, *, now: float) -> None:
-        del connection, now
-        return
+        return self._api_worker_job_repo._requeue_expired_api_worker_job_claims(connection, now=now)
 
     def claim_next_api_worker_job(
         self,
@@ -1100,133 +752,11 @@ class RuntimeStore:
         request_id: str = "",
         job_code: str = "",
     ) -> dict[str, Any] | None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            self._requeue_expired_api_worker_job_claims(connection, now=now)
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT job.*
-                        FROM api_worker_job job
-                        JOIN task_request request ON request.request_id = job.request_id
-                        WHERE (:request_id = '' OR job.request_id = :request_id)
-                          AND (:job_code = '' OR job.job_code = :job_code)
-                          AND request.status = 'waiting_children'
-                          AND job.status IN ('pending', 'retry_wait')
-                          AND job.available_at <= :available_at
-                        ORDER BY job.available_at ASC, job.created_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                    {
-                        "request_id": request_id,
-                        "job_code": job_code,
-                        "available_at": now,
-                    },
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
-            payload = _load_json_dict(row.get("payload_json"))
-            run_id = f"api-worker-{row['job_id']}-{uuid.uuid4().hex}"
-            max_execution_seconds = _resolve_runtime_seconds(
-                row.get("max_execution_seconds"),
-                payload,
-                "max_execution_seconds",
-            )
-            max_idle_seconds = _resolve_runtime_seconds(
-                row.get("max_idle_seconds"),
-                payload,
-                "max_idle_seconds",
-                "max_no_progress_seconds",
-                default=DEFAULT_WATCHDOG_STALE_AFTER_SECONDS,
-            )
-            heartbeat_timeout_seconds = _resolve_runtime_seconds(
-                row.get("heartbeat_timeout_seconds"),
-                payload,
-                "heartbeat_timeout_seconds",
-                default=max(lease_seconds * 2.0, 30.0),
-            )
-            result = connection.execute(
-                self._text(
-                    """
-                    UPDATE api_worker_job
-                    SET status = 'running',
-                        stage = 'running',
-                        progress_stage = 'job_claimed',
-                        attempt_count = COALESCE(attempt_count, 0) + 1,
-                        worker_id = :worker_id,
-                        worker_pid = :worker_pid,
-                        lease_until = :lease_until,
-                        run_id = :run_id,
-                        max_execution_seconds = :max_execution_seconds,
-                        max_idle_seconds = :max_idle_seconds,
-                        heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
-                        updated_at = :updated_at,
-                        started_at = :updated_at,
-                        finished_at = NULL,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message
-                    WHERE job_id = :job_id
-                      AND status IN ('pending', 'retry_wait')
-                    """
-                ),
-                {
-                    "job_id": row["job_id"],
-                    "worker_id": worker_id,
-                    "worker_pid": int(worker_pid or 0),
-                    "lease_until": now + max(lease_seconds, 5.0),
-                    "run_id": run_id,
-                    "max_execution_seconds": max_execution_seconds,
-                    "max_idle_seconds": max_idle_seconds,
-                    "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                    "updated_at": now,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": "API worker claimed job.",
-                },
-            )
-            if int(result.rowcount or 0) <= 0:
-                return None
-            claimed = (
-                connection.execute(
-                    self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
-                    {"job_id": row["job_id"]},
-                )
-                .mappings()
-                .first()
-            )
-            return self._api_worker_job_from_row(claimed) if claimed is not None else None
+        self._ensure_runtime_schema_ready()
+        return self._api_worker_job_repo.claim_next_api_worker_job(worker_id=worker_id, worker_pid=worker_pid, lease_seconds=lease_seconds, request_id=request_id, job_code=job_code)
 
     def heartbeat_api_worker_job(self, *, job_id: str, run_id: str, lease_seconds: float) -> bool:
-        with self._engine.begin() as connection:
-            now = time.time()
-            result = connection.execute(
-                self._text(
-                    """
-                    UPDATE api_worker_job
-                    SET heartbeat_at = :heartbeat_at,
-                        lease_until = :lease_until,
-                        updated_at = :updated_at
-                    WHERE job_id = :job_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "run_id": run_id,
-                    "heartbeat_at": now,
-                    "lease_until": now + max(lease_seconds, 5.0),
-                    "updated_at": now,
-                },
-            )
-        return int(result.rowcount or 0) > 0
+        return self._api_worker_job_repo.heartbeat_api_worker_job(job_id=job_id, run_id=run_id, lease_seconds=lease_seconds)
 
     def update_api_worker_job_progress(
         self,
@@ -1237,33 +767,7 @@ class RuntimeStore:
         message: str = "",
         lease_seconds: float | None = None,
     ) -> dict[str, Any]:
-        del lease_seconds
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE api_worker_job
-                    SET progress_stage = :progress_stage,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message,
-                        updated_at = :updated_at
-                    WHERE job_id = :job_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "run_id": run_id,
-                    "progress_stage": progress_stage,
-                    "progress_message": str(message or ""),
-                    "last_progress_at": now,
-                    "updated_at": now,
-                },
-            )
-        return self.load_api_worker_job(job_id=job_id)
+        return self._api_worker_job_repo.update_api_worker_job_progress(job_id=job_id, run_id=run_id, progress_stage=progress_stage, message=message, lease_seconds=lease_seconds)
 
     def mark_api_worker_job_success(
         self,
@@ -1274,51 +778,7 @@ class RuntimeStore:
         result: dict[str, Any],
         stage: str = "completed",
     ) -> dict[str, Any]:
-        with self._engine.begin() as connection:
-            now = time.time()
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE api_worker_job
-                    SET status = 'success',
-                        stage = :stage,
-                        progress_stage = :progress_stage,
-                        run_id = :run_id,
-                        summary_json = :summary_json,
-                        result_json = :result_json,
-                        error_text = '',
-                        error_type = '',
-                        error_code = '',
-                        dead_letter_reason = '',
-                        worker_id = '',
-                        worker_pid = 0,
-                        lease_until = NULL,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message,
-                        updated_at = :updated_at,
-                        finished_at = :finished_at
-                    WHERE job_id = :job_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "stage": stage,
-                    "progress_stage": stage,
-                    "run_id": run_id,
-                    "summary_json": _json_dumps(summary),
-                    "result_json": _json_dumps(result),
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": "API worker job succeeded.",
-                    "updated_at": now,
-                    "finished_at": now,
-                },
-            )
-        return self.load_api_worker_job(job_id=job_id)
+        return self._api_worker_job_repo.mark_api_worker_job_success(job_id=job_id, run_id=run_id, summary=summary, result=result, stage=stage)
 
     def mark_api_worker_job_retry_or_failed(
         self,
@@ -1333,94 +793,10 @@ class RuntimeStore:
         error_code: str = "",
         dead_letter_reason: str = "",
     ) -> dict[str, Any]:
-        with self._engine.begin() as connection:
-            now = time.time()
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT attempt_count, max_attempts
-                        FROM api_worker_job
-                        WHERE job_id = :job_id
-                          AND run_id = :run_id
-                          AND status = 'running'
-                        LIMIT 1
-                        """
-                    ),
-                    {"job_id": job_id, "run_id": run_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return self.load_api_worker_job(job_id=job_id)
-            attempt_count = int(row["attempt_count"] or 0)
-            max_attempts = int(row["max_attempts"] or 1)
-            status = "retry_wait" if attempt_count < max_attempts else "failed"
-            available_at = now + max(retry_delay_seconds, 0.1) if status == "retry_wait" else now
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE api_worker_job
-                    SET status = :status,
-                        stage = :stage,
-                        progress_stage = :progress_stage,
-                        run_id = :run_id,
-                        summary_json = :summary_json,
-                        result_json = :result_json,
-                        error_text = :error_text,
-                        error_type = :error_type,
-                        error_code = :error_code,
-                        dead_letter_reason = :dead_letter_reason,
-                        worker_id = '',
-                        worker_pid = 0,
-                        lease_until = NULL,
-                        available_at = :available_at,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message,
-                        updated_at = :updated_at,
-                        finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
-                    WHERE job_id = :job_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "status": status,
-                    "stage": "retry_wait" if status == "retry_wait" else "failed",
-                    "progress_stage": "retry_wait" if status == "retry_wait" else "failed",
-                    "run_id": run_id,
-                    "summary_json": _json_dumps(summary or {}),
-                    "result_json": _json_dumps(result or {}),
-                    "error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
-                    "available_at": available_at,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": error_text,
-                    "updated_at": now,
-                },
-            )
-        return self.load_api_worker_job(job_id=job_id)
+        return self._api_worker_job_repo.mark_api_worker_job_retry_or_failed(job_id=job_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason)
 
     def load_api_worker_job(self, *, job_id: str) -> dict[str, Any]:
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
-                    {"job_id": job_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ValueError("API worker job not found.")
-            return self._api_worker_job_from_row(row)
+        return self._api_worker_job_repo.load_api_worker_job(job_id=job_id)
 
     def list_api_worker_jobs_for_request(
         self,
@@ -1428,24 +804,7 @@ class RuntimeStore:
         request_id: str,
         job_code: str = "",
     ) -> list[dict[str, Any]]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM api_worker_job
-                        WHERE request_id = :request_id
-                          AND (:job_code = '' OR job_code = :job_code)
-                        ORDER BY created_at ASC, updated_at ASC
-                        """
-                    ),
-                    {"request_id": request_id, "job_code": job_code},
-                )
-                .mappings()
-                .all()
-            )
-        return [self._api_worker_job_from_row(row) for row in rows]
+        return self._api_worker_job_repo.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
 
     def summarize_api_worker_jobs_for_request(
         self,
@@ -1453,36 +812,7 @@ class RuntimeStore:
         request_id: str,
         job_code: str = "",
     ) -> dict[str, Any]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT status, COUNT(*) AS count
-                        FROM api_worker_job
-                        WHERE request_id = :request_id
-                          AND (:job_code = '' OR job_code = :job_code)
-                        GROUP BY status
-                        """
-                    ),
-                    {"request_id": request_id, "job_code": job_code},
-                )
-                .mappings()
-                .all()
-            )
-        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
-        total = sum(counts.values())
-        active_count = sum(counts.get(status, 0) for status in ACTIVE_API_WORKER_JOB_STATUSES)
-        success_count = counts.get("success", 0) + counts.get("skipped", 0)
-        failed_count = counts.get("failed", 0) + counts.get("cancelled", 0)
-        return {
-            "total": total,
-            "counts": counts,
-            "active_count": active_count,
-            "terminal_count": max(total - active_count, 0),
-            "success_count": success_count,
-            "failed_count": failed_count,
-        }
+        return self._api_worker_job_repo.summarize_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
 
     @contextmanager
     def fastmoss_cookie_cache_lock(self, *, cache_key: str) -> Any:
@@ -1650,151 +980,8 @@ class RuntimeStore:
         request_id: str = "",
         item_codes: tuple[str, ...] = (),
     ) -> RuntimeTaskExecutionRecord | None:
-        normalized_request_id = str(request_id or "").strip()
-        allowed_item_codes = {str(item or "").strip() for item in item_codes if str(item or "").strip()}
-        with self._engine.begin() as connection:
-            now = time.time()
-            self._requeue_expired_leases(connection, now=now)
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM task_execution
-                        WHERE status IN ('pending', 'retry_wait')
-                          AND available_at <= :available_at
-                          AND (:request_id = '' OR request_id = :request_id)
-                        ORDER BY queue_seq ASC, created_at ASC
-                        """
-                    ),
-                    {"available_at": now, "request_id": normalized_request_id},
-                )
-                .mappings()
-                .all()
-            )
-            for row in rows:
-                if allowed_item_codes and str(row["item_code"] or "") not in allowed_item_codes:
-                    continue
-                resource_code = str(row["resource_code"] or "")
-                if resource_code:
-                    lease_row = (
-                        connection.execute(
-                            self._text(
-                                """
-                                SELECT *
-                                FROM resource_lease
-                                WHERE resource_code = :resource_code
-                                LIMIT 1
-                                """
-                            ),
-                            {"resource_code": resource_code},
-                        )
-                        .mappings()
-                        .first()
-                    )
-                    if lease_row is not None and _coerce_float(lease_row["lease_until"]) > now:
-                        continue
-                    if lease_row is not None:
-                        connection.execute(
-                            self._text("DELETE FROM resource_lease WHERE resource_code = :resource_code"),
-                            {"resource_code": resource_code},
-                        )
-                payload = _load_json_dict(row.get("payload_json"))
-                run_id = f"browser-{row['execution_id']}-{uuid.uuid4().hex}"
-                max_execution_seconds = _resolve_runtime_seconds(
-                    row.get("max_execution_seconds"),
-                    payload,
-                    "max_execution_seconds",
-                )
-                max_idle_seconds = _resolve_runtime_seconds(
-                    row.get("max_idle_seconds"),
-                    payload,
-                    "max_idle_seconds",
-                    "max_no_progress_seconds",
-                    default=DEFAULT_WATCHDOG_STALE_AFTER_SECONDS,
-                )
-                heartbeat_timeout_seconds = _resolve_runtime_seconds(
-                    row.get("heartbeat_timeout_seconds"),
-                    payload,
-                    "heartbeat_timeout_seconds",
-                    default=max(lease_seconds * 2.0, 30.0),
-                )
-                result = connection.execute(
-                    self._text(
-                        """
-                        UPDATE task_execution
-                        SET status = 'running',
-                            worker_id = :worker_id,
-                            worker_pid = :worker_pid,
-                            attempt_count = COALESCE(attempt_count, 0) + 1,
-                            run_id = :run_id,
-                            progress_stage = 'job_claimed',
-                            max_execution_seconds = :max_execution_seconds,
-                            max_idle_seconds = :max_idle_seconds,
-                            heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
-                            updated_at = :updated_at,
-                            started_at = :updated_at,
-                            finished_at = NULL,
-                            heartbeat_at = :heartbeat_at,
-                            last_progress_at = :last_progress_at,
-                            progress_seq = COALESCE(progress_seq, 0) + 1,
-                            progress_message = :progress_message
-                        WHERE execution_id = :execution_id
-                          AND status IN ('pending', 'retry_wait')
-                        """
-                    ),
-                    {
-                        "worker_id": worker_id,
-                        "worker_pid": int(worker_pid or 0),
-                        "run_id": run_id,
-                        "max_execution_seconds": max_execution_seconds,
-                        "max_idle_seconds": max_idle_seconds,
-                        "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                        "updated_at": now,
-                        "heartbeat_at": now,
-                        "last_progress_at": now,
-                        "progress_message": "Browser worker claimed execution.",
-                        "execution_id": row["execution_id"],
-                    },
-                )
-                if int(result.rowcount or 0) <= 0:
-                    continue
-                if resource_code:
-                    connection.execute(
-                        self._text(
-                            """
-                            INSERT INTO resource_lease (
-                                resource_code, execution_id, request_id, worker_id, status,
-                                lease_until, heartbeat_at, created_at, updated_at
-                            ) VALUES (
-                                :resource_code, :execution_id, :request_id, :worker_id, 'active',
-                                :lease_until, :heartbeat_at, :created_at, :updated_at
-                            )
-                            """
-                        ),
-                        {
-                            "resource_code": resource_code,
-                            "execution_id": row["execution_id"],
-                            "request_id": row["request_id"],
-                            "worker_id": worker_id,
-                            "lease_until": now + lease_seconds,
-                            "heartbeat_at": now,
-                            "created_at": now,
-                            "updated_at": now,
-                        },
-                    )
-                execution = (
-                    connection.execute(
-                        self._text("SELECT * FROM task_execution WHERE execution_id = :execution_id"),
-                        {"execution_id": row["execution_id"]},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if execution is None:
-                    return None
-                return self._execution_from_row(execution)
-            return None
+        self._ensure_runtime_schema_ready()
+        return self._task_execution_repo.claim_next_browser_execution(worker_id=worker_id, worker_pid=worker_pid, lease_seconds=lease_seconds, request_id=request_id, item_codes=item_codes)
 
     def claim_browser_execution(
         self,
@@ -1804,189 +991,11 @@ class RuntimeStore:
         worker_pid: int | None = None,
         lease_seconds: float,
     ) -> RuntimeTaskExecutionRecord | None:
-        with self._engine.begin() as connection:
-            now = time.time()
-            self._requeue_expired_leases(connection, now=now)
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM task_execution
-                        WHERE execution_id = :execution_id
-                        LIMIT 1
-                        """
-                    ),
-                    {"execution_id": execution_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None or str(row["status"] or "") not in {"pending", "retry_wait"}:
-                return None
-            if _coerce_float(row["available_at"]) > now:
-                return None
-            resource_code = str(row["resource_code"] or "")
-            if resource_code:
-                lease_row = (
-                    connection.execute(
-                        self._text(
-                            """
-                            SELECT *
-                            FROM resource_lease
-                            WHERE resource_code = :resource_code
-                            LIMIT 1
-                            """
-                        ),
-                        {"resource_code": resource_code},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if lease_row is not None and _coerce_float(lease_row["lease_until"]) > now:
-                    return None
-                if lease_row is not None:
-                    connection.execute(
-                        self._text("DELETE FROM resource_lease WHERE resource_code = :resource_code"),
-                        {"resource_code": resource_code},
-                    )
-            payload = _load_json_dict(row.get("payload_json"))
-            run_id = f"browser-{row['execution_id']}-{uuid.uuid4().hex}"
-            max_execution_seconds = _resolve_runtime_seconds(
-                row.get("max_execution_seconds"),
-                payload,
-                "max_execution_seconds",
-            )
-            max_idle_seconds = _resolve_runtime_seconds(
-                row.get("max_idle_seconds"),
-                payload,
-                "max_idle_seconds",
-                "max_no_progress_seconds",
-                default=DEFAULT_WATCHDOG_STALE_AFTER_SECONDS,
-            )
-            heartbeat_timeout_seconds = _resolve_runtime_seconds(
-                row.get("heartbeat_timeout_seconds"),
-                payload,
-                "heartbeat_timeout_seconds",
-                default=max(lease_seconds * 2.0, 30.0),
-            )
-            result = connection.execute(
-                self._text(
-                    """
-                    UPDATE task_execution
-                    SET status = 'running',
-                        worker_id = :worker_id,
-                        worker_pid = :worker_pid,
-                        attempt_count = COALESCE(attempt_count, 0) + 1,
-                        run_id = :run_id,
-                        progress_stage = 'job_claimed',
-                        max_execution_seconds = :max_execution_seconds,
-                        max_idle_seconds = :max_idle_seconds,
-                        heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
-                        updated_at = :updated_at,
-                        started_at = :updated_at,
-                        finished_at = NULL,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message
-                    WHERE execution_id = :execution_id
-                      AND status IN ('pending', 'retry_wait')
-                    """
-                ),
-                {
-                    "worker_id": worker_id,
-                    "worker_pid": int(worker_pid or 0),
-                    "run_id": run_id,
-                    "max_execution_seconds": max_execution_seconds,
-                    "max_idle_seconds": max_idle_seconds,
-                    "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-                    "updated_at": now,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": "Browser worker claimed execution.",
-                    "execution_id": execution_id,
-                },
-            )
-            if int(result.rowcount or 0) <= 0:
-                return None
-            if resource_code:
-                connection.execute(
-                    self._text(
-                        """
-                        INSERT INTO resource_lease (
-                            resource_code, execution_id, request_id, worker_id, status,
-                            lease_until, heartbeat_at, created_at, updated_at
-                        ) VALUES (
-                            :resource_code, :execution_id, :request_id, :worker_id, 'active',
-                            :lease_until, :heartbeat_at, :created_at, :updated_at
-                        )
-                        """
-                    ),
-                    {
-                        "resource_code": resource_code,
-                        "execution_id": row["execution_id"],
-                        "request_id": row["request_id"],
-                        "worker_id": worker_id,
-                        "lease_until": now + lease_seconds,
-                        "heartbeat_at": now,
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                )
-            execution = (
-                connection.execute(
-                    self._text("SELECT * FROM task_execution WHERE execution_id = :execution_id"),
-                    {"execution_id": execution_id},
-                )
-                .mappings()
-                .first()
-            )
-            if execution is None:
-                return None
-            return self._execution_from_row(execution)
+        self._ensure_runtime_schema_ready()
+        return self._task_execution_repo.claim_browser_execution(execution_id=execution_id, worker_id=worker_id, worker_pid=worker_pid, lease_seconds=lease_seconds)
 
     def heartbeat_browser_execution(self, *, execution_id: str, run_id: str, lease_seconds: float) -> bool:
-        with self._engine.begin() as connection:
-            now = time.time()
-            result = connection.execute(
-                self._text(
-                    """
-                    UPDATE task_execution
-                    SET heartbeat_at = :heartbeat_at,
-                        updated_at = :updated_at
-                    WHERE execution_id = :execution_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "heartbeat_at": now,
-                    "updated_at": now,
-                    "execution_id": execution_id,
-                    "run_id": run_id,
-                },
-            )
-            if int(result.rowcount or 0) <= 0:
-                return False
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE resource_lease
-                    SET heartbeat_at = :heartbeat_at,
-                        lease_until = :lease_until,
-                        updated_at = :updated_at
-                    WHERE execution_id = :execution_id
-                    """
-                ),
-                {
-                    "heartbeat_at": now,
-                    "lease_until": now + lease_seconds,
-                    "updated_at": now,
-                    "execution_id": execution_id,
-                },
-            )
-        return True
+        return self._task_execution_repo.heartbeat_browser_execution(execution_id=execution_id, run_id=run_id, lease_seconds=lease_seconds)
 
     def update_task_execution_progress(
         self,
@@ -1997,33 +1006,7 @@ class RuntimeStore:
         message: str = "",
         lease_seconds: float | None = None,
     ) -> RuntimeTaskExecutionRecord:
-        del lease_seconds
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE task_execution
-                    SET progress_stage = :progress_stage,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message,
-                        updated_at = :updated_at
-                    WHERE execution_id = :execution_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "execution_id": execution_id,
-                    "run_id": run_id,
-                    "progress_stage": progress_stage,
-                    "progress_message": str(message or ""),
-                    "last_progress_at": now,
-                    "updated_at": now,
-                },
-            )
-        return self.load_task_execution(execution_id=execution_id)
+        return self._task_execution_repo.update_task_execution_progress(execution_id=execution_id, run_id=run_id, progress_stage=progress_stage, message=message, lease_seconds=lease_seconds)
 
     def _finalize_browser_execution(
         self,
@@ -2035,89 +1018,7 @@ class RuntimeStore:
         result: dict[str, Any],
         error_text: str,
     ) -> RuntimeTaskExecutionRecord:
-        with self._engine.begin() as connection:
-            now = time.time()
-            execution_row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT execution_id, request_id, resource_code
-                        FROM task_execution
-                        WHERE execution_id = :execution_id
-                        LIMIT 1
-                        """
-                    ),
-                    {"execution_id": execution_id},
-                )
-                .mappings()
-                .first()
-            )
-            if execution_row is None:
-                raise ValueError("Task execution not found.")
-            update_result = connection.execute(
-                self._text(
-                    """
-                    UPDATE task_execution
-                    SET status = :status,
-                        run_id = :run_id,
-                        progress_stage = :progress_stage,
-                        summary_json = :summary_json,
-                        result_json = :result_json,
-                        error_text = :error_text,
-                        error_type = '',
-                        error_code = '',
-                        dead_letter_reason = '',
-                        worker_id = '',
-                        worker_pid = 0,
-                        updated_at = :updated_at,
-                        finished_at = :finished_at,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message
-                    WHERE execution_id = :execution_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "status": status,
-                    "run_id": run_id,
-                    "progress_stage": status,
-                    "summary_json": _json_dumps(summary),
-                    "result_json": _json_dumps(result),
-                    "error_text": error_text,
-                    "updated_at": now,
-                    "finished_at": now,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": f"Browser execution {status}.",
-                    "execution_id": execution_id,
-                },
-            )
-            applied = int(update_result.rowcount or 0) > 0
-            if applied and execution_row["resource_code"]:
-                connection.execute(
-                    self._text("DELETE FROM resource_lease WHERE resource_code = :resource_code"),
-                    {"resource_code": execution_row["resource_code"]},
-                )
-            if applied:
-                self._refresh_request_child_counts(
-                    connection,
-                    request_id=str(execution_row["request_id"]),
-                    now=now,
-                )
-            execution = (
-                connection.execute(
-                    self._text("SELECT * FROM task_execution WHERE execution_id = :execution_id"),
-                    {"execution_id": execution_id},
-                )
-                .mappings()
-                .first()
-            )
-            if execution is None:
-                raise ValueError("Task execution not found after update.")
-            return self._execution_from_row(execution)
+        return self._task_execution_repo._finalize_browser_execution(execution_id=execution_id, status=status, run_id=run_id, summary=summary, result=result, error_text=error_text)
 
     def mark_browser_execution_success(
         self,
@@ -2127,14 +1028,7 @@ class RuntimeStore:
         summary: dict[str, Any],
         result: dict[str, Any],
     ) -> RuntimeTaskExecutionRecord:
-        return self._finalize_browser_execution(
-            execution_id=execution_id,
-            status="success",
-            run_id=run_id,
-            summary=summary,
-            result=result,
-            error_text="",
-        )
+        return self._task_execution_repo.mark_browser_execution_success(execution_id=execution_id, run_id=run_id, summary=summary, result=result)
 
     def mark_browser_execution_skipped(
         self,
@@ -2144,14 +1038,7 @@ class RuntimeStore:
         summary: dict[str, Any],
         result: dict[str, Any],
     ) -> RuntimeTaskExecutionRecord:
-        return self._finalize_browser_execution(
-            execution_id=execution_id,
-            status="skipped",
-            run_id=run_id,
-            summary=summary,
-            result=result,
-            error_text="",
-        )
+        return self._task_execution_repo.mark_browser_execution_skipped(execution_id=execution_id, run_id=run_id, summary=summary, result=result)
 
     def mark_browser_execution_retry_or_failed(
         self,
@@ -2166,105 +1053,10 @@ class RuntimeStore:
         error_code: str = "",
         dead_letter_reason: str = "",
     ) -> RuntimeTaskExecutionRecord:
-        with self._engine.begin() as connection:
-            now = time.time()
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM task_execution
-                        WHERE execution_id = :execution_id
-                          AND run_id = :run_id
-                          AND status = 'running'
-                        LIMIT 1
-                        """
-                    ),
-                    {"execution_id": execution_id, "run_id": run_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return self.load_task_execution(execution_id=execution_id)
-            status = "retry_wait"
-            available_at = now + max(retry_delay_seconds, 0.1)
-            if int(row["attempt_count"] or 0) >= int(row["max_attempts"] or 1):
-                status = "failed"
-                available_at = now
-            update_result = connection.execute(
-                self._text(
-                    """
-                    UPDATE task_execution
-                    SET status = :status,
-                        run_id = :run_id,
-                        progress_stage = :progress_stage,
-                        summary_json = :summary_json,
-                        result_json = :result_json,
-                        error_text = :error_text,
-                        error_type = :error_type,
-                        error_code = :error_code,
-                        dead_letter_reason = :dead_letter_reason,
-                        worker_id = '',
-                        worker_pid = 0,
-                        available_at = :available_at,
-                        updated_at = :updated_at,
-                        finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        progress_seq = COALESCE(progress_seq, 0) + 1,
-                        progress_message = :progress_message
-                    WHERE execution_id = :execution_id
-                      AND run_id = :run_id
-                      AND status = 'running'
-                    """
-                ),
-                {
-                    "status": status,
-                    "run_id": run_id,
-                    "progress_stage": status,
-                    "summary_json": _json_dumps(summary or {}),
-                    "result_json": _json_dumps(result or {}),
-                    "error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
-                    "available_at": available_at,
-                    "updated_at": now,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "progress_message": error_text,
-                    "execution_id": execution_id,
-                },
-            )
-            applied = int(update_result.rowcount or 0) > 0
-            resource_code = str(row["resource_code"] or "")
-            if applied and resource_code:
-                connection.execute(
-                    self._text("DELETE FROM resource_lease WHERE resource_code = :resource_code"),
-                    {"resource_code": resource_code},
-                )
-            if applied:
-                self._refresh_request_child_counts(
-                    connection,
-                    request_id=str(row["request_id"]),
-                    now=now,
-                )
-        return self.load_task_execution(execution_id=execution_id)
+        return self._task_execution_repo.mark_browser_execution_retry_or_failed(execution_id=execution_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason)
 
     def load_task_execution(self, *, execution_id: str) -> RuntimeTaskExecutionRecord:
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT * FROM task_execution WHERE execution_id = :execution_id LIMIT 1"),
-                    {"execution_id": execution_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ValueError("Task execution not found.")
-            return self._execution_from_row(row)
+        return self._task_execution_repo.load_task_execution(execution_id=execution_id)
 
     def _scan_runtime_rows(
         self,
@@ -3199,67 +1991,7 @@ class RuntimeStore:
         raise ValueError(f"Unsupported watchdog target_table: {target_table}")
 
     def reclaim_expired_outbox_claims(self, *, limit: int = 100) -> list[NotificationOutboxRecord]:
-        candidates = self.scan_expired_outbox_leases(limit=limit)
-        if not candidates:
-            return []
-        now = time.time()
-        with self._engine.begin() as connection:
-            for candidate in candidates:
-                row = (
-                    connection.execute(
-                        self._text(
-                            """
-                            SELECT retry_count, max_retry_count
-                            FROM notification_outbox
-                            WHERE outbox_id = :outbox_id
-                              AND status = 'sending'
-                            LIMIT 1
-                            """
-                        ),
-                        {"outbox_id": candidate.outbox_id},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if row is None:
-                    continue
-                retry_count = int(row["retry_count"] or 0) + 1
-                max_retry_count = int(row["max_retry_count"] or 0)
-                status = "retry_wait" if retry_count < max_retry_count else "failed"
-                next_retry_at = now if status == "retry_wait" else None
-                connection.execute(
-                    self._text(
-                        """
-                        UPDATE notification_outbox
-                        SET status = :status,
-                            progress_stage = :progress_stage,
-                            retry_count = :retry_count,
-                            next_retry_at = :next_retry_at,
-                            worker_id = '',
-                            lease_until = NULL,
-                            heartbeat_at = NULL,
-                            last_error_text = :last_error_text,
-                            error_type = 'timeout',
-                            error_code = 'outbox_lease_expired',
-                            dead_letter_reason = :dead_letter_reason,
-                            last_progress_at = :last_progress_at,
-                            updated_at = :updated_at
-                        WHERE outbox_id = :outbox_id
-                        """
-                    ),
-                    {
-                        "outbox_id": candidate.outbox_id,
-                        "status": status,
-                        "progress_stage": "failed" if status == "failed" else "retry_wait",
-                        "retry_count": retry_count,
-                        "next_retry_at": next_retry_at,
-                        "last_error_text": "Outbox sending lease expired and was reclaimed.",
-                        "dead_letter_reason": "lease_expired" if status == "failed" else "",
-                        "last_progress_at": now,
-                        "updated_at": now,
-                    },
-                )
-        return [self.load_outbox(outbox_id=item.outbox_id) for item in candidates]
+        return self._notification_outbox_repo.reclaim_expired_outbox_claims(limit=limit)
 
     def _aggregate_runtime_request_children(self, connection: Any, *, request_id: str) -> dict[str, int]:
         task_stats = (
@@ -3521,143 +2253,14 @@ class RuntimeStore:
         return self._notification_outbox_repo.load(outbox_id=outbox_id)
 
     def _requeue_expired_outbox_claims(self, connection: Any, *, now: float) -> None:
-        rows = (
-            connection.execute(
-                self._text(
-                    """
-                    SELECT outbox_id, retry_count, max_retry_count
-                    FROM notification_outbox
-                    WHERE status = 'sending'
-                      AND COALESCE(lease_until, 0) <= :now
-                    """
-                ),
-                {"now": now},
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            retry_count = int(row["retry_count"] or 0) + 1
-            max_retry_count = int(row["max_retry_count"] or 0)
-            status = "retry_wait" if retry_count < max_retry_count else "failed"
-            next_retry_at = now if status == "retry_wait" else None
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE notification_outbox
-                    SET status = :status,
-                        progress_stage = CASE
-                            WHEN :status = 'failed' THEN 'failed'
-                            ELSE 'retry_wait'
-                        END,
-                        retry_count = :retry_count,
-                        next_retry_at = :next_retry_at,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = NULL,
-                        last_error_text = :last_error_text,
-                        error_type = 'timeout',
-                        error_code = 'outbox_lease_expired',
-                        dead_letter_reason = CASE
-                            WHEN :status = 'failed' THEN 'lease_expired'
-                            ELSE dead_letter_reason
-                        END,
-                        last_progress_at = :last_progress_at,
-                        updated_at = :updated_at
-                    WHERE outbox_id = :outbox_id
-                    """
-                ),
-                {
-                    "outbox_id": row["outbox_id"],
-                    "status": status,
-                    "retry_count": retry_count,
-                    "next_retry_at": next_retry_at,
-                    "last_error_text": "Outbox sending lease expired and was reclaimed.",
-                    "last_progress_at": now,
-                    "updated_at": now,
-                },
-            )
+        return self._notification_outbox_repo._requeue_expired_outbox_claims(connection, now=now)
 
     def claim_next_outbox(self, *, worker_id: str, lease_seconds: float) -> NotificationOutboxRecord | None:
-        with self._engine.begin() as connection:
-            now = time.time()
-            self._requeue_expired_outbox_claims(connection, now=now)
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM notification_outbox
-                        WHERE status = 'pending'
-                           OR (status = 'retry_wait' AND COALESCE(next_retry_at, 0) <= :now)
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                        FOR UPDATE SKIP LOCKED
-                        """
-                    ),
-                    {"now": now},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE notification_outbox
-                    SET status = 'sending',
-                        progress_stage = 'sending',
-                        worker_id = :worker_id,
-                        lease_until = :lease_until,
-                        heartbeat_at = :heartbeat_at,
-                        last_progress_at = :last_progress_at,
-                        updated_at = :updated_at
-                    WHERE outbox_id = :outbox_id
-                    """
-                ),
-                {
-                    "outbox_id": row["outbox_id"],
-                    "worker_id": worker_id,
-                    "lease_until": now + lease_seconds,
-                    "heartbeat_at": now,
-                    "last_progress_at": now,
-                    "updated_at": now,
-                },
-            )
-            updated_row = (
-                connection.execute(
-                    self._text("SELECT * FROM notification_outbox WHERE outbox_id = :outbox_id LIMIT 1"),
-                    {"outbox_id": row["outbox_id"]},
-                )
-                .mappings()
-                .first()
-            )
-            if updated_row is None:
-                return None
-            return self._outbox_from_row(updated_row)
+        self._ensure_runtime_schema_ready()
+        return self._notification_outbox_repo.claim_next_outbox(worker_id=worker_id, lease_seconds=lease_seconds)
 
     def heartbeat_outbox(self, *, outbox_id: str, lease_seconds: float) -> None:
-        with self._engine.begin() as connection:
-            now = time.time()
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE notification_outbox
-                    SET heartbeat_at = :heartbeat_at,
-                        lease_until = :lease_until,
-                        updated_at = :updated_at
-                    WHERE outbox_id = :outbox_id
-                      AND status = 'sending'
-                    """
-                ),
-                {
-                    "outbox_id": outbox_id,
-                    "heartbeat_at": now,
-                    "lease_until": now + lease_seconds,
-                    "updated_at": now,
-                },
-            )
+        return self._notification_outbox_repo.heartbeat_outbox(outbox_id=outbox_id, lease_seconds=lease_seconds)
 
     def update_outbox_progress(
         self,
@@ -3666,60 +2269,10 @@ class RuntimeStore:
         progress_stage: str,
         lease_seconds: float | None = None,
     ) -> NotificationOutboxRecord:
-        now = time.time()
-        with self._engine.begin() as connection:
-            assignments = [
-                "progress_stage = :progress_stage",
-                "last_progress_at = :last_progress_at",
-                "updated_at = :updated_at",
-            ]
-            values: dict[str, Any] = {
-                "outbox_id": outbox_id,
-                "progress_stage": progress_stage,
-                "last_progress_at": now,
-                "updated_at": now,
-            }
-            if lease_seconds is not None:
-                assignments.extend(["heartbeat_at = :heartbeat_at", "lease_until = :lease_until"])
-                values["heartbeat_at"] = now
-                values["lease_until"] = now + max(lease_seconds, 0.1)
-            connection.execute(
-                self._text(
-                    f"""
-                    UPDATE notification_outbox
-                    SET {", ".join(assignments)}
-                    WHERE outbox_id = :outbox_id
-                    """
-                ),
-                values,
-            )
-        return self.load_outbox(outbox_id=outbox_id)
+        return self._notification_outbox_repo.update_outbox_progress(outbox_id=outbox_id, progress_stage=progress_stage, lease_seconds=lease_seconds)
 
     def mark_outbox_sent(self, *, outbox_id: str) -> NotificationOutboxRecord:
-        with self._engine.begin() as connection:
-            now = time.time()
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE notification_outbox
-                    SET status = 'sent',
-                        progress_stage = 'sent',
-                        sent_at = :sent_at,
-                        updated_at = :updated_at,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = NULL,
-                        last_error_text = '',
-                        error_type = '',
-                        error_code = '',
-                        dead_letter_reason = '',
-                        last_progress_at = :last_progress_at
-                    WHERE outbox_id = :outbox_id
-                    """
-                ),
-                {"outbox_id": outbox_id, "sent_at": now, "updated_at": now, "last_progress_at": now},
-            )
-        return self.load_outbox(outbox_id=outbox_id)
+        return self._notification_outbox_repo.mark_outbox_sent(outbox_id=outbox_id)
 
     def mark_outbox_retry_or_failed(
         self,
@@ -3732,60 +2285,7 @@ class RuntimeStore:
         error_code: str = "",
         dead_letter_reason: str = "",
     ) -> NotificationOutboxRecord:
-        with self._engine.begin() as connection:
-            now = time.time()
-            row = (
-                connection.execute(
-                    self._text("SELECT * FROM notification_outbox WHERE outbox_id = :outbox_id LIMIT 1"),
-                    {"outbox_id": outbox_id},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ValueError("Outbox record not found.")
-            retry_count = int(row["retry_count"] or 0) + 1
-            max_retry_count = int(row["max_retry_count"] or 0)
-            status = "retry_wait" if retryable and retry_count < max_retry_count else "failed"
-            next_retry_at = now + max(retry_delay_seconds, 0.1) if status == "retry_wait" else None
-            resolved_dead_letter_reason = dead_letter_reason
-            if status == "failed" and not resolved_dead_letter_reason:
-                resolved_dead_letter_reason = "max_retry_exhausted" if retryable else "terminal_dispatch_failure"
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE notification_outbox
-                    SET status = :status,
-                        progress_stage = :progress_stage,
-                        retry_count = :retry_count,
-                        next_retry_at = :next_retry_at,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = NULL,
-                        last_error_text = :last_error_text,
-                        error_type = :error_type,
-                        error_code = :error_code,
-                        dead_letter_reason = :dead_letter_reason,
-                        last_progress_at = :last_progress_at,
-                        updated_at = :updated_at
-                    WHERE outbox_id = :outbox_id
-                    """
-                ),
-                {
-                    "outbox_id": outbox_id,
-                    "status": status,
-                    "progress_stage": status,
-                    "retry_count": retry_count,
-                    "next_retry_at": next_retry_at,
-                    "last_error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "dead_letter_reason": resolved_dead_letter_reason,
-                    "last_progress_at": now,
-                    "updated_at": now,
-                },
-            )
-        return self.load_outbox(outbox_id=outbox_id)
+        return self._notification_outbox_repo.mark_outbox_retry_or_failed(outbox_id=outbox_id, error_text=error_text, retry_delay_seconds=retry_delay_seconds, retryable=retryable, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason)
 
     def upsert_influencer_pool_author_jobs(
         self,
@@ -3793,131 +2293,7 @@ class RuntimeStore:
         jobs: list[dict[str, Any]],
         force_refresh: bool = False,
     ) -> dict[str, Any]:
-        created_count = 0
-        updated_count = 0
-        kept_terminal_count = 0
-        now = time.time()
-        with self._engine.begin() as connection:
-            for job in jobs:
-                request_id = str(job.get("request_id", "") or "").strip()
-                product_id = str(job.get("product_id", "") or "").strip()
-                influencer_id = str(job.get("influencer_id", "") or "").strip()
-                source_record_id = str(job.get("source_record_id", "") or "").strip()
-                if not product_id or not influencer_id:
-                    continue
-                existing = (
-                    connection.execute(
-                        self._text(
-                            """
-                            SELECT *
-                            FROM influencer_pool_author_job
-                            WHERE request_id = :request_id
-                              AND source_record_id = :source_record_id
-                              AND product_id = :product_id
-                              AND influencer_id = :influencer_id
-                            LIMIT 1
-                            """
-                        ),
-                        {
-                            "request_id": request_id,
-                            "source_record_id": source_record_id,
-                            "product_id": product_id,
-                            "influencer_id": influencer_id,
-                        },
-                    )
-                    .mappings()
-                    .first()
-                )
-                payload = {
-                    "request_id": request_id,
-                    "source_record_id": source_record_id,
-                    "product_id": product_id,
-                    "influencer_id": influencer_id,
-                    "uid": str(job.get("uid", "") or ""),
-                    "sold_count": _coerce_float(job.get("sold_count")),
-                    "follower_count": _coerce_float(job.get("follower_count")),
-                    "holiday_name": str(job.get("holiday_name", "") or ""),
-                    "source_images_json": _json_dumps({"value": job.get("source_images")}),
-                    "author_row_json": _json_dumps(
-                        job.get("author_row") if isinstance(job.get("author_row"), dict) else {}
-                    ),
-                    "force_refresh": 1 if bool(job.get("force_refresh")) else 0,
-                    "max_attempts": int(job.get("max_attempts", 3) or 3),
-                }
-                if existing is None:
-                    connection.execute(
-                        self._text(
-                            """
-                            INSERT INTO influencer_pool_author_job (
-                                job_id, request_id, source_record_id, product_id, influencer_id, uid,
-                                sold_count, follower_count, holiday_name, source_images_json,
-                                author_row_json, force_refresh, status, stage, attempt_count, max_attempts,
-                                available_at, created_at, updated_at
-                            ) VALUES (
-                                :job_id, :request_id, :source_record_id, :product_id, :influencer_id, :uid,
-                                :sold_count, :follower_count, :holiday_name, :source_images_json,
-                                :author_row_json, :force_refresh, 'pending', 'queued', 0, :max_attempts,
-                                :available_at, :created_at, :updated_at
-                            )
-                            """
-                        ),
-                        {
-                            **payload,
-                            "job_id": uuid.uuid4().hex,
-                            "available_at": now,
-                            "created_at": now,
-                            "updated_at": now,
-                        },
-                    )
-                    created_count += 1
-                    continue
-
-                existing_status = str(existing["status"] or "")
-                should_keep_terminal = (
-                    existing_status in {"succeeded", "skipped"}
-                    and not force_refresh
-                )
-                next_status = existing_status if should_keep_terminal else "pending"
-                if should_keep_terminal:
-                    kept_terminal_count += 1
-                else:
-                    updated_count += 1
-                connection.execute(
-                    self._text(
-                        """
-                        UPDATE influencer_pool_author_job
-                        SET request_id = :request_id,
-                            source_record_id = :source_record_id,
-                            uid = :uid,
-                            sold_count = :sold_count,
-                            follower_count = :follower_count,
-                            holiday_name = :holiday_name,
-                            source_images_json = :source_images_json,
-                            author_row_json = :author_row_json,
-                            force_refresh = :force_refresh,
-                            status = :status,
-                            stage = CASE WHEN :status = status THEN stage ELSE 'queued' END,
-                            max_attempts = :max_attempts,
-                            available_at = CASE WHEN :status = status THEN available_at ELSE :available_at END,
-                            worker_id = CASE WHEN :status = status THEN worker_id ELSE '' END,
-                            lease_until = CASE WHEN :status = status THEN lease_until ELSE NULL END,
-                            updated_at = :updated_at
-                        WHERE job_id = :job_id
-                        """
-                    ),
-                    {
-                        **payload,
-                        "job_id": existing["job_id"],
-                        "status": next_status,
-                        "available_at": now,
-                        "updated_at": now,
-                    },
-                )
-        return {
-            "created_count": created_count,
-            "updated_count": updated_count,
-            "kept_terminal_count": kept_terminal_count,
-        }
+        return self._influencer_pool_job_repo.upsert_influencer_pool_author_jobs(jobs=jobs, force_refresh=force_refresh)
 
     def upsert_influencer_pool_product_jobs(
         self,
@@ -3925,110 +2301,7 @@ class RuntimeStore:
         jobs: list[dict[str, Any]],
         force_refresh: bool = False,
     ) -> dict[str, Any]:
-        created_count = 0
-        updated_count = 0
-        kept_terminal_count = 0
-        now = time.time()
-        with self._engine.begin() as connection:
-            for job in jobs:
-                request_id = str(job.get("request_id", "") or "").strip()
-                source_record_id = str(job.get("source_record_id", "") or "").strip()
-                product_id = str(job.get("product_id", "") or "").strip()
-                if not source_record_id:
-                    continue
-                existing = (
-                    connection.execute(
-                        self._text(
-                            """
-                            SELECT *
-                            FROM influencer_pool_product_job
-                            WHERE request_id = :request_id
-                              AND source_record_id = :source_record_id
-                              AND product_id = :product_id
-                            LIMIT 1
-                            """
-                        ),
-                        {
-                            "request_id": request_id,
-                            "source_record_id": source_record_id,
-                            "product_id": product_id,
-                        },
-                    )
-                    .mappings()
-                    .first()
-                )
-                payload = {
-                    "request_id": request_id,
-                    "source_record_id": source_record_id,
-                    "product_id": product_id,
-                    "source_record_json": _json_dumps(
-                        job.get("source_record") if isinstance(job.get("source_record"), dict) else {}
-                    ),
-                    "max_attempts": int(job.get("max_attempts", 3) or 3),
-                }
-                if existing is None:
-                    connection.execute(
-                        self._text(
-                            """
-                            INSERT INTO influencer_pool_product_job (
-                                job_id, request_id, source_record_id, product_id, source_record_json,
-                                status, stage, attempt_count, max_attempts,
-                                available_at, created_at, updated_at
-                            ) VALUES (
-                                :job_id, :request_id, :source_record_id, :product_id, :source_record_json,
-                                'pending', 'queued', 0, :max_attempts,
-                                :available_at, :created_at, :updated_at
-                            )
-                            """
-                        ),
-                        {
-                            **payload,
-                            "job_id": uuid.uuid4().hex,
-                            "available_at": now,
-                            "created_at": now,
-                            "updated_at": now,
-                        },
-                    )
-                    created_count += 1
-                    continue
-
-                existing_status = str(existing["status"] or "")
-                should_keep_terminal = existing_status in {"completed", "skipped"} and not force_refresh
-                next_status = existing_status if should_keep_terminal else "pending"
-                if should_keep_terminal:
-                    kept_terminal_count += 1
-                else:
-                    updated_count += 1
-                connection.execute(
-                    self._text(
-                        """
-                        UPDATE influencer_pool_product_job
-                        SET request_id = :request_id,
-                            product_id = :product_id,
-                            source_record_json = :source_record_json,
-                            status = :status,
-                            stage = CASE WHEN :status = status THEN stage ELSE 'queued' END,
-                            max_attempts = :max_attempts,
-                            available_at = CASE WHEN :status = status THEN available_at ELSE :available_at END,
-                            worker_id = CASE WHEN :status = status THEN worker_id ELSE '' END,
-                            lease_until = CASE WHEN :status = status THEN lease_until ELSE NULL END,
-                            updated_at = :updated_at
-                        WHERE job_id = :job_id
-                        """
-                    ),
-                    {
-                        **payload,
-                        "job_id": existing["job_id"],
-                        "status": next_status,
-                        "available_at": now,
-                        "updated_at": now,
-                    },
-                )
-        return {
-            "created_count": created_count,
-            "updated_count": updated_count,
-            "kept_terminal_count": kept_terminal_count,
-        }
+        return self._influencer_pool_job_repo.upsert_influencer_pool_product_jobs(jobs=jobs, force_refresh=force_refresh)
 
     def claim_influencer_pool_product_job(
         self,
@@ -4037,75 +2310,7 @@ class RuntimeStore:
         worker_id: str,
         lease_seconds: float,
     ) -> dict[str, Any] | None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'failed_retry',
-                        stage = 'lease_expired',
-                        worker_id = '',
-                        lease_until = NULL,
-                        updated_at = :updated_at
-                    WHERE status IN ('discovering')
-                      AND lease_until IS NOT NULL
-                      AND lease_until <= :now
-                    """
-                ),
-                {"now": now, "updated_at": now},
-            )
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM influencer_pool_product_job
-                        WHERE (:request_id = '' OR request_id = :request_id)
-                          AND status IN ('pending', 'failed_retry')
-                          AND available_at <= :available_at
-                        ORDER BY created_at ASC, updated_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                    {"request_id": request_id, "available_at": now},
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'discovering',
-                        stage = 'product_author_list',
-                        attempt_count = COALESCE(attempt_count, 0) + 1,
-                        worker_id = :worker_id,
-                        lease_until = :lease_until,
-                        started_at = CASE WHEN started_at IS NULL THEN :now ELSE started_at END,
-                        heartbeat_at = :now,
-                        updated_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": row["job_id"],
-                    "worker_id": worker_id,
-                    "lease_until": now + max(lease_seconds, 5.0),
-                    "now": now,
-                },
-            )
-            claimed = (
-                connection.execute(
-                    self._text("SELECT * FROM influencer_pool_product_job WHERE job_id = :job_id"),
-                    {"job_id": row["job_id"]},
-                )
-                .mappings()
-                .first()
-            )
-            return self._influencer_pool_product_job_from_row(claimed) if claimed is not None else None
+        return self._influencer_pool_job_repo.claim_influencer_pool_product_job(request_id=request_id, worker_id=worker_id, lease_seconds=lease_seconds)
 
     def mark_influencer_pool_product_job_discovered(
         self,
@@ -4115,32 +2320,7 @@ class RuntimeStore:
         matched_author_count: int = 0,
         queued_author_job_count: int = 0,
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'detail_pending',
-                        stage = 'author_jobs_queued',
-                        matched_author_count = :matched_author_count,
-                        queued_author_job_count = :queued_author_job_count,
-                        run_id = :run_id,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "run_id": run_id,
-                    "matched_author_count": max(int(matched_author_count or 0), 0),
-                    "queued_author_job_count": max(int(queued_author_job_count or 0), 0),
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_product_job_discovered(job_id=job_id, run_id=run_id, matched_author_count=matched_author_count, queued_author_job_count=queued_author_job_count)
 
     def mark_influencer_pool_product_job_success(
         self,
@@ -4149,25 +2329,7 @@ class RuntimeStore:
         run_id: str,
         stage: str = "completed",
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'completed',
-                        stage = :stage,
-                        run_id = :run_id,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now,
-                        finished_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {"job_id": job_id, "run_id": run_id, "stage": stage, "now": now},
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_product_job_success(job_id=job_id, run_id=run_id, stage=stage)
 
     def mark_influencer_pool_product_job_author_retry_wait(
         self,
@@ -4179,36 +2341,7 @@ class RuntimeStore:
         error_code: str = "",
         error_path: str = "",
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'author_failed_retry',
-                        stage = 'waiting_author_retry',
-                        run_id = :run_id,
-                        last_error_text = :error_text,
-                        last_error_type = :error_type,
-                        last_error_code = :error_code,
-                        last_error_path = :error_path,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "run_id": run_id,
-                    "error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "error_path": error_path,
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_product_job_author_retry_wait(job_id=job_id, run_id=run_id, error_text=error_text, error_type=error_type, error_code=error_code, error_path=error_path)
 
     def reactivate_influencer_pool_product_job_finalizer(
         self,
@@ -4218,33 +2351,7 @@ class RuntimeStore:
         product_id: str,
         run_id: str,
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = 'detail_pending',
-                        stage = 'author_job_updated',
-                        run_id = :run_id,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now
-                    WHERE source_record_id = :source_record_id
-                      AND product_id = :product_id
-                      AND (:request_id = '' OR request_id = :request_id)
-                      AND status IN ('detail_pending', 'author_failed_retry')
-                    """
-                ),
-                {
-                    "request_id": request_id,
-                    "source_record_id": source_record_id,
-                    "product_id": product_id,
-                    "run_id": run_id,
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.reactivate_influencer_pool_product_job_finalizer(request_id=request_id, source_record_id=source_record_id, product_id=product_id, run_id=run_id)
 
     def mark_influencer_pool_product_job_failed(
         self,
@@ -4259,52 +2366,7 @@ class RuntimeStore:
         retry_delay_seconds: float = 30.0,
         hard_stop: bool = False,
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT attempt_count, max_attempts FROM influencer_pool_product_job WHERE job_id = :job_id"),
-                    {"job_id": job_id},
-                )
-                .mappings()
-                .first()
-            )
-            attempt_count = int(row["attempt_count"] or 0) if row is not None else 0
-            max_attempts = int(row["max_attempts"] or 1) if row is not None else 1
-            status = "hard_stopped" if hard_stop else ("failed_retry" if attempt_count < max_attempts else "hard_failed")
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_product_job
-                    SET status = :status,
-                        stage = :stage,
-                        run_id = :run_id,
-                        last_error_text = :error_text,
-                        last_error_type = :error_type,
-                        last_error_code = :error_code,
-                        last_error_path = :error_path,
-                        worker_id = '',
-                        lease_until = NULL,
-                        available_at = :available_at,
-                        heartbeat_at = :now,
-                        updated_at = :now,
-                        finished_at = CASE WHEN :status IN ('hard_failed', 'hard_stopped') THEN :now ELSE finished_at END
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "status": status,
-                    "stage": stage,
-                    "run_id": run_id,
-                    "error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "error_path": error_path,
-                    "available_at": now + max(retry_delay_seconds, 0.1),
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_product_job_failed(job_id=job_id, run_id=run_id, error_text=error_text, error_type=error_type, error_code=error_code, error_path=error_path, stage=stage, retry_delay_seconds=retry_delay_seconds, hard_stop=hard_stop)
 
     def list_influencer_pool_product_jobs_for_finalizer(
         self,
@@ -4312,176 +2374,23 @@ class RuntimeStore:
         request_id: str = "",
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM influencer_pool_product_job
-                        WHERE (:request_id = '' OR request_id = :request_id)
-                          AND status = 'detail_pending'
-                        ORDER BY updated_at ASC, created_at ASC
-                        LIMIT :limit
-                        """
-                    ),
-                    {"request_id": request_id, "limit": max(int(limit or 1), 1)},
-                )
-                .mappings()
-                .all()
-            )
-        return [self._influencer_pool_product_job_from_row(row) for row in rows]
+        return self._influencer_pool_job_repo.list_influencer_pool_product_jobs_for_finalizer(request_id=request_id, limit=limit)
 
     def list_influencer_pool_product_jobs_for_request(self, *, request_id: str) -> list[dict[str, Any]]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM influencer_pool_product_job
-                        WHERE request_id = :request_id
-                        ORDER BY created_at ASC, updated_at ASC
-                        """
-                    ),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .all()
-            )
-        return [self._influencer_pool_product_job_from_row(row) for row in rows]
+        return self._influencer_pool_job_repo.list_influencer_pool_product_jobs_for_request(request_id=request_id)
 
     def summarize_influencer_pool_product_jobs_for_request(self, *, request_id: str) -> dict[str, Any]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT status, COUNT(*) AS count
-                        FROM influencer_pool_product_job
-                        WHERE request_id = :request_id
-                        GROUP BY status
-                        """
-                    ),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .all()
-            )
-            aggregate = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT
-                            COALESCE(SUM(matched_author_count), 0) AS matched_author_count,
-                            COALESCE(SUM(queued_author_job_count), 0) AS queued_author_job_count
-                        FROM influencer_pool_product_job
-                        WHERE request_id = :request_id
-                        """
-                    ),
-                    {"request_id": request_id},
-                )
-                .mappings()
-                .first()
-            )
-        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
-        active_statuses = {
-            "pending",
-            "failed_retry",
-            "discovering",
-            "detail_pending",
-            "author_failed_retry",
-        }
-        failed_statuses = {"hard_failed", "hard_stopped"}
-        success_statuses = {"completed", "skipped"}
-        total = sum(counts.values())
-        active_count = sum(counts.get(status, 0) for status in active_statuses)
-        failed_count = sum(counts.get(status, 0) for status in failed_statuses)
-        success_count = sum(counts.get(status, 0) for status in success_statuses)
-        return {
-            "total": total,
-            "counts": counts,
-            "active_count": active_count,
-            "terminal_count": max(total - active_count, 0),
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "matched_author_count": int((aggregate or {}).get("matched_author_count") or 0),
-            "queued_author_job_count": int((aggregate or {}).get("queued_author_job_count") or 0),
-        }
+        return self._influencer_pool_job_repo.summarize_influencer_pool_product_jobs_for_request(request_id=request_id)
 
     def find_next_influencer_pool_work_request_id(
         self,
         *,
         task_code: str = "sync_tk_influencer_pool",
     ) -> str:
-        now = time.time()
-        queries = [
-            """
-            SELECT job.request_id
-            FROM influencer_pool_product_job job
-            JOIN task_request request ON request.request_id = job.request_id
-            WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
-              AND job.status IN ('pending', 'failed_retry')
-              AND job.available_at <= :available_at
-            ORDER BY job.available_at ASC, job.created_at ASC
-            LIMIT 1
-            """,
-            """
-            SELECT job.request_id
-            FROM influencer_pool_author_job job
-            JOIN task_request request ON request.request_id = job.request_id
-            WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
-              AND job.status IN ('pending', 'failed_retry')
-              AND job.available_at <= :available_at
-            ORDER BY job.available_at ASC, job.created_at ASC
-            LIMIT 1
-            """,
-            """
-            SELECT job.request_id
-            FROM influencer_pool_product_job job
-            JOIN task_request request ON request.request_id = job.request_id
-            WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
-              AND job.status = 'detail_pending'
-            ORDER BY job.updated_at ASC, job.created_at ASC
-            LIMIT 1
-            """,
-        ]
-        with self._engine.connect() as connection:
-            for query in queries:
-                row = (
-                    connection.execute(
-                        self._text(query),
-                        {"task_code": task_code, "available_at": now},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if row is not None:
-                    return str(row["request_id"] or "")
-        return ""
+        return self._influencer_pool_job_repo.find_next_influencer_pool_work_request_id(task_code=task_code)
 
     def _influencer_pool_product_job_from_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "job_id": str(row["job_id"]),
-            "request_id": str(row["request_id"] or ""),
-            "source_record_id": str(row["source_record_id"] or ""),
-            "product_id": str(row["product_id"] or ""),
-            "source_record": _load_json_dict(row["source_record_json"]),
-            "status": str(row["status"] or ""),
-            "stage": str(row["stage"] or ""),
-            "attempt_count": int(row["attempt_count"] or 0),
-            "max_attempts": int(row["max_attempts"] or 0),
-            "matched_author_count": int(row["matched_author_count"] or 0),
-            "queued_author_job_count": int(row["queued_author_job_count"] or 0),
-            "last_error_text": str(row["last_error_text"] or ""),
-            "last_error_type": str(row["last_error_type"] or ""),
-            "last_error_code": str(row["last_error_code"] or ""),
-            "last_error_path": str(row["last_error_path"] or ""),
-            "run_id": str(row["run_id"] or ""),
-        }
+        return self._influencer_pool_job_repo._influencer_pool_product_job_from_row(row)
 
     def claim_influencer_pool_author_job(
         self,
@@ -4492,82 +2401,7 @@ class RuntimeStore:
         worker_id: str,
         lease_seconds: float,
     ) -> dict[str, Any] | None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_author_job
-                    SET status = 'failed_retry',
-                        stage = 'lease_expired',
-                        worker_id = '',
-                        lease_until = NULL,
-                        updated_at = :updated_at
-                    WHERE status = 'running'
-                      AND lease_until IS NOT NULL
-                      AND lease_until <= :now
-                    """
-                ),
-                {"now": now, "updated_at": now},
-            )
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT *
-                        FROM influencer_pool_author_job
-                        WHERE (:request_id = '' OR request_id = :request_id)
-                          AND (:product_id = '' OR product_id = :product_id)
-                          AND (:source_record_id = '' OR source_record_id = :source_record_id)
-                          AND status IN ('pending', 'failed_retry')
-                          AND available_at <= :available_at
-                        ORDER BY created_at ASC, updated_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                    {
-                        "request_id": request_id,
-                        "product_id": product_id,
-                        "source_record_id": source_record_id,
-                        "available_at": now,
-                    },
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_author_job
-                    SET status = 'running',
-                        stage = 'author_detail',
-                        attempt_count = COALESCE(attempt_count, 0) + 1,
-                        worker_id = :worker_id,
-                        lease_until = :lease_until,
-                        started_at = CASE WHEN started_at IS NULL THEN :now ELSE started_at END,
-                        heartbeat_at = :now,
-                        updated_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": row["job_id"],
-                    "worker_id": worker_id,
-                    "lease_until": now + max(lease_seconds, 5.0),
-                    "now": now,
-                },
-            )
-            claimed = (
-                connection.execute(
-                    self._text("SELECT * FROM influencer_pool_author_job WHERE job_id = :job_id"),
-                    {"job_id": row["job_id"]},
-                )
-                .mappings()
-                .first()
-            )
-            return self._influencer_pool_author_job_from_row(claimed) if claimed is not None else None
+        return self._influencer_pool_job_repo.claim_influencer_pool_author_job(request_id=request_id, product_id=product_id, source_record_id=source_record_id, worker_id=worker_id, lease_seconds=lease_seconds)
 
     def mark_influencer_pool_author_job_success(
         self,
@@ -4577,33 +2411,7 @@ class RuntimeStore:
         target_record_id: str = "",
         snapshot_id: str = "",
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_author_job
-                    SET status = 'succeeded',
-                        stage = 'completed',
-                        target_record_id = :target_record_id,
-                        snapshot_id = :snapshot_id,
-                        run_id = :run_id,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now,
-                        finished_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "run_id": run_id,
-                    "target_record_id": target_record_id,
-                    "snapshot_id": snapshot_id,
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_author_job_success(job_id=job_id, run_id=run_id, target_record_id=target_record_id, snapshot_id=snapshot_id)
 
     def mark_influencer_pool_author_job_skipped(
         self,
@@ -4613,26 +2421,7 @@ class RuntimeStore:
         stage: str,
         reason: str,
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_author_job
-                    SET status = 'skipped',
-                        stage = :stage,
-                        run_id = :run_id,
-                        last_error_text = :reason,
-                        worker_id = '',
-                        lease_until = NULL,
-                        heartbeat_at = :now,
-                        updated_at = :now,
-                        finished_at = :now
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {"job_id": job_id, "run_id": run_id, "stage": stage, "reason": reason, "now": now},
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_author_job_skipped(job_id=job_id, run_id=run_id, stage=stage, reason=reason)
 
     def mark_influencer_pool_author_job_failed(
         self,
@@ -4646,52 +2435,7 @@ class RuntimeStore:
         stage: str = "",
         retry_delay_seconds: float = 30.0,
     ) -> None:
-        now = time.time()
-        with self._engine.begin() as connection:
-            row = (
-                connection.execute(
-                    self._text("SELECT attempt_count, max_attempts FROM influencer_pool_author_job WHERE job_id = :job_id"),
-                    {"job_id": job_id},
-                )
-                .mappings()
-                .first()
-            )
-            attempt_count = int(row["attempt_count"] or 0) if row is not None else 0
-            max_attempts = int(row["max_attempts"] or 1) if row is not None else 1
-            status = "failed_retry" if attempt_count < max_attempts else "hard_failed"
-            connection.execute(
-                self._text(
-                    """
-                    UPDATE influencer_pool_author_job
-                    SET status = :status,
-                        stage = :stage,
-                        run_id = :run_id,
-                        last_error_text = :error_text,
-                        last_error_type = :error_type,
-                        last_error_code = :error_code,
-                        last_error_path = :error_path,
-                        worker_id = '',
-                        lease_until = NULL,
-                        available_at = :available_at,
-                        heartbeat_at = :now,
-                        updated_at = :now,
-                        finished_at = CASE WHEN :status = 'hard_failed' THEN :now ELSE finished_at END
-                    WHERE job_id = :job_id
-                    """
-                ),
-                {
-                    "job_id": job_id,
-                    "status": status,
-                    "stage": stage,
-                    "run_id": run_id,
-                    "error_text": error_text,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "error_path": error_path,
-                    "available_at": now + max(retry_delay_seconds, 0.1),
-                    "now": now,
-                },
-            )
+        return self._influencer_pool_job_repo.mark_influencer_pool_author_job_failed(job_id=job_id, run_id=run_id, error_text=error_text, error_type=error_type, error_code=error_code, error_path=error_path, stage=stage, retry_delay_seconds=retry_delay_seconds)
 
     def summarize_influencer_pool_author_jobs(
         self,
@@ -4700,102 +2444,10 @@ class RuntimeStore:
         product_id: str,
         source_record_id: str,
     ) -> dict[str, Any]:
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT status, COUNT(*) AS count
-                        FROM influencer_pool_author_job
-                        WHERE (:request_id = '' OR request_id = :request_id)
-                          AND product_id = :product_id
-                          AND source_record_id = :source_record_id
-                        GROUP BY status
-                        """
-                    ),
-                    {
-                        "request_id": request_id,
-                        "product_id": product_id,
-                        "source_record_id": source_record_id,
-                    },
-                )
-                .mappings()
-                .all()
-            )
-        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
-        return {
-            "total": sum(counts.values()),
-            "counts": counts,
-            "pending_count": counts.get("pending", 0),
-            "running_count": counts.get("running", 0),
-            "failed_retry_count": counts.get("failed_retry", 0),
-            "succeeded_count": counts.get("succeeded", 0),
-            "skipped_count": counts.get("skipped", 0),
-            "hard_failed_count": counts.get("hard_failed", 0),
-        }
+        return self._influencer_pool_job_repo.summarize_influencer_pool_author_jobs(request_id=request_id, product_id=product_id, source_record_id=source_record_id)
 
     def _influencer_pool_author_job_from_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "job_id": str(row["job_id"]),
-            "request_id": str(row["request_id"] or ""),
-            "source_record_id": str(row["source_record_id"] or ""),
-            "product_id": str(row["product_id"] or ""),
-            "influencer_id": str(row["influencer_id"] or ""),
-            "uid": str(row["uid"] or ""),
-            "sold_count": _coerce_float(row["sold_count"]),
-            "follower_count": _coerce_float(row["follower_count"]),
-            "holiday_name": str(row["holiday_name"] or ""),
-            "source_images": _load_json_dict(row["source_images_json"]).get("value"),
-            "author_row": _load_json_dict(row["author_row_json"]),
-            "force_refresh": bool(int(row["force_refresh"] or 0)),
-            "status": str(row["status"] or ""),
-            "stage": str(row["stage"] or ""),
-            "attempt_count": int(row["attempt_count"] or 0),
-            "max_attempts": int(row["max_attempts"] or 0),
-            "target_record_id": str(row["target_record_id"] or ""),
-            "snapshot_id": str(row["snapshot_id"] or ""),
-            "last_error_text": str(row["last_error_text"] or ""),
-            "last_error_type": str(row["last_error_type"] or ""),
-            "last_error_code": str(row["last_error_code"] or ""),
-            "last_error_path": str(row["last_error_path"] or ""),
-            "run_id": str(row["run_id"] or ""),
-        }
+        return self._influencer_pool_job_repo._influencer_pool_author_job_from_row(row)
 
     def replace_artifacts(self, *, run_id: str, records: list[ArtifactObjectRecord]) -> None:
-        with self._engine.begin() as connection:
-            connection.execute(
-                self._text("DELETE FROM artifact_object WHERE run_id = :run_id"),
-                {"run_id": run_id},
-            )
-            for record in records:
-                connection.execute(
-                    self._text(
-                        """
-                        INSERT INTO artifact_object (
-                            artifact_id, request_id, execution_id, run_id, step_id, kind,
-                            bucket, object_key, etag, size, content_type, source_path,
-                            metadata_json, created_at
-                        ) VALUES (
-                            :artifact_id, :request_id, :execution_id, :run_id, :step_id, :kind,
-                            :bucket, :object_key, :etag, :size, :content_type, :source_path,
-                            :metadata_json, :created_at
-                        )
-                        """
-                    ),
-                    {
-                        "artifact_id": record.artifact_id,
-                        "request_id": record.request_id,
-                        "execution_id": record.execution_id,
-                        "run_id": record.run_id,
-                        "step_id": record.step_id,
-                        "kind": record.kind,
-                        "bucket": record.bucket,
-                        "object_key": record.object_key,
-                        "etag": record.etag,
-                        "size": record.size,
-                        "content_type": record.content_type,
-                        "source_path": record.source_path,
-                        "metadata_json": _json_dumps(record.metadata),
-                        "created_at": record.created_at,
-                    },
-                )
+        return self._artifact_object_repo.replace_artifacts(run_id=run_id, records=records)

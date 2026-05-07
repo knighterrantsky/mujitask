@@ -1,0 +1,604 @@
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any
+
+from automation_business_scaffold.infrastructure.runtime.persistence_primitives import (
+    coerce_int as _coerce_int,
+    coerce_non_negative_float as _coerce_non_negative_float,
+    json_dumps as _json_dumps,
+    load_json_dict as _load_json_dict,
+    resolve_runtime_seconds as _resolve_runtime_seconds,
+)
+
+ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "retry_wait"}
+TERMINAL_API_WORKER_JOB_STATUSES = {"success", "failed", "skipped", "cancelled"}
+DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
+
+
+class ApiWorkerJobRepository:
+    def __init__(self, store: Any):
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def enqueue_api_worker_jobs(
+        self,
+        *,
+        request_id: str,
+        task_code: str,
+        job_code: str,
+        jobs: list[dict[str, Any]],
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        created_records: list[dict[str, Any]] = []
+        updated_records: list[dict[str, Any]] = []
+        skipped_records: list[dict[str, Any]] = []
+        now = time.time()
+        with self._engine.begin() as connection:
+            for job in jobs:
+                business_key = str(job.get("business_key", "") or "")
+                dedupe_key = str(job.get("dedupe_key", "") or "")
+                payload = dict(job.get("payload") or {})
+                max_attempts = int(job.get("max_attempts", 3) or 3)
+                max_execution_seconds = _coerce_non_negative_float(job.get("max_execution_seconds"))
+                max_idle_seconds = _resolve_runtime_seconds(
+                    job.get("max_idle_seconds"),
+                    payload,
+                    "max_idle_seconds",
+                    "max_no_progress_seconds",
+                )
+                heartbeat_timeout_seconds = _resolve_runtime_seconds(
+                    job.get("heartbeat_timeout_seconds"),
+                    payload,
+                    "heartbeat_timeout_seconds",
+                )
+                existing = None
+                if dedupe_key:
+                    existing = (
+                        connection.execute(
+                            self._text(
+                                """
+                                SELECT *
+                                FROM api_worker_job
+                                WHERE dedupe_key = :dedupe_key
+                                LIMIT 1
+                                """
+                            ),
+                            {"dedupe_key": dedupe_key},
+                        )
+                        .mappings()
+                        .first()
+                    )
+                if existing is not None:
+                    existing_status = str(existing["status"] or "")
+                    if existing_status in TERMINAL_API_WORKER_JOB_STATUSES and not force_refresh:
+                        skipped_records.append(
+                            {
+                                "business_key": business_key,
+                                "dedupe_key": dedupe_key,
+                                "existing_job_id": str(existing["job_id"]),
+                                "status": existing_status,
+                            }
+                        )
+                        continue
+                    connection.execute(
+                        self._text(
+                            """
+                            UPDATE api_worker_job
+                            SET request_id = :request_id,
+                                task_code = :task_code,
+                                job_code = :job_code,
+                                business_key = :business_key,
+                                status = 'pending',
+                                stage = 'queued',
+                                progress_stage = 'queued',
+                                payload_json = :payload_json,
+                                summary_json = '{}',
+                                result_json = '{}',
+                                error_text = '',
+                                error_type = '',
+                                error_code = '',
+                                dead_letter_reason = '',
+                                worker_id = '',
+                                worker_pid = 0,
+                                lease_until = NULL,
+                                available_at = :available_at,
+                                max_attempts = :max_attempts,
+                                max_execution_seconds = :max_execution_seconds,
+                                max_idle_seconds = :max_idle_seconds,
+                                heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
+                                progress_seq = 0,
+                                progress_message = '',
+                                last_progress_at = :last_progress_at,
+                                updated_at = :updated_at,
+                                finished_at = NULL,
+                                heartbeat_at = NULL
+                            WHERE job_id = :job_id
+                            """
+                        ),
+                        {
+                            "job_id": existing["job_id"],
+                            "request_id": request_id,
+                            "task_code": task_code,
+                            "job_code": job_code,
+                            "business_key": business_key,
+                            "payload_json": _json_dumps(payload),
+                            "available_at": now,
+                            "max_attempts": max_attempts,
+                            "max_execution_seconds": max_execution_seconds,
+                            "max_idle_seconds": max_idle_seconds,
+                            "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
+                            "last_progress_at": now,
+                            "updated_at": now,
+                        },
+                    )
+                    updated = (
+                        connection.execute(
+                            self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
+                            {"job_id": existing["job_id"]},
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if updated is not None:
+                        updated_records.append(self._api_worker_job_from_row(updated))
+                    continue
+
+                job_id = uuid.uuid4().hex
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO api_worker_job (
+                            job_id, request_id, task_code, job_code, business_key, dedupe_key,
+                            status, stage, progress_stage, attempt_count, max_attempts, max_execution_seconds,
+                            max_idle_seconds, heartbeat_timeout_seconds,
+                            payload_json, summary_json, result_json, error_text, error_type, error_code,
+                            dead_letter_reason, worker_id, worker_pid, lease_until,
+                            available_at, run_id, created_at, updated_at, started_at,
+                            finished_at, heartbeat_at, last_progress_at, progress_seq, progress_message
+                        ) VALUES (
+                            :job_id, :request_id, :task_code, :job_code, :business_key, :dedupe_key,
+                            'pending', 'queued', 'queued', 0, :max_attempts, :max_execution_seconds,
+                            :max_idle_seconds, :heartbeat_timeout_seconds, :payload_json,
+                            '{}', '{}', '', '', '', '', '', 0, NULL,
+                            :available_at, '', :created_at, :updated_at, NULL,
+                            NULL, NULL, :last_progress_at, 0, ''
+                        )
+                        """
+                    ),
+                    {
+                        "job_id": job_id,
+                        "request_id": request_id,
+                        "task_code": task_code,
+                        "job_code": job_code,
+                        "business_key": business_key,
+                        "dedupe_key": dedupe_key,
+                        "max_attempts": max_attempts,
+                        "max_execution_seconds": max_execution_seconds,
+                        "max_idle_seconds": max_idle_seconds,
+                        "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
+                        "payload_json": _json_dumps(payload),
+                        "available_at": now,
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_progress_at": now,
+                    },
+                )
+                created = (
+                    connection.execute(
+                        self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
+                        {"job_id": job_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if created is not None:
+                    created_records.append(self._api_worker_job_from_row(created))
+        return {
+            "created_count": len(created_records),
+            "updated_count": len(updated_records),
+            "skipped_count": len(skipped_records),
+            "created_records": created_records,
+            "updated_records": updated_records,
+            "skipped_records": skipped_records,
+        }
+
+    def _requeue_expired_api_worker_job_claims(self, connection: Any, *, now: float) -> None:
+        del connection, now
+        return
+
+    def claim_next_api_worker_job(
+        self,
+        *,
+        worker_id: str,
+        worker_pid: int | None = None,
+        lease_seconds: float,
+        request_id: str = "",
+        job_code: str = "",
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        with self._engine.begin() as connection:
+            self._requeue_expired_api_worker_job_claims(connection, now=now)
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT job.*
+                        FROM api_worker_job job
+                        JOIN task_request request ON request.request_id = job.request_id
+                        WHERE (:request_id = '' OR job.request_id = :request_id)
+                          AND (:job_code = '' OR job.job_code = :job_code)
+                          AND request.status = 'waiting_children'
+                          AND job.status IN ('pending', 'retry_wait')
+                          AND job.available_at <= :available_at
+                        ORDER BY job.available_at ASC, job.created_at ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "request_id": request_id,
+                        "job_code": job_code,
+                        "available_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            payload = _load_json_dict(row.get("payload_json"))
+            run_id = f"api-worker-{row['job_id']}-{uuid.uuid4().hex}"
+            max_execution_seconds = _resolve_runtime_seconds(
+                row.get("max_execution_seconds"),
+                payload,
+                "max_execution_seconds",
+            )
+            max_idle_seconds = _resolve_runtime_seconds(
+                row.get("max_idle_seconds"),
+                payload,
+                "max_idle_seconds",
+                "max_no_progress_seconds",
+                default=DEFAULT_WATCHDOG_STALE_AFTER_SECONDS,
+            )
+            heartbeat_timeout_seconds = _resolve_runtime_seconds(
+                row.get("heartbeat_timeout_seconds"),
+                payload,
+                "heartbeat_timeout_seconds",
+                default=max(lease_seconds * 2.0, 30.0),
+            )
+            result = connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'running',
+                        stage = 'running',
+                        progress_stage = 'job_claimed',
+                        attempt_count = COALESCE(attempt_count, 0) + 1,
+                        worker_id = :worker_id,
+                        worker_pid = :worker_pid,
+                        lease_until = :lease_until,
+                        run_id = :run_id,
+                        max_execution_seconds = :max_execution_seconds,
+                        max_idle_seconds = :max_idle_seconds,
+                        heartbeat_timeout_seconds = :heartbeat_timeout_seconds,
+                        updated_at = :updated_at,
+                        started_at = :updated_at,
+                        finished_at = NULL,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message
+                    WHERE job_id = :job_id
+                      AND status IN ('pending', 'retry_wait')
+                    """
+                ),
+                {
+                    "job_id": row["job_id"],
+                    "worker_id": worker_id,
+                    "worker_pid": int(worker_pid or 0),
+                    "lease_until": now + max(lease_seconds, 5.0),
+                    "run_id": run_id,
+                    "max_execution_seconds": max_execution_seconds,
+                    "max_idle_seconds": max_idle_seconds,
+                    "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": "API worker claimed job.",
+                },
+            )
+            if int(result.rowcount or 0) <= 0:
+                return None
+            claimed = (
+                connection.execute(
+                    self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
+                    {"job_id": row["job_id"]},
+                )
+                .mappings()
+                .first()
+            )
+            return self._api_worker_job_from_row(claimed) if claimed is not None else None
+
+    def heartbeat_api_worker_job(self, *, job_id: str, run_id: str, lease_seconds: float) -> bool:
+        with self._engine.begin() as connection:
+            now = time.time()
+            result = connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET heartbeat_at = :heartbeat_at,
+                        lease_until = :lease_until,
+                        updated_at = :updated_at
+                    WHERE job_id = :job_id
+                      AND run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "heartbeat_at": now,
+                    "lease_until": now + max(lease_seconds, 5.0),
+                    "updated_at": now,
+                },
+            )
+        return int(result.rowcount or 0) > 0
+
+    def update_api_worker_job_progress(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        progress_stage: str,
+        message: str = "",
+        lease_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        del lease_seconds
+        now = time.time()
+        with self._engine.begin() as connection:
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET progress_stage = :progress_stage,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message,
+                        updated_at = :updated_at
+                    WHERE job_id = :job_id
+                      AND run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "progress_stage": progress_stage,
+                    "progress_message": str(message or ""),
+                    "last_progress_at": now,
+                    "updated_at": now,
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def mark_api_worker_job_success(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        stage: str = "completed",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'success',
+                        stage = :stage,
+                        progress_stage = :progress_stage,
+                        run_id = :run_id,
+                        summary_json = :summary_json,
+                        result_json = :result_json,
+                        error_text = '',
+                        error_type = '',
+                        error_code = '',
+                        dead_letter_reason = '',
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message,
+                        updated_at = :updated_at,
+                        finished_at = :finished_at
+                    WHERE job_id = :job_id
+                      AND run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "stage": stage,
+                    "progress_stage": stage,
+                    "run_id": run_id,
+                    "summary_json": _json_dumps(summary),
+                    "result_json": _json_dumps(result),
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": "API worker job succeeded.",
+                    "updated_at": now,
+                    "finished_at": now,
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def mark_api_worker_job_retry_or_failed(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        error_text: str,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        retry_delay_seconds: float = 30.0,
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT attempt_count, max_attempts
+                        FROM api_worker_job
+                        WHERE job_id = :job_id
+                          AND run_id = :run_id
+                          AND status = 'running'
+                        LIMIT 1
+                        """
+                    ),
+                    {"job_id": job_id, "run_id": run_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return self.load_api_worker_job(job_id=job_id)
+            attempt_count = int(row["attempt_count"] or 0)
+            max_attempts = int(row["max_attempts"] or 1)
+            status = "retry_wait" if attempt_count < max_attempts else "failed"
+            available_at = now + max(retry_delay_seconds, 0.1) if status == "retry_wait" else now
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = :status,
+                        stage = :stage,
+                        progress_stage = :progress_stage,
+                        run_id = :run_id,
+                        summary_json = :summary_json,
+                        result_json = :result_json,
+                        error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        available_at = :available_at,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message,
+                        updated_at = :updated_at,
+                        finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                    WHERE job_id = :job_id
+                      AND run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "status": status,
+                    "stage": "retry_wait" if status == "retry_wait" else "failed",
+                    "progress_stage": "retry_wait" if status == "retry_wait" else "failed",
+                    "run_id": run_id,
+                    "summary_json": _json_dumps(summary or {}),
+                    "result_json": _json_dumps(result or {}),
+                    "error_text": error_text,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
+                    "available_at": available_at,
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": error_text,
+                    "updated_at": now,
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def load_api_worker_job(self, *, job_id: str) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    self._text("SELECT * FROM api_worker_job WHERE job_id = :job_id LIMIT 1"),
+                    {"job_id": job_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise ValueError("API worker job not found.")
+            return self._api_worker_job_from_row(row)
+
+    def list_api_worker_jobs_for_request(
+        self,
+        *,
+        request_id: str,
+        job_code: str = "",
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM api_worker_job
+                        WHERE request_id = :request_id
+                          AND (:job_code = '' OR job_code = :job_code)
+                        ORDER BY created_at ASC, updated_at ASC
+                        """
+                    ),
+                    {"request_id": request_id, "job_code": job_code},
+                )
+                .mappings()
+                .all()
+            )
+        return [self._api_worker_job_from_row(row) for row in rows]
+
+    def summarize_api_worker_jobs_for_request(
+        self,
+        *,
+        request_id: str,
+        job_code: str = "",
+    ) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT status, COUNT(*) AS count
+                        FROM api_worker_job
+                        WHERE request_id = :request_id
+                          AND (:job_code = '' OR job_code = :job_code)
+                        GROUP BY status
+                        """
+                    ),
+                    {"request_id": request_id, "job_code": job_code},
+                )
+                .mappings()
+                .all()
+            )
+        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
+        total = sum(counts.values())
+        active_count = sum(counts.get(status, 0) for status in ACTIVE_API_WORKER_JOB_STATUSES)
+        success_count = counts.get("success", 0) + counts.get("skipped", 0)
+        failed_count = counts.get("failed", 0) + counts.get("cancelled", 0)
+        return {
+            "total": total,
+            "counts": counts,
+            "active_count": active_count,
+            "terminal_count": max(total - active_count, 0),
+            "success_count": success_count,
+            "failed_count": failed_count,
+        }

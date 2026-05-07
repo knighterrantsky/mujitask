@@ -5,6 +5,9 @@ owners:
   business_flow:
     paths:
       - src/automation_business_scaffold/domains/**/flows/**
+    allowed_helper_like_paths:
+      - path: src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/orchestrator.py
+        reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
     responsibilities:
       - decide what business targets to collect
       - decide business filtering and continuation strategy
