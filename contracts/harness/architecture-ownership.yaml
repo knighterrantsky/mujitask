@@ -8,6 +8,14 @@ owners:
     allowed_helper_like_paths:
       - path: src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/orchestrator.py
         reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
+      - path: src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/orchestrator.py
+        reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
+      - path: src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/orchestrator.py
+        reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
+      - path: src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/orchestrator.py
+        reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
+      - path: src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/stages/dispatch_product_collection.py
+        reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
     responsibilities:
       - decide what business targets to collect
       - decide business filtering and continuation strategy

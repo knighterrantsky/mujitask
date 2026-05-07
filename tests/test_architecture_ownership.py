@@ -124,6 +124,9 @@ def test_refactored_tiktok_flow_packages_do_not_import_runtime_repositories_or_p
     guarded_flow_packages = (
         TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
         TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
+        TIKTOK_FLOW_ROOT / "refresh_current_competitor_table",
+        TIKTOK_FLOW_ROOT / "sync_tk_influencer_pool",
+        TIKTOK_FLOW_ROOT / "tiktok_fastmoss_product_ingest",
     )
     forbidden_import_prefixes = (
         "automation_business_scaffold.infrastructure.runtime.repositories",
@@ -159,6 +162,9 @@ def test_refactored_stage_packages_do_not_import_sibling_workflow_packages() -> 
     guarded_flow_packages = (
         TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
         TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
+        TIKTOK_FLOW_ROOT / "refresh_current_competitor_table",
+        TIKTOK_FLOW_ROOT / "sync_tk_influencer_pool",
+        TIKTOK_FLOW_ROOT / "tiktok_fastmoss_product_ingest",
     )
     package_prefixes = {
         flow_package: (

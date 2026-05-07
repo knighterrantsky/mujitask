@@ -110,15 +110,18 @@ def test_product_ingest_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "tiktok_fastmoss_product_ingest.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
-        REPO_ROOT
-        / "src"
-        / "automation_business_scaffold"
-        / "domains"
-        / "tiktok"
-        / "flows"
-        / "tiktok_fastmoss_product_ingest.py"
-    ).read_text(encoding="utf-8")
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT
+            / "src"
+            / "automation_business_scaffold"
+            / "domains"
+            / "tiktok"
+            / "flows"
+            / "tiktok_fastmoss_product_ingest"
+        ).rglob("*.py")
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "tiktok_fastmoss_product_ingest.yaml"
     ).read_text(encoding="utf-8")
@@ -155,15 +158,18 @@ def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "refresh_competitor_row_by_url.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
-        REPO_ROOT
-        / "src"
-        / "automation_business_scaffold"
-        / "domains"
-        / "tiktok"
-        / "flows"
-        / "refresh_current_competitor_table.py"
-    ).read_text(encoding="utf-8")
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT
+            / "src"
+            / "automation_business_scaffold"
+            / "domains"
+            / "tiktok"
+            / "flows"
+            / "refresh_current_competitor_table"
+        ).rglob("*.py")
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "refresh_current_competitor_table.yaml"
     ).read_text(encoding="utf-8")

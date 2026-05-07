@@ -485,6 +485,87 @@ features:
       - This phase must not introduce a cross-workflow shared keyword kernel.
       - New structure tests must guard against stage logic moving back into orchestrator or generic helper/common dumping-ground modules.
 
+  - feature_code: project_structure_refactor_phase_3
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/arch/refactor-search-keyword-competitor-products.md
+      - docs/arch/refactor-refresh-current-competitor-table.md
+      - docs/arch/refactor-sync-tk-influencer-pool.md
+      - docs/arch/refactor-tiktok-fastmoss-product-ingest.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest
+      - tests/test_refresh_current_competitor_table_refactor_structure.py
+      - tests/test_sync_tk_influencer_pool_refactor_structure.py
+      - tests/test_tiktok_fastmoss_product_ingest_refactor_structure.py
+      - tests/test_project_structure_refactor_phase_3.py
+      - tests/test_architecture_ownership.py
+    source_contracts:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/dev/module-guide.md
+      - docs/arch/refactor-refresh-current-competitor-table.md
+      - docs/arch/refactor-sync-tk-influencer-pool.md
+      - docs/arch/refactor-tiktok-fastmoss-product-ingest.md
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/workflow/refresh_current_competitor_table.yaml
+      - contracts/workflow/sync_tk_influencer_pool.yaml
+      - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
+    allowed_paths:
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - docs/arch/**
+      - docs/dev/module-guide.md
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/**
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool.py
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/**
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest.py
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/**
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/apps/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh.py
+      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh.py
+    done_gate:
+      tests:
+        - tests/test_refresh_current_competitor_table_refactor_structure.py
+        - tests/test_sync_tk_influencer_pool_refactor_structure.py
+        - tests/test_tiktok_fastmoss_product_ingest_refactor_structure.py
+        - tests/test_project_structure_refactor_phase_3.py
+        - tests/test_architecture_ownership.py
+        - tests/test_runtime_refresh_current_competitor_table.py
+        - tests/test_runtime_sync_tk_influencer_pool.py
+        - tests/test_runtime_product_ingest_module.py
+      commands:
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest
+        - uv run --extra dev pytest tests/test_refresh_current_competitor_table_refactor_structure.py tests/test_sync_tk_influencer_pool_refactor_structure.py tests/test_tiktok_fastmoss_product_ingest_refactor_structure.py tests/test_project_structure_refactor_phase_3.py tests/test_architecture_ownership.py
+        - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_runtime_sync_tk_influencer_pool.py tests/test_runtime_product_ingest_module.py
+    completion_rules:
+      - refresh_current_competitor_table, sync_tk_influencer_pool, and tiktok_fastmoss_product_ingest flow implementations must be same-name packages.
+      - Stage modules must be anchored by stable stage_code values from the workflow definitions.
+      - Orchestrators must remain dispatch glue; summary.py must own final summary/result/outbox assembly.
+      - Row-level leaf flows selection_row_refresh.py and competitor_row_refresh.py must remain untouched.
+      - RuntimeStore phase 3 and any shared workflow kernel extraction are out of scope for this phase.
+
   - feature_code: runtime_watchdog_supervisor
     status: complete
     feature_area: runtime_control_plane
