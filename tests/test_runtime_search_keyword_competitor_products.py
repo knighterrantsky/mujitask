@@ -13,6 +13,8 @@ from PIL import Image, ImageDraw
 import automation_business_scaffold.capabilities.browser.fastmoss_security.coordinate_mapping as fastmoss_coordinate_mapping
 import automation_business_scaffold.capabilities.browser.fastmoss_security.diagnostics as fastmoss_diagnostics
 import automation_business_scaffold.capabilities.browser.fastmoss_security.element_state as fastmoss_element_state
+import automation_business_scaffold.capabilities.browser.fastmoss_security.request_verification as fastmoss_request_verification
+import automation_business_scaffold.capabilities.browser.fastmoss_security.session_bootstrap as fastmoss_session_bootstrap
 import automation_business_scaffold.capabilities.browser.fastmoss_security.slider_challenge as fastmoss_slider_challenge
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
@@ -335,6 +337,99 @@ def test_fastmoss_security_browser_resolve_preserves_audit_on_security_failure(
     assert result.result["slider_captcha_audit_artifact_refs"][0]["artifact_key"] == "slider_captcha_audit"
     assert result.result["browser_diagnostic_artifact_refs"][0]["artifact_key"] == "after_slider_resolution_screenshot"
     assert "browser-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+
+def test_fastmoss_login_cookie_bootstrap_refreshes_cache_without_leaking_status(
+    monkeypatch,
+    runtime_db_url: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _FakeSession:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            self.cookies = [{"name": "fd_tk", "value": "stale-token", "domain": ".fastmoss.com", "path": "/"}]
+
+        def __enter__(self) -> "_FakeSession":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def export_cookies(self) -> list[dict[str, object]]:
+            return list(self.cookies)
+
+        def ensure_logged_in(self) -> None:
+            raise fastmoss_request_verification.FastMossHTTPError(
+                "stale login",
+                response_code="MSG_AUTH_EXPIRED",
+                method="GET",
+                path="/api/user/profile",
+                stage="ensure_logged_in",
+            )
+
+        def login(self) -> None:
+            self.cookies = [{"name": "fd_tk", "value": "login-token", "domain": ".fastmoss.com", "path": "/"}]
+
+    def fake_attach(session, *, force_refresh=False, **kwargs):
+        calls.append({"force_refresh": force_refresh, **kwargs})
+        if force_refresh:
+            session.cookies = [{"name": "fd_tk", "value": "fresh-token", "domain": ".fastmoss.com", "path": "/"}]
+            return {"enabled": True, "status": "cache_refreshed"}
+        return {"enabled": True, "status": "cache_attached"}
+
+    monkeypatch.setattr(fastmoss_session_bootstrap, "FastMossHTTPSession", _FakeSession)
+    monkeypatch.setattr(fastmoss_session_bootstrap, "attach_fastmoss_cookie_cache", fake_attach)
+
+    result = fastmoss_session_bootstrap.bootstrap_fastmoss_login_cookies(
+        db_url=runtime_db_url,
+        fastmoss_settings={
+            "phone": "18000000000",
+            "password": "secret-password",
+            "base_url": "https://www.fastmoss.com",
+            "region": "US",
+        },
+    )
+
+    assert [call["force_refresh"] for call in calls] == [False, True]
+    assert result["status"]["status"] == "cache_refreshed"
+    assert result["status"]["has_fd_tk"] is True
+    assert result["cookies"][0]["value"] == "fresh-token"
+    assert "fresh-token" not in json.dumps(result["status"], ensure_ascii=False)
+    assert "secret-password" not in json.dumps(result["status"], ensure_ascii=False)
+
+
+def test_fastmoss_original_request_verification_result_preserves_security_failure(
+    monkeypatch,
+) -> None:
+    def fake_verify(*_args, **_kwargs):
+        raise fastmoss_request_verification.FastMossHTTPError(
+            "FastMoss security verification is still required.",
+            response_code="MSG_SAFE_0001",
+            payload={"code": "MSG_SAFE_0001", "data": {"id": "299522"}, "ext": {"is_login": "1"}},
+            method="GET",
+            path="/api/goods/v3/base",
+            stage="browser_security.verify_original_request",
+        )
+
+    monkeypatch.setattr(fastmoss_request_verification, "verify_original_request_with_cookies", fake_verify)
+
+    result = fastmoss_request_verification.verify_original_request_with_cookies_result(
+        {"path": "/api/goods/v3/base", "params": {"product_id": "1732183420263764252"}},
+        fastmoss_settings={"base_url": "https://www.fastmoss.com", "region": "US"},
+        cookies=[{"name": "fd_tk", "value": "browser-token", "domain": ".fastmoss.com", "path": "/"}],
+        default_referer="https://www.fastmoss.com/zh/e-commerce/detail/1732183420263764252",
+    )
+
+    assert result == {
+        "verified": False,
+        "verified_path": "/api/goods/v3/base",
+        "response_code": "MSG_SAFE_0001",
+        "error_code": "fastmoss_security_verification_required",
+        "error_type": "security_verification",
+        "data_id": "299522",
+        "ext_is_login": "1",
+    }
 
 
 class _FakeFastMossSliderMouse:
