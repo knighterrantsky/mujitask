@@ -10,7 +10,10 @@ from types import SimpleNamespace
 from automation_framework.captcha import SliderMatchResult
 from PIL import Image, ImageDraw
 
-import automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler as fastmoss_security_module
+import automation_business_scaffold.capabilities.browser.fastmoss_security.coordinate_mapping as fastmoss_coordinate_mapping
+import automation_business_scaffold.capabilities.browser.fastmoss_security.diagnostics as fastmoss_diagnostics
+import automation_business_scaffold.capabilities.browser.fastmoss_security.element_state as fastmoss_element_state
+import automation_business_scaffold.capabilities.browser.fastmoss_security.slider_challenge as fastmoss_slider_challenge
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
 )
@@ -369,7 +372,7 @@ class _FakeFastMossSliderLocator:
 
     def is_visible(self, timeout: int | None = None) -> bool:
         del timeout
-        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_POPUP_SELECTORS:
+        if self.selector in fastmoss_element_state.FASTMOSS_SLIDER_POPUP_SELECTORS:
             return self.page.popup_visible
         return self.page.popup_visible
 
@@ -382,7 +385,7 @@ class _FakeFastMossSliderLocator:
         del script
         box = self.bounding_box()
         background_image = "none"
-        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
+        if self.selector in fastmoss_element_state.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
             background_image = f"url(data:image/png;base64,{_png_base64(672, 390)})"
         return {
             "tag_name": "div",
@@ -395,11 +398,11 @@ class _FakeFastMossSliderLocator:
 
     def bounding_box(self, timeout: int | None = None) -> dict[str, float]:
         del timeout
-        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
+        if self.selector in fastmoss_element_state.FASTMOSS_SLIDER_BACKGROUND_SELECTORS:
             return {"x": 100.0, "y": 50.0, "width": 340.0, "height": 160.0}
-        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_TARGET_SELECTORS:
+        if self.selector in fastmoss_element_state.FASTMOSS_SLIDER_TARGET_SELECTORS:
             return {"x": 120.0, "y": 80.0, "width": 50.0, "height": 50.0}
-        if self.selector in fastmoss_security_module.FASTMOSS_SLIDER_HANDLE_SELECTORS:
+        if self.selector in fastmoss_element_state.FASTMOSS_SLIDER_HANDLE_SELECTORS:
             return {"x": 90.0, "y": 260.0, "width": 20.0, "height": 20.0}
         return {"x": 80.0, "y": 40.0, "width": 380.0, "height": 280.0}
 
@@ -476,7 +479,7 @@ def test_fastmoss_slider_uses_mixed_css_resolver_and_persists_target_position_ar
         captured_provider_config.update(config or {})
         return _FakeProvider()
 
-    monkeypatch.setattr(fastmoss_security_module, "_build_slider_captcha_provider", fake_provider)
+    monkeypatch.setattr(fastmoss_slider_challenge, "_build_slider_captcha_provider", fake_provider)
     automation_page = SimpleNamespace(
         raw_page=page,
         build_diagnostic_artifacts_payload=lambda **kwargs: {
@@ -485,7 +488,7 @@ def test_fastmoss_slider_uses_mixed_css_resolver_and_persists_target_position_ar
         },
     )
 
-    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+    result = fastmoss_slider_challenge._try_resolve_fastmoss_slider_security_check(
         page,
         automation_page=automation_page,
         raw_page=page,
@@ -520,16 +523,16 @@ def test_fastmoss_slider_uses_mixed_css_resolver_and_persists_target_position_ar
     assert result["post_drag_verify_wait_ms"] == 1
     assert result["confirmation_wait_ms"] == 2000
     assert result["drag_profile"] == {
-        "steps": fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS,
-        "step_delay_seconds": fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS,
+        "steps": fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS,
+        "step_delay_seconds": fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS,
     }
-    assert fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS <= 36
-    assert fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS <= 0.012
-    assert result["audit"]["config"]["drag_steps"] == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS
+    assert fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS <= 36
+    assert fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS <= 0.012
+    assert result["audit"]["config"]["drag_steps"] == fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEPS
     assert result["audit"]["config"]["simple_target"] is False
     assert (
         result["audit"]["config"]["drag_step_delay_seconds"]
-        == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS
+        == fastmoss_slider_challenge.DEFAULT_FASTMOSS_SLIDER_DRAG_STEP_DELAY_SECONDS
     )
     assert attempt["artifact_keys"]["target_position_screenshot"] == "slider_attempt_1_target_position_screenshot"
     assert result["artifact_refs"]
@@ -581,7 +584,7 @@ def test_fastmoss_slider_corrects_low_confidence_ocr_with_outline_bbox_anchor() 
         confidence=0.18,
         raw={"target": [508, 214], "confidence": 0.18},
     )
-    anchored = fastmoss_security_module._select_fastmoss_shape_anchor_slider_result(
+    anchored = fastmoss_coordinate_mapping._select_fastmoss_shape_anchor_slider_result(
         ocr_result,
         background_image=background_bytes,
         piece_image=piece_bytes,
@@ -595,7 +598,7 @@ def test_fastmoss_slider_corrects_low_confidence_ocr_with_outline_bbox_anchor() 
     assert shape_anchor["selected_box"]["x"] == 418.0
     assert shape_anchor["target_interpretation"] == "fastmoss_outline_bbox_center_minus_piece_outline_anchor"
 
-    mapping = fastmoss_security_module._build_fastmoss_mixed_slider_mapping(
+    mapping = fastmoss_coordinate_mapping._build_fastmoss_mixed_slider_mapping(
         SimpleNamespace(),
         slider_result=anchored,
         background_box={"x": 100.0, "y": 50.0, "width": 336.0, "height": 195.0},
@@ -629,7 +632,7 @@ def test_fastmoss_slider_keeps_ocr_when_outline_candidate_is_far_away() -> None:
         confidence=0.31,
         raw={"target": [568, 222], "confidence": 0.31},
     )
-    anchored = fastmoss_security_module._select_fastmoss_shape_anchor_slider_result(
+    anchored = fastmoss_coordinate_mapping._select_fastmoss_shape_anchor_slider_result(
         ocr_result,
         background_image=background_bytes,
         piece_image=piece_bytes,
@@ -658,9 +661,9 @@ def test_fastmoss_slider_waits_for_loading_to_finish_before_retry(monkeypatch, t
         def compare_slider(self, target_image: bytes, background_image: bytes) -> SliderMatchResult:
             raise AssertionError("FastMoss slider should use match mode by default")
 
-    monkeypatch.setattr(fastmoss_security_module, "_build_slider_captcha_provider", lambda _config=None: _FakeProvider())
+    monkeypatch.setattr(fastmoss_slider_challenge, "_build_slider_captcha_provider", lambda _config=None: _FakeProvider())
 
-    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+    result = fastmoss_slider_challenge._try_resolve_fastmoss_slider_security_check(
         page,
         automation_page=SimpleNamespace(raw_page=page),
         raw_page=page,
@@ -692,7 +695,7 @@ def test_fastmoss_slider_waits_for_visual_elements_before_framework_resolver(mon
     calls: dict[str, object] = {}
 
     monkeypatch.setattr(
-        fastmoss_security_module,
+        fastmoss_slider_challenge,
         "_wait_for_fastmoss_slider_state",
         lambda _page, *, timeout_ms: {"visible": True, "selector": "#tcaptcha_transform_dy"},
     )
@@ -722,14 +725,14 @@ def test_fastmoss_slider_waits_for_visual_elements_before_framework_resolver(mon
         assert initial_state["handle_selector"] == ".ready-handle"
         return {"attempted": True, "resolved": True, "reason": "slider_cleared", "attempts": []}
 
-    monkeypatch.setattr(fastmoss_security_module, "_wait_for_fastmoss_slider_elements", fake_wait_for_elements)
+    monkeypatch.setattr(fastmoss_slider_challenge, "_wait_for_fastmoss_slider_elements", fake_wait_for_elements)
     monkeypatch.setattr(
-        fastmoss_security_module,
+        fastmoss_slider_challenge,
         "_resolve_fastmoss_slider_with_framework_captcha",
         fake_framework_resolve,
     )
 
-    result = fastmoss_security_module._try_resolve_fastmoss_slider_security_check(
+    result = fastmoss_slider_challenge._try_resolve_fastmoss_slider_security_check(
         page,
         automation_page=SimpleNamespace(raw_page=page),
         raw_page=page,
@@ -742,14 +745,14 @@ def test_fastmoss_slider_waits_for_visual_elements_before_framework_resolver(mon
     )
 
     assert result["resolved"] is True
-    assert calls["timeout_ms"] == fastmoss_security_module.DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS
+    assert calls["timeout_ms"] == fastmoss_element_state.DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS
     assert calls["selector_overrides"] == {"background": ".ready-bg"}
 
 
 def test_fastmoss_browser_diagnostic_artifacts_write_state_and_screenshot(tmp_path: Path) -> None:
     page = _FakeFastMossSliderPage()
 
-    refs = fastmoss_security_module._capture_fastmoss_browser_diagnostic_artifacts(
+    refs = fastmoss_diagnostics._capture_fastmoss_browser_diagnostic_artifacts(
         page,
         raw_page=page,
         audit_dir=str(tmp_path),
