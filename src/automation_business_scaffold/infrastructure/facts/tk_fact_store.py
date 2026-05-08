@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 
+from automation_business_scaffold.infrastructure.facts.fact_payload_views import extract_fact_payloads
+from automation_business_scaffold.infrastructure.facts.fact_queries import TKFactQueryAccess
 from automation_business_scaffold.infrastructure.schemas.fact_schema import ensure_tk_fact_schema
 
 
@@ -46,11 +48,7 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
-def _media_asset_has_locator(asset: Mapping[str, Any]) -> bool:
-    return any(_clean_text(asset.get(key)) for key in ("object_key", "file_token", "local_path"))
-
-
-class TKFactStore:
+class TKFactStore(TKFactQueryAccess):
     def __init__(self, *, runtime_store: Any | None = None, db_url: str = ""):
         if runtime_store is not None:
             self._engine = runtime_store._engine  # noqa: SLF001
@@ -308,46 +306,6 @@ class TKFactStore:
                 "metadata_json": _json_dumps(metadata),
             },
         )
-
-    def find_media_asset(
-        self,
-        *,
-        source_url: str = "",
-        file_token: str = "",
-        local_path: str = "",
-        object_key: str = "",
-    ) -> dict[str, Any]:
-        candidates: list[dict[str, Any]] = []
-        seen_asset_ids: set[str] = set()
-        asset_key = self.build_asset_key(
-            source_url=source_url,
-            file_token=file_token,
-            local_path=local_path,
-            object_key=object_key,
-        )
-        if asset_key:
-            asset = self._get_by_unique("tk_media_assets", "asset_key", asset_key)
-            if asset:
-                candidates.append(asset)
-                seen_asset_ids.add(str(asset.get("asset_id") or ""))
-        for column_name, value in (
-            ("file_token", file_token),
-            ("object_key", object_key),
-            ("local_path", local_path),
-            ("source_url", source_url),
-        ):
-            cleaned = _clean_text(value)
-            if cleaned:
-                for asset in self._get_media_assets_by_column(column_name, cleaned):
-                    asset_id = str(asset.get("asset_id") or "")
-                    if asset_id and asset_id in seen_asset_ids:
-                        continue
-                    candidates.append(asset)
-                    seen_asset_ids.add(asset_id)
-        for asset in candidates:
-            if _media_asset_has_locator(asset):
-                return asset
-        return candidates[0] if candidates else {}
 
     def link_media_asset(
         self,
@@ -1056,38 +1014,6 @@ class TKFactStore:
             )
         return self._row_to_dict(row) if row is not None else {}
 
-    def creator_has_product(self, *, creator_id: str = "", uid: str = "", unique_id: str = "", product_id: str) -> bool:
-        creator_key = self.build_creator_key(creator_id=creator_id, uid=uid, unique_id=unique_id)
-        product_id = _clean_text(product_id)
-        if not creator_key or not product_id:
-            return False
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text(
-                        """
-                        SELECT 1
-                        FROM tk_creator_product_relations
-                        WHERE creator_key = :creator_key
-                          AND product_id = :product_id
-                        LIMIT 1
-                        """
-                    ),
-                    {"creator_key": creator_key, "product_id": product_id},
-                )
-                .first()
-            )
-        return row is not None
-
-    def get_product(self, *, product_id: str) -> dict[str, Any]:
-        return self._get_by_unique("tk_products", "product_id", _clean_text(product_id))
-
-    def get_creator(self, *, creator_key: str) -> dict[str, Any]:
-        return self._get_by_unique("tk_creators", "creator_key", _clean_text(creator_key))
-
-    def get_raw_api_response(self, *, raw_response_id: str) -> dict[str, Any]:
-        return self._get_by_unique("tk_raw_api_responses", "raw_response_id", _clean_text(raw_response_id))
-
     @staticmethod
     def build_shop_key(*, shop_id: str = "", shop_name: str = "") -> str:
         shop_id = _clean_text(shop_id)
@@ -1226,49 +1152,6 @@ class TKFactStore:
             )
         return self._row_to_dict(row) if row is not None else {}
 
-    def _get_by_unique(self, table_name: str, unique_column: str, unique_value: str) -> dict[str, Any]:
-        if not unique_value:
-            return {}
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    self._text(
-                        f"""
-                        SELECT *
-                        FROM {table_name}
-                        WHERE {unique_column} = :unique_value
-                        LIMIT 1
-                        """
-                    ),
-                    {"unique_value": unique_value},
-                )
-                .mappings()
-                .first()
-            )
-        return self._row_to_dict(row) if row is not None else {}
-
-    def _get_media_assets_by_column(self, column_name: str, value: str) -> list[dict[str, Any]]:
-        if column_name not in {"asset_key", "source_url", "file_token", "local_path", "object_key"}:
-            return []
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    self._text(
-                        f"""
-                        SELECT *
-                        FROM tk_media_assets
-                        WHERE {column_name} = :value
-                        ORDER BY updated_at DESC
-                        LIMIT 20
-                        """
-                    ),
-                    {"value": value},
-                )
-                .mappings()
-                .all()
-            )
-        return [self._row_to_dict(row) for row in rows]
-
     def _insert_row(self, connection: Any, *, table_name: str, data: Mapping[str, Any]) -> None:
         columns = list(data.keys())
         placeholders = [f":{column}" for column in columns]
@@ -1352,77 +1235,3 @@ class TKFactStore:
                 public_key = str(key)[: -len("_json")]
                 payload[public_key] = _load_json_dict(str(payload.get(key) or ""))
         return payload
-
-
-def extract_fact_payloads(items: Sequence[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    fact_entities: list[dict[str, Any]] = []
-    fact_relations: list[dict[str, Any]] = []
-    fact_media_assets: list[dict[str, Any]] = []
-    fact_metric_observations: list[dict[str, Any]] = []
-    raw_api_responses: list[dict[str, Any]] = []
-    seen: dict[str, set[str]] = {
-        "entities": set(),
-        "relations": set(),
-        "media": set(),
-        "metrics": set(),
-        "raw": set(),
-    }
-
-    for item in items:
-        for entity in item.get("fact_entities", []) if isinstance(item.get("fact_entities"), list) else []:
-            key = _fact_identity(entity)
-            if key and key not in seen["entities"]:
-                seen["entities"].add(key)
-                fact_entities.append(dict(entity))
-        for relation in item.get("fact_relations", []) if isinstance(item.get("fact_relations"), list) else []:
-            key = _fact_identity(relation)
-            if key and key not in seen["relations"]:
-                seen["relations"].add(key)
-                fact_relations.append(dict(relation))
-        for asset in item.get("fact_media_assets", []) if isinstance(item.get("fact_media_assets"), list) else []:
-            key = _fact_identity(asset)
-            if key and key not in seen["media"]:
-                seen["media"].add(key)
-                fact_media_assets.append(dict(asset))
-        for metric in (
-            item.get("fact_metric_observations", [])
-            if isinstance(item.get("fact_metric_observations"), list)
-            else []
-        ):
-            key = _fact_identity(metric)
-            if key and key not in seen["metrics"]:
-                seen["metrics"].add(key)
-                fact_metric_observations.append(dict(metric))
-        for raw_response in item.get("raw_api_responses", []) if isinstance(item.get("raw_api_responses"), list) else []:
-            key = _fact_identity(raw_response)
-            if key and key not in seen["raw"]:
-                seen["raw"].add(key)
-                raw_api_responses.append(dict(raw_response))
-
-    return {
-        "fact_entities": fact_entities,
-        "fact_relations": fact_relations,
-        "fact_media_assets": fact_media_assets,
-        "fact_metric_observations": fact_metric_observations,
-        "raw_api_responses": raw_api_responses,
-    }
-
-
-def _fact_identity(payload: Mapping[str, Any]) -> str:
-    for key in (
-        "id",
-        "product_id",
-        "shop_key",
-        "creator_key",
-        "video_key",
-        "asset_id",
-        "latest_id",
-        "observation_id",
-        "relation_key",
-        "raw_response_id",
-        "raw_link_id",
-    ):
-        value = _clean_text(payload.get(key))
-        if value:
-            return f"{key}:{value}"
-    return ""
