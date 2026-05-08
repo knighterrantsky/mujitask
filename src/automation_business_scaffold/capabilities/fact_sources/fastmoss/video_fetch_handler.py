@@ -40,14 +40,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPSession,
 )
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
-    attach_fastmoss_cookie_cache_if_configured,
+    build_fastmoss_session,
     fastmoss_security_fallback_required_result,
     fastmoss_session_conflict_failed_result,
     fastmoss_settings_from_payload,
     is_fastmoss_security_verification_error,
     is_fastmoss_session_conflict_error,
+    prepare_fastmoss_session,
 )
-from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 
 HANDLER_CODE = "fastmoss_video_fetch"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
@@ -215,8 +215,8 @@ def _resolve_fastmoss_video_bundle(
     if not live_fetch or not video_id:
         return {}
 
-    with _build_fastmoss_session(fastmoss_settings) as session:
-        _prepare_fastmoss_session(session, fastmoss_settings)
+    with build_fastmoss_session(fastmoss_settings, session_factory=FastMossHTTPSession) as session:
+        prepare_fastmoss_session(session, settings=fastmoss_settings)
         return _fetch_live_fastmoss_video_bundle(session, video_id=video_id, payload=payload)
 
 
@@ -282,39 +282,6 @@ def _video_fetch_endpoints(payload: Mapping[str, Any]) -> set[str]:
     if "goods" in detail_level or "product" in detail_level:
         endpoints.add("goods")
     return endpoints
-
-
-def _build_fastmoss_session(settings: Mapping[str, Any]) -> FastMossHTTPSession:
-    return FastMossHTTPSession(
-        phone=first_non_empty(settings.get("phone")),
-        password=first_non_empty(settings.get("password")),
-        base_url=first_non_empty(settings.get("base_url"), "https://www.fastmoss.com"),
-        default_region=first_non_empty(settings.get("region"), "US"),
-        timeout=float(settings.get("timeout", 30.0) or 30.0),
-        request_delay_range=resolve_api_request_delay_range(settings, provider="fastmoss"),
-        trust_env=coerce_bool(
-            first_non_empty(
-                settings.get("trust_env"),
-                settings.get("use_system_proxy"),
-                settings.get("fastmoss_trust_env"),
-                settings.get("fastmoss_use_system_proxy"),
-            ),
-            default=False,
-        ),
-    )
-
-
-def _prepare_fastmoss_session(session: FastMossHTTPSession, settings: Mapping[str, Any]) -> None:
-    attach_fastmoss_cookie_cache_if_configured(
-        session,
-        settings=settings,
-        default_region=first_non_empty(settings.get("region"), "US"),
-    )
-    cookies = settings.get("browser_cookies")
-    if isinstance(cookies, list):
-        session.replace_browser_cookies(cookies)
-    if coerce_bool(settings.get("ensure_logged_in"), default=bool(cookies or settings.get("phone"))):
-        session.ensure_logged_in()
 
 
 def _append_fastmoss_video_raw_responses(

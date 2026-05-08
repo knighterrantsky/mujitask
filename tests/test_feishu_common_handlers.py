@@ -4,7 +4,7 @@ from typing import Any
 
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
-from automation_business_scaffold.capabilities.input_sources.feishu.table_common import map_write_records
+from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
 from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_source_mapper import (
@@ -763,7 +763,7 @@ def test_feishu_table_write_uses_remote_image_name_for_attachment_upload(monkeyp
         FakeClient,
     )
     monkeypatch.setattr(
-        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.requests.get",
+        "automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes.requests.get",
         lambda *args, **kwargs: FakeResponse(),
     )
     payload = _table_payload(

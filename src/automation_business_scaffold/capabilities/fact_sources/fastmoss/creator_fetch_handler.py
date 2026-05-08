@@ -32,14 +32,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPSession,
 )
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
-    attach_fastmoss_cookie_cache_if_configured,
+    build_fastmoss_session,
     fastmoss_security_fallback_required_result,
     fastmoss_session_conflict_failed_result,
     fastmoss_settings_from_payload,
     is_fastmoss_security_verification_error,
     is_fastmoss_session_conflict_error,
+    prepare_fastmoss_session,
 )
-from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import (
     Mapping,
     Sequence,
@@ -272,45 +272,26 @@ def _resolve_fastmoss_creator_bundle(
         return {}
 
     session_policy = coerce_mapping(payload.get("session_policy"))
-    session = FastMossHTTPSession(
-        phone=first_non_empty(fastmoss_settings.get("phone")),
-        password=first_non_empty(fastmoss_settings.get("password")),
-        base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
-        default_region=first_non_empty(
-            payload.get("region"),
-            fastmoss_settings.get("region"),
-            "US",
-        ),
-        timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
-        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
-        trust_env=coerce_bool(
-            first_non_empty(
-                fastmoss_settings.get("trust_env"),
-                fastmoss_settings.get("use_system_proxy"),
-                fastmoss_settings.get("fastmoss_trust_env"),
-                fastmoss_settings.get("fastmoss_use_system_proxy"),
-            ),
-            default=False,
-        ),
+    default_region = first_non_empty(payload.get("region"), fastmoss_settings.get("region"), "US")
+    session = build_fastmoss_session(
+        fastmoss_settings,
+        default_region=default_region,
+        session_factory=FastMossHTTPSession,
     )
     with session:
-        attach_fastmoss_cookie_cache_if_configured(
-            session,
-            settings=fastmoss_settings,
-            default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
-        )
-        cookies = fastmoss_settings.get("browser_cookies")
-        if isinstance(cookies, list):
-            session.replace_browser_cookies(cookies)
         require_login = coerce_bool(
             session_policy.get("require_login"),
             default=coerce_bool(
                 fastmoss_settings.get("ensure_logged_in"),
-                default=bool(cookies or fastmoss_settings.get("phone")),
+                default=bool(fastmoss_settings.get("browser_cookies") or fastmoss_settings.get("phone")),
             ),
         )
-        if require_login:
-            session.ensure_logged_in()
+        prepare_fastmoss_session(
+            session,
+            settings=fastmoss_settings,
+            default_region=default_region,
+            require_login=require_login,
+        )
 
         creator_id = first_non_empty(creator_identity.get("creator_id"))
         uid_candidate = first_non_empty(creator_identity.get("uid"))

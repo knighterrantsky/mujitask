@@ -3,11 +3,17 @@ from __future__ import annotations
 from automation_business_scaffold.capabilities.input_sources.feishu.table_common import (
     adapt_source_rows,
     build_feishu_client,
-    classify_feishu_exception,
-    normalize_raw_rows,
-    read_feishu_records,
     resolve_read_target,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.row_reading import (
+    read_feishu_records,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.schema_normalization import (
+    normalize_raw_rows,
     validate_read_schema,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.transport_errors import (
+    classify_feishu_exception,
 )
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (

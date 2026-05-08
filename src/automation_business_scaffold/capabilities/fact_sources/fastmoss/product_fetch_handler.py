@@ -37,14 +37,14 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPSession,
 )
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
-    attach_fastmoss_cookie_cache_if_configured,
+    build_fastmoss_session,
     fastmoss_security_fallback_required_result,
     fastmoss_session_conflict_failed_result,
     fastmoss_settings_from_payload,
     is_fastmoss_security_verification_error,
     is_fastmoss_session_conflict_error,
+    prepare_fastmoss_session,
 )
-from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from collections.abc import Mapping
 from typing import Any
 
@@ -199,34 +199,9 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
     if not live_fetch or not product_id:
         return {}
 
-    session = FastMossHTTPSession(
-        phone=first_non_empty(fastmoss_settings.get("phone")),
-        password=first_non_empty(fastmoss_settings.get("password")),
-        base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
-        default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
-        timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
-        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
-        trust_env=coerce_bool(
-            first_non_empty(
-                fastmoss_settings.get("trust_env"),
-                fastmoss_settings.get("use_system_proxy"),
-                fastmoss_settings.get("fastmoss_trust_env"),
-                fastmoss_settings.get("fastmoss_use_system_proxy"),
-            ),
-            default=False,
-        ),
-    )
+    session = build_fastmoss_session(fastmoss_settings, session_factory=FastMossHTTPSession)
     with session:
-        attach_fastmoss_cookie_cache_if_configured(
-            session,
-            settings=fastmoss_settings,
-            default_region=first_non_empty(fastmoss_settings.get("region"), "US"),
-        )
-        cookies = fastmoss_settings.get("browser_cookies")
-        if isinstance(cookies, list):
-            session.replace_browser_cookies(cookies)
-        if coerce_bool(fastmoss_settings.get("ensure_logged_in"), default=bool(cookies or fastmoss_settings.get("phone"))):
-            session.ensure_logged_in()
+        prepare_fastmoss_session(session, settings=fastmoss_settings)
         base = session.get_product_base(product_id)
         overview_window_days = _coerce_window_days(fastmoss_settings.get("overview_window_days"), default=[28])
         sku_window_days = _coerce_positive_int(fastmoss_settings.get("sku_window_days"), default=28)
