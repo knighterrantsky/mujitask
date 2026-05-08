@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from automation_business_scaffold.capabilities.browser import tiktok_product_fetch_handler as browser_handler
+import automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler as browser_handler
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 
 

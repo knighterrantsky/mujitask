@@ -15,11 +15,11 @@
 - `stage_code`: `read_competitor_rows`、`dispatch_product_collection`、`collect_product_data`、`browser_fallback`、`resume_competitor_rows_after_browser_fallback`、`ready_for_summary`
 - `job_code` / `handler_code`: 沿用既有 workflow 和 job contract
 
-`refresh_competitor_row_by_url` 仍复用同一 runtime surface；本阶段不拆 `competitor_row_refresh.py` 这类 row-level leaf flow。
+`refresh_competitor_row_by_url` 仍复用同一 runtime surface；本阶段不拆 `competitor_row_refresh/` 这类 row-level leaf flow package。
 
 ## 新的 Flow Package
 
-`domains/tiktok/flows/refresh_current_competitor_table.py` 迁移为同名 package:
+`domains/tiktok/flows/refresh_current_competitor_table/` 已迁移为同名 package:
 
 ```text
 domains/tiktok/flows/refresh_current_competitor_table/
@@ -66,7 +66,6 @@ domains/tiktok/flows/refresh_current_competitor_table/
 
 后续再评估:
 
-- `competitor_row_refresh.py` row-level leaf flow 拆包。
+- `competitor_row_refresh/` row-level leaf flow package 的进一步拆分。
 - selection/competitor/product ingest 三类 row fallback 的共享候选抽取。
 - RuntimeStore phase 3 的剩余 SQL owner 迁移。
-

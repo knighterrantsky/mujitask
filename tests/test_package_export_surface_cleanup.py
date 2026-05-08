@@ -16,6 +16,11 @@ TOUCHED_FLOW_PACKAGES = (
     "search_keyword_selection_products",
     "search_keyword_competitor_products",
 )
+PACKAGE_FLOW_NAMES = (
+    *TOUCHED_FLOW_PACKAGES,
+    "selection_row_refresh",
+    "competitor_row_refresh",
+)
 BUSINESS_EXPORT_NAMES = {
     "advance_stage",
     "finalize_request",
@@ -49,7 +54,7 @@ def _is_empty_or_docstring_only(path: Path) -> bool:
 
 
 def test_touched_flow_package_init_files_are_not_business_export_surfaces() -> None:
-    for package_name in TOUCHED_FLOW_PACKAGES:
+    for package_name in PACKAGE_FLOW_NAMES:
         init_file = TIKTOK_FLOW_ROOT / package_name / "__init__.py"
         assert init_file.is_file(), package_name
         assert _is_empty_or_docstring_only(init_file), package_name
@@ -63,13 +68,63 @@ def test_touched_flow_package_init_files_are_not_business_export_surfaces() -> N
 
 
 def test_touched_flow_packages_do_not_expose_business_symbols() -> None:
-    for package_name in TOUCHED_FLOW_PACKAGES:
+    for package_name in PACKAGE_FLOW_NAMES:
         module = importlib.import_module(
             f"automation_business_scaffold.domains.tiktok.flows.{package_name}"
         )
         exposed = [name for name in BUSINESS_EXPORT_NAMES if hasattr(module, name)]
 
         assert exposed == [], package_name
+
+
+def test_tiktok_flows_root_init_is_not_a_business_export_surface() -> None:
+    init_file = TIKTOK_FLOW_ROOT / "__init__.py"
+
+    assert _is_empty_or_docstring_only(init_file)
+
+    source = init_file.read_text(encoding="utf-8")
+    assert "__all__" not in source
+    assert "control_plane.executor.runner" not in source
+
+
+def test_static_governance_references_use_package_flow_paths() -> None:
+    old_path_tokens = {
+        f"`flows/{flow_name}.py`"
+        for flow_name in PACKAGE_FLOW_NAMES
+    } | {
+        f"domains/tiktok/flows/{flow_name}.py"
+        for flow_name in PACKAGE_FLOW_NAMES
+    } | {
+        f"src/automation_business_scaffold/domains/tiktok/flows/{flow_name}.py"
+        for flow_name in PACKAGE_FLOW_NAMES
+    } | {
+        f"/flows/{flow_name}.py"
+        for flow_name in PACKAGE_FLOW_NAMES
+    }
+    allowed_antiregression_tests = {
+        "tests/test_selection_row_refresh_package_structure.py",
+        "tests/test_competitor_row_refresh_package_structure.py",
+    }
+    scanned_roots = (
+        REPO_ROOT / "contracts",
+        REPO_ROOT / "docs",
+        REPO_ROOT / "src" / "automation_business_scaffold" / "contracts",
+        REPO_ROOT / "tests",
+    )
+    suffixes = {".md", ".yaml", ".yml", ".json", ".py"}
+    violations: list[str] = []
+
+    for root in scanned_roots:
+        for path in sorted(item for item in root.rglob("*") if item.suffix in suffixes):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if rel in allowed_antiregression_tests:
+                continue
+            source = path.read_text(encoding="utf-8")
+            for token in old_path_tokens:
+                if token in source:
+                    violations.append(f"{rel} contains old flow path {token}")
+
+    assert violations == []
 
 
 def test_runtime_imports_target_concrete_modules_for_touched_flows() -> None:

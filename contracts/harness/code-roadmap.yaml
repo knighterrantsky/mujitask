@@ -291,7 +291,6 @@ features:
       - src/automation_business_scaffold/capabilities/input_sources/feishu/table_common.py
       - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_selection_products.py
       - src/automation_business_scaffold/domains/tiktok/workflows/search_keyword_selection_products.py
-      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products.py
       - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products/**
       - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
       - src/automation_business_scaffold/infrastructure/runtime/bootstrap.py
@@ -452,7 +451,6 @@ features:
       - contracts/harness/code-roadmap.yaml
       - docs/arch/**
       - docs/dev/module-guide.md
-      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products.py
       - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/**
       - src/automation_business_scaffold/infrastructure/runtime/**
       - tests/**
@@ -527,11 +525,8 @@ features:
       - contracts/harness/code-roadmap.yaml
       - docs/arch/**
       - docs/dev/module-guide.md
-      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py
       - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/**
-      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool.py
       - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/**
-      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest.py
       - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/**
       - tests/**
     forbidden_paths:
@@ -541,8 +536,8 @@ features:
       - src/automation_business_scaffold/apps/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/infrastructure/runtime/**
-      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh.py
-      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh.py
+      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh/**
+      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh/**
     done_gate:
       tests:
         - tests/test_refresh_current_competitor_table_refactor_structure.py
@@ -563,8 +558,135 @@ features:
       - refresh_current_competitor_table, sync_tk_influencer_pool, and tiktok_fastmoss_product_ingest flow implementations must be same-name packages.
       - Stage modules must be anchored by stable stage_code values from the workflow definitions.
       - Orchestrators must remain dispatch glue; summary.py must own final summary/result/outbox assembly.
-      - Row-level leaf flows selection_row_refresh.py and competitor_row_refresh.py must remain untouched.
+      - Row-level leaf flow packages selection_row_refresh and competitor_row_refresh must remain untouched.
       - RuntimeStore phase 3 and any shared workflow kernel extraction are out of scope for this phase.
+
+  - feature_code: project_structure_refactor_phase_4
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/module-ownership-contract.md
+      - docs/dev/module-guide.md
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest
+      - tests/test_flow_context_refactor_structure.py
+      - tests/test_project_structure_refactor_phase_4.py
+      - tests/test_architecture_ownership.py
+    source_contracts:
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/module-ownership-contract.md
+      - docs/dev/module-guide.md
+    allowed_paths:
+      - contracts/harness/code-roadmap.yaml
+      - docs/dev/module-guide.md
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products/**
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/**
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/**
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/**
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/**
+      - tests/test_flow_context_refactor_structure.py
+      - tests/test_project_structure_refactor_phase_4.py
+      - tests/test_architecture_ownership.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/apps/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+    done_gate:
+      tests:
+        - tests/test_flow_context_refactor_structure.py
+        - tests/test_project_structure_refactor_phase_4.py
+        - tests/test_architecture_ownership.py
+        - tests/test_selection_keyword_refactor_structure.py
+        - tests/test_search_keyword_competitor_refactor_structure.py
+      commands:
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest
+        - uv run --extra dev pytest tests/test_flow_context_refactor_structure.py tests/test_project_structure_refactor_phase_4.py tests/test_architecture_ownership.py tests/test_selection_keyword_refactor_structure.py tests/test_search_keyword_competitor_refactor_structure.py
+    completion_rules:
+      - Top-level TikTok flow contexts must be decomposed context packages with concrete submodule imports.
+      - Context packages must contain typed models, runtime views, stage inputs, decision models, and summary inputs only.
+      - Flow context packages must not import provider clients, runtime repositories, capabilities, or control_plane modules.
+      - Package __init__.py files must not become business export surfaces.
+
+  - feature_code: project_structure_refactor_phase_5
+    status: complete
+    feature_type: repository_governance
+    requires_architecture_delta_gate: true
+    default_context:
+      - README.md
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/module-ownership-contract.md
+      - docs/dev/module-guide.md
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/control_plane/executor/workflow_registry.py
+      - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
+      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh
+      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh
+      - tests/test_selection_row_refresh_package_structure.py
+      - tests/test_competitor_row_refresh_package_structure.py
+      - tests/test_project_structure_refactor_phase_5.py
+      - tests/test_package_export_surface_cleanup.py
+    source_contracts:
+      - docs/arch/project-architecture-contract.md
+      - docs/arch/module-ownership-contract.md
+      - docs/dev/module-guide.md
+    allowed_paths:
+      - contracts/harness/code-roadmap.yaml
+      - docs/dev/module-guide.md
+      - src/automation_business_scaffold/control_plane/executor/workflow_registry.py
+      - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
+      - src/automation_business_scaffold/domains/tiktok/flows/__init__.py
+      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh/**
+      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh/**
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_selection_products/__init__.py
+      - src/automation_business_scaffold/domains/tiktok/flows/search_keyword_competitor_products/__init__.py
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/__init__.py
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/__init__.py
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/__init__.py
+      - tests/test_selection_row_refresh_package_structure.py
+      - tests/test_competitor_row_refresh_package_structure.py
+      - tests/test_project_structure_refactor_phase_5.py
+      - tests/test_package_export_surface_cleanup.py
+      - tests/test_architecture_ownership.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/apps/**
+      - src/automation_business_scaffold/infrastructure/runtime/**
+    done_gate:
+      tests:
+        - tests/test_selection_row_refresh_package_structure.py
+        - tests/test_competitor_row_refresh_package_structure.py
+        - tests/test_project_structure_refactor_phase_5.py
+        - tests/test_package_export_surface_cleanup.py
+        - tests/test_architecture_ownership.py
+        - tests/test_runtime_refresh_competitor_row_by_url.py
+        - tests/test_runtime_product_fact_ingest.py
+      commands:
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh
+        - python3 -m compileall -q src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh
+        - uv run --extra dev pytest tests/test_selection_row_refresh_package_structure.py tests/test_competitor_row_refresh_package_structure.py tests/test_project_structure_refactor_phase_5.py tests/test_package_export_surface_cleanup.py tests/test_architecture_ownership.py
+        - uv run --extra dev pytest tests/test_runtime_refresh_competitor_row_by_url.py tests/test_runtime_product_fact_ingest.py
+    completion_rules:
+      - Row-level leaf flows selection_row_refresh and competitor_row_refresh must be package-oriented.
+      - Leaf package orchestrators must remain thin sequencing glue.
+      - Runtime-path imports for package-refactored flow families must target concrete modules.
+      - Flow package __init__.py files must remain empty or docstring-only.
+      - No shared leaf kernel, RuntimeStore phase 3, or browser capability refactor is part of this phase.
 
   - feature_code: runtime_watchdog_supervisor
     status: complete

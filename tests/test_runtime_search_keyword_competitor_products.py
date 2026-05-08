@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from automation_framework.captcha import SliderMatchResult
 from PIL import Image, ImageDraw
 
-from automation_business_scaffold.capabilities.browser import fastmoss_security_resolve_handler as fastmoss_security_module
+import automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler as fastmoss_security_module
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
 )

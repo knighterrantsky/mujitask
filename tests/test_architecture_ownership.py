@@ -24,6 +24,10 @@ TOP_LEVEL_FLOW_PACKAGES_WITH_CLEAN_INIT = (
     TIKTOK_FLOW_ROOT / "search_keyword_selection_products",
     TIKTOK_FLOW_ROOT / "search_keyword_competitor_products",
 )
+CLEAN_PACKAGE_INIT_FILES = (
+    TIKTOK_FLOW_ROOT / "__init__.py",
+    CAPABILITIES_ROOT / "browser" / "__init__.py",
+)
 
 
 def _load_checker() -> ModuleType:
@@ -268,6 +272,32 @@ def test_touched_top_level_flow_packages_do_not_export_business_symbols() -> Non
     )
     for flow_package in TOP_LEVEL_FLOW_PACKAGES_WITH_CLEAN_INIT:
         init_file = flow_package / "__init__.py"
+        source = init_file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(init_file))
+        for node in tree.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                continue
+            violations.append(f"{init_file.relative_to(REPO_ROOT)} contains executable package export surface")
+            break
+        for token in forbidden_tokens:
+            if token in source:
+                violations.append(f"{init_file.relative_to(REPO_ROOT)} contains {token}")
+
+    assert violations == []
+
+
+def test_touched_parent_package_init_files_do_not_export_business_symbols() -> None:
+    violations: list[str] = []
+    forbidden_tokens = (
+        "__all__",
+        " import *",
+        "control_plane.executor.runner",
+        "_handler import",
+        "HANDLER_CODE",
+        "CONTRACT",
+    )
+
+    for init_file in CLEAN_PACKAGE_INIT_FILES:
         source = init_file.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(init_file))
         for node in tree.body:

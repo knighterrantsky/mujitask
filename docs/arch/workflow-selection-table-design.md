@@ -498,8 +498,8 @@ stateDiagram-v2
 | --- | --- |
 | `domains/tiktok/workflows/tiktok_fastmoss_product_ingest.py` | 定义选品采集 workflow stage 与 `selection_row_refresh` job 编排 |
 | `domains/tiktok/workflows/search_keyword_selection_products.py` | 定义关键词搜索选品写入 workflow stage 与新增行详情采集 gate |
-| `domains/tiktok/flows/tiktok_fastmoss_product_ingest.py` | 推进行级队列、等待 browser fallback resume、汇总最终 row result |
-| `domains/tiktok/flows/selection_row_refresh.py` | 串行执行 TikTok request、browser resume、media sync、FastMoss、Fact DB、飞书写回 |
+| `domains/tiktok/flows/tiktok_fastmoss_product_ingest/` | 推进行级队列、等待 browser fallback resume、汇总最终 row result |
+| `domains/tiktok/flows/selection_row_refresh/` | 串行执行 TikTok request、browser resume、media sync、FastMoss、Fact DB、飞书写回 |
 | `fact_sources/tiktok/product_request_fetch_handler.py` | 商品 URL 校验、TikTok 商品详情提取和 browser fallback 信号 |
 | `fact_sources/fastmoss/product_fetch_handler.py` | FastMoss 商品数据提取和风控 fallback 信号 |
 | `mappers/feishu_selection_row_mapper.py` | 选品候选扫描、`skip_statuses` 过滤和来源行标准化 |

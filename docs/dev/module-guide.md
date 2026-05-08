@@ -83,7 +83,7 @@ Skill 只负责意图识别、参数提取、提交顶层 task 和返回 request
 | `search_keyword_selection_products` | `workflows/search_keyword_selection_products.py` | `flows/search_keyword_selection_products/` |
 | `sync_tk_influencer_pool` | `workflows/sync_tk_influencer_pool.py` | `flows/sync_tk_influencer_pool/` |
 | `tiktok_fastmoss_product_ingest` | `workflows/tiktok_fastmoss_product_ingest.py` | `flows/tiktok_fastmoss_product_ingest/` |
-| `refresh_competitor_row_by_url` | `workflows/refresh_competitor_row_by_url.py` | `flows/competitor_row_refresh.py` |
+| `refresh_competitor_row_by_url` | `workflows/refresh_competitor_row_by_url.py` | `flows/competitor_row_refresh/` |
 
 ## 8. 5 个 Daemon 快速索引
 
