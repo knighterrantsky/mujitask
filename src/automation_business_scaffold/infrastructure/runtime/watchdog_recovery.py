@@ -31,7 +31,11 @@ class WatchdogRecoveryCoordinator:
             for row in rows:
                 request = self._request_from_row(row)
                 counts = self._aggregate_runtime_request_children(connection, request_id=request.request_id)
-                if counts["total_count"] <= 0 or counts["active_count"] > 0:
+                if (
+                    counts["total_count"] <= 0
+                    or counts["active_count"] > 0
+                    or counts.get("fallback_required_count", 0) > 0
+                ):
                     continue
                 candidates.append(
                     self._watchdog_payload(

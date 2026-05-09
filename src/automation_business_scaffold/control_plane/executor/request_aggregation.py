@@ -44,6 +44,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
     success_count = 0
     failed_count = 0
     skipped_count = 0
+    fallback_required_count = 0
     active_count = 0
 
     for job in api_jobs:
@@ -53,7 +54,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
         elif handler_status == "skipped":
             skipped_count += 1
         elif handler_status == "fallback_required":
-            pass
+            fallback_required_count += 1
         elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
@@ -68,7 +69,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
         elif handler_status == "skipped":
             skipped_count += 1
         elif handler_status == "fallback_required":
-            pass
+            fallback_required_count += 1
         elif handler_status in {"success", "partial_success"}:
             success_count += 1
         else:
@@ -85,6 +86,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
         "success_count": success_count,
         "failed_count": failed_count,
         "skipped_count": skipped_count,
+        "fallback_required_count": fallback_required_count,
         "active_count": active_count,
     }
 

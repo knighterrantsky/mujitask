@@ -16,12 +16,21 @@ class RuntimeRequestLifecycle:
                     SELECT
                         COUNT(*) AS total_count,
                         SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
-                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                        SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
                         SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
-                    FROM task_execution
-                    WHERE request_id = :request_id
+                    FROM (
+                        SELECT
+                            status,
+                            COALESCE(
+                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                status
+                            ) AS effective_status
+                        FROM task_execution
+                        WHERE request_id = :request_id
+                    ) child
                     """
                 ),
                 {"request_id": request_id},
@@ -36,12 +45,21 @@ class RuntimeRequestLifecycle:
                     SELECT
                         COUNT(*) AS total_count,
                         SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
-                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                        SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
                         SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
-                    FROM api_worker_job
-                    WHERE request_id = :request_id
+                    FROM (
+                        SELECT
+                            status,
+                            COALESCE(
+                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                status
+                            ) AS effective_status
+                        FROM api_worker_job
+                        WHERE request_id = :request_id
+                    ) child
                     """
                 ),
                 {"request_id": request_id},
@@ -55,6 +73,8 @@ class RuntimeRequestLifecycle:
             "success_count": int(task_stats.get("success_count") or 0) + int(api_stats.get("success_count") or 0),
             "failed_count": int(task_stats.get("failed_count") or 0) + int(api_stats.get("failed_count") or 0),
             "skipped_count": int(task_stats.get("skipped_count") or 0) + int(api_stats.get("skipped_count") or 0),
+            "fallback_required_count": int(task_stats.get("fallback_required_count") or 0)
+            + int(api_stats.get("fallback_required_count") or 0),
             "active_count": int(task_stats.get("active_count") or 0) + int(api_stats.get("active_count") or 0),
         }
 
@@ -106,7 +126,11 @@ class RuntimeRequestLifecycle:
             )
 
             transitioned = False
-            if str(request_row["status"] or "") == "waiting_children" and counts["active_count"] == 0:
+            if (
+                str(request_row["status"] or "") == "waiting_children"
+                and counts["active_count"] == 0
+                and counts["fallback_required_count"] == 0
+            ):
                 connection.execute(
                     store._text(
                         """
@@ -153,6 +177,7 @@ class RuntimeRequestLifecycle:
             "child_success_count": counts["success_count"],
             "child_failed_count": counts["failed_count"],
             "child_skipped_count": counts["skipped_count"],
+            "fallback_required_count": counts["fallback_required_count"],
             "active_count": counts["active_count"],
         }
 
@@ -202,6 +227,7 @@ class RuntimeRequestLifecycle:
             str(request_row["status"]) == "waiting_children"
             and int(stats["total_count"] or 0) > 0
             and int(stats["active_count"] or 0) == 0
+            and int(stats["fallback_required_count"] or 0) == 0
         ):
             connection.execute(
                 self._store._text(
@@ -224,12 +250,21 @@ class RuntimeRequestLifecycle:
                     SELECT
                         COUNT(*) AS total_count,
                         SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
-                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                        SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                        SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
                         SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
-                    FROM task_execution
-                    WHERE request_id = :request_id
+                    FROM (
+                        SELECT
+                            status,
+                            COALESCE(
+                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                status
+                            ) AS effective_status
+                        FROM task_execution
+                        WHERE request_id = :request_id
+                    ) child
                     """
                 ),
                 {"request_id": request_id},
@@ -244,6 +279,7 @@ class RuntimeRequestLifecycle:
                 "success_count": 0,
                 "failed_count": 0,
                 "skipped_count": 0,
+                "fallback_required_count": 0,
                 "active_count": 0,
             }
         return dict(stats)

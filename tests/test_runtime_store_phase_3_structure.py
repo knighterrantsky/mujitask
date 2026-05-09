@@ -49,6 +49,7 @@ def test_request_lifecycle_aggregates_task_and_api_children() -> None:
                 "success_count": 1,
                 "failed_count": 0,
                 "skipped_count": 0,
+                "fallback_required_count": 0,
                 "active_count": 1,
             },
             {
@@ -57,6 +58,7 @@ def test_request_lifecycle_aggregates_task_and_api_children() -> None:
                 "success_count": 2,
                 "failed_count": 1,
                 "skipped_count": 0,
+                "fallback_required_count": 0,
                 "active_count": 0,
             },
         ]
@@ -70,6 +72,7 @@ def test_request_lifecycle_aggregates_task_and_api_children() -> None:
         "success_count": 3,
         "failed_count": 1,
         "skipped_count": 0,
+        "fallback_required_count": 0,
         "active_count": 1,
     }
 
