@@ -77,7 +77,7 @@ Runtime DB 必须区分“执行生命周期”和“业务结果”。`status` 
 | --- | --- | --- |
 | `pending` | `task_request` / `api_worker_job` / `task_execution` | 可被对应执行者 claim；如果 `available_at` / `next_retry_at` 在未来，则表示延迟可执行 |
 | `running` | `task_request` / `api_worker_job` / `task_execution` | 已被 executor 或 worker claim，受 lease / heartbeat 保护 |
-| `waiting` | `task_request` / `api_worker_job` | 当前记录不能继续执行，正在等待 child job / browser execution / 外部可观测事件终态；等待引用写在 `result_json.wait` 或等价字段中 |
+| `waiting` | `task_request` / `api_worker_job` | 当前记录不能继续执行，正在等待 child job / browser execution / 外部可观测事件终态；对行级 browser fallback，`waiting` row job 是唯一 fallback 待处理事实 |
 | `finished` | `task_request` / `api_worker_job` / `task_execution` | 运行生命周期结束，必须同时写入 `result_status` |
 | `cancelled` | `task_request` / `api_worker_job` / `task_execution` | 执行被取消或取消链路已收敛；它是生命周期状态，不是业务结果 |
 
@@ -95,11 +95,11 @@ Runtime DB 必须区分“执行生命周期”和“业务结果”。`status` 
 | 历史状态 / 信号 | 目标表达 |
 | --- | --- |
 | `retry_wait` | `status=pending` + `available_at` / `next_retry_at` 在未来；错误与重试原因写入标准错误字段 |
-| `waiting_children` | `status=waiting` + `result_json.wait.kind=children`，引用 active child `api_worker_job` / `task_execution` |
+| `waiting_children` | `status=waiting`；被等待对象由 Runtime DB 中非终态 child `api_worker_job` / `task_execution` 表达，等待引用只能作为观测冗余 |
 | `ready_for_summary` | `current_stage=ready_for_summary` + `status=pending`；它是 workflow stage/cursor，不是生命周期状态 |
 | `success` / `failed` / `skipped` 作为 job status | `status=finished` + `result_status=success/failed/skipped` |
 | `partial_success` 作为 job status | `status=finished` + `result_status=partial_success` |
-| `fallback_required` | Handler 或行级 job 的等待信号，不是 Runtime DB status；触发方记录进入 `waiting`，并引用 child `task_execution` 或等待重试原 stage 的策略 |
+| `fallback_required` | Handler 或行级 job 的等待信号，不是 Runtime DB status；executor 将触发行级 job 置为 `waiting`，并创建或等待对应 browser `task_execution` |
 
 `pending` 只能落在可被调度的具体 Runtime 记录上:
 
@@ -109,20 +109,32 @@ Runtime DB 必须区分“执行生命周期”和“业务结果”。`status` 
 
 FastMoss fetch、TikTok fetch 这类 handler 内部步骤本身不是 Runtime DB 记录，不能单独拥有 `pending`。只有当 workflow 或行级 pipeline 为它创建了 `api_worker_job` / `task_execution` 记录时，才有 Runtime 生命周期状态。
 
-Browser fallback 的数据传递使用引用，不复制大 payload。触发方可在 `result_json.wait` 中记录:
+#### Row-Serial Browser Fallback 最小事实
+
+行级串行商品采集 workflow 必须把 fallback 事实收敛在 Runtime DB 的既有记录上，不能为了恢复流程引入派生 candidate、source job 变量或平行状态表。
+
+- `waiting` row job 是唯一 fallback 待处理事实。同一个 `task_request` 在 `row_pipeline_concurrency=1` 时最多只能存在一个因 browser fallback 等待的行级主 job。
+- `task_execution` 是浏览器任务事实。同一个 `task_request` 在上述等待期间最多只能存在一个未终态 browser `task_execution`。
+- Runtime DB 只保存最小运行事实: row job 的生命周期、handler 返回的业务化 browser 请求、browser execution 的生命周期、小型结构化结果和 artifact/cache 引用。
+- executor 负责调度和数据交换: 根据 waiting row job 的业务化 fallback 请求创建 browser `task_execution`，在 browser 终态后把 browser result 引用、cookie cache metadata 或失败信息写回原 row job，再把原 row job 改回 `pending` 或收敛为终态。
+- handler 只返回“我需要某个 browser handler 处理这件事”的业务化请求，例如 `handler_code` 与业务 payload；handler 不携带 `fallback_source_job_id`、`after_browser_candidates` 或类似运行时关联字段。
+- summary gate 只看终态业务结果: 不存在 `waiting` / `running` 的 row job，不存在未终态 browser `task_execution`，所有需要汇总的 row job 都是 `status=finished` 且带 `result_status`。summary 不依赖派生 candidate 数量，也不能把 browser success 当成行级 success。
+
+Handler fallback 请求使用小型结构化 payload，不复制大对象，也不表达 runtime 调度策略:
 
 ```json
 {
-  "kind": "browser_execution",
-  "execution_id": "exec_xxx",
-  "source_job_id": "job_xxx",
-  "source_stage": "refresh_selection_rows",
-  "fallback_handler": "tiktok_product_browser_fetch",
-  "after_browser_policy": "use_browser_output_for_current_stage"
+  "next_action": {
+    "type": "browser_fallback",
+    "handler_code": "tiktok_product_browser_fetch",
+    "payload": {
+      "product_url": "https://www.tiktok.com/..."
+    }
+  }
 }
 ```
 
-`task_execution.result_json` 保存浏览器 handler 的小型结构化结果和 object/artifact 引用。浏览器抓取产生的大文件进入对象存储并由 `artifact_object` 索引；FastMoss 风控解除产生的 cookie 直接持久化到 `fastmoss_session_cookie_cache`，原 job 只通过脱敏 cache metadata 观察结果。
+`task_execution.result_json` 保存浏览器 handler 的小型结构化结果和 object/artifact 引用。浏览器抓取产生的大文件进入对象存储并由 `artifact_object` 索引；FastMoss 风控解除产生的 cookie 直接持久化到 `fastmoss_session_cookie_cache`。browser result 写回原 job 的逻辑由 executor/runtime 层完成，原 job 只接收 normalized result 引用、脱敏 cache metadata 或失败证据。
 
 ## 3. 表设计
 
@@ -382,8 +394,7 @@ stateDiagram-v2
 | --- | --- |
 | `status=pending`, `current_stage=<stage>` | 等待 executor 推进某个 workflow stage |
 | `status=running`, `current_stage=<stage>` | executor 正在推进该 stage |
-| `status=waiting`, `result_json.wait.kind=children` | 已派生 child `api_worker_job` / `task_execution`，等待终态 |
-| `status=waiting`, `result_json.wait.kind=browser_execution` | 等待 browser fallback 完成并由 workflow 定义后续动作 |
+| `status=waiting` | 等待 child `api_worker_job` / browser `task_execution` / 外部可观测事件终态；对 row-serial fallback，waiting row job 是唯一待处理事实 |
 | `status=pending`, `current_stage=ready_for_summary` | 子任务已收敛，等待 executor 生成 summary/outbox |
 | `status=finished`, `result_status=success` | 顶层任务成功 |
 | `status=finished`, `result_status=partial_success` | 顶层任务部分成功 |
@@ -422,7 +433,7 @@ stateDiagram-v2
     cancelled --> [*]
 ```
 
-`api_worker_job` 承载 API/IO job。行级主 job 例如 `selection_row_refresh` / `competitor_row_refresh` 可以在需要 browser fallback 时进入 `waiting`，并在 `result_json.wait` 引用 child `task_execution`。等待解除后，workflow 定义是使用 browser output 替代当前 stage 输出，还是重试原 handler/stage。
+`api_worker_job` 承载 API/IO job。行级主 job 例如 `selection_row_refresh` / `competitor_row_refresh` 可以在需要 browser fallback 时进入 `waiting`；这个 waiting row job 本身就是唯一 fallback 待处理事实。executor 根据 row job 中的业务化 fallback 请求创建 browser `task_execution`，在 task_execution 终态后把 browser result 引用或脱敏 cache metadata 写回原 row job，并按 workflow 定义把原 row job 改回 `pending` 或收敛为 `finished`。Runtime 设计不依赖 `after_browser_candidates`、`fallback_source_job_id` 这类派生字段。
 
 当前 claim 过期后应通过 requeue 逻辑回到 `pending` 或在次数耗尽时进入 `finished, result_status=failed`。建议把 `error_type` 记录为 `lease_expired`。
 

@@ -88,7 +88,7 @@ protected_invariants:
   - FastMoss 关键词搜索按 order=2,2 的 7 日销量倒序返回且存在 min_day7_sold_count 时，如果整页 day7_sold_count 最大值低于阈值，应停止继续翻页
   - FastMoss provider API 风控 fallback 对同一原始请求最多一次；browser fallback 成功判据是原始失败的 FastMoss API 请求不再返回 MSG_SAFE_0001，搜索场景必须验证原始 /api/goods/V2/search，商品详情页不能作为搜索风控解除成功判据
   - FastMoss browser fallback 只持久化 cookies，不是 API token；cookie value 不得出现在 summary/log/result 中
-  - fastmoss_product_fetch、fastmoss_creator_fetch、fastmoss_shop_fetch、fastmoss_video_fetch 遇到 MSG_SAFE_0001 时必须返回 wait/fallback signal（兼容期可包含 fallback_required）、reason=fastmoss_api_security_verification 和脱敏 verification_request；成功解风控后只允许重试原 handler 一次
+  - fastmoss_product_fetch、fastmoss_creator_fetch、fastmoss_shop_fetch、fastmoss_video_fetch 遇到 MSG_SAFE_0001 时必须返回业务化 browser request（兼容期可包含 fallback_required）、reason=fastmoss_api_security_verification 和脱敏 verification_request；成功解风控后只允许重试原 handler 一次
   - FastMoss 与 TikTok 商品页验证码逻辑独立；FastMoss browser fallback 使用 FastMoss/Tencent selector profile 和 framework SliderCaptchaResolver，并保留 slider_captcha_audit_artifact_refs
   - 验证码等待只在已识别风控信号后发生；正常 FastMoss 搜索、正常 TikTok request、正常 TikTok 商品页采集不得进入滑块等待
   - image_timeout_ms 是元素出现的最大等待，不是固定 sleep；滑动后最多轮询 5 秒验证结果，弹窗消失后延迟 2 秒二次确认
@@ -98,7 +98,8 @@ protected_invariants:
   - FastMoss session/cookie 恢复属于 infrastructure/fastmoss；last_auth_failed_at 已标记的 cookie 不得复用，刷新后仍 auth 失败时终态错误为 fastmoss_session_conflict_or_external_login
   - 新商品详情抓取判定不可访问时，保留种子字段并写 商品状态=已下架/区域不可售
   - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status or final result_status; pending/running/waiting/finished/cancelled are lifecycle states, success/partial_success/failed/skipped are terminal result_status values
+  - Waiting competitor_row_refresh is the only pending row-level fallback fact, and task_execution is the browser task fact; handler output may request a browser handler, but executor/runtime owns browser task scheduling and browser result writeback to the original row job
   - TikTok browser fallback may substitute the current TikTok collection stage output through task_execution.result_json normalized_product_result and artifact refs; FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage
-  - fallback_required、FastMoss browser success、TikTok browser success 和 seed write success 都不是详情采集终态；ready_for_summary 只能汇总 keyword_seed_import 终态和每条成功 seed row 的最终 competitor_row_refresh row_status/result_status，且不得存在 active browser executions 或 unresolved wait/fallback references
+  - fallback_required、FastMoss browser success、TikTok browser success 和 seed write success 都不是详情采集终态；ready_for_summary 只能汇总 keyword_seed_import 终态和每条成功 seed row 的最终 competitor_row_refresh row_status/result_status，且不得存在 waiting row job 或 active browser execution，不得依赖派生 candidate 数量
   - 新商品详情补齐必须请求 FastMoss goods.overview 的 d_type=7、d_type=28、d_type=90 三个窗口；d_type=28 用于常规概览和结构数据，d_type=90 用于近90天销量，所有窗口必须在 raw_api_responses.request_params.d_type 和 product_metric_snapshots.window_days 中可审计
   - 详情补齐必须遵守竞品行刷新字段契约

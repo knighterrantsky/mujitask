@@ -45,12 +45,12 @@ stages:
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
     projection_mapper: competitor_table_projection_mapper
-    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回 wait/fallback signal 和 browser_fallback_payload。
+    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回业务化 browser request 和 browser_fallback_payload。
   - stage_code: browser_fallback
     job_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
     handler_code: browser_runloop
     runtime_table: task_execution
-    purpose: 由 workflow 将 row-level wait/fallback signal 显式派发到 task_execution，等待 browser-runloop claim 并完成浏览器生命周期。
+    purpose: executor/runtime 根据唯一 waiting competitor_row_refresh 派发 task_execution，等待 browser-runloop 终态并负责 browser result 回写。
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总单行刷新结果并写通知 outbox。
@@ -59,8 +59,8 @@ protected_invariants:
   - refresh_competitor_row_by_url 是正式 Task，不属于 internal/debug leaf task。
   - 一次请求最多刷新一个由 product_url 定位到的 TK竞品收集记录。
   - 单行刷新必须复用 competitor_row_refresh 行级 pipeline，不新增绕过 Runtime/capability 边界的业务路径。
-  - Row-level browser fallback is owned by task_execution/browser-runloop; competitor_row_refresh 只能返回 wait/fallback signal，不允许直接 import browser capability 或 run_supervised_handler inline fallback。
-  - browser task_execution terminal 后，executor 只结清当前 competitor_row_refresh 的 wait 引用并让同一个行级主 job 回到 pending；不得创建独立恢复 stage 或第二个行级业务事实源。
-  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总最终 competitor_row_refresh 结果，且不得存在 active browser execution 或 unresolved wait/fallback reference。
+  - Waiting competitor_row_refresh 是唯一 row-level fallback 待处理事实，task_execution 是浏览器任务事实；competitor_row_refresh 只能返回业务化 browser request，不允许直接 import browser capability 或 run_supervised_handler inline fallback。
+  - browser task_execution terminal 后，executor/runtime 把 browser result 引用、cookie cache metadata 或失败证据写回当前 competitor_row_refresh，并让同一个行级主 job 回到 pending 或收敛为终态；不得创建独立恢复 stage、派生 candidate 或第二个行级业务事实源。
+  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总最终 competitor_row_refresh 结果，且不得存在 waiting row job 或 active browser execution。
 
 known_architecture_gaps: []

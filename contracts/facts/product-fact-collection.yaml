@@ -11,7 +11,7 @@ principles:
   - business flows decide what products to collect and which projection mapper to use
   - fact collection does not decide Feishu fields
   - Feishu projection does not decide fact persistence
-  - row-level browser fallback is isolated in task_execution/browser-runloop; API worker row pipelines may only emit a wait/fallback signal and continue after browser output or cookie-cache evidence is persisted
+  - waiting row job is the only pending row-level fallback fact; task_execution is the browser task fact; API worker row pipelines may only emit a business browser request and continue after executor/runtime writes browser output references or cookie-cache evidence back to the original row job
   - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status and not a final row result
   - row-level product collection workflows default to row_pipeline_concurrency=1 unless a workflow contract explicitly declares bounded concurrency, FIFO/lane, idempotency, and summary gates
   - browser-runloop must execute browser handlers through child_process supervision, not inline supervision, so Sync Playwright never runs inside a host asyncio loop
@@ -28,7 +28,7 @@ required_pipeline_roles:
 business_job_usage:
   tiktok_fastmoss_product_ingest:
     - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
-    - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a wait/fallback signal with browser_fallback_payload; workflow owns selection_row_browser_fallback enqueue_task_executions(), waits for browser-runloop completion, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.
+    - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a business browser request with browser_fallback_payload; executor/runtime owns task_execution scheduling, waits for browser-runloop completion, writes browser output refs, cookie-cache metadata, or failure evidence back to the original row job, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.
     - keyword selection row refresh must preserve the row-level cursor: one successful seed row may be active by default, fallback_required is not a Runtime DB status or final row status, and the next seed row cannot be dispatched until the current row has status=finished plus result_status after any browser fallback.
     - TikTok browser fetch may substitute the current TikTok collection stage output by writing normalized_product_result and artifact refs to task_execution.result_json and artifact_object.
     - FastMoss security browser resolve may only unblock the original FastMoss API stage by persisting fastmoss_session_cookie_cache and returning redacted metadata; the original handler must read cookie cache and retry the original request once.
@@ -40,7 +40,7 @@ business_job_usage:
     - writeback_enabled only controls Feishu projection writes and must not disable product fact collection or Fact DB persistence.
   refresh_current_competitor_table:
     - competitor_row_refresh is the row-level product fact collection boundary for TK competitor table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
-    - when competitor_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a wait/fallback signal with browser_fallback_payload; workflow owns enqueue_task_executions(), waits for browser-runloop completion, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.
+    - when competitor_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a business browser request with browser_fallback_payload; executor/runtime owns task_execution scheduling, waits for browser-runloop completion, writes browser output refs, cookie-cache metadata, or failure evidence back to the original row job, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.
     - TikTok browser fetch may substitute the current TikTok collection stage output; FastMoss security browser resolve may only persist fastmoss_session_cookie_cache and unblock one retry of the original FastMoss API stage.
   sync_tk_influencer_pool:
     - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.

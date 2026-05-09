@@ -71,7 +71,7 @@ flowchart TD
     B1 -->|域名/格式无效| B2["回写 商品状态=链接不可访问<br/>返回 skipped"]
     B1 -->|有效| C["2. TikTok request fetch"]
     C --> C1{"采集成功?"}
-    C1 -->|wait/fallback signal| D["3. 创建/等待 TikTok browser task_execution<br/>行级 job status=waiting"]
+    C1 -->|browser request| D["3. executor 创建/等待 TikTok browser task_execution<br/>行级 job status=waiting"]
     D --> D1{"browser 成功?"}
     D1 -->|否| D2["返回 failed"]
     C1 -->|失败且不可 fallback| D2
@@ -98,13 +98,14 @@ flowchart TD
 
 约束:
 
-- `fallback_required` 是兼容期 handler wait signal，不是 Runtime DB `status`，也不是行级终态；当前行等待 browser 时，行级主 job 或顶层 request 使用 `status=waiting` 和 `result_json.wait` 记录 child `task_execution` 引用。
-- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` 成功后，normalized result、artifact evidence 和 fallback metadata 保存在 `task_execution.result_json` / `artifact_object`；原行 pipeline 按引用继续执行 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终 `row_status`。
-- FastMoss security fallback 属于解除阻塞后重跑当前 FastMoss stage。Browser handler 成功后只持久化 `fastmoss_session_cookie_cache` 并返回脱敏 metadata；原 FastMoss handler 从 cookie cache 重新请求原 API 一次，不通过 payload 传递 cookie value。
+- `fallback_required` 是兼容期 handler wait signal，不是 Runtime DB `status`，也不是行级终态。当前行等待 browser 时，`selection_row_refresh.status=waiting` 是唯一 fallback 待处理事实；browser `task_execution` 是浏览器任务事实。
+- 同一顶层请求在 `row_pipeline_concurrency=1` 时最多只能有一个 waiting row job 和一个未终态 browser `task_execution`。workflow 不依赖 `after_browser_candidates`、`fallback_source_job_id` 或派生 candidate 数量判断下一步。
+- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` 成功后，normalized result、artifact evidence 和 fallback metadata 保存在 `task_execution.result_json` / `artifact_object`；executor/runtime 把结果引用写回原 `selection_row_refresh`，原行 pipeline 按引用继续执行 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终 `row_status`。
+- FastMoss security fallback 属于解除阻塞后重跑当前 FastMoss stage。Browser handler 成功后只持久化 `fastmoss_session_cookie_cache` 并返回脱敏 metadata；executor/runtime 把脱敏 metadata 写回原 `selection_row_refresh`，原 FastMoss handler 从 cookie cache 重新请求原 API 一次，不通过 payload 传递 cookie value。
 - Browser `task_execution` 失败时，当前行按业务规则标记 `failed` 或 `partial_success`，然后 row cursor 才能放行下一行；失败不能被父任务 summary 当成成功吞掉。
 - 客户现场 / 生产默认 `row_pipeline_concurrency=1`。当前行未形成最终 `row_status` 前，workflow 不应推进下一条候选行的采集。后续如需提升吞吐，只能通过 workflow contract 显式声明 bounded concurrency、FIFO/lane、幂等边界和 summary gate。
-- `ready_for_summary` 的入口条件是所有候选行都有最终 `row_status`，且不存在未处理 wait/fallback 引用、active browser execution 或未收敛的行级主 job。
-- 父任务汇总必须使用行级业务结果，不得只按 `api_worker_job.status` 或 `task_execution.status` 汇总。Browser 子任务 success 只能作为当前行解除等待的输入证据。
+- `ready_for_summary` 的入口条件是所有候选行都有最终 `row_status`，且不存在未处理 waiting row job、active browser execution 或未收敛的行级主 job。
+- 父任务汇总必须使用行级业务终态结果，不得只按 `api_worker_job.status` 或 `task_execution.status` 汇总，不得看派生 candidate 数量。Browser 子任务 success 只能作为当前行解除等待的输入证据。
 - Browser 阶段产生的截图、HTML、raw page dump 等物理资产可以在 browser handler 内先写对象存储并由 `artifact_object` 索引；商品媒体资产、Fact DB upsert 和 Feishu projection 的最终一致性仍由 `selection_row_refresh` 行级主 job 承担。正式 workflow 缺 Fact DB 或 MinIO/S3 对象存储配置时必须 fail fast，不能用 `dry_run` 或 `local` 成功替代。
 
 ### 3.5 关键词搜索选品写入入口
@@ -114,7 +115,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["Task: search_keyword_selection_products"] --> B["keyword_seed_import<br/>FastMoss search + selection_seed_projection_mapper"]
-    B --> C{"FastMoss search wait/fallback signal?"}
+    B --> C{"FastMoss search browser request?"}
     C -->|是| D["fastmoss_security_browser_resolve<br/>task_execution"]
     D --> E["重试 keyword_seed_import<br/>原 /api/goods/V2/search"]
     C -->|否| F["seed rows insert_if_absent"]
@@ -123,7 +124,7 @@ flowchart TD
     G -->|否| H["ready_for_summary<br/>只汇总搜索/跳过结果"]
     G -->|是| I["dispatch_selection_row_refresh_jobs"]
     I --> J["refresh_selection_rows<br/>复用 selection_row_refresh"]
-    J --> K{"row wait/fallback signal?"}
+    J --> K{"row browser request?"}
     K -->|是| L["selection_row_browser_fallback<br/>task_execution"]
     L --> J
     K -->|否| N{"全部新增行有最终 row_status?"}
@@ -134,11 +135,11 @@ flowchart TD
 
 约束:
 
-- `keyword_seed_import` 遇到 FastMoss `MSG_SAFE_0001` 时，只能记录 wait/fallback signal；FastMoss browser `task_execution` success 只允许解除阻塞并重试原始搜索请求，不能直接让关键词任务进入 success summary。
+- `keyword_seed_import` 遇到 FastMoss `MSG_SAFE_0001` 时，只能返回业务化 browser request；FastMoss browser `task_execution` success 只允许解除阻塞并重试原始搜索请求，不能直接让关键词任务进入 success summary。
 - 已存在选品行按 `insert_if_absent` 跳过，不能触发 `selection_row_refresh`。
 - 新增成功的选品行进入与 `tiktok_fastmoss_product_ingest` 完全相同的 `selection_row_refresh` pipeline；TikTok / FastMoss row-level fallback 必须通过 `selection_row_browser_fallback` 等待 child `task_execution` 终态，再按 fallback 类型继续当前行。
-- Browser fallback 结束后不进入独立恢复 stage；executor 只结清当前 `selection_row_refresh` 的 wait 引用，并让同一个行级主 job 重新可 claim。
-- `ready_for_summary` 必须同时等待 seed import 终态和所有新增行最终 `row_status`；不存在未处理 wait/fallback 引用、active browser execution 或未收敛行级主 job 时才允许汇总。
+- Browser fallback 结束后不进入独立恢复 stage；executor/runtime 负责把 browser result 引用、FastMoss cookie cache metadata 或失败证据写回当前 `selection_row_refresh`，并让同一个行级主 job 重新可 claim 或收敛为终态。
+- `ready_for_summary` 必须同时等待 seed import 终态和所有新增行最终 `row_status`；不存在 waiting row job、active browser execution 或未收敛行级主 job 时才允许汇总。
 - 关键词选品 summary 的详情成功 / 失败数必须来自最终行级业务结果，不能把 browser 子任务 success 或 seed write success 当成详情采集 success。
 
 ## 4. Job 设计
@@ -452,7 +453,7 @@ stateDiagram-v2
     waiting_read --> waiting_dispatch: read terminal
     running --> waiting_dispatch: direct ingest mode
     waiting_dispatch --> waiting_rows: dispatch complete
-    waiting_rows --> waiting_browser_fallback: current row wait/fallback signal
+    waiting_rows --> waiting_browser_fallback: current row business browser request
     waiting_browser_fallback --> waiting_rows: browser task_execution success, row job pending
     waiting_browser_fallback --> row_terminal: browser task_execution failed
     waiting_rows --> row_terminal: current row terminal
@@ -479,7 +480,7 @@ stateDiagram-v2
 | 场景 | 策略 |
 | --- | --- |
 | URL 格式/域名无效 | 回写 `商品状态=链接不可访问`，行级 job 标记 `skipped`，不阻塞其他行 |
-| TikTok request 返回 wait/fallback signal | 标记当前行 `status=waiting`，引用 browser fallback；该状态不是行级终态，不进入父任务 success 计数 |
+| TikTok request 返回 browser fallback 请求 | 标记当前行 `status=waiting`，由 executor/runtime 派发 browser `task_execution` 并回写结果；该状态不是行级终态，不进入父任务 success 计数 |
 | TikTok browser fallback 成功但行级主 job尚未形成终态 | 继续等待行级主 job 消费 browser output；不得进入 `ready_for_summary` |
 | TikTok request 失败 + browser fallback 失败 | 行级 job 标记 `failed`，不执行写回 |
 | 商品已下架/区域不可售 | 回写 `商品状态=已下架/区域不可售`，行级 job 标记 `skipped` |
