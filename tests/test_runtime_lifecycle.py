@@ -395,7 +395,7 @@ def test_reconcile_request_waiting_children_idempotently_promotes_ready_for_summ
     assert first_reconcile["active_count"] == 1
     assert first_reconcile["child_total_count"] == 2
     assert first_reconcile["child_terminal_count"] == 1
-    assert first_reconcile["request"].status == "waiting_children"
+    assert first_reconcile["request"].status == "waiting"
 
     claimed_execution = store.claim_browser_execution(
         execution_id=execution_id,
@@ -415,14 +415,14 @@ def test_reconcile_request_waiting_children_idempotently_promotes_ready_for_summ
 
     assert second_reconcile["transitioned"] is False
     assert second_reconcile["active_count"] == 0
-    assert second_reconcile["request"].status == "ready_for_summary"
+    assert second_reconcile["request"].status == "pending"
     assert second_reconcile["request"].current_stage == "ready_for_summary"
     assert second_reconcile["child_total_count"] == 2
     assert second_reconcile["child_terminal_count"] == 2
     assert second_reconcile["child_success_count"] == 2
 
     assert third_reconcile["transitioned"] is False
-    assert third_reconcile["request"].status == "ready_for_summary"
+    assert third_reconcile["request"].status == "pending"
 
 
 def test_reconcile_waiting_children_keeps_fallback_required_parent_waiting(runtime_db_url):
@@ -486,7 +486,7 @@ def test_reconcile_waiting_children_keeps_fallback_required_parent_waiting(runti
     assert reconciled["child_success_count"] == 0
     assert reconciled["child_failed_count"] == 0
     assert reconciled["child_skipped_count"] == 0
-    assert reconciled["request"].status == "waiting_children"
+    assert reconciled["request"].status == "waiting"
     assert reconciled["request"].current_stage == "collect_product_data"
 
     watchdog_candidates = store.scan_waiting_children_reconciliation(now=time.time())

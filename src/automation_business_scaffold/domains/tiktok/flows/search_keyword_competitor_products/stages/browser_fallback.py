@@ -147,23 +147,18 @@ def advance(
     )
     if after_browser_candidates:
         row_stage_code = "refresh_competitor_rows"
-        row_job_def = workflow.require_job("competitor_row_refresh")
-        row_jobs = [
-            _after_browser_row_job(
-                request=request,
-                workflow=workflow,
-                stage_code=row_stage_code,
-                row_job_def=row_job_def,
-                candidate=candidate,
+        requeued_jobs = []
+        for candidate in after_browser_candidates:
+            row_job_id = str(candidate.get("row_job_id") or "")
+            if not row_job_id:
+                continue
+            requeued_jobs.append(
+                store.requeue_waiting_api_worker_job(
+                    job_id=row_job_id,
+                    payload=_after_browser_row_payload(stage_code=row_stage_code, candidate=candidate),
+                    stage="queued",
+                )
             )
-            for candidate in after_browser_candidates
-        ]
-        dispatch = store.enqueue_api_worker_jobs(
-            request_id=request.request_id,
-            task_code=request.task_code,
-            job_code=row_job_def.job_code,
-            jobs=row_jobs,
-        )
         _update_request_cursor(
             store=store,
             request=request,
@@ -171,15 +166,15 @@ def advance(
             payload={
                 "execution_count": len(executions),
                 "after_browser_candidate_count": len(after_browser_candidates),
-                "row_dispatch": dispatch,
+                "requeued_row_count": len(requeued_jobs),
                 "status": "success",
             },
         )
         return _waiting(
             stage_code=row_stage_code,
-            message="Enqueued competitor row refresh after browser fallback.",
+            message="Requeued competitor row refresh after browser fallback.",
             details={
-                "created_count": int(dispatch["created_count"]),
+                "requeued_count": len(requeued_jobs),
                 "after_browser_candidate_count": len(after_browser_candidates),
             },
         )
@@ -209,7 +204,11 @@ def _row_has_after_browser_terminal(
         source_record_id=source_record_id,
         job_code="competitor_row_refresh",
     )
-    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
+    if row_job is None:
+        return False
+    if _record_effective_status(row_job) in {"pending", "running"}:
+        return False
+    return True
 
 def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []

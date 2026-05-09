@@ -85,6 +85,7 @@ formal_workflow_persistence_contract:
       - browser_provider_name
       - browser_profile_id
       - browser_workspace_id
+      - browser_cookies
       - BROWSER_PROFILE_REF
       - BROWSER_PROVIDER_NAME
       - BROWSER_PROFILE_ID

@@ -104,7 +104,7 @@ def _apply_stage_result(store: RuntimeStore, *, request_id: str, stage_result: d
         current_stage = str(stage_result.get("current_stage") or "")
         store.update_task_request(
             request_id=request_id,
-            status="waiting_children",
+            status="waiting",
             current_stage=current_stage,
             progress_stage=current_stage,
             worker_id="",
@@ -122,7 +122,7 @@ def _mark_stage_job_success(store: RuntimeStore, *, request_id: str, stage_code:
     )
     store.update_task_request(
         request_id=request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage=stage_code,
         progress_stage=stage_code,
     )
@@ -166,7 +166,8 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
             ]
         },
     )
-    assert read_job["status"] == "success"
+    assert read_job["status"] == "finished"
+    assert read_job["result_status"] == "success"
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
     assert released and released[0]["stage_code"] == READ_STAGE_CODE
@@ -204,7 +205,8 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
             "product_fact_bundle": {"product_id": "product-1"},
         },
     )
-    assert product_job["status"] == "success"
+    assert product_job["status"] == "finished"
+    assert product_job["result_status"] == "success"
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
     assert released and released[0]["stage_code"] == DISCOVER_CREATORS_STAGE_CODE
@@ -233,7 +235,8 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
             "product_hits": [{"source_record_id": "row-1", "product_id": "product-1", "product_key": "row-1:product-1"}],
         },
     )
-    assert sync_job["status"] == "success"
+    assert sync_job["status"] == "finished"
+    assert sync_job["result_status"] == "success"
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
     assert released and released[0]["stage_code"] == SYNC_INFLUENCER_POOL_STAGE_CODE
@@ -256,7 +259,8 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
         job_code="feishu_table_write",
         result={"written_count": 1, "target_record_ids": ["fs-row-status-1"]},
     )
-    assert writeback_job["status"] == "success"
+    assert writeback_job["status"] == "finished"
+    assert writeback_job["result_status"] == "success"
 
     released = release_request_after_child_completion(store, request_id=request.request_id)
     assert released and released[0]["stage_code"] == WRITEBACK_STAGE_CODE
@@ -414,7 +418,7 @@ def test_sync_tk_influencer_pool_finalize_request_reports_partial_success(runtim
     )
     store.update_task_request(
         request_id=request.request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
         progress_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
     )

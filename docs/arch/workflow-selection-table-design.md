@@ -438,11 +438,9 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 ### 8.8 Fact DB 持久化配置
 
-当前 `fact_bundle_upsert` handler 需要 `fact_db_url` 才能实际写入数据库。若 payload 中未提供，handler 以 `dry_run` 模式运行（仅计算不持久化）。
+正式选品 workflow 必须声明 `requires_fact_db=true` 和 `requires_object_storage=true`。Runtime 控制面在 submit preflight 阶段从 Project Configuration 解析 Runtime DB、Fact DB 和对象存储配置；缺 Fact DB、非 local 对象存储 provider、bucket 或 MinIO/S3 必填配置时，正式任务必须拒绝创建。
 
-**已知问题**：`selection_row_refresh` 和 `competitor_row_refresh` flow 均未在 `fact_bundle_upsert` 步骤的 payload 中传入 `fact_db_url`，导致 Fact DB 写入全部为 dry_run。
-
-**修复方向**：在两个 flow 的 `_child_context` 构建 `fact_bundle_upsert` payload 时，从 `request_payload` 或环境变量中解析并传入 `fact_db_url`（或 `execution_control_db_url`）。
+`task_request.payload_json`、行级 `api_worker_job.payload_json` 和 browser `task_execution.payload_json` 不承载 `fact_db_url`、`execution_control_db_url`、MinIO/S3 secret 或 browser cookie value。`fact_bundle_upsert` 从项目运行配置解析 Fact DB；缺配置时返回配置失败，不能以 `dry_run` 作为正式流程成功结果。
 
 ## 9. 状态收敛
 

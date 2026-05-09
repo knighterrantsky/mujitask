@@ -208,7 +208,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
             "success_count": success_count,
             "failed_count": failed_count,
             "execution": stored_execution.to_dict(),
-            "execution_status": stored_execution.status,
+            "execution_status": stored_execution.result_status or stored_execution.status,
             "worker_result": outcome.worker_result.to_dict(),
             "supervisor": outcome.to_dict(),
             "parent_updates": parent_updates,
@@ -241,7 +241,20 @@ def persist_api_worker_outcome(
             error_code=outcome.error.error_code if outcome.error is not None else "",
             dead_letter_reason="supervisor_failed" if outcome.error is not None and outcome.error.terminal else "",
         )
-        return marked_job, 0, 1 if marked_job.get("status") == "failed" else 0
+        return marked_job, 0, 1 if marked_job.get("result_status") == "failed" else 0
+
+    if outcome.worker_result.status == "fallback_required":
+        marked_job = store.mark_api_worker_job_waiting(
+            job_id=job_id,
+            run_id=run_id,
+            summary=stored_summary,
+            result=stored_result,
+            stage=_api_worker_stage_from_handler_result(outcome.worker_result.status),
+            error_text=outcome.error_text if outcome.error is not None else "",
+            error_type=outcome.error.error_type if outcome.error is not None else "",
+            error_code=outcome.error.error_code if outcome.error is not None else "",
+        )
+        return marked_job, 0, 0
 
     marked_job = store.mark_api_worker_job_success(
         job_id=job_id,
@@ -250,7 +263,8 @@ def persist_api_worker_outcome(
         result=stored_result,
         stage=_api_worker_stage_from_handler_result(outcome.worker_result.status),
     )
-    return marked_job, 1 if marked_job.get("status") == "success" else 0, 0
+    marked_result_status = str(marked_job.get("result_status") or marked_job.get("status") or "")
+    return marked_job, 1 if marked_result_status in {"success", "partial_success"} else 0, 0
 
 
 def persist_browser_execution_outcome(
@@ -275,7 +289,7 @@ def persist_browser_execution_outcome(
             error_code=outcome.error.error_code if outcome.error is not None else "",
             dead_letter_reason="supervisor_failed" if outcome.error is not None and outcome.error.terminal else "",
         )
-        return execution, 0, 1 if execution.status == "failed" else 0
+        return execution, 0, 1 if execution.result_status == "failed" else 0
     if outcome.worker_result.status == "skipped":
         execution = store.mark_browser_execution_skipped(
             execution_id=execution_id,
@@ -283,14 +297,14 @@ def persist_browser_execution_outcome(
             summary=stored_summary,
             result=stored_result,
         )
-        return execution, 1 if execution.status == "skipped" else 0, 0
+        return execution, 1 if execution.result_status == "skipped" else 0, 0
     execution = store.mark_browser_execution_success(
         execution_id=execution_id,
         run_id=run_id,
         summary=stored_summary,
         result=stored_result,
     )
-    return execution, 1 if execution.status == "success" else 0, 0
+    return execution, 1 if execution.result_status in {"success", "partial_success"} else 0, 0
 
 
 def _dispatch_api_runtime_handler(context: HandlerContext) -> Any:

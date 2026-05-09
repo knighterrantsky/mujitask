@@ -170,12 +170,15 @@ def build_request_payload(
     outbox = [record.to_dict() for record in store.list_request_outbox(request_id=request_id)]
     result = dict(request.result or {})
     summary = dict(request.summary or {})
+    exposed_request_status = request.result_status or request.status
     return {
         "control_action": control_action,
         "message": message,
         "request_id": request.request_id,
         "task_code": request.task_code,
-        "request_status": request.status,
+        "request_status": exposed_request_status,
+        "status": request.status,
+        "result_status": request.result_status,
         "current_stage": request.current_stage,
         "summary": summary or {"total": 0, "counts": {}},
         "result": result,
@@ -193,6 +196,7 @@ def build_request_payload(
         "item": {
             "request_id": request.request_id,
             "status": request.status,
+            "result_status": request.result_status,
             "current_stage": request.current_stage,
             "task_code": request.task_code,
         },

@@ -7,7 +7,7 @@ LEASE_EXPIRED_RULE = "running_job_lease_expired"
 WORKER_HEARTBEAT_TIMEOUT_RULE = "worker_heartbeat_timeout"
 STALE_PROGRESS_RULE = "stale_progress"
 EXECUTION_TIMEOUT_RULE = "execution_timeout"
-WAITING_CHILDREN_RULE = "parent_waiting_children_unreconciled"
+WAITING_CHILDREN_RULE = "parent_waiting_unreconciled"
 OUTBOX_SENDING_TIMEOUT_RULE = "outbox_sending_timeout"
 
 RETRY_ACTION = "retry"
@@ -27,17 +27,17 @@ RULE_PRECEDENCE = {
 }
 
 RETRY_STATUS_BY_TABLE = {
-    "api_worker_job": "retry_wait",
-    "task_execution": "retry_wait",
+    "api_worker_job": "pending",
+    "task_execution": "pending",
     "notification_outbox": "retry_wait",
     "task_request": "pending",
 }
 
 FAIL_STATUS_BY_TABLE = {
-    "api_worker_job": "failed",
-    "task_execution": "failed",
+    "api_worker_job": "finished",
+    "task_execution": "finished",
     "notification_outbox": "failed",
-    "task_request": "failed",
+    "task_request": "finished",
 }
 
 
@@ -77,7 +77,7 @@ RULE_SPECS = (
     WatchdogRuleSpec(
         rule_code=WAITING_CHILDREN_RULE,
         helper_name="scan_waiting_children_reconciliation",
-        target_status="waiting_children",
+        target_status="waiting",
         description="Repair parent requests whose children are terminal but summary has not advanced.",
     ),
     WatchdogRuleSpec(

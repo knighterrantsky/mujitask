@@ -90,7 +90,7 @@ WAITING_STAGES = {
     WRITEBACK_STAGE_CODE,
 }
 
-ACTIVE_STATUSES = {"pending", "running", "retry_wait"}
+ACTIVE_STATUSES = {"pending", "running"}
 
 SUCCESSFUL_HANDLER_STATUSES = {"success", "partial_success"}
 

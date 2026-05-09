@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.contracts.handler.api import (
@@ -26,6 +28,7 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 
 DIRECT_PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123"
 DIRECT_PRODUCT_ID = "123"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -279,6 +282,8 @@ def test_product_fact_submit_rejects_runtime_config_payload_without_test_overrid
             "execution_control_minio_endpoint": "127.0.0.1:9000",
             "execution_control_minio_access_key": "minioadmin",
             "execution_control_minio_secret_key": "miniosecret",
+            "fastmoss": {"browser_cookies": [{"name": "fd_tk", "value": "secret-cookie"}]},
+            "browser_profile_id": "profile-1",
             "product_url": DIRECT_PRODUCT_URL,
             "product_id": DIRECT_PRODUCT_ID,
         }
@@ -288,6 +293,17 @@ def test_product_fact_submit_rejects_runtime_config_payload_without_test_overrid
     assert payload["error_code"] == "strict_persistence_config_missing"
     assert "execution_control_db_url" in payload["forbidden_runtime_config_fields"]
     assert "fact_db_url" in payload["forbidden_runtime_config_fields"]
+    assert "browser_profile_id" in payload["forbidden_runtime_config_fields"]
+    assert "fastmoss.browser_cookies" in payload["forbidden_runtime_config_fields"]
+
+
+def test_formal_submit_forbidden_fields_cover_product_fact_contract() -> None:
+    contract = yaml.safe_load((REPO_ROOT / "contracts/facts/product-fact-collection.yaml").read_text())
+    forbidden = set(
+        contract["formal_workflow_persistence_contract"]["formal_skill_payload_boundary"]["forbidden_fields"]
+    )
+
+    assert forbidden <= runtime_orchestrator.FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS
 
 
 def test_product_fact_submit_persists_strict_persistence_summary_into_request_payload(runtime_db_url: str) -> None:
@@ -318,7 +334,7 @@ def test_product_fact_submit_then_executor_dispatches_direct_ingest_jobs(runtime
     payload = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
 
     assert payload["request_id"] == request_id
-    assert payload["request_status"] == "waiting_children"
+    assert payload["request_status"] == "waiting"
     assert payload["current_stage"] == "collect_selection_rows"
     job_codes = {job["job_code"] for job in payload["api_worker_jobs"]}
     assert job_codes == {"selection_row_refresh"}
@@ -349,7 +365,8 @@ def test_product_fact_api_worker_once_dispatches_registry_and_persists_results(
     )
     jobs_by_code = {job["job_code"]: job for job in status_payload["api_worker_jobs"]}
 
-    assert jobs_by_code["selection_row_refresh"]["status"] == "success"
+    assert jobs_by_code["selection_row_refresh"]["status"] == "finished"
+    assert jobs_by_code["selection_row_refresh"]["result_status"] == "success"
     assert jobs_by_code["selection_row_refresh"]["result"]["handler_result"]["result"]["row_status"] == "success"
     assert jobs_by_code["selection_row_refresh"]["summary"]["progress_stage"] == "selection_row_refresh"
     assert jobs_by_code["selection_row_refresh"]["result"]["supervisor"]["progress_stage"] == "selection_row_refresh"
@@ -366,12 +383,13 @@ def test_product_fact_browser_fallback_path_from_request_handler(
     _bind_browser_fallback_handler(monkeypatch)
 
     first_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert first_row["api_worker_job"]["status"] == "success"
+    assert first_row["api_worker_job"]["status"] == "waiting"
+    assert first_row["api_worker_job"]["result_status"] == ""
     assert first_row["api_worker_job"]["result"]["handler_result"]["status"] == "fallback_required"
 
     fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert fallback_wait["request_id"] == request_id
-    assert fallback_wait["request_status"] == "waiting_children"
+    assert fallback_wait["request_status"] == "waiting"
     assert fallback_wait["current_stage"] == "selection_row_browser_fallback"
     fallback_executions = _stage_executions(
         fallback_wait,
@@ -425,7 +443,8 @@ def test_product_fact_browser_fallback_path_from_request_handler(
         and item["payload"]["stage_code"] == "collect_selection_rows"
         and item["payload"].get("browser_fallback_resolved")
     )
-    assert row_job["status"] == "success"
+    assert row_job["status"] == "finished"
+    assert row_job["result_status"] == "success"
     assert row_job["result"]["handler_result"]["summary"]["browser_fallback_used"] is True
     assert refreshed["result"]["rows"][0]["row_status"] == "success"
 
@@ -436,7 +455,7 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
     store = _load_store(runtime_db_url)
     store.update_task_request(
         request_id=request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage="selection_row_browser_fallback",
     )
     product_ids = ("123", "456")
@@ -611,7 +630,7 @@ def test_product_fact_final_executor_once_summarizes_and_creates_notification_ou
     store = _load_store(runtime_db_url)
     store.update_task_request(
         request_id=request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage="collect_selection_rows",
     )
     enqueue = store.enqueue_api_worker_jobs(

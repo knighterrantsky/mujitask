@@ -90,7 +90,7 @@ def advance_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: 
     current_stage = _current_stage(request)
     if current_stage == SUMMARY_STAGE_CODE:
         return finalize_sync_tk_influencer_pool_request(store=store, request_id=request_id)
-    if current_stage in WAITING_STAGES and str(request.status or "") == "waiting_children":
+    if current_stage in WAITING_STAGES and str(request.status or "") == "waiting":
         return release_sync_tk_influencer_pool_request(store=store, request_id=request_id)
     if current_stage in {
         DISCOVER_CREATORS_STAGE_CODE,

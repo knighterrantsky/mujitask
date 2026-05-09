@@ -562,7 +562,7 @@ def _lookup_nested(source: Any, *keys: str) -> str:
     return ""
 
 def _effective_tiktok_result(*, tiktok_job: Mapping[str, Any] | None, browser_execution: Any) -> dict[str, Any]:
-    if browser_execution is not None and str(browser_execution.status or "") == "success":
+    if browser_execution is not None and str(getattr(browser_execution, "result_status", "") or browser_execution.status or "") == "success":
         return extract_effective_result_payload(browser_execution)
     return extract_effective_result_payload(tiktok_job)
 

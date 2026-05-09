@@ -193,6 +193,58 @@ def test_fastmoss_security_browser_resolve_persists_cookie_cache_without_leaking
     assert loaded["cookies"][0]["value"] == "browser-token"
 
 
+def test_fastmoss_security_browser_resolve_uses_runtime_db_env_when_payload_omits_it(
+    runtime_db_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_URL", runtime_db_url)
+    monkeypatch.delenv("EXECUTION_CONTROL_DB_URL", raising=False)
+
+    store = RuntimeStore(db_url=runtime_db_url)
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "search_request": {
+                    "keyword": SEARCH_QUERY,
+                    "search_query": SEARCH_QUERY,
+                    "region": "US",
+                    "pagination": {"page": 1, "page_size": 10},
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "mock_fastmoss_security_browser_resolve": {
+                    "response_code": "200",
+                    "ext_is_login": "1",
+                    "cookies": [
+                        {
+                            "name": "fd_tk",
+                            "value": "browser-token-from-env",
+                            "domain": ".fastmoss.com",
+                            "path": "/",
+                            "secure": True,
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["cookie_cache"]["cookie_count"] == 1
+
+    cache_context = build_fastmoss_cookie_cache_context(
+        base_url="https://www.fastmoss.com",
+        account_key="18000000000",
+        region="US",
+    )
+    loaded = store.load_fastmoss_cookie_cache(cache_key=str(cache_context["cache_key"]))
+    assert loaded is not None
+    assert loaded["cookies"][0]["value"] == "browser-token-from-env"
+
+
 def test_fastmoss_security_browser_resolve_supports_non_search_original_request(
     runtime_db_url: str,
 ) -> None:
@@ -1061,7 +1113,7 @@ def _mark_api_job_success(
     stage_code = str((job.get("payload") or {}).get("stage_code") or "")
     store.update_task_request(
         request_id=str(job["request_id"]),
-        status="waiting_children",
+        status="waiting",
         current_stage=stage_code,
         progress_stage=stage_code,
     )
@@ -1089,7 +1141,7 @@ def _mark_api_job_fastmoss_security_fallback_required(
     stage_code = str((job.get("payload") or {}).get("stage_code") or "")
     store.update_task_request(
         request_id=str(job["request_id"]),
-        status="waiting_children",
+        status="waiting",
         current_stage=stage_code,
         progress_stage=stage_code,
     )
@@ -1137,7 +1189,7 @@ def _mark_api_job_fastmoss_security_fallback_required(
             "details": {"response_code": "MSG_SAFE_0001"},
         },
     }
-    store.mark_api_worker_job_success(
+    store.mark_api_worker_job_waiting(
         job_id=job_id,
         run_id=str(claimed["run_id"]),
         summary=handler_result["summary"],
@@ -1146,6 +1198,9 @@ def _mark_api_job_fastmoss_security_fallback_required(
             **handler_result["result"],
         },
         stage="browser_fallback_required",
+        error_text="FastMoss search security verification is required.",
+        error_type="security_verification",
+        error_code="fastmoss_security_verification_required",
     )
 
 
@@ -1159,7 +1214,7 @@ def _mark_competitor_row_refresh_fallback_required(
     payload = dict(job.get("payload") or {})
     store.update_task_request(
         request_id=str(job["request_id"]),
-        status="waiting_children",
+        status="waiting",
         current_stage=stage_code,
         progress_stage=stage_code,
     )
@@ -1213,12 +1268,15 @@ def _mark_competitor_row_refresh_fallback_required(
             "fallback_reason": "request_blocked",
         },
     }
-    store.mark_api_worker_job_success(
+    store.mark_api_worker_job_waiting(
         job_id=job_id,
         run_id=str(claimed["run_id"]),
         summary=handler_result["summary"],
         result={"handler_result": handler_result, **handler_result["result"]},
         stage="browser_fallback_required",
+        error_text="browser fallback required",
+        error_type="browser_fallback_required",
+        error_code="tiktok_product_browser_fetch_required",
     )
 
 
@@ -1232,7 +1290,7 @@ def _mark_browser_execution_success(
     execution = store.load_task_execution(execution_id=execution_id)
     store.update_task_request(
         request_id=execution.request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage=str((execution.payload or {}).get("stage_code") or ""),
         progress_stage=str((execution.payload or {}).get("stage_code") or ""),
     )
@@ -1471,6 +1529,92 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     assert "候选：1 条" in message_text
     assert "详情成功：1 条" in message_text
     assert "1. SKU 123456789" in message_text
+
+
+def test_keyword_runtime_dispatches_competitor_rows_serially(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_keyword_request(runtime_db_url)
+    seed_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
+    assert seed_waiting["action"] == "waiting"
+    seed_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="keyword_seed_import",
+        job_code="keyword_seed_import",
+    )
+    seeds = []
+    for index, product_id in enumerate((PRODUCT_ID, "987654321000000002"), start=1):
+        product_url = f"https://www.tiktok.com/view/product/{product_id}"
+        seeds.append(
+            {
+                "candidate_key": f"product:{product_id}",
+                "business_entity_key": f"product:{product_id}",
+                "product_identity": {
+                    "product_id": product_id,
+                    "product_url": product_url,
+                    "normalized_product_url": product_url,
+                },
+                "product_id": product_id,
+                "product_url": product_url,
+                "normalized_product_url": product_url,
+                "search_query": SEARCH_QUERY,
+                "search_rank": index,
+                "source_context": {"product_id": product_id, "product_url": product_url},
+                "source_record_id": f"seed-row-{index}",
+                "seed_status": "success",
+                "target_record_ids": [f"seed-row-{index}"],
+            }
+        )
+    _mark_api_job_success(
+        store,
+        job_id=str(seed_job["job_id"]),
+        summary={"candidate_count": 2, "written_count": 2},
+        result={
+            "normalized_candidates": seeds,
+            "seed_contexts": seeds,
+            "seed_write_results": [{"product_id": item["product_id"], "status": "success"} for item in seeds],
+            "written_count": 2,
+            "skipped_count": 0,
+            "failed_count": 0,
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    seed_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
+    assert seed_advance["next_stage"] == "dispatch_row_refresh_jobs"
+
+    request = store.load_task_request(request_id=request.request_id)
+    dispatch_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_row_refresh_jobs",
+    )
+    assert dispatch_advance["next_stage"] == "refresh_competitor_rows"
+    row_jobs = [
+        job
+        for job in store.list_api_worker_jobs_for_request(request_id=request.request_id)
+        if str((job.get("payload") or {}).get("stage_code") or "") == "refresh_competitor_rows"
+    ]
+    assert len(row_jobs) == 1
+    assert row_jobs[0]["payload"]["source_record_id"] == "seed-row-1"
+
+    _mark_api_job_success(
+        store,
+        job_id=str(row_jobs[0]["job_id"]),
+        summary={"row_status": "success"},
+        result={"row_status": "success", "step_timeline": [{"step": "tiktok_request", "status": "success"}]},
+    )
+    request = store.load_task_request(request_id=request.request_id)
+    refresh_wait = advance_stage(store=store, request=request, workflow=workflow, stage_code="refresh_competitor_rows")
+    assert refresh_wait["action"] == "waiting"
+    assert refresh_wait["details"]["created_count"] == 1
+    row_jobs = [
+        job
+        for job in store.list_api_worker_jobs_for_request(request_id=request.request_id)
+        if str((job.get("payload") or {}).get("stage_code") or "") == "refresh_competitor_rows"
+    ]
+    assert len(row_jobs) == 2
+    assert row_jobs[-1]["payload"]["source_record_id"] == "seed-row-2"
 
 
 def test_keyword_runtime_zero_candidates_finalizes_success(runtime_db_url: str) -> None:
@@ -1737,7 +1881,7 @@ def test_keyword_runtime_row_browser_fallback_resumes_before_summary(runtime_db_
     assert finalized["summary"]["final_status"] == "success"
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["result"]["row_results"][0]["browser_status"] == "success"
-    assert finalized["result"]["stage_summary"]["refresh_competitor_rows"]["statuses"]["fallback_required"] == 1
+    assert "fallback_required" not in finalized["result"]["stage_summary"]["refresh_competitor_rows"]["statuses"]
 
 
 def test_keyword_runtime_browser_fallback_path_finalizes(runtime_db_url: str) -> None:

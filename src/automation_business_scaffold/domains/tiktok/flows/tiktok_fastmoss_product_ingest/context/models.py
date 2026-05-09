@@ -43,7 +43,7 @@ from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper i
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
 
-ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
+ACTIVE_API_JOB_STATUSES = {"pending", "running"}
 
 FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
     "persistence",

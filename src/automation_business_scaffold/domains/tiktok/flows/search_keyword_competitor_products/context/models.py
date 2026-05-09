@@ -76,23 +76,12 @@ FASTMOSS_PRODUCT_PASSTHROUGH_KEYS = (
     "required",
 )
 
-RUNTIME_DB_PASSTHROUGH_KEYS = (
-    "execution_control_db_url",
-    "db_url",
-)
+RUNTIME_DB_PASSTHROUGH_KEYS: tuple[str, ...] = ()
 
 FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
-    "browser_profile_ref",
-    "browser_profile_id",
-    "browser_provider_name",
-    "browser_workspace_id",
     "browser_headless",
     "browser_force_open",
     "browser_timeout_ms",
-    "fastmoss_browser_profile_ref",
-    "fastmoss_browser_profile_id",
-    "fastmoss_browser_provider_name",
-    "fastmoss_browser_workspace_id",
     "fastmoss_browser_timeout_ms",
     "fastmoss_slider_max_attempts",
     "fastmoss_slider_appear_timeout_ms",

@@ -253,7 +253,7 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     )
     store.update_task_request(
         request_id=request.request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage="collect_product_data",
     )
     common_payload = {
@@ -315,7 +315,8 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     first_tiktok = store.load_api_worker_job(job_id=tiktok_job_id)
     parent_after_retry = store.load_task_request(request_id=request.request_id)
     assert first_timeout["api_worker_job"]["job_id"] == tiktok_job_id
-    assert first_timeout["api_worker_job"]["status"] == "retry_wait"
+    assert first_timeout["api_worker_job"]["status"] == "pending"
+    assert first_timeout["api_worker_job"]["result_status"] == ""
     assert first_timeout["failed_count"] == 0
     assert first_timeout["parent_updates"] == []
     assert first_timeout["supervisor"]["execution_mode"] == "child_process"
@@ -324,14 +325,15 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     assert first_tiktok["attempt_count"] == 1
     assert first_tiktok["error_type"] == "timeout"
     assert first_tiktok["error_code"] == "child_process_timeout"
-    assert parent_after_retry.status == "waiting_children"
+    assert parent_after_retry.status == "waiting"
     assert parent_after_retry.current_stage == "collect_product_data"
 
     fastmoss_success = runtime_orchestrator.execute_api_worker_once(worker_params)
 
     assert fastmoss_success["api_worker_job"]["job_id"] == fastmoss_job_id
-    assert fastmoss_success["api_worker_job"]["status"] == "success"
-    assert store.load_task_request(request_id=request.request_id).status == "waiting_children"
+    assert fastmoss_success["api_worker_job"]["status"] == "finished"
+    assert fastmoss_success["api_worker_job"]["result_status"] == "success"
+    assert store.load_task_request(request_id=request.request_id).status == "waiting"
 
     time.sleep(0.12)
     final_timeout = runtime_orchestrator.execute_api_worker_once(worker_params)
@@ -339,7 +341,8 @@ def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_co
     failed_tiktok = store.load_api_worker_job(job_id=tiktok_job_id)
     released_parent = store.load_task_request(request_id=request.request_id)
     assert final_timeout["api_worker_job"]["job_id"] == tiktok_job_id
-    assert final_timeout["api_worker_job"]["status"] == "failed"
+    assert final_timeout["api_worker_job"]["status"] == "finished"
+    assert final_timeout["api_worker_job"]["result_status"] == "failed"
     assert final_timeout["failed_count"] == 1
     assert final_timeout["parent_updates"] == [
         {

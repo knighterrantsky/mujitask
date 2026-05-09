@@ -345,7 +345,7 @@ def _handler_status_from_api_job(job: Mapping[str, Any] | None) -> str:
     if not job:
         return ""
     handler_result = _job_handler_result(job)
-    return str(handler_result.get("status") or job.get("status") or "")
+    return str(handler_result.get("status") or job.get("result_status") or job.get("status") or "")
 
 def _handler_status_from_execution(execution: Any) -> str:
     if execution is None:
@@ -353,8 +353,8 @@ def _handler_status_from_execution(execution: Any) -> str:
     result = dict(execution.result or {})
     handler_result = result.get("handler_result")
     if isinstance(handler_result, Mapping):
-        return str(handler_result.get("status") or execution.status or "")
-    return str(execution.status or "")
+        return str(handler_result.get("status") or getattr(execution, "result_status", "") or execution.status or "")
+    return str(getattr(execution, "result_status", "") or execution.status or "")
 
 def _job_handler_result(job: Mapping[str, Any] | None) -> dict[str, Any]:
     if not job:

@@ -146,7 +146,9 @@ def finalize_request(
     return {
         "action": "finalized",
         "request_id": request.request_id,
-        "request_status": updated.status,
+        "request_status": updated.result_status or updated.status,
+        "status": updated.status,
+        "result_status": updated.result_status,
         "current_stage": updated.current_stage,
         "summary": updated.summary,
         "result": updated.result,

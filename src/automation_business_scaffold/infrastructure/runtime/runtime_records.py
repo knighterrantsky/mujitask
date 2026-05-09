@@ -10,6 +10,7 @@ class RuntimeTaskRequestRecord:
     project_code: str
     task_code: str
     status: str
+    result_status: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     current_stage: str = ""
     progress_stage: str = ""
@@ -56,6 +57,7 @@ class RuntimeTaskExecutionRecord:
     resource_code: str
     status: str
     queue_seq: int
+    result_status: str = ""
     progress_stage: str = ""
     available_at: float = 0.0
     worker_id: str = ""

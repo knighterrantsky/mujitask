@@ -5,8 +5,8 @@ from typing import Any, Mapping
 from automation_business_scaffold.control_plane.runtime_config.settings import build_request_payload
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
-ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
-ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
+ACTIVE_API_JOB_STATUSES = {"pending", "running", "waiting"}
+ACTIVE_EXECUTION_STATUSES = {"pending", "running", "waiting"}
 
 
 def build_runtime_request_payload(
@@ -59,7 +59,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
             success_count += 1
         else:
             failed_count += 1
-        status_key = handler_status or str(job.get("status") or "unknown")
+        status_key = handler_status or str(job.get("result_status") or job.get("status") or "unknown")
         counts[status_key] = counts.get(status_key, 0) + 1
 
     for execution in executions:
@@ -74,7 +74,7 @@ def aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[
             success_count += 1
         else:
             failed_count += 1
-        status_key = handler_status or execution.status or "unknown"
+        status_key = handler_status or getattr(execution, "result_status", "") or execution.status or "unknown"
         counts[status_key] = counts.get(status_key, 0) + 1
 
     total = len(api_jobs) + len(executions)
@@ -95,7 +95,7 @@ def _handler_status_from_api_job(job: Mapping[str, Any] | None) -> str:
     if not job:
         return ""
     handler_result = _job_handler_result(job)
-    return str(handler_result.get("status") or job.get("status") or "")
+    return str(handler_result.get("status") or job.get("result_status") or job.get("status") or "")
 
 
 def _handler_status_from_execution(execution: Any) -> str:
@@ -104,8 +104,8 @@ def _handler_status_from_execution(execution: Any) -> str:
     result = dict(execution.result or {})
     handler_result = result.get("handler_result")
     if isinstance(handler_result, Mapping):
-        return str(handler_result.get("status") or execution.status or "")
-    return str(execution.status or "")
+        return str(handler_result.get("status") or getattr(execution, "result_status", "") or execution.status or "")
+    return str(getattr(execution, "result_status", "") or execution.status or "")
 
 
 def _job_handler_result(job: Mapping[str, Any] | None) -> dict[str, Any]:

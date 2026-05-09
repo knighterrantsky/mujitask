@@ -234,18 +234,19 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
 
     first_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert first_executor["request_id"] == request_id
-    assert first_executor["request_status"] == "waiting_children"
+    assert first_executor["request_status"] == "waiting"
     assert first_executor["current_stage"] == READ_STAGE_CODE
     assert {job["job_code"] for job in first_executor["api_worker_jobs"]} == {"feishu_table_read"}
 
     read_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert read_job["request_id"] == request_id
     assert read_job["api_worker_job"]["job_code"] == "feishu_table_read"
-    assert read_job["api_worker_job"]["status"] == "success"
+    assert read_job["api_worker_job"]["status"] == "finished"
+    assert read_job["api_worker_job"]["result_status"] == "success"
 
     discover_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert discover_executor["request_id"] == request_id
-    assert discover_executor["request_status"] == "waiting_children"
+    assert discover_executor["request_status"] == "waiting"
     assert discover_executor["current_stage"] == DISCOVER_CREATORS_STAGE_CODE
     product_jobs = _jobs_for_stage(discover_executor, DISCOVER_CREATORS_STAGE_CODE, "product_creator_discovery")
     assert len(product_jobs) == 1
@@ -254,11 +255,12 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     product_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert product_job["request_id"] == request_id
     assert product_job["api_worker_job"]["job_code"] == "product_creator_discovery"
-    assert product_job["api_worker_job"]["status"] == "success"
+    assert product_job["api_worker_job"]["status"] == "finished"
+    assert product_job["api_worker_job"]["result_status"] == "success"
 
     creator_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert creator_executor["request_id"] == request_id
-    assert creator_executor["request_status"] == "waiting_children"
+    assert creator_executor["request_status"] == "waiting"
     assert creator_executor["current_stage"] == SYNC_INFLUENCER_POOL_STAGE_CODE
     creator_jobs = _jobs_for_stage(creator_executor, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
     assert len(creator_jobs) == 1
@@ -267,11 +269,12 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     creator_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert creator_job["request_id"] == request_id
     assert creator_job["api_worker_job"]["job_code"] == "influencer_creator_sync"
-    assert creator_job["api_worker_job"]["status"] == "success"
+    assert creator_job["api_worker_job"]["status"] == "finished"
+    assert creator_job["api_worker_job"]["result_status"] == "success"
 
     writeback_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert writeback_executor["request_id"] == request_id
-    assert writeback_executor["request_status"] == "waiting_children"
+    assert writeback_executor["request_status"] == "waiting"
     assert writeback_executor["current_stage"] == WRITEBACK_STAGE_CODE
     writeback_jobs = _jobs_for_stage(writeback_executor, WRITEBACK_STAGE_CODE, "feishu_table_write")
     assert len(writeback_jobs) == 1
@@ -280,7 +283,8 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     writeback_job = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert writeback_job["request_id"] == request_id
     assert writeback_job["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert writeback_job["api_worker_job"]["status"] == "success"
+    assert writeback_job["api_worker_job"]["status"] == "finished"
+    assert writeback_job["api_worker_job"]["result_status"] == "success"
     assert writeback_job["api_worker_job"]["result"]["stage_code"] == WRITEBACK_STAGE_CODE
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
@@ -296,7 +300,12 @@ def test_sync_tk_influencer_pool_executor_happy_path_through_runtime_registry(
     assert status_payload["summary"]["final_status"] == "success"
     assert status_payload["summary"]["product_group_count"] == 1
     assert status_payload["summary"]["product_groups"][0]["creator_detail_success_count"] == 1
-    assert _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")[0]["status"] == "success"
+    assert (
+        _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")[0][
+            "result_status"
+        ]
+        == "success"
+    )
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"
 
@@ -345,7 +354,8 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
 
     status_payload = _status(runtime_db_url, request_id)
     creator_detail_jobs = _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
-    assert {job["status"] for job in creator_detail_jobs} == {"success"}
+    assert {job["status"] for job in creator_detail_jobs} == {"finished", "waiting"}
+    assert {job["result_status"] for job in creator_detail_jobs} == {"success", ""}
     assert status_payload["request_status"] == "partial_success"
     assert status_payload["summary"]["warnings"] == ["partial_creator_projection"]
     assert status_payload["summary"]["product_groups"][0]["creator_detail_success_count"] == 1
@@ -354,6 +364,7 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     assert _api_job_by_creator_id(status_payload, "creator-fail")["result"]["handler_result"]["status"] == (
         "fallback_required"
     )
-    assert _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")[0]["status"] == "success"
+    assert _api_job_by_creator_id(status_payload, "creator-success")["result_status"] == "success"
+    assert _api_job_by_creator_id(status_payload, "creator-fail")["result_status"] == ""
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"

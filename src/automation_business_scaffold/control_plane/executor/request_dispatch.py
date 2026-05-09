@@ -106,8 +106,9 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
             waiting_stage = str(stage_result.get("current_stage") or current_stage)
             store.update_task_request(
                 request_id=request.request_id,
-                status="waiting_children",
+                status="waiting",
                 current_stage=waiting_stage,
+                result=dict(stage_result.get("wait") or {}),
                 worker_id="",
                 lease_until=0.0,
                 heartbeat_at=0.0,
@@ -174,7 +175,8 @@ def finalize_not_ready_request(
 ) -> dict[str, Any]:
     store.update_task_request(
         request_id=request_id,
-        status="failed",
+        status="finished",
+        result_status="failed",
         current_stage=current_stage,
         result={"status": "not_ready", "message": message},
         summary={"total": 0, "counts": {"not_ready": 1}},

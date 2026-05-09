@@ -283,7 +283,7 @@ def test_refresh_executor_integration_request_first_success_path(
 
     first_executor = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert first_executor["request_id"] == request_id
-    assert first_executor["request_status"] == "waiting_children"
+    assert first_executor["request_status"] == "waiting"
     assert first_executor["current_stage"] == "read_competitor_rows"
     read_jobs = _stage_jobs(first_executor, stage_code="read_competitor_rows", job_code="feishu_table_read")
     assert len(read_jobs) == 1
@@ -303,7 +303,7 @@ def test_refresh_executor_integration_request_first_success_path(
 
     collect_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert collect_wait["request_id"] == request_id
-    assert collect_wait["request_status"] == "waiting_children"
+    assert collect_wait["request_status"] == "waiting"
     assert collect_wait["current_stage"] == "collect_product_data"
     collect_job_codes = {
         str(job["job_code"])
@@ -313,7 +313,8 @@ def test_refresh_executor_integration_request_first_success_path(
 
     row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
-    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["status"] == "finished"
+    assert row_worker["api_worker_job"]["result_status"] == "success"
     assert row_worker["api_worker_job"]["result"]["row_status"] == "success"
     collect_status = _status(runtime_db_url, request_id)
     row_job = _stage_jobs(
@@ -321,7 +322,8 @@ def test_refresh_executor_integration_request_first_success_path(
         stage_code="collect_product_data",
         job_code="competitor_row_refresh",
     )[0]
-    assert row_job["status"] == "success"
+    assert row_job["status"] == "finished"
+    assert row_job["result_status"] == "success"
     assert row_job["result"]["normalized_product_result"]["product_id"] == PRODUCT_ID
     assert row_job["result"]["product_fact_bundle"]["product_id"] == PRODUCT_ID
     assert row_job["result"]["writeback_result"]["written_count"] == 1
@@ -363,13 +365,14 @@ def test_refresh_executor_integration_browser_fallback_path(
     row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert row_worker["request_id"] == request_id
     assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
-    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["status"] == "waiting"
+    assert row_worker["api_worker_job"]["result_status"] == ""
     assert row_worker["api_worker_job"]["result"]["handler_result"]["status"] == "fallback_required"
     assert row_worker["api_worker_job"]["result"]["runtime_evidence"]["browser_fallback_used"] is True
 
     fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert fallback_wait["request_id"] == request_id
-    assert fallback_wait["request_status"] == "waiting_children"
+    assert fallback_wait["request_status"] == "waiting"
     assert fallback_wait["current_stage"] == "browser_fallback"
     fallback_executions = [
         execution
@@ -396,7 +399,7 @@ def test_refresh_executor_integration_browser_fallback_path(
 
     after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert after_browser_wait["request_id"] == request_id
-    assert after_browser_wait["request_status"] == "waiting_children"
+    assert after_browser_wait["request_status"] == "waiting"
     assert after_browser_wait["current_stage"] == "collect_product_data"
     after_browser_jobs = [
         job
@@ -616,7 +619,8 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
     assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
-    assert read_worker["api_worker_job"]["status"] == "success"
+    assert read_worker["api_worker_job"]["status"] == "finished"
+    assert read_worker["api_worker_job"]["result_status"] == "success"
     assert read_worker["api_worker_job"]["result"]["handler_result"]["result"]["source_rows"][0]["source_record_id"] == SOURCE_RECORD_ID
 
     collect_wait = runtime_orchestrator.execute_executor_once(
@@ -629,7 +633,8 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
     assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
-    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["status"] == "finished"
+    assert row_worker["api_worker_job"]["result_status"] == "success"
     assert row_worker["api_worker_job"]["result"]["fact_upsert"]["persistence_mode"] == "database"
     assert TKFactStore(db_url=runtime_db_url).get_product(product_id=PRODUCT_ID)["title"] == "Graduation Candy Boxes"
     projection_fields = row_worker["api_worker_job"]["result"]["writeback_projection"]["fields"]

@@ -683,6 +683,8 @@ def _runtime_db_url(payload: Mapping[str, Any], *, fastmoss_settings: Mapping[st
         request_payload.get("db_url"),
         fastmoss_settings.get("execution_control_db_url"),
         fastmoss_settings.get("db_url"),
+        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL"),
+        os.environ.get("EXECUTION_CONTROL_DB_URL"),
     )
 
 

@@ -401,7 +401,7 @@ def test_keyword_executor_integration_happy_path(
 
     seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert seed_wait["request_id"] == request_id
-    assert seed_wait["request_status"] == "waiting_children"
+    assert seed_wait["request_status"] == "waiting"
     assert seed_wait["current_stage"] == "keyword_seed_import"
     seed_import_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
     assert len(seed_import_jobs) == 1
@@ -411,7 +411,8 @@ def test_keyword_executor_integration_happy_path(
     seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert seed_worker["request_id"] == request_id
     assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
-    assert seed_worker["api_worker_job"]["status"] == "success"
+    assert seed_worker["api_worker_job"]["status"] == "finished"
+    assert seed_worker["api_worker_job"]["result_status"] == "success"
     assert seed_worker["parent_updates"] == [
         {
             "request_id": request_id,
@@ -422,7 +423,7 @@ def test_keyword_executor_integration_happy_path(
     ]
 
     refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert refresh_wait["request_status"] == "waiting_children"
+    assert refresh_wait["request_status"] == "waiting"
     assert refresh_wait["current_stage"] == "refresh_competitor_rows"
     row_jobs = _stage_jobs(refresh_wait, stage_code="refresh_competitor_rows", job_code="competitor_row_refresh")
     assert len(row_jobs) == 1
@@ -432,7 +433,8 @@ def test_keyword_executor_integration_happy_path(
     row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert row_worker["request_id"] == request_id
     assert row_worker["api_worker_job"]["job_code"] == "competitor_row_refresh"
-    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["status"] == "finished"
+    assert row_worker["api_worker_job"]["result_status"] == "success"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -585,7 +587,8 @@ def test_selection_keyword_executor_dispatches_selection_row_refresh(
 
     seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
-    assert seed_worker["api_worker_job"]["status"] == "success"
+    assert seed_worker["api_worker_job"]["status"] == "finished"
+    assert seed_worker["api_worker_job"]["result_status"] == "success"
 
     refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert refresh_wait["current_stage"] == "refresh_selection_rows"
@@ -596,7 +599,8 @@ def test_selection_keyword_executor_dispatches_selection_row_refresh(
 
     row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert row_worker["api_worker_job"]["job_code"] == "selection_row_refresh"
-    assert row_worker["api_worker_job"]["status"] == "success"
+    assert row_worker["api_worker_job"]["status"] == "finished"
+    assert row_worker["api_worker_job"]["result_status"] == "success"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -768,7 +772,8 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     first_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert first_row["api_worker_job"]["status"] == "success"
+    assert first_row["api_worker_job"]["status"] == "waiting"
+    assert first_row["api_worker_job"]["result_status"] == ""
     assert first_row["api_worker_job"]["result"]["handler_result"]["status"] == "fallback_required"
 
     fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
@@ -1158,7 +1163,7 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
     worker_params = _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
 
     seed_wait = runtime_orchestrator.execute_executor_once(worker_params)
-    assert seed_wait["request_status"] == "waiting_children"
+    assert seed_wait["request_status"] == "waiting"
     assert seed_wait["current_stage"] == "keyword_seed_import"
     seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
     assert len(seed_jobs) == 1
@@ -1209,7 +1214,7 @@ def test_keyword_executor_integration_browser_fallback_path(
     runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert refresh_wait["request_status"] == "waiting_children"
+    assert refresh_wait["request_status"] == "waiting"
     assert refresh_wait["current_stage"] == "refresh_competitor_rows"
     row_jobs = _stage_jobs(refresh_wait, stage_code="refresh_competitor_rows", job_code="competitor_row_refresh")
     assert len(row_jobs) == 1

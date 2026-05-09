@@ -13,8 +13,8 @@ ChildKind = Literal["api_worker_job", "task_execution"]
 ChildRecord = Mapping[str, Any] | RuntimeTaskExecutionRecord
 RequestRecord = Mapping[str, Any] | RuntimeTaskRequestRecord
 
-ACTIVE_CHILD_STATUSES = frozenset({"pending", "running", "retry_wait"})
-TERMINAL_CHILD_STATUSES = frozenset({"success", "failed", "skipped", "cancelled", "partial_success"})
+ACTIVE_CHILD_STATUSES = frozenset({"pending", "running"})
+TERMINAL_CHILD_STATUSES = frozenset({"finished", "cancelled", "success", "failed", "skipped", "partial_success"})
 SUCCESS_CHILD_STATUSES = frozenset({"success", "skipped", "partial_success"})
 FAILED_CHILD_STATUSES = frozenset({"failed", "cancelled"})
 
@@ -308,7 +308,9 @@ def build_request_view_fragment(request: RequestRecord | None) -> dict[str, Any]
     return {
         "request_id": _coerce_str(request_dict.get("request_id")),
         "task_code": _coerce_str(request_dict.get("task_code")),
-        "request_status": _coerce_str(request_dict.get("status")),
+        "request_status": _coerce_str(request_dict.get("result_status") or request_dict.get("status")),
+        "status": _coerce_str(request_dict.get("status")),
+        "result_status": _coerce_str(request_dict.get("result_status")),
         "current_stage": _coerce_str(request_dict.get("current_stage")),
         "worker_id": _coerce_str(request_dict.get("worker_id")),
         "error": _coerce_str(request_dict.get("error_text")),
@@ -331,7 +333,7 @@ def _build_api_worker_job_view(job: Mapping[str, Any]) -> RequestChildView:
         request_id=_coerce_str(job.get("request_id")),
         task_code=_coerce_str(job.get("task_code")),
         child_code=_coerce_str(job.get("job_code")),
-        status=_coerce_str(job.get("status")),
+        status=_coerce_str(job.get("result_status") or job.get("status")),
         stage_code=_coerce_str(job.get("stage")),
         business_key=_coerce_str(job.get("business_key")),
         dedupe_key=_coerce_str(job.get("dedupe_key")),
@@ -363,7 +365,7 @@ def _build_task_execution_view(execution: ChildRecord) -> RequestChildView:
         task_code=_coerce_str(execution_dict.get("task_code") or payload.get("task_code")),
         workflow_code=_coerce_str(execution_dict.get("workflow_code")),
         child_code=_coerce_str(execution_dict.get("item_code")),
-        status=_coerce_str(execution_dict.get("status")),
+        status=_coerce_str(execution_dict.get("result_status") or execution_dict.get("status")),
         stage_code=_coerce_str(execution_dict.get("stage_code") or payload.get("stage_code")),
         business_key=_coerce_str(execution_dict.get("business_key")),
         dedupe_key=_coerce_str(execution_dict.get("dedupe_key")),

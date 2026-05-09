@@ -294,8 +294,8 @@ def _record_effective_status(record: Any) -> str:
             if isinstance(handler_result, Mapping):
                 if _is_unavailable_result(handler_result):
                     return "unavailable"
-                return str(handler_result.get("status") or record.status or "")
-        return str(getattr(record, "status", "") or "")
+                return str(handler_result.get("status") or getattr(record, "result_status", "") or record.status or "")
+        return str(getattr(record, "result_status", "") or getattr(record, "status", "") or "")
     if isinstance(record, Mapping):
         result = dict(record.get("result") or {})
         if _is_unavailable_result(result) or _is_unavailable_result(record):
@@ -304,8 +304,8 @@ def _record_effective_status(record: Any) -> str:
         if isinstance(handler_result, Mapping):
             if _is_unavailable_result(handler_result):
                 return "unavailable"
-            return str(handler_result.get("status") or record.get("status") or "")
-        return str(record.get("status") or "")
+            return str(handler_result.get("status") or record.get("result_status") or record.get("status") or "")
+        return str(record.get("result_status") or record.get("status") or "")
     return ""
 
 __all__ = [name for name in globals() if not name.startswith('__')]

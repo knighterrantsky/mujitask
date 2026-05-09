@@ -63,9 +63,6 @@ def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str,
         ("fastmoss_base_url", "base_url"),
         ("region", "region"),
         ("fastmoss_timeout", "timeout"),
-        ("browser_cookies", "browser_cookies"),
-        ("execution_control_db_url", "execution_control_db_url"),
-        ("db_url", "db_url"),
         ("fastmoss_cookie_cache_namespace", "cookie_cache_namespace"),
         ("fastmoss_cookie_cache_enabled", "cookie_cache_enabled"),
         ("fastmoss_cookie_cache_ttl_seconds", "cookie_cache_ttl_seconds"),
@@ -261,10 +258,10 @@ def _record_effective_status(record: Any) -> str:
     if record is None:
         return ""
     if isinstance(record, Mapping):
-        status = str(record.get("status") or "")
+        status = str(record.get("result_status") or record.get("status") or "")
         handler_status = extract_handler_result_status(record)
         return handler_status or status
-    status = str(getattr(record, "status", "") or "")
+    status = str(getattr(record, "result_status", "") or getattr(record, "status", "") or "")
     handler_status = extract_handler_result_status(record)
     return handler_status or status
 

@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerNextAction, HandlerResult
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
@@ -173,7 +174,7 @@ def attach_fastmoss_cookie_cache_if_configured(
     default_region: str = "US",
     account_required: bool = False,
 ) -> dict[str, Any]:
-    db_url = first_non_empty(settings.get("execution_control_db_url"), settings.get("db_url"))
+    db_url = _runtime_db_url(settings)
     if not db_url:
         return {"enabled": False, "reason": "missing_db_url"}
     resolved_account_key = first_non_empty(
@@ -284,7 +285,7 @@ def refresh_fastmoss_session_after_security_check(
     if not credentials_available and not cookie_rows:
         return False
 
-    db_url = first_non_empty(settings.get("execution_control_db_url"), settings.get("db_url"))
+    db_url = _runtime_db_url(settings)
     account_key = first_non_empty(
         settings.get("account_key"),
         settings.get("phone"),
@@ -357,7 +358,7 @@ def fastmoss_settings_from_payload(payload: Mapping[str, Any], *, defaults: Mapp
         ),
         "region": first_non_empty(settings.get("region"), payload.get("region"), request_payload.get("region"), "US"),
         "timeout": settings.get("timeout", payload.get("fastmoss_timeout", request_payload.get("fastmoss_timeout", 30.0))),
-        "browser_cookies": settings.get("browser_cookies", payload.get("browser_cookies", request_payload.get("browser_cookies", []))),
+        "browser_cookies": settings.get("browser_cookies", []),
         "live_fetch": explicit_live_fetch,
         "_has_live_config": _has_fastmoss_live_config(settings, payload, request_payload),
         "ensure_logged_in": settings.get(
@@ -367,15 +368,11 @@ def fastmoss_settings_from_payload(payload: Mapping[str, Any], *, defaults: Mapp
         "execution_control_db_url": first_non_empty(
             settings.get("execution_control_db_url"),
             settings.get("db_url"),
-            payload.get("execution_control_db_url"),
-            payload.get("db_url"),
-            request_payload.get("execution_control_db_url"),
-            request_payload.get("db_url"),
+            _runtime_db_url({}),
         ),
         "db_url": first_non_empty(
             settings.get("db_url"),
-            payload.get("db_url"),
-            request_payload.get("db_url"),
+            _runtime_db_url({}),
         ),
         "cookie_cache_namespace": first_non_empty(
             settings.get("cookie_cache_namespace"),
@@ -455,6 +452,17 @@ def _redact_request_params(params: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("fm-sign", "cnonce", "_time", "password", "pwd"):
         redacted.pop(key, None)
     return redacted
+
+
+def _runtime_db_url(settings: Mapping[str, Any]) -> str:
+    defaults = get_execution_control_defaults()
+    return first_non_empty(
+        settings.get("execution_control_db_url"),
+        settings.get("db_url"),
+        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL"),
+        os.environ.get("EXECUTION_CONTROL_DB_URL"),
+        defaults.db_url,
+    )
 
 
 def _non_negative_float(value: Any, default: float) -> float:

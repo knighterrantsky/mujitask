@@ -43,7 +43,7 @@
 
 - 不传 `run_mode`。`run_mode` 只属于本地调试或测试 submit override，不是正式 Skill 契约。
 - 不传 Runtime DB、Fact DB、MinIO/S3 endpoint、access key、secret key、bucket 等真实运行配置。
-- 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key` 这类连接或密钥字段。
+- 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key`、`browser_cookies` 这类连接、密钥或会话凭据字段。
 - 不从 `skill.local.env` 读取浏览器固定资源配置；`BROWSER_PROFILE_REF`、`BROWSER_PROVIDER_NAME`、`BROWSER_PROFILE_ID`、`BROWSER_WORKSPACE_ID`、`BROWSER_PROFILES_FILE`、`DEFAULT_PROFILE_REF` 这类默认值属于项目运行配置。正式 Skill 只允许用户通过 CLI 参数显式覆盖本次业务使用的 `profile_ref`。
 
 正式 submit 由 Runtime 控制面从项目运行配置解析 Runtime DB、Fact DB 和对象存储，并在创建 `task_request` 前做 preflight。缺 Runtime DB、Fact DB、artifact provider、bucket 或 MinIO/S3 必填配置时，submit 必须被拒绝，不能让后续 handler 退化成 `dry_run` 或本地 `local` 成功。

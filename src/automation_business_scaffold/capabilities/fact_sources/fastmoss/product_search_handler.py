@@ -6,6 +6,8 @@ import os
 import re
 import tempfile
 import time
+
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
     HandlerContext,
@@ -261,7 +263,7 @@ def _resolve_fastmoss_search_settings(payload: dict[str, Any]) -> dict[str, Any]
         settings.get("fastmoss_password_env"),
         payload.get("fastmoss_password_env"),
     )
-    browser_cookies = settings.get("browser_cookies", payload.get("browser_cookies"))
+    browser_cookies = settings.get("browser_cookies")
     return {
         "phone": first_non_empty(
             settings.get("phone"),
@@ -284,8 +286,7 @@ def _resolve_fastmoss_search_settings(payload: dict[str, Any]) -> dict[str, Any]
         "execution_control_db_url": first_non_empty(
             settings.get("execution_control_db_url"),
             settings.get("db_url"),
-            payload.get("execution_control_db_url"),
-            payload.get("db_url"),
+            _runtime_db_url(),
         ),
         "cookie_cache_namespace": first_non_empty(
             settings.get("cookie_cache_namespace"),
@@ -1203,6 +1204,15 @@ def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
             "minio_region": payload.get("minio_region"),
             "minio_create_bucket": payload.get("minio_create_bucket"),
         }
+    )
+
+
+def _runtime_db_url() -> str:
+    defaults = get_execution_control_defaults()
+    return first_non_empty(
+        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL"),
+        os.environ.get("EXECUTION_CONTROL_DB_URL"),
+        defaults.db_url,
     )
 
 

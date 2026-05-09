@@ -652,7 +652,7 @@ class InfluencerPoolJobRepository:
             FROM influencer_pool_product_job job
             JOIN task_request request ON request.request_id = job.request_id
             WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
+              AND request.status = 'waiting'
               AND job.status IN ('pending', 'failed_retry')
               AND job.available_at <= :available_at
             ORDER BY job.available_at ASC, job.created_at ASC
@@ -663,7 +663,7 @@ class InfluencerPoolJobRepository:
             FROM influencer_pool_author_job job
             JOIN task_request request ON request.request_id = job.request_id
             WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
+              AND request.status = 'waiting'
               AND job.status IN ('pending', 'failed_retry')
               AND job.available_at <= :available_at
             ORDER BY job.available_at ASC, job.created_at ASC
@@ -674,7 +674,7 @@ class InfluencerPoolJobRepository:
             FROM influencer_pool_product_job job
             JOIN task_request request ON request.request_id = job.request_id
             WHERE request.task_code = :task_code
-              AND request.status = 'waiting_children'
+              AND request.status = 'waiting'
               AND job.status = 'detail_pending'
             ORDER BY job.updated_at ASC, job.created_at ASC
             LIMIT 1

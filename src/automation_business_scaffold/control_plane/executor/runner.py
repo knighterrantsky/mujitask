@@ -36,8 +36,8 @@ from automation_business_scaffold.domains.tiktok.workflows import get_workflow_d
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
-ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
-ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
+ACTIVE_API_JOB_STATUSES = {"pending", "running"}
+ACTIVE_EXECUTION_STATUSES = {"pending", "running"}
 MAX_EXECUTOR_STAGE_HOPS = 16
 WORKFLOW_RUNTIME_NOT_READY_MESSAGE = "No workflow runtime is registered for this task_code."
 API_HANDLER_REGISTRY: Any | None = None
@@ -50,7 +50,18 @@ FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS = {
     "artifact_root",
     "artifact_store",
     "artifact_store_provider",
+    "BROWSER_PROFILES_FILE",
+    "BROWSER_PROFILE_ID",
+    "BROWSER_PROFILE_REF",
+    "BROWSER_PROVIDER_NAME",
+    "BROWSER_WORKSPACE_ID",
+    "browser_cookies",
+    "browser_profile_id",
+    "browser_profile_ref",
+    "browser_provider_name",
+    "browser_workspace_id",
     "db_url",
+    "DEFAULT_PROFILE_REF",
     "execution_control_artifact_bucket",
     "execution_control_artifact_object_prefix",
     "execution_control_artifact_root",
@@ -71,6 +82,7 @@ FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS = {
     "minio_secret_key",
     "minio_secure",
     "persistence",
+    "run_mode",
     "s3_access_key",
     "s3_secret_key",
 }
@@ -572,11 +584,22 @@ def _forbidden_formal_submit_runtime_config_fields(
 ) -> list[str]:
     if allow_test_overrides:
         return []
-    return sorted(
-        key
-        for key in FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS
-        if key in params and params.get(key) not in (None, "")
-    )
+    forbidden: set[str] = set()
+
+    def visit(value: Any, *, path: str = "") -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if key_text in FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS and child not in (None, "", [], {}):
+                    forbidden.add(child_path)
+                visit(child, path=child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, path=f"{path}[{index}]" if path else f"[{index}]")
+
+    visit(params)
+    return sorted(forbidden)
 
 
 def _first_text(*values: Any) -> str:
@@ -671,7 +694,7 @@ def _handler_status_from_api_job(job: Mapping[str, Any] | None) -> str:
     if not job:
         return ""
     handler_result = _job_handler_result(job)
-    return str(handler_result.get("status") or job.get("status") or "")
+    return str(handler_result.get("status") or job.get("result_status") or job.get("status") or "")
 
 
 def _handler_status_from_execution(execution: Any) -> str:
@@ -680,8 +703,8 @@ def _handler_status_from_execution(execution: Any) -> str:
     result = dict(execution.result or {})
     handler_result = result.get("handler_result")
     if isinstance(handler_result, Mapping):
-        return str(handler_result.get("status") or execution.status or "")
-    return str(execution.status or "")
+        return str(handler_result.get("status") or getattr(execution, "result_status", "") or execution.status or "")
+    return str(getattr(execution, "result_status", "") or execution.status or "")
 
 
 def _job_handler_result(job: Mapping[str, Any] | None) -> dict[str, Any]:

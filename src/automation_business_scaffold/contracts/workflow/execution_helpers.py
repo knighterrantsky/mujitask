@@ -13,10 +13,10 @@ RecordLike: TypeAlias = Mapping[str, Any] | object | None
 
 _FORMATTER = Formatter()
 _SUCCESSFUL_HANDLER_STATUSES = frozenset({"success", "partial_success"})
-_SUCCESSFUL_RECORD_STATUSES = frozenset({"success"})
+_SUCCESSFUL_RECORD_STATUSES = frozenset({"success", "partial_success"})
 _FAILURE_HANDLER_STATUSES = frozenset({"failed", "fallback_required"})
-_ACTIVE_RECORD_STATUSES = frozenset({"pending", "running", "retry_wait"})
-_TERMINAL_RECORD_STATUSES = frozenset({"success", "failed", "skipped", "cancelled"})
+_ACTIVE_RECORD_STATUSES = frozenset({"pending", "running"})
+_TERMINAL_RECORD_STATUSES = frozenset({"finished", "cancelled", "success", "failed", "skipped"})
 _TERMINAL_HANDLER_STATUSES = frozenset({"success", "skipped", "partial_success", "failed", "fallback_required"})
 
 
@@ -223,7 +223,7 @@ def extract_handler_result_status(record_or_payload: RecordLike, *, default: str
     if handler_result:
         return str(handler_result.get("status") or default)
     payload = _as_dict(record_or_payload)
-    return str(payload.get("status") or default)
+    return str(payload.get("result_status") or payload.get("status") or default)
 
 
 def extract_effective_result_payload(record_or_payload: RecordLike) -> dict[str, Any]:
@@ -314,7 +314,7 @@ def select_latest_successful_record(
         record = _as_dict(record_like)
         if str(record.get(code_field) or "") != code_value:
             continue
-        record_status = str(record.get("status") or "")
+        record_status = str(record.get("result_status") or record.get("status") or "")
         handler_status = extract_handler_result_status(record)
         if record_status not in accepted_record_statuses and handler_status not in accepted_handler_statuses:
             continue
@@ -477,7 +477,8 @@ def record_effective_status(record_or_payload: RecordLike) -> str:
         return _effective_outcome_status(record)
     status = str(getattr(record_or_payload, "status", "") or "")
     handler_status = extract_handler_result_status(getattr(record_or_payload, "result", {}) or {})
-    return handler_status or status
+    result_status = str(getattr(record_or_payload, "result_status", "") or "")
+    return handler_status or result_status or status
 
 
 def timeout_seconds_for_workflow(workflow: Any, target_code: str) -> float:
@@ -680,8 +681,10 @@ def _stringify_template_value(value: Any) -> str:
 
 def _looks_like_handler_result(value: Mapping[str, Any]) -> bool:
     status = value.get("status")
+    lifecycle_statuses = {"pending", "running", "waiting", "finished", "cancelled"}
     return isinstance(status, str) and (
-        "handler_code" in value or "job_id" in value or "request_id" in value
+        status not in lifecycle_statuses
+        and ("handler_code" in value or "job_id" in value or "request_id" in value)
     )
 
 
@@ -689,7 +692,7 @@ def _effective_outcome_status(record: Mapping[str, Any]) -> str:
     handler_status = extract_handler_result_status(record)
     if handler_status:
         return handler_status
-    return str(record.get("status") or "")
+    return str(record.get("result_status") or record.get("status") or "")
 
 
 def _record_code(record: Mapping[str, Any]) -> str:
