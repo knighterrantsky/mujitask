@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from automation_business_scaffold.contracts.handler.contract import (
@@ -19,6 +20,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     fallback_required_result,
     first_non_empty,
     merge_fact_bundles,
+    new_fact_bundle,
     normalize_product_identity,
     partial_success_result,
     product_business_key,
@@ -48,10 +50,15 @@ _SELECTION_REQUIRED_WRITEBACK_FIELDS = (
     "评分",
     "商品主图",
     "商品侧边栏图片",
-    "今年总销量",
+    "总销量",
+    "上架日期",
+    "180天销量",
     "出单种类占比图",
     "销量趋势图",
 )
+
+_FASTMOSS_ONLY_WRITEBACK_FIELDS = ("总销量", "上架日期", "180天销量")
+_FASTMOSS_PRODUCT_DATE_TZ = timezone(timedelta(hours=-5))
 
 
 def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult:
@@ -198,41 +205,70 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
 
     effective_tiktok_payload = dict(tiktok_payload)
     if tiktok_result.status == "fallback_required" or bool(tiktok_payload.get("fallback_required")):
-        runtime_evidence["browser_fallback_used"] = True
-        step_timeline.append(
-            {
-                "step": "browser_fallback",
-                "status": "fallback_required",
-                "fallback_handler": "tiktok_product_browser_fetch",
-            }
-        )
-        return _browser_fallback_required_pipeline_result(
-            context,
+        source_normalized_result = _normalized_product_result_from_source_fields(
+            source_context=source_context,
             identity=identity,
-            source_record_id=source_record_id,
-            business_key=business_key,
-            step_timeline=step_timeline,
-            runtime_evidence=runtime_evidence,
-            fallback_handler="tiktok_product_browser_fetch",
-            fallback_payload={
-                **request_payload,
-                **payload,
-                "request_payload": request_payload,
-                "source_record_id": source_record_id,
-                "product_identity": identity,
-                "normalized_product_url": first_non_empty(
-                    payload.get("normalized_product_url"), identity.get("normalized_product_url")
-                ),
-                "product_url": first_non_empty(
-                    identity.get("normalized_product_url"), identity.get("product_url")
-                ),
-                "source_context": source_context,
-                "fallback_source_job_id": first_non_empty(
-                    tiktok_payload.get("fallback_source_job_id"), context.job_id
-                ),
-            },
-            fallback_reason=first_non_empty(tiktok_payload.get("fallback_reason"), "tiktok_request_fallback_required"),
         )
+        if source_normalized_result:
+            effective_tiktok_payload = {"normalized_product_result": source_normalized_result}
+            runtime_evidence["tiktok_source_fields_fallback"] = True
+            step_timeline.append(
+                _skipped_timeline_entry("browser_fallback", reason="source_fields_sufficient")
+            )
+            warnings.append(
+                "TikTok request required browser fallback; reused existing selection row fields."
+            )
+        elif minimal_product_result := _minimal_normalized_product_result_for_fastmoss(
+            source_context=source_context,
+            identity=identity,
+        ):
+            effective_tiktok_payload = {"normalized_product_result": minimal_product_result}
+            runtime_evidence["tiktok_fastmoss_only_backfill"] = True
+            step_timeline.append(
+                _skipped_timeline_entry("browser_fallback", reason="fastmoss_only_backfill")
+            )
+            warnings.append(
+                "TikTok request required browser fallback; continued FastMoss-only writeback."
+            )
+        else:
+            runtime_evidence["browser_fallback_used"] = True
+            step_timeline.append(
+                {
+                    "step": "browser_fallback",
+                    "status": "fallback_required",
+                    "fallback_handler": "tiktok_product_browser_fetch",
+                }
+            )
+            return _browser_fallback_required_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                runtime_evidence=runtime_evidence,
+                fallback_handler="tiktok_product_browser_fetch",
+                fallback_payload={
+                    **request_payload,
+                    **payload,
+                    "request_payload": request_payload,
+                    "source_record_id": source_record_id,
+                    "product_identity": identity,
+                    "normalized_product_url": first_non_empty(
+                        payload.get("normalized_product_url"),
+                        identity.get("normalized_product_url"),
+                    ),
+                    "product_url": first_non_empty(
+                        identity.get("normalized_product_url"), identity.get("product_url")
+                    ),
+                    "source_context": source_context,
+                    "fallback_source_job_id": first_non_empty(
+                        tiktok_payload.get("fallback_source_job_id"), context.job_id
+                    ),
+                },
+                fallback_reason=first_non_empty(
+                    tiktok_payload.get("fallback_reason"), "tiktok_request_fallback_required"
+                ),
+            )
     elif (
         coerce_bool(payload.get("browser_fallback_resolved"))
         and first_non_empty(payload.get("browser_fallback_handler")) == "tiktok_product_browser_fetch"
@@ -270,7 +306,10 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
         )
 
     product_unavailable = _is_unavailable_product_result(normalized_product_result)
-    asset_refs = _collect_asset_refs(normalized_product_result)
+    fastmoss_only_backfill = coerce_bool(runtime_evidence.get("tiktok_fastmoss_only_backfill"))
+    if fastmoss_only_backfill:
+        runtime_evidence["fastmoss_field_backfill"] = True
+    asset_refs = [] if fastmoss_only_backfill else _collect_asset_refs(normalized_product_result)
     media_result_payload: dict[str, Any] = {}
     if product_unavailable:
         step_timeline.append(_skipped_timeline_entry("media_sync", reason="product_unavailable"))
@@ -333,12 +372,12 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
                 "fastmoss_overview_window_days": _first_present(
                     payload.get("fastmoss_overview_window_days"),
                     request_payload.get("fastmoss_overview_window_days"),
-                    [7, 28, 90],
+                    [7, 28, 90, 180],
                 ),
                 "fastmoss_window_days": first_non_empty(
                     payload.get("fastmoss_window_days"),
                     request_payload.get("fastmoss_window_days"),
-                    90,
+                    180,
                 ),
                 "fastmoss_sku_window_days": first_non_empty(
                     payload.get("fastmoss_sku_window_days"),
@@ -457,6 +496,11 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
             step_timeline.append(
                 _skipped_timeline_entry("chart_render", reason="product_unavailable")
             )
+        elif fastmoss_only_backfill:
+            chart_image_paths = {}
+            step_timeline.append(
+                _skipped_timeline_entry("chart_render", reason="fastmoss_only_backfill")
+            )
         else:
             try:
                 chart_image_paths = _render_selection_charts(
@@ -479,22 +523,38 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
                         ],
                     },
                 )
-                step_timeline.append(
-                    _timeline_entry("chart_render", failed_result(context, error=chart_error))
-                )
-                return _failed_pipeline_result(
-                    context,
-                    identity=identity,
-                    source_record_id=source_record_id,
-                    business_key=business_key,
-                    step_timeline=step_timeline,
-                    failed_step="chart_render",
-                    error=chart_error,
-                    runtime_evidence=runtime_evidence,
-                    normalized_product_result=normalized_product_result,
-                    product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
-                    fact_upsert=fact_result.result,
-                )
+                if coerce_bool(runtime_evidence.get("tiktok_source_fields_fallback")):
+                    runtime_evidence["fastmoss_field_backfill"] = True
+                    optional_step_failed = True
+                    warnings.append(
+                        "Chart render failed after TikTok source-field fallback; "
+                        "continued FastMoss field writeback only."
+                    )
+                    chart_image_paths = {}
+                    step_timeline.append(
+                        _timeline_entry(
+                            "chart_render",
+                            failed_result(context, error=chart_error),
+                            detail={"downgraded_to_fastmoss_field_backfill": True},
+                        )
+                    )
+                else:
+                    step_timeline.append(
+                        _timeline_entry("chart_render", failed_result(context, error=chart_error))
+                    )
+                    return _failed_pipeline_result(
+                        context,
+                        identity=identity,
+                        source_record_id=source_record_id,
+                        business_key=business_key,
+                        step_timeline=step_timeline,
+                        failed_step="chart_render",
+                        error=chart_error,
+                        runtime_evidence=runtime_evidence,
+                        normalized_product_result=normalized_product_result,
+                        product_fact_bundle=fastmoss_payload.get("product_fact_bundle"),
+                        fact_upsert=fact_result.result,
+                    )
         if chart_image_paths:
             step_timeline.append(
                 _timeline_entry(
@@ -516,6 +576,7 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
             else _missing_required_selection_writeback_fields(
                 source_context=source_context,
                 projection_fields=projection_fields,
+                fastmoss_only=coerce_bool(runtime_evidence.get("fastmoss_field_backfill")),
             )
         )
         if missing_required_fields:
@@ -626,6 +687,8 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
     row_status = (
         "unavailable"
         if product_unavailable
+        else "partial_success"
+        if coerce_bool(runtime_evidence.get("fastmoss_field_backfill"))
         else "partial_success"
         if optional_step_failed or write_result.status == "skipped"
         else "success"
@@ -972,6 +1035,103 @@ def _source_fields(source_context: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _normalized_product_result_from_source_fields(
+    *,
+    source_context: Mapping[str, Any],
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_fields = _source_fields(source_context)
+    required_source_fields = (
+        "店铺名称",
+        "标题",
+        "当前价格",
+        "评论数",
+        "评分",
+        "商品主图",
+        "商品侧边栏图片",
+    )
+    if any(not _has_writeback_value(source_fields.get(field)) for field in required_source_fields):
+        return {}
+
+    product_id = first_non_empty(
+        identity.get("product_id"),
+        source_context.get("product_id"),
+        source_fields.get("商品ID"),
+    )
+    product_url = first_non_empty(
+        identity.get("normalized_product_url"),
+        identity.get("product_url"),
+        source_context.get("product_url"),
+        _source_product_url(source_fields.get("商品链接")),
+    )
+    if not product_id and not product_url:
+        return {}
+
+    logical_fields = {
+        "title": first_non_empty(source_fields.get("标题")),
+        "shop_name": first_non_empty(source_fields.get("店铺名称")),
+        "price_text": first_non_empty(source_fields.get("当前价格")),
+        "review_count": source_fields.get("评论数"),
+        "rating_score": source_fields.get("评分"),
+        "main_image_url": source_fields.get("商品主图"),
+        "gallery_images": source_fields.get("商品侧边栏图片"),
+    }
+    return {
+        "product_id": product_id,
+        "normalized_product_url": product_url,
+        "product": {
+            "product_id": product_id,
+            "normalized_url": product_url,
+            "product_url": product_url,
+            "title": logical_fields["title"],
+            "shop_name": logical_fields["shop_name"],
+            "price_text": logical_fields["price_text"],
+        },
+        "logical_fields": logical_fields,
+        "fact_bundle": new_fact_bundle(),
+    }
+
+
+def _minimal_normalized_product_result_for_fastmoss(
+    *,
+    source_context: Mapping[str, Any],
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_fields = _source_fields(source_context)
+    product_id = first_non_empty(
+        identity.get("product_id"),
+        source_context.get("product_id"),
+        source_fields.get("商品ID"),
+    )
+    product_url = first_non_empty(
+        identity.get("normalized_product_url"),
+        identity.get("product_url"),
+        source_context.get("product_url"),
+        _source_product_url(source_fields.get("商品链接")),
+    )
+    if not product_id and not product_url:
+        return {}
+    return {
+        "product_id": product_id,
+        "normalized_product_url": product_url,
+        "product": compact_dict(
+            {
+                "product_id": product_id,
+                "normalized_url": product_url,
+                "product_url": product_url,
+            }
+        ),
+        "logical_fields": {},
+        "fact_bundle": new_fact_bundle(),
+    }
+
+
+def _source_product_url(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return first_non_empty(value.get("link"), value.get("text"), value.get("url"))
+    return first_non_empty(value)
+
+
 def _fact_bundle_without_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]:
     cleaned = dict(coerce_mapping(fact_bundle))
     cleaned["media_assets"] = []
@@ -1098,10 +1258,14 @@ def _missing_required_selection_writeback_fields(
     *,
     source_context: Mapping[str, Any],
     projection_fields: Mapping[str, Any],
+    fastmoss_only: bool = False,
 ) -> list[str]:
     source_fields = _source_fields(source_context)
     missing: list[str] = []
-    for field_name in _SELECTION_REQUIRED_WRITEBACK_FIELDS:
+    required_fields = (
+        _FASTMOSS_ONLY_WRITEBACK_FIELDS if fastmoss_only else _SELECTION_REQUIRED_WRITEBACK_FIELDS
+    )
+    for field_name in required_fields:
         if _has_writeback_value(source_fields.get(field_name)):
             continue
         if _has_writeback_value(projection_fields.get(field_name)):
@@ -1573,9 +1737,14 @@ def _build_selection_projection_fields(
     fastmoss_bundle = coerce_mapping(fastmoss_result.get("product_fact_bundle"))
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
-    overview_28d_metrics = coerce_mapping(
+    base_product = coerce_mapping(
+        _unwrap_fastmoss_data(_extract_raw_api_payload(fastmoss_bundle, "goods.base")).get(
+            "product"
+        )
+    )
+    overview_180d_metrics = coerce_mapping(
         _unwrap_fastmoss_data(
-            _extract_raw_api_payload(fastmoss_bundle, "goods.overview", d_type=28)
+            _extract_raw_api_payload(fastmoss_bundle, "goods.overview", d_type=180)
         ).get("overview")
     )
     product_skus = (
@@ -1622,10 +1791,18 @@ def _build_selection_projection_fields(
         ),
     )
     total_sales = _number_value(
-        _metric_text(overview_28d_metrics, "sold_count"),
-        _metric_text(
-            overview_metrics, "sales_28d", "sold_count_28d", "day28_sold_count", "sold_count"
-        ),
+        base_product.get("sold_count"),
+        base_product.get("sold_count_show"),
+        _metric_text(overview_metrics, "total_sales", "total_sold_count"),
+    )
+    launch_date = _fastmoss_launch_date(
+        base_product.get("launch_time"),
+        base_product.get("launch_date"),
+        base_product.get("launch_time_text"),
+    )
+    sales_180d = _number_value(
+        _metric_text(overview_180d_metrics, "sold_count"),
+        _metric_text(overview_metrics, "sales_180d", "sold_count_180d", "day180_sold_count"),
     )
     fields = {
         "商品ID": first_non_empty(
@@ -1643,7 +1820,9 @@ def _build_selection_projection_fields(
         "评分": rating if rating is not None else "",
         "商品主图": main_image,
         "商品侧边栏图片": gallery_images,
-        "今年总销量": total_sales if total_sales is not None else "",
+        "总销量": total_sales if total_sales is not None else "",
+        "上架日期": launch_date,
+        "180天销量": sales_180d if sales_180d is not None else "",
         "出单种类占比图": chart_images.get("distribution_chart") or [],
         "销量趋势图": chart_images.get("trend_chart") or [],
         "SKU销量占比图": chart_images.get("sku_chart") or [],
@@ -1723,6 +1902,31 @@ def _metric_text(payload: Mapping[str, Any], *keys: str) -> str:
         text = first_non_empty(value)
         if text:
             return text
+    return ""
+
+
+def _fastmoss_launch_date(*values: Any) -> str:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        text = first_non_empty(value).strip()
+        if not text:
+            continue
+        date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+        if date_match:
+            return date_match.group(0)
+        try:
+            timestamp = float(text)
+        except ValueError:
+            continue
+        if timestamp <= 0:
+            continue
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp / 1000
+        try:
+            return datetime.fromtimestamp(timestamp, tz=_FASTMOSS_PRODUCT_DATE_TZ).date().isoformat()
+        except (OSError, OverflowError, ValueError):
+            continue
     return ""
 
 

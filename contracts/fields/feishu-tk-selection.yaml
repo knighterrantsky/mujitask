@@ -33,7 +33,9 @@ auto_maintained_fields:
   - 评分
   - 商品主图
   - 商品侧边栏图片
-  - 今年总销量
+  - 总销量
+  - 上架日期
+  - 180天销量
   - 出单种类占比图
   - 销量趋势图
   - SKU销量占比图
@@ -49,7 +51,9 @@ required_writeback_fields:
   - 评分
   - 商品主图
   - 商品侧边栏图片
-  - 今年总销量
+  - 总销量
+  - 上架日期
+  - 180天销量
   - 出单种类占比图
   - 销量趋势图
 
@@ -62,7 +66,9 @@ candidate_required_fields:
   - 评分
   - 商品主图
   - 商品侧边栏图片
-  - 今年总销量
+  - 总销量
+  - 上架日期
+  - 180天销量
   - 出单种类占比图
   - 销量趋势图
 
@@ -211,16 +217,39 @@ fields:
     source_of_truth: fact_db.product_distribution_snapshots|rendered_chart_png
     write_target: feishu.TK选品收集.出单种类占比图
 
-  - display_name: 今年总销量
-    canonical_name: current_year_sales
+  - display_name: 总销量
+    canonical_name: total_sales
     role: research_metric
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: fastmoss.goods.overview(d_type=28).overview.sold_count
-    write_target: feishu.TK选品收集.今年总销量
+    source_of_truth: fastmoss.goods.base.product.sold_count
+    write_target: feishu.TK选品收集.总销量
     notes: >
-      字段名沿用历史命名；实际口径为 FastMoss 近 28 天 overview.sold_count，
-      与销量趋势图 inc_sold_count / 分布图 sold_count 保持一致，不使用 real_sold_count。
+      代表 FastMoss 商品基础信息中的累计销量；历史上把 FastMoss 近 28 天
+      overview.sold_count 写入总销量字段的逻辑取消。
+
+  - display_name: 上架日期
+    canonical_name: launch_date
+    role: research_metric
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.goods.base.product.launch_time
+    write_target: feishu.TK选品收集.上架日期
+    notes: >
+      launch_time 为 Unix timestamp，写入飞书前转换为 YYYY-MM-DD 日期。
+      Roxy 实抓样例 1731566133878820985 返回 launch_time=1755612244，
+      页面展示为 2025-08-19 (GMT-5)。
+
+  - display_name: 180天销量
+    canonical_name: sales_180d
+    role: research_metric
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.goods.overview(d_type=180).overview.sold_count
+    write_target: feishu.TK选品收集.180天销量
+    notes: >
+      代表 FastMoss 商品概览 180 天窗口销量；不是商品累计总销量，
+      也不是近 28 天 overview.sold_count。
 
   - display_name: 销量趋势图
     canonical_name: current_year_sales_trend_screenshot

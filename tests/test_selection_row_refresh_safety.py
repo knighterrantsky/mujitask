@@ -65,6 +65,8 @@ def test_selection_row_refresh_writeback_disabled_skips_feishu_write(
         )
 
     def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        assert context.payload["fastmoss_overview_window_days"] == [7, 28, 90, 180]
+        assert context.payload["fastmoss_window_days"] == "180"
         return HandlerResult.success(
             context, result={"product_fact_bundle": {"product_id": PRODUCT_ID}}
         )
@@ -130,6 +132,268 @@ def test_selection_row_refresh_url_invalid_writeback_disabled_skips_status_write
         and step.get("reason") == "writeback_disabled"
         for step in result.result["step_timeline"]
     )
+
+
+def test_selection_row_refresh_reuses_source_fields_when_tiktok_request_needs_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_payloads: list[dict[str, object]] = []
+    source_fields = {
+        "商品ID": PRODUCT_ID,
+        "商品链接": {"link": PRODUCT_URL, "text": PRODUCT_URL},
+        "店铺名称": "Sample Shop",
+        "标题": "Sample product",
+        "当前价格": "12.99",
+        "评论数": "15",
+        "评分": "4.8",
+        "商品主图": [{"file_token": "main"}],
+        "商品侧边栏图片": [{"file_token": "gallery"}],
+    }
+    context = HandlerContext(
+        request_id="req-selection-source-fallback",
+        job_id="job-selection-source-fallback",
+        handler_code="selection_row_refresh",
+        worker_type="api_worker",
+        runtime_table="api_worker_job",
+        workflow_code="tiktok_fastmoss_product_ingest",
+        stage_code="collect_selection_rows",
+        job_code="selection_row_refresh",
+        payload={
+            "request_payload": {
+                "product_url": PRODUCT_URL,
+                "selection_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+                "writeback_enabled": True,
+            },
+            "source_record_id": "rec-source-fallback",
+            "target_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+            "product_identity": {
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+                "normalized_product_url": PRODUCT_URL,
+            },
+            "source_context": {
+                "source_record_id": "rec-source-fallback",
+                "fields": source_fields,
+            },
+            "writeback_enabled": True,
+        },
+    )
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.fallback_required(
+            context,
+            error=HandlerError(
+                error_type="fallback_required",
+                error_code="tiktok_browser_fallback_required",
+                message="browser required",
+                retryable=False,
+                fallback_allowed=True,
+                fallback_reason="request_signal_missing_router_data",
+            ),
+            result={
+                "fallback_required": True,
+                "fallback_reason": "request_signal_missing_router_data",
+            },
+        )
+
+    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "product_fact_bundle": {
+                    "product_id": PRODUCT_ID,
+                    "raw_api_responses": [
+                        {
+                            "source_endpoint": "goods.base",
+                            "response_payload": {
+                                "data": {
+                                    "product": {
+                                        "sold_count": "1163",
+                                        "launch_time": 1755612244,
+                                    }
+                                }
+                            },
+                        },
+                        {
+                            "source_endpoint": "goods.overview",
+                            "request_params": {"d_type": 180},
+                            "response_payload": {
+                                "data": {
+                                    "overview": {"sold_count": "1134"},
+                                }
+                            },
+                        },
+                    ],
+                },
+                "metrics_snapshot": {"overview": {"sales_180d": "1134"}},
+            },
+        )
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
+
+    def fake_render_selection_charts(**kwargs: object) -> dict[str, list[dict[str, str]]]:
+        return {
+            "distribution_chart": [{"file_token": "distribution"}],
+            "trend_chart": [{"file_token": "trend"}],
+        }
+
+    def fake_feishu_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"written_count": 1})
+
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(
+        selection_row_refresh, "_render_selection_charts", fake_render_selection_charts
+    )
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(context)
+
+    assert result.status == "success"
+    assert result.result["row_status"] == "success"
+    assert result.result["runtime_evidence"]["tiktok_source_fields_fallback"] is True
+    assert any(
+        item.get("step") == "browser_fallback"
+        and item.get("reason") == "source_fields_sufficient"
+        for item in result.result["step_timeline"]
+    )
+    fields = result.result["writeback_projection"]["fields"]
+    assert fields["总销量"] == 1163.0
+    assert fields["上架日期"] == "2025-08-19"
+    assert fields["180天销量"] == 1134.0
+    assert len(write_payloads) == 1
+
+
+def test_selection_row_refresh_writes_fastmoss_only_when_source_fields_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_payloads: list[dict[str, object]] = []
+    context = HandlerContext(
+        request_id="req-selection-fastmoss-only",
+        job_id="job-selection-fastmoss-only",
+        handler_code="selection_row_refresh",
+        worker_type="api_worker",
+        runtime_table="api_worker_job",
+        workflow_code="tiktok_fastmoss_product_ingest",
+        stage_code="collect_selection_rows",
+        job_code="selection_row_refresh",
+        payload={
+            "request_payload": {
+                "product_url": PRODUCT_URL,
+                "selection_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+                "writeback_enabled": True,
+            },
+            "source_record_id": "rec-fastmoss-only",
+            "target_table_ref": "https://example.feishu.cn/base/app?table=tbl",
+            "product_identity": {
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+                "normalized_product_url": PRODUCT_URL,
+            },
+            "source_context": {
+                "source_record_id": "rec-fastmoss-only",
+                "fields": {
+                    "商品ID": PRODUCT_ID,
+                    "商品链接": {"link": PRODUCT_URL, "text": PRODUCT_URL},
+                },
+            },
+            "writeback_enabled": True,
+        },
+    )
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.fallback_required(
+            context,
+            error=HandlerError(
+                error_type="fallback_required",
+                error_code="tiktok_browser_fallback_required",
+                message="browser required",
+                retryable=False,
+                fallback_allowed=True,
+                fallback_reason="request_signal_missing_router_data",
+            ),
+            result={
+                "fallback_required": True,
+                "fallback_reason": "request_signal_missing_router_data",
+            },
+        )
+
+    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "product_fact_bundle": {
+                    "product_id": PRODUCT_ID,
+                    "raw_api_responses": [
+                        {
+                            "source_endpoint": "goods.base",
+                            "response_payload": {
+                                "data": {
+                                    "product": {
+                                        "sold_count": "1163",
+                                        "launch_time": 1755612244,
+                                    }
+                                }
+                            },
+                        },
+                        {
+                            "source_endpoint": "goods.overview",
+                            "request_params": {"d_type": 180},
+                            "response_payload": {
+                                "data": {"overview": {"sold_count": "1134"}},
+                            },
+                        },
+                    ],
+                },
+                "metrics_snapshot": {"overview": {"sales_180d": "1134"}},
+            },
+        )
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "database"})
+
+    def fail_chart_render(**kwargs: object) -> dict[str, object]:
+        raise AssertionError("chart render should be skipped for FastMoss-only writeback")
+
+    def fake_feishu_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"written_count": 1})
+
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fail_chart_render)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(context)
+
+    assert result.status == "partial_success"
+    assert result.result["row_status"] == "partial_success"
+    assert result.result["runtime_evidence"]["tiktok_fastmoss_only_backfill"] is True
+    assert any(
+        item.get("step") == "chart_render" and item.get("reason") == "fastmoss_only_backfill"
+        for item in result.result["step_timeline"]
+    )
+    fields = result.result["writeback_projection"]["fields"]
+    assert fields == {
+        "商品ID": PRODUCT_ID,
+        "商品链接": PRODUCT_URL,
+        "总销量": 1163.0,
+        "上架日期": "2025-08-19",
+        "180天销量": 1134.0,
+    }
+    assert write_payloads[0]["records"][0]["projection_fields"] == fields
 
 
 def test_selection_row_refresh_fails_before_write_when_required_chart_render_missing(
@@ -344,7 +608,9 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
         "评分",
         "商品主图",
         "商品侧边栏图片",
-        "今年总销量",
+        "总销量",
+        "上架日期",
+        "180天销量",
     ]
     assert called["feishu_write"] == 0
 
@@ -811,10 +1077,21 @@ def test_selection_projection_skips_single_sku_best_sku_as_non_distinct_analysis
     assert "父体图片" not in fields
 
 
-def test_selection_projection_uses_28d_fastmoss_sold_count_for_total_sales() -> None:
+def test_selection_projection_uses_base_total_sales_launch_date_and_180d_sales() -> None:
     fields = _projection_fields(
         fastmoss_bundle={
             "raw_api_responses": [
+                {
+                    "source_endpoint": "goods.base",
+                    "response_payload": {
+                        "data": {
+                            "product": {
+                                "sold_count": "1163",
+                                "launch_time": 1755612244,
+                            }
+                        }
+                    },
+                },
                 {
                     "source_endpoint": "goods.overview",
                     "request_params": {"d_type": 7},
@@ -845,6 +1122,16 @@ def test_selection_projection_uses_28d_fastmoss_sold_count_for_total_sales() -> 
                         }
                     },
                 },
+                {
+                    "source_endpoint": "goods.overview",
+                    "request_params": {"d_type": 180},
+                    "response_payload": {
+                        "data": {
+                            "d_type": 180,
+                            "overview": {"sold_count": "1134", "real_sold_count": "1200"},
+                        }
+                    },
+                },
             ]
         },
         metrics_snapshot={
@@ -854,11 +1141,15 @@ def test_selection_projection_uses_28d_fastmoss_sold_count_for_total_sales() -> 
                 "sales_28d": "5932",
                 "sold_count_28d": "5932",
                 "day28_sold_count": "5932",
+                "sales_180d": "9999",
             }
         },
     )
 
-    assert fields["今年总销量"] == 5128.0
+    assert fields["总销量"] == 1163.0
+    assert fields["上架日期"] == "2025-08-19"
+    assert fields["180天销量"] == 1134.0
+    assert "今年总销量" not in fields
 
 
 def _projection_fields(
