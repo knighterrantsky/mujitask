@@ -1,6 +1,6 @@
 # 选品采集需求
 
-更新时间：`2026-05-05`
+更新时间：`2026-05-08`
 
 - 入口任务：`tiktok_fastmoss_product_ingest`
 - 触发方式：OpenClaw 定时或手动触发；关键词搜索选品写入流程写入新行后也复用同一行级采集口径
@@ -60,15 +60,17 @@
 本流程采集来源包括：
 
 1. TikTok 商品详情：商品身份、标题、价格、评论数、评分、描述、店铺名称、主图和侧边栏图片。
-2. FastMoss 商品概览：近 28 天销量、价格兜底、商品分布、每日销量趋势和 SKU 数据。
-3. 媒体同步结果：用于写回飞书附件字段的商品图片素材。
-4. Fact DB 快照元数据：用于图表字段写回前重新渲染 PNG。
+2. FastMoss 商品基础信息：商品累计总销量、预估上架日期和价格兜底。
+3. FastMoss 商品概览：近 180 天销量、商品分布和每日销量趋势。
+4. FastMoss SKU 数据：SKU 清单、SKU 销量/GMV/库存分布和主销 SKU。
+5. 媒体同步结果：用于写回飞书附件字段的商品图片素材。
+6. Fact DB 快照元数据：用于图表字段写回前重新渲染 PNG。
 
 ### 3.4 字段分层
 
 `TK选品收集` 当前字段分为必填补全字段、系统运行字段、可选补充字段和非自动维护字段。
 
-必填补全字段参与表级候选判断。以下 11 个字段全部有值时，表级扫描认为该记录不需要作为候选项：
+必填补全字段参与表级候选判断。以下 13 个字段全部有值时，表级扫描认为该记录不需要作为候选项：
 
 | 字段名 | 数据来源 | 写入策略 |
 | --- | --- | --- |
@@ -80,7 +82,9 @@
 | `评分` | TikTok `logical_fields.rating` | `fill_missing_only` |
 | `商品主图` | TikTok `logical_fields.main_image_url`，兜底媒体同步结果 | `fill_missing_only` |
 | `商品侧边栏图片` | TikTok `logical_fields.gallery_images` | `fill_missing_only` |
-| `今年总销量` | FastMoss `goods.overview(d_type=28).overview.sold_count` | `fill_missing_only` |
+| `总销量` | FastMoss `goods.base.product.sold_count` | `fill_missing_only` |
+| `上架日期` | FastMoss `goods.base.product.launch_time` 转换为商品站点日期 | `fill_missing_only` |
+| `180天销量` | FastMoss `goods.overview(d_type=180).overview.sold_count` | `fill_missing_only` |
 | `出单种类占比图` | FastMoss 分布快照元数据，写回前渲染 PNG | `fill_missing_only` |
 | `销量趋势图` | FastMoss 每日指标元数据，写回前渲染 PNG | `fill_missing_only` |
 
@@ -101,7 +105,9 @@
 
 补充说明：
 
-- `今年总销量` 字段名不变，实际写入近 28 天销量数据；使用 FastMoss `overview.sold_count`，与销量趋势图 `inc_sold_count` / 分布图 `sold_count` 口径一致，不使用 `real_sold_count`。
+- `总销量` 不再使用 FastMoss 近 28 天 overview 数据；实际口径改为 FastMoss 商品基础接口中的累计销量 `goods.base.product.sold_count`。
+- `上架日期` 来源于 FastMoss 商品基础接口 `goods.base.product.launch_time`，写入飞书前转换为 `YYYY-MM-DD` 日期；Roxy 实抓样例 `1731566133878820985` 返回 `launch_time=1755612244`，页面展示为 `2025-08-19 (GMT-5)`。
+- `180天销量` 来源于 FastMoss 商品概览接口 `goods.overview(d_type=180).overview.sold_count`；该字段用于替代历史把近 28 天销量写入总销量字段的逻辑。
 - 有效 `best_sku` 定义为 `sku_value` 有业务值且 `sold_count > 0`；`Default`、`默认`、`Specification`、空值、单 SKU 或第一条 SKU 都不能作为父体字段兜底来源。
 - 没有有效 `best_sku` 时，跳过 `SKU销量占比图`、`父体规格`、`父体图片`，不阻塞其他字段，也不让记录重新进入候选队列。
 - `父体规格` 可在图片缺失时单独写入；`父体图片` 只在能通过 `sku_id` 或 `prop_value_id` 匹配到该 `best_sku` 对应图片时写入。
@@ -124,7 +130,7 @@
 4. `记录日期` 只在本次确实产生至少一个字段写入时才刷新。
 5. TikTok 采集失败且无法获得必要商品身份时，不执行字段写回。
 6. FastMoss 采集失败时，只有本次写回必填补全字段已经由原表、TikTok 投影结果或已有 FastMoss 数据满足，才允许继续写回。
-7. 可售商品写回前必须校验 11 个必填补全字段；任一必填字段缺失时，本行写回失败，不写入半截字段。
+7. 可售商品写回前必须校验 13 个必填补全字段；任一必填字段缺失时，本行写回失败，不写入半截字段。
 8. 无有效 `best_sku`、父体图片无法匹配不阻塞其余字段；`SKU销量占比图` 仍以有效 `best_sku` 为业务门槛。
 
 ### 3.7 图表渲染
@@ -152,12 +158,14 @@
 4. 商品已下架或区域不可售时，回写 `商品状态=已下架/区域不可售` 并跳过媒体、FastMoss 和图表采集。
 5. 有效商品采集完成后，空白必填补全字段被正确填入。
 6. 已有值的字段不被覆盖，`商品ID` 和 `商品链接` 除外。
-7. `今年总销量` 使用 FastMoss 近 28 天 `overview.sold_count`，不使用 `real_sold_count`。
-8. 无有效 `best_sku` 时，跳过 `SKU销量占比图`、`父体规格`、`父体图片`，其他字段正常写回，且这些可选字段缺失不触发表级候选。
-9. 可售商品缺失必填补全字段或必填图表渲染失败时，本行写回失败，不写入半截字段。
-10. 本次无实际字段写入时，`记录日期` 不刷新。
-11. `文本`、`关键词`、`差评整理` 不受表级数据采集影响。
-12. 图表 PNG 不入 DB/MinIO，DB 只存元数据。
+7. `总销量` 使用 FastMoss `goods.base.product.sold_count`，不得再使用 FastMoss 近 28 天 `overview.sold_count` 映射总销量。
+8. `上架日期` 使用 FastMoss `goods.base.product.launch_time` 转换后的日期。
+9. `180天销量` 使用 FastMoss `goods.overview(d_type=180).overview.sold_count`。
+10. 无有效 `best_sku` 时，跳过 `SKU销量占比图`、`父体规格`、`父体图片`，其他字段正常写回，且这些可选字段缺失不触发表级候选。
+11. 可售商品缺失必填补全字段或必填图表渲染失败时，本行写回失败，不写入半截字段。
+12. 本次无实际字段写入时，`记录日期` 不刷新。
+13. `文本`、`关键词`、`差评整理` 不受表级数据采集影响。
+14. 图表 PNG 不入 DB/MinIO，DB 只存元数据。
 
 ## 6. 变更影响边界
 
