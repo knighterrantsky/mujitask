@@ -6,7 +6,7 @@ from typing import Any
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result,
 )
-from automation_business_scaffold.infrastructure.tiktok.product_page import (
+from automation_business_scaffold.capabilities.browser.tiktok.product_page import (
     TikTokProductUnavailableError,
     fetch_tiktok_product_record_via_browser,
 )

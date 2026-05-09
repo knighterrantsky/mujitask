@@ -1,0 +1,69 @@
+schema_version: 1
+contract_type: workflow_contract
+workflow_code: refresh_competitor_row_by_url
+domain: tk_competitor
+task_code: refresh_competitor_row_by_url
+status: formal_single_row_entry
+
+business_requirement: docs/business/requirements/refresh-current-competitor-table.md
+business_requirement_note: 竞品采集单行入口 — 按 TikTok 商品 URL 定位 TK竞品收集 中的一行，并复用竞品表行级刷新 pipeline。
+architecture_design: docs/arch/workflow-competitor-table-design.md
+implementation_manifest: src/automation_business_scaffold/contracts/workflow/refresh_competitor_row_by_url.yaml
+field_contracts:
+  - contracts/fields/feishu-tk-competitor.yaml
+state_contracts:
+  - contracts/states/tk-competitor-product-status.yaml
+
+source_adapter: competitor_table_source_adapter
+projection_mappers:
+  - competitor_table_projection_mapper
+
+persistence_requirements:
+  requires_fact_db: true
+  requires_object_storage: true
+  fact_bundle_upsert:
+    require_database_persistence: true
+    missing_fact_db_policy: fail_fast
+    forbidden_success_modes:
+      - dry_run
+  media_asset_sync:
+    require_object_storage: true
+    missing_object_storage_policy: fail_fast
+    provider_local_policy: fail_fast
+    forbidden_success_modes:
+      - linked_local
+
+stages:
+  - stage_code: read_competitor_rows
+    handler_code: feishu_table_read
+    source_adapter: competitor_table_source_adapter
+    purpose: 读取 TK竞品收集 并按 product_url 定位唯一匹配行。
+  - stage_code: dispatch_product_collection
+    handler_code: executor_daemon
+    purpose: 为匹配行最多创建一个 competitor_row_refresh 主 job。
+  - stage_code: collect_product_data
+    job_code: competitor_row_refresh
+    handler_code: competitor_row_refresh
+    projection_mapper: competitor_table_projection_mapper
+    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回 fallback_required 和 browser_fallback_payload。
+  - stage_code: browser_fallback
+    job_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
+    handler_code: browser_runloop
+    runtime_table: task_execution
+    purpose: 由 workflow 将 row-level fallback_required 显式派发到 task_execution，等待 browser-runloop claim 并完成浏览器生命周期。
+  - stage_code: resume_competitor_rows_after_browser_fallback
+    job_code: competitor_row_refresh
+    handler_code: competitor_row_refresh
+    purpose: browser fallback 成功后，仅对可恢复行重新派发 competitor_row_refresh，并注入浏览器结果或 FastMoss security fallback attempt 标记。
+  - stage_code: ready_for_summary
+    handler_code: outbox_dispatch
+    purpose: 汇总单行刷新结果并写通知 outbox。
+
+protected_invariants:
+  - refresh_competitor_row_by_url 是正式 Task，不属于 internal/debug leaf task。
+  - 一次请求最多刷新一个由 product_url 定位到的 TK竞品收集记录。
+  - 单行刷新必须复用 competitor_row_refresh 行级 pipeline，不新增绕过 Runtime/capability 边界的业务路径。
+  - Row-level browser fallback is owned by task_execution/browser-runloop; competitor_row_refresh 只能返回 fallback_required，不允许直接 import browser capability 或 run_supervised_handler inline fallback。
+  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总 resume 后的最终 competitor_row_refresh 结果，且不得存在 active browser execution 或 active resume job。
+
+known_architecture_gaps: []

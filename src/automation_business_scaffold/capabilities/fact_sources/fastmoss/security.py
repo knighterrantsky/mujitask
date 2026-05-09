@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerNextAction, HandlerResult
@@ -17,12 +17,14 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import (
     DEFAULT_FASTMOSS_COOKIE_CACHE_TTL_SECONDS,
     attach_fastmoss_cookie_cache,
+    refresh_fastmoss_session_cookies,
 )
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
     FastMossSessionConflictError,
 )
+from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 FASTMOSS_SECURITY_VERIFICATION_CODES = {"MSG_SAFE_0001"}
@@ -169,19 +171,22 @@ def attach_fastmoss_cookie_cache_if_configured(
     *,
     settings: Mapping[str, Any],
     default_region: str = "US",
+    account_required: bool = False,
 ) -> dict[str, Any]:
     db_url = first_non_empty(settings.get("execution_control_db_url"), settings.get("db_url"))
     if not db_url:
         return {"enabled": False, "reason": "missing_db_url"}
-    enabled = coerce_bool(settings.get("cookie_cache_enabled"), default=True)
-    if not enabled:
-        return {"enabled": False, "reason": "disabled"}
-    account_key = first_non_empty(
+    resolved_account_key = first_non_empty(
         settings.get("account_key"),
         settings.get("phone"),
         settings.get("phone_env"),
-        "default",
     )
+    if account_required and not resolved_account_key:
+        return {}
+    enabled = coerce_bool(settings.get("cookie_cache_enabled"), default=True)
+    if not enabled:
+        return {"enabled": False, "reason": "disabled"}
+    account_key = first_non_empty(resolved_account_key, "default")
     ttl_seconds = _non_negative_float(
         settings.get("cookie_cache_ttl_seconds"),
         DEFAULT_FASTMOSS_COOKIE_CACHE_TTL_SECONDS,
@@ -195,6 +200,113 @@ def attach_fastmoss_cookie_cache_if_configured(
         enabled=enabled,
         ttl_seconds=ttl_seconds,
     )
+
+
+def build_fastmoss_session(
+    settings: Mapping[str, Any],
+    *,
+    default_region: str = "US",
+    session_factory: Callable[..., FastMossHTTPSession] = FastMossHTTPSession,
+) -> FastMossHTTPSession:
+    return session_factory(
+        phone=first_non_empty(settings.get("phone")),
+        password=first_non_empty(settings.get("password")),
+        base_url=first_non_empty(settings.get("base_url"), "https://www.fastmoss.com"),
+        default_region=first_non_empty(settings.get("region"), default_region),
+        timeout=float(settings.get("timeout", 30.0) or 30.0),
+        request_delay_range=resolve_api_request_delay_range(settings, provider="fastmoss"),
+        trust_env=coerce_bool(
+            first_non_empty(
+                settings.get("trust_env"),
+                settings.get("use_system_proxy"),
+                settings.get("fastmoss_trust_env"),
+                settings.get("fastmoss_use_system_proxy"),
+            ),
+            default=False,
+        ),
+    )
+
+
+def prepare_fastmoss_session(
+    session: FastMossHTTPSession,
+    *,
+    settings: Mapping[str, Any],
+    default_region: str = "US",
+    require_login: bool | None = None,
+    account_required: bool = False,
+    cookie_cache_errors: str = "raise",
+) -> dict[str, Any]:
+    try:
+        cookie_cache_status = attach_fastmoss_cookie_cache_if_configured(
+            session,
+            settings=settings,
+            default_region=first_non_empty(settings.get("region"), default_region),
+            account_required=account_required,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if cookie_cache_errors != "return":
+            raise
+        cookie_cache_status = {
+            "enabled": coerce_bool(settings.get("cookie_cache_enabled"), default=True),
+            "status": "unavailable",
+            "reason": str(exc),
+        }
+
+    cookies = settings.get("browser_cookies")
+    if isinstance(cookies, list) and cookies:
+        session.replace_browser_cookies(cookies)
+    login_required = (
+        bool(require_login)
+        if require_login is not None
+        else coerce_bool(settings.get("ensure_logged_in"), default=bool(cookies or settings.get("phone")))
+    )
+    if login_required:
+        session.ensure_logged_in()
+    return cookie_cache_status
+
+
+def refresh_fastmoss_session_after_security_check(
+    session: FastMossHTTPSession,
+    *,
+    settings: Mapping[str, Any],
+    default_region: str = "US",
+    cookies: list[Mapping[str, Any]] | None = None,
+    has_credentials: bool | None = None,
+    reason: str = "fastmoss_security_check_login_refresh",
+) -> bool:
+    cookie_rows = cookies if cookies is not None else settings.get("browser_cookies")
+    cookie_rows = cookie_rows if isinstance(cookie_rows, list) else []
+    credentials_available = (
+        bool(has_credentials)
+        if has_credentials is not None
+        else bool(first_non_empty(settings.get("phone")) and first_non_empty(settings.get("password")))
+    )
+    if not credentials_available and not cookie_rows:
+        return False
+
+    db_url = first_non_empty(settings.get("execution_control_db_url"), settings.get("db_url"))
+    account_key = first_non_empty(
+        settings.get("account_key"),
+        settings.get("phone"),
+        settings.get("phone_env"),
+    )
+    store = RuntimeStore(db_url=db_url) if db_url and account_key else None
+    refresh_fastmoss_session_cookies(
+        session,
+        store=store,
+        account_key=first_non_empty(account_key, "default"),
+        region=first_non_empty(settings.get("region"), default_region),
+        namespace=first_non_empty(settings.get("cookie_cache_namespace")),
+        enabled=coerce_bool(settings.get("cookie_cache_enabled"), default=True),
+        cookies=cookie_rows,
+        prefer_login=credentials_available,
+        ttl_seconds=_non_negative_float(
+            settings.get("cookie_cache_ttl_seconds"),
+            DEFAULT_FASTMOSS_COOKIE_CACHE_TTL_SECONDS,
+        ),
+        reason=reason,
+    )
+    return True
 
 
 def fastmoss_settings_from_payload(payload: Mapping[str, Any], *, defaults: Mapping[str, Any] | None = None) -> dict[str, Any]:

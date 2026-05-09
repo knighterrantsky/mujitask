@@ -7,7 +7,9 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerError,
     HandlerResult,
 )
-from automation_business_scaffold.domains.tiktok.flows import selection_row_refresh
+from automation_business_scaffold.domains.tiktok.flows.selection_row_refresh.pipeline import (
+    finalization as selection_row_refresh,
+)
 
 
 PRODUCT_ID = "1732355931137544633"
@@ -83,7 +85,7 @@ def test_selection_row_refresh_writeback_disabled_skips_feishu_write(
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
-    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=False))
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=False))
 
     assert result.status == "success"
     assert called["feishu_write"] == 0
@@ -118,7 +120,7 @@ def test_selection_row_refresh_url_invalid_writeback_disabled_skips_status_write
     )
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
-    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=False))
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=False))
 
     assert result.status == "success"
     assert result.result["row_status"] == "url_invalid"
@@ -181,7 +183,7 @@ def test_selection_row_refresh_fails_before_write_when_required_chart_render_mis
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
-    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=True))
 
     assert result.status == "failed"
     assert result.error is not None
@@ -248,7 +250,7 @@ def test_selection_row_refresh_unavailable_writes_status_without_required_charts
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
 
-    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=True))
 
     assert result.status == "success"
     assert result.result["row_status"] == "unavailable"
@@ -330,7 +332,7 @@ def test_selection_row_refresh_validates_required_fields_before_feishu_write(
     )
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_feishu_write)
 
-    result = selection_row_refresh.run_selection_row_refresh_flow(_context(writeback_enabled=True))
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=True))
 
     assert result.status == "failed"
     assert result.error is not None

@@ -9,7 +9,7 @@ import automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_f
 import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler as product_fetch_impl
 import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
-from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     READ_STAGE_CODE,
     SYNC_INFLUENCER_POOL_STAGE_CODE,

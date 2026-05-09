@@ -63,7 +63,7 @@
 
 - 控制面代码
   - `src/automation_business_scaffold/infrastructure/runtime/runtime_store.py`
-  - `src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table.py`
+  - `src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/`
   - `src/automation_business_scaffold/executor_daemon.py`
 - 数据库迁移
   - `alembic.ini`

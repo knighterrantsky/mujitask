@@ -46,7 +46,7 @@ CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
 
 def competitor_row_refresh_handler(context: HandlerContext) -> HandlerResult:
-    from automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh import (
+    from automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh.orchestrator import (
         run_competitor_row_refresh_flow,
     )
 

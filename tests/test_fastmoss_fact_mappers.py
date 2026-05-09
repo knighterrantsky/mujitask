@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 
-from automation_business_scaffold.infrastructure.fastmoss.fact_mappers import (
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.mappers.fact_bundle_mapper import (
     map_fastmoss_author_video_list,
     map_fastmoss_goods_author,
     map_fastmoss_goods_base,

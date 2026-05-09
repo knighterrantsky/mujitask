@@ -53,7 +53,10 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-automation_business_scaffold = ["infrastructure/fastmoss/*.mjs"]
+automation_business_scaffold = [
+  "contracts/workflow/*.yaml",
+  "infrastructure/fastmoss/*.mjs",
+]
 
 [tool.ruff]
 line-length = 100

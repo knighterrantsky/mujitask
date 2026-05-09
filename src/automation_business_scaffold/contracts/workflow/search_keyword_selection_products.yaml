@@ -17,12 +17,45 @@ workflow:
   runtime_export: build_search_keyword_selection_products_workflow
   exports:
     - SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION
+runtime_flow:
+  module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.orchestrator
+  exports:
+    - advance_stage
+    - finalize_request
+    - release_request_after_child_completion
+  context_module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.context
+  summary_module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.summary
+  stage_modules:
+    - stage_code: keyword_seed_import
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.keyword_seed_import
+    - stage_code: fastmoss_security_browser_fallback
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.fastmoss_security_browser_fallback
+    - stage_code: dispatch_selection_row_refresh_jobs
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.dispatch_selection_row_refresh_jobs
+    - stage_code: refresh_selection_rows
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.refresh_selection_rows
+    - stage_code: selection_row_browser_fallback
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.selection_row_browser_fallback
+    - stage_code: resume_selection_rows_after_browser_fallback
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.resume_selection_rows_after_browser_fallback
+    - stage_code: ready_for_summary
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.ready_for_summary
 custom_logic:
   mappers:
     - code: keyword_search_parameter_mapper
       module: automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper
       export: keyword_search_parameter_mapper
   policies:
+    - code: selection_keyword_candidate_filter
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.policies.candidate_filter
+      exports:
+        - normalize_search_candidates
+        - candidate_allowed
+    - code: selection_keyword_dedupe
+      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.policies.dedupe
+      exports:
+        - search_digest
+        - resolve_product_identity
     - code: table_workflow_policies
       module: automation_business_scaffold.domains.tiktok.policies.workflow_policies
       exports:

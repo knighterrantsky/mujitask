@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from automation_business_scaffold.infrastructure.tiktok import product_page
-from automation_business_scaffold.infrastructure.tiktok.product_page import (
+from automation_business_scaffold.capabilities.browser.tiktok import product_page
+from automation_business_scaffold.capabilities.browser.tiktok.product_page import (
     SHOP_CANDIDATE_SELECTORS,
     TikTokProductExtractionError,
     TikTokProductUnavailableError,
@@ -125,7 +125,7 @@ def test_tiktok_product_request_fetch_cleans_sold_by_shop_label() -> None:
 
 
 def test_browser_masked_price_is_not_promoted_to_numeric_amount() -> None:
-    from automation_business_scaffold.infrastructure.tiktok.product_page import _normalize_price_amount
+    from automation_business_scaffold.capabilities.browser.tiktok.product_page import _normalize_price_amount
 
     assert _normalize_price_amount("$1*") == ""
     assert _normalize_price_amount("$13.24") == "13.24"

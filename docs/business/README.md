@@ -58,6 +58,7 @@
 ## 当前正式业务入口
 
 - `refresh_current_competitor_table`
+- `refresh_competitor_row_by_url`
 - `search_keyword_competitor_products`
 - `sync_tk_influencer_pool`
 - `tiktok_fastmoss_product_ingest`

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool import (
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     DISPATCH_PRODUCT_STAGE_CODE,
     READ_STAGE_CODE,
@@ -9,9 +9,13 @@ from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool i
     TASK_CODE,
     WORKFLOW_CODE,
     WRITEBACK_STAGE_CODE,
+)
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.orchestrator import (
     advance_stage,
-    finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.summary import (
+    finalize_request,
 )
 from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import build_tiktok_outbox_message_text
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition

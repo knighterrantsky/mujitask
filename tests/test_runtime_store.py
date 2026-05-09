@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 
@@ -207,3 +209,18 @@ def test_fastmoss_cookie_cache_auth_failed_marker(runtime_db_url):
 
     assert marked is not None
     assert marked["last_auth_failed_at"] > 0
+
+
+def test_runtime_claim_fails_fast_when_schema_missing(unbootstrapped_runtime_db_url):
+    store = RuntimeStore(db_url=unbootstrapped_runtime_db_url)
+
+    with pytest.raises(RuntimeError, match="explicit runtime schema bootstrap"):
+        store.claim_next_task_request(worker_id="worker-a", lease_seconds=30.0)
+
+
+def test_runtime_bootstrap_path_is_explicit(unbootstrapped_runtime_db_url):
+    store = RuntimeStore(db_url=unbootstrapped_runtime_db_url)
+
+    store.bootstrap_schema()
+
+    assert store.claim_next_task_request(worker_id="worker-a", lease_seconds=30.0) is None

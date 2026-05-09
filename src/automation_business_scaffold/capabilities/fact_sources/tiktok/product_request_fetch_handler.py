@@ -3,7 +3,7 @@ from __future__ import annotations
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result as _shared_build_tiktok_normalized_product_result,
 )
-from automation_business_scaffold.infrastructure.tiktok.product_page import (
+from automation_business_scaffold.capabilities.browser.tiktok.product_page import (
     TikTokProductExtractionError,
     TikTokRateLimitError,
     TikTokProductUnavailableError,

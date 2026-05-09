@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from automation_business_scaffold.capabilities.input_sources.feishu.batch_write import (
+    execute_write_records,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.schema_normalization import (
+    validate_write_schema,
+)
 from automation_business_scaffold.capabilities.input_sources.feishu.table_common import (
     build_feishu_client,
-    classify_feishu_exception,
-    execute_write_records,
-    map_write_records,
     resolve_write_target,
-    validate_write_schema,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.transport_errors import (
+    classify_feishu_exception,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import (
+    map_write_records,
 )
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (

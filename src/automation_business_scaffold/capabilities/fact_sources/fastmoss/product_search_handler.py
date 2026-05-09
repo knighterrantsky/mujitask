@@ -36,12 +36,12 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPSession,
     FastMossSessionConflictError,
 )
-from automation_business_scaffold.infrastructure.fastmoss.cookie_cache import (
-    attach_fastmoss_cookie_cache,
-    refresh_fastmoss_session_cookies,
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
+    build_fastmoss_session,
+    is_fastmoss_security_verification_error,
+    prepare_fastmoss_session,
+    refresh_fastmoss_session_after_security_check,
 )
-from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
-from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -108,7 +108,7 @@ def fastmoss_product_search_handler(context: HandlerContext) -> HandlerResult:
                 details=exc.to_dict(),
             )
             return failed_result(context, error=error, summary={"candidate_count": 0})
-        if _is_fastmoss_security_verification_error(exc):
+        if is_fastmoss_security_verification_error(exc):
             error = build_error(
                 error_type="security_verification",
                 error_code="fastmoss_security_verification_required",
@@ -353,41 +353,38 @@ def _resolve_fastmoss_product_search_pages(
     if query["require_login"] and not cookies and not (phone and password):
         raise ValueError("FastMoss product search requires credentials or browser_cookies.")
 
-    session = FastMossHTTPSession(
-        phone=phone,
-        password=password,
-        base_url=first_non_empty(fastmoss_settings.get("base_url"), "https://www.fastmoss.com"),
-        default_region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
-        timeout=float(fastmoss_settings.get("timeout", 30.0) or 30.0),
-        request_delay_range=resolve_api_request_delay_range(fastmoss_settings, provider="fastmoss"),
-        trust_env=coerce_bool(fastmoss_settings.get("trust_env"), default=False),
+    default_region = first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US")
+    session = build_fastmoss_session(
+        fastmoss_settings,
+        default_region=default_region,
+        session_factory=FastMossHTTPSession,
     )
     with session:
-        cookie_cache_status = _attach_fastmoss_cookie_cache_if_configured(
+        cookie_cache_status = prepare_fastmoss_session(
             session,
-            fastmoss_settings=fastmoss_settings,
-            query=query,
+            settings=fastmoss_settings,
+            default_region=default_region,
+            require_login=coerce_bool(
+                fastmoss_settings.get("ensure_logged_in"),
+                default=bool(query["require_login"] or cookies or phone),
+            ),
+            account_required=True,
+            cookie_cache_errors="return",
         )
-        if cookies:
-            session.replace_browser_cookies(cookies)
-        ensure_logged_in = coerce_bool(
-            fastmoss_settings.get("ensure_logged_in"),
-            default=bool(query["require_login"] or cookies or phone),
-        )
-        if ensure_logged_in:
-            session.ensure_logged_in()
+        if cookie_cache_status.get("reason") == "missing_db_url":
+            cookie_cache_status = {}
 
         try:
             raw_pages = _fetch_fastmoss_search_pages(session, query=query)
         except FastMossHTTPError as exc:
-            if not _is_fastmoss_security_verification_error(exc):
+            if not is_fastmoss_security_verification_error(exc):
                 raise
-            if not _refresh_fastmoss_session_after_security_check(
+            if not refresh_fastmoss_session_after_security_check(
                 session,
+                settings=fastmoss_settings,
+                default_region=default_region,
                 cookies=cookies,
                 has_credentials=bool(phone and password),
-                fastmoss_settings=fastmoss_settings,
-                query=query,
             ):
                 raise
             raw_pages = _fetch_fastmoss_search_pages(session, query=query)
@@ -396,80 +393,6 @@ def _resolve_fastmoss_product_search_pages(
         if cookie_cache_status:
             session_snapshot["cookie_cache"] = cookie_cache_status
         return raw_pages, {}, session_snapshot
-
-
-def _is_fastmoss_security_verification_error(exc: FastMossHTTPError) -> bool:
-    return coerce_str(exc.response_code) in FASTMOSS_SECURITY_VERIFICATION_CODES
-
-
-def _refresh_fastmoss_session_after_security_check(
-    session: FastMossHTTPSession,
-    *,
-    cookies: list[Mapping[str, Any]],
-    has_credentials: bool,
-    fastmoss_settings: Mapping[str, Any],
-    query: Mapping[str, Any],
-) -> bool:
-    """Refresh FastMoss auth material once after a safety challenge response."""
-
-    if not has_credentials and not cookies:
-        return False
-    db_url = first_non_empty(fastmoss_settings.get("execution_control_db_url"), fastmoss_settings.get("db_url"))
-    account_key = first_non_empty(
-        fastmoss_settings.get("account_key"),
-        fastmoss_settings.get("phone"),
-        fastmoss_settings.get("phone_env"),
-    )
-    store = RuntimeStore(db_url=db_url) if db_url and account_key else None
-    refresh_fastmoss_session_cookies(
-        session,
-        store=store,
-        account_key=first_non_empty(account_key, "default"),
-        region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
-        namespace=first_non_empty(fastmoss_settings.get("cookie_cache_namespace")),
-        enabled=coerce_bool(fastmoss_settings.get("cookie_cache_enabled"), default=True),
-        cookies=cookies,
-        prefer_login=has_credentials,
-        ttl_seconds=_non_negative_float(
-            fastmoss_settings.get("cookie_cache_ttl_seconds"),
-            12 * 60 * 60,
-        ),
-        reason="fastmoss_security_check_login_refresh",
-    )
-    return True
-
-
-def _attach_fastmoss_cookie_cache_if_configured(
-    session: FastMossHTTPSession,
-    *,
-    fastmoss_settings: Mapping[str, Any],
-    query: Mapping[str, Any],
-) -> dict[str, Any]:
-    db_url = first_non_empty(fastmoss_settings.get("execution_control_db_url"), fastmoss_settings.get("db_url"))
-    account_key = first_non_empty(
-        fastmoss_settings.get("account_key"),
-        fastmoss_settings.get("phone"),
-        fastmoss_settings.get("phone_env"),
-    )
-    if not db_url or not account_key:
-        return {}
-    enabled = coerce_bool(fastmoss_settings.get("cookie_cache_enabled"), default=True)
-    try:
-        store = RuntimeStore(db_url=db_url)
-        return attach_fastmoss_cookie_cache(
-            session,
-            store=store,
-            account_key=account_key,
-            region=first_non_empty(query.get("region"), fastmoss_settings.get("region"), "US"),
-            namespace=first_non_empty(fastmoss_settings.get("cookie_cache_namespace")),
-            enabled=enabled,
-            ttl_seconds=_non_negative_float(
-                fastmoss_settings.get("cookie_cache_ttl_seconds"),
-                12 * 60 * 60,
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"enabled": enabled, "status": "unavailable", "reason": str(exc)}
 
 
 def _fetch_fastmoss_search_pages(

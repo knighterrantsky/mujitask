@@ -5,6 +5,8 @@ import uuid
 
 import pytest
 from automation_business_scaffold.project_env import bootstrap_project_env
+from automation_business_scaffold.infrastructure.schemas.fact_schema import ensure_tk_fact_schema
+from automation_business_scaffold.infrastructure.schemas.runtime_schema import ensure_runtime_schema
 
 bootstrap_project_env()
 
@@ -33,6 +35,19 @@ def _merge_pg_options(base_url: str, *new_options: str) -> str:
 def runtime_db_url(monkeypatch):
     """Return an isolated Postgres schema URL for runtime/fact store tests."""
 
+    yield from _isolated_runtime_db_url(monkeypatch, bootstrap_schema=True)
+
+
+@pytest.fixture
+def unbootstrapped_runtime_db_url(monkeypatch):
+    """Return an isolated Postgres schema URL for migration/bootstrap tests."""
+
+    yield from _isolated_runtime_db_url(monkeypatch, bootstrap_schema=False)
+
+
+def _isolated_runtime_db_url(monkeypatch, *, bootstrap_schema: bool):
+    """Return an isolated Postgres schema URL, optionally bootstrapped for runtime tests."""
+
     if create_engine is None or text is None or make_url is None:
         pytest.skip("SQLAlchemy is required for runtime/fact store tests.")
 
@@ -54,6 +69,15 @@ def runtime_db_url(monkeypatch):
 
     isolated_url = _merge_pg_options(base_url, f"-csearch_path={schema_name}")
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_DB_URL", isolated_url)
+    if bootstrap_schema:
+        schema_engine = create_engine(isolated_url, future=True, pool_pre_ping=True)
+        try:
+            ensure_runtime_schema(schema_engine)
+            with schema_engine.begin() as connection:
+                ensure_tk_fact_schema(connection)
+        finally:
+            schema_engine.dispose()
+
 
     try:
         yield isolated_url

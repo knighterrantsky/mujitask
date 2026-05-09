@@ -423,3 +423,72 @@ def test_reconcile_request_waiting_children_idempotently_promotes_ready_for_summ
 
     assert third_reconcile["transitioned"] is False
     assert third_reconcile["request"].status == "ready_for_summary"
+
+
+def test_reconcile_waiting_children_keeps_fallback_required_parent_waiting(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = _submit_request(store)
+    store.update_task_request(
+        request_id=request.request_id,
+        status="waiting_children",
+        current_stage="collect_product_data",
+        progress_stage="collect_product_data",
+    )
+
+    jobs = store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code="tiktok_fastmoss_product_ingest",
+        job_code="fastmoss_product_fetch",
+        jobs=[
+            {
+                "business_key": "product:123",
+                "dedupe_key": f"{request.request_id}:fallback_required_job",
+                "payload": {"product_id": "123"},
+            }
+        ],
+    )
+    job_id = jobs["created_records"][0]["job_id"]
+    claimed_job = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+    assert claimed_job is not None and claimed_job["job_id"] == job_id
+    store.mark_api_worker_job_success(
+        job_id=job_id,
+        run_id=claimed_job["run_id"],
+        summary={"handler_status": "fallback_required"},
+        result={
+            "handler_result": {
+                "status": "fallback_required",
+                "result": {"fallback_required": True},
+            }
+        },
+        stage="browser_fallback_required",
+    )
+
+    with store._engine.connect() as connection:  # noqa: SLF001
+        counts = store._aggregate_runtime_request_children(  # noqa: SLF001
+            connection,
+            request_id=request.request_id,
+        )
+
+    assert counts["total_count"] == 1
+    assert counts["terminal_count"] == 1
+    assert counts["fallback_required_count"] == 1
+    assert counts["success_count"] == 0
+    assert counts["failed_count"] == 0
+    assert counts["skipped_count"] == 0
+    assert counts["active_count"] == 0
+
+    reconciled = store.reconcile_request_waiting_children(request_id=request.request_id)
+
+    assert reconciled["transitioned"] is False
+    assert reconciled["fallback_required_count"] == 1
+    assert reconciled["child_total_count"] == 1
+    assert reconciled["child_terminal_count"] == 1
+    assert reconciled["child_success_count"] == 0
+    assert reconciled["child_failed_count"] == 0
+    assert reconciled["child_skipped_count"] == 0
+    assert reconciled["request"].status == "waiting_children"
+    assert reconciled["request"].current_stage == "collect_product_data"
+
+    watchdog_candidates = store.scan_waiting_children_reconciliation(now=time.time())
+
+    assert watchdog_candidates == []

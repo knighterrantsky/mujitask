@@ -11,14 +11,14 @@ ROW_FLOW_FILES = (
     / "domains"
     / "tiktok"
     / "flows"
-    / "selection_row_refresh.py",
+    / "selection_row_refresh",
     REPO_ROOT
     / "src"
     / "automation_business_scaffold"
     / "domains"
     / "tiktok"
     / "flows"
-    / "competitor_row_refresh.py",
+    / "competitor_row_refresh",
 )
 BROWSER_RUNLOOP_PLIST = (
     REPO_ROOT / "config" / "deployment" / "launchd" / "com.happyzhao.mujitask.browser-runloop.plist.template"
@@ -31,6 +31,16 @@ EXECUTOR_LOOPING = (
     / "executor"
     / "looping.py"
 )
+
+
+def _source_text(path: Path) -> str:
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return "\n".join(
+        item.read_text(encoding="utf-8")
+        for item in sorted(path.rglob("*.py"))
+        if "__pycache__" not in item.parts
+    )
 
 
 def test_row_refresh_flows_do_not_inline_browser_fallback() -> None:
@@ -46,7 +56,7 @@ def test_row_refresh_flows_do_not_inline_browser_fallback() -> None:
 
     violations: list[str] = []
     for path in ROW_FLOW_FILES:
-        source = path.read_text(encoding="utf-8")
+        source = _source_text(path)
         for token in forbidden_tokens:
             if token in source:
                 violations.append(f"{path.relative_to(REPO_ROOT)} contains {token}")
@@ -64,15 +74,15 @@ def test_selection_keyword_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "search_keyword_selection_products.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
+    runtime_source = _source_text(
         REPO_ROOT
         / "src"
         / "automation_business_scaffold"
         / "domains"
         / "tiktok"
         / "flows"
-        / "search_keyword_selection_products.py"
-    ).read_text(encoding="utf-8")
+        / "search_keyword_selection_products"
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "search_keyword_selection_products.yaml"
     ).read_text(encoding="utf-8")
@@ -100,15 +110,18 @@ def test_product_ingest_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "tiktok_fastmoss_product_ingest.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
-        REPO_ROOT
-        / "src"
-        / "automation_business_scaffold"
-        / "domains"
-        / "tiktok"
-        / "flows"
-        / "tiktok_fastmoss_product_ingest.py"
-    ).read_text(encoding="utf-8")
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT
+            / "src"
+            / "automation_business_scaffold"
+            / "domains"
+            / "tiktok"
+            / "flows"
+            / "tiktok_fastmoss_product_ingest"
+        ).rglob("*.py")
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "tiktok_fastmoss_product_ingest.yaml"
     ).read_text(encoding="utf-8")
@@ -145,15 +158,18 @@ def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
         / "workflows"
         / "refresh_competitor_row_by_url.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
-        REPO_ROOT
-        / "src"
-        / "automation_business_scaffold"
-        / "domains"
-        / "tiktok"
-        / "flows"
-        / "refresh_current_competitor_table.py"
-    ).read_text(encoding="utf-8")
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT
+            / "src"
+            / "automation_business_scaffold"
+            / "domains"
+            / "tiktok"
+            / "flows"
+            / "refresh_current_competitor_table"
+        ).rglob("*.py")
+    )
     contract_source = (
         REPO_ROOT / "contracts" / "workflow" / "refresh_current_competitor_table.yaml"
     ).read_text(encoding="utf-8")

@@ -47,6 +47,7 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 | task_code | 作用 | 执行形态 |
 | --- | --- | --- |
 | `refresh_current_competitor_table` | 竞品采集：定时刷新当前飞书竞品表 | submit 入队，executor 编排，browser/API worker 执行 |
+| `refresh_competitor_row_by_url` | 竞品采集：按 TikTok 商品 URL 定位并刷新单行竞品记录 | submit 入队，executor 编排，browser/API worker 执行 |
 | `search_keyword_competitor_products` | 关键词搜索竞品写入 | submit 入队，executor 编排，browser/API worker 执行 |
 | `sync_tk_influencer_pool` | 从竞品表扩展达人池 | submit 入队，api worker 消费 product/author/finalizer job |
 | `tiktok_fastmoss_product_ingest` | 选品采集：TikTok + FastMoss 商品事实采集并写回选品表 | submit 入队，api worker 采集、上传媒体、写事实库 |
