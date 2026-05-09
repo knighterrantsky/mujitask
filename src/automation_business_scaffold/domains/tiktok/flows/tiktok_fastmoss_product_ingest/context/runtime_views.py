@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -48,14 +47,28 @@ from .decision_models import *
 
 
 def _row_refresh_jobs_for_summary(*, store: RuntimeStore, request_id: str) -> list[dict[str, Any]]:
-    return [
-        *_api_jobs_for_stage(store, request_id=request_id, stage_code="collect_selection_rows"),
-        *_api_jobs_for_stage(
-            store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        ),
-    ]
+    return _api_jobs_for_stage(store, request_id=request_id, stage_code="collect_selection_rows")
+
+def _selection_row_has_after_browser_terminal(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store,
+                request_id=request_id,
+                stage_code="collect_selection_rows",
+            )
+            if _mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
+        source_record_id=source_record_id,
+        job_code="selection_row_refresh",
+    )
+    return _handler_status_from_api_job(row_job) in {"success", "partial_success", "failed", "skipped"}
 
 def _selection_row_browser_fallback_candidates(
     store: RuntimeStore,
@@ -90,6 +103,12 @@ def _selection_row_browser_fallback_candidates(
             result_payload.get("source_record_id"),
             row_payload.get("source_record_id"),
         )
+        if _selection_row_has_after_browser_terminal(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         business_entity_key = _first_non_empty(
             result_payload.get("business_entity_key"),
             row_payload.get("business_key"),
@@ -139,7 +158,7 @@ def _selection_row_browser_fallback_candidates(
         )
     return candidates
 
-def _selection_row_browser_resume_candidates(
+def _selection_row_after_browser_candidates(
     store: RuntimeStore,
     *,
     request_id: str,
@@ -299,6 +318,22 @@ def _latest_api_job_by_code(jobs: list[dict[str, Any]], job_code: str) -> dict[s
         if str(job.get("job_code") or "") == job_code:
             return job
     return {}
+
+def _latest_row_job(
+    jobs: list[dict[str, Any]],
+    *,
+    source_record_id: str,
+    job_code: str,
+) -> dict[str, Any] | None:
+    selected: dict[str, Any] | None = None
+    for job in jobs:
+        if str(job.get("job_code") or "") != job_code:
+            continue
+        payload = dict(job.get("payload") or {})
+        if str(payload.get("source_record_id") or "") != source_record_id:
+            continue
+        selected = job
+    return selected
 
 def _any_api_jobs_active(jobs: list[dict[str, Any]]) -> bool:
     return any(str(job.get("status") or "") in ACTIVE_API_JOB_STATUSES for job in jobs)

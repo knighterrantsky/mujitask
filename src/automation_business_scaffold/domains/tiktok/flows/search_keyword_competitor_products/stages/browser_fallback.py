@@ -27,6 +27,7 @@ from ..context.stage_inputs import (
     _fastmoss_browser_resource_code,
     _fastmoss_search_settings_from_request_payload,
     _first_text,
+    _latest_row_job,
     _minimal_seed_context,
     _payload_subset,
     _record_effective_status,
@@ -130,28 +131,85 @@ def advance(
         )
     if _any_browser_executions_active(executions):
         return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
-    resumable = _browser_resume_candidates(store=store, request_id=request.request_id)
+    after_browser_candidates = _browser_after_browser_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "after_browser_candidate_count": len(after_browser_candidates),
+            "status": "success" if after_browser_candidates else "failed",
         },
     )
-    if resumable:
-        return {
-            "action": "advance",
-            "next_stage": "resume_competitor_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
-        }
+    if after_browser_candidates:
+        row_stage_code = "refresh_competitor_rows"
+        row_job_def = workflow.require_job("competitor_row_refresh")
+        row_jobs = [
+            _after_browser_row_job(
+                request=request,
+                workflow=workflow,
+                stage_code=row_stage_code,
+                row_job_def=row_job_def,
+                candidate=candidate,
+            )
+            for candidate in after_browser_candidates
+        ]
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=row_job_def.job_code,
+            jobs=row_jobs,
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "execution_count": len(executions),
+                "after_browser_candidate_count": len(after_browser_candidates),
+                "row_dispatch": dispatch,
+                "status": "success",
+            },
+        )
+        return _waiting(
+            stage_code=row_stage_code,
+            message="Enqueued competitor row refresh after browser fallback.",
+            details={
+                "created_count": int(dispatch["created_count"]),
+                "after_browser_candidate_count": len(after_browser_candidates),
+            },
+        )
     return {
         "action": "advance",
         "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "details": {"execution_count": len(executions), "after_browser_candidate_count": 0},
     }
+
+
+def _row_has_after_browser_terminal(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store=store,
+                request_id=request_id,
+                stage_code="refresh_competitor_rows",
+            )
+            if coerce_mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
+        source_record_id=source_record_id,
+        job_code="competitor_row_refresh",
+    )
+    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
 
 def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
@@ -185,6 +243,12 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             browser_payload.get("source_record_id"),
             payload.get("source_record_id"),
         )
+        if _row_has_after_browser_terminal(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         candidate_key = _first_text(
             result.get("candidate_key"),
             browser_payload.get("candidate_key"),
@@ -293,7 +357,7 @@ def _browser_execution_payload(
             payload["fastmoss"] = fastmoss_settings
     return _compact_mapping(payload)
 
-def _browser_resume_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+def _browser_after_browser_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     fallback_by_key = {
         str(candidate.get("fallback_key") or ""): candidate
         for candidate in _browser_fallback_candidates(store=store, request_id=request_id)
@@ -328,7 +392,39 @@ def _browser_resume_candidates(store: RuntimeStore, *, request_id: str) -> list[
         )
     return candidates
 
-def _resume_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
+
+def _after_browser_row_job(
+    *,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+    row_job_def: Any,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _after_browser_row_payload(stage_code=stage_code, candidate=candidate)
+    keys = render_job_keys(
+        row_job_def,
+        request.payload,
+        candidate,
+        payload,
+        request_id=request.request_id,
+        task_code=request.task_code,
+        workflow_code=workflow.workflow_code,
+        stage_code=stage_code,
+        job_code=row_job_def.job_code,
+    )
+    return {
+        "business_key": keys["business_key"],
+        "dedupe_key": build_stage_local_dedupe_key(
+            f"{keys['dedupe_key']}:after-browser-fallback",
+            row_job_def.job_code,
+        ),
+        "payload": payload,
+        "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
+    }
+
+
+def _after_browser_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
     fallback_handler = str(candidate.get("fallback_handler") or "")
     payload = dict(candidate.get("row_payload") or {}) if isinstance(candidate.get("row_payload"), Mapping) else {}
     browser_payload = (

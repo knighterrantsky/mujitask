@@ -28,7 +28,7 @@ from ..context.stage_inputs import (
     _record_effective_status,
 )
 from ..context.runtime_views import (
-    _selection_row_has_successful_resume,
+    _selection_row_has_after_browser_terminal,
 )
 from ..context.decision_models import (
     _waiting,
@@ -136,27 +136,62 @@ def advance(
             stage_code=stage_code,
             message="Waiting for selection row browser fallback executions to finish.",
         )
-    resumable = _selection_row_browser_resume_candidates(store=store, request_id=request.request_id)
+    after_browser_candidates = _selection_row_after_browser_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "after_browser_candidate_count": len(after_browser_candidates),
+            "status": "success" if after_browser_candidates else "failed",
         },
     )
-    if resumable:
-        return {
-            "action": "advance",
-            "next_stage": "resume_selection_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
-        }
+    if after_browser_candidates:
+        row_stage_code = "refresh_selection_rows"
+        row_job_def = workflow.require_job("selection_row_refresh")
+        jobs = [
+            _selection_row_after_browser_job(
+                request=request,
+                workflow=workflow,
+                stage_code=row_stage_code,
+                row_job_def=row_job_def,
+                candidate=candidate,
+            )
+            for candidate in after_browser_candidates
+        ]
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=row_job_def.job_code,
+            jobs=jobs,
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "execution_count": len(executions),
+                "after_browser_candidate_count": len(after_browser_candidates),
+                "row_dispatch": dispatch,
+                "status": "success",
+            },
+        )
+        return _waiting(
+            stage_code=row_stage_code,
+            message="Enqueued selection row refresh after browser fallback.",
+            details={
+                "created_count": int(dispatch["created_count"]),
+                "after_browser_candidate_count": len(after_browser_candidates),
+            },
+        )
     return {
         "action": "advance",
         "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "details": {"execution_count": len(executions), "after_browser_candidate_count": 0},
     }
 
 
@@ -188,7 +223,7 @@ def _selection_row_browser_fallback_candidates(
             result_payload.get("source_record_id"),
             row_payload.get("source_record_id"),
         )
-        if _selection_row_has_successful_resume(
+        if _selection_row_has_after_browser_terminal(
             store=store,
             request_id=request_id,
             source_record_id=source_record_id,
@@ -273,7 +308,7 @@ def _selection_row_browser_execution_payload(
     return compact_dict(payload)
 
 
-def _selection_row_browser_resume_candidates(
+def _selection_row_after_browser_candidates(
     store: RuntimeStore,
     *,
     request_id: str,
@@ -315,7 +350,55 @@ def _selection_row_browser_resume_candidates(
     return candidates
 
 
-def _selection_row_resume_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
+def _selection_row_after_browser_job(
+    *,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+    row_job_def: Any,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _selection_row_after_browser_payload(stage_code=stage_code, candidate=candidate)
+    product_identity = coerce_mapping(candidate.get("product_identity"))
+    row_key = _first_text(
+        candidate.get("source_record_id"),
+        candidate.get("business_entity_key"),
+        candidate.get("candidate_key"),
+        product_identity.get("product_id"),
+        product_identity.get("normalized_product_url"),
+    )
+    candidate_context = {
+        **dict(candidate),
+        "source_record_id_or_product_id": row_key,
+    }
+    payload_context = {
+        **payload,
+        "source_record_id_or_product_id": row_key,
+    }
+    keys = render_job_keys(
+        row_job_def,
+        request.payload,
+        candidate_context,
+        payload_context,
+        request_id=request.request_id,
+        task_code=request.task_code,
+        workflow_code=workflow.workflow_code,
+        stage_code=stage_code,
+        job_code=row_job_def.job_code,
+    )
+    dedupe_base = keys["dedupe_key"] or f"{request.request_id}:{stage_code}:{row_key}"
+    return {
+        "business_key": keys["business_key"] or row_key,
+        "dedupe_key": build_stage_local_dedupe_key(
+            f"{dedupe_base}:after-browser-fallback",
+            row_job_def.job_code,
+        ),
+        "payload": payload,
+        "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
+    }
+
+
+def _selection_row_after_browser_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
     fallback_handler = str(candidate.get("fallback_handler") or "")
     payload = dict(coerce_mapping(candidate.get("row_payload")))
     browser_payload = coerce_mapping(candidate.get("browser_execution_payload"))

@@ -1676,34 +1676,34 @@ def test_keyword_runtime_row_browser_fallback_resumes_before_summary(runtime_db_
     )
     recovered = release_request_after_child_completion(store, request_id=request.request_id)
     assert recovered == [
-        {
-            "request_id": request.request_id,
-            "stage_code": "resume_competitor_rows_after_browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+            {
+                "request_id": request.request_id,
+                "stage_code": "browser_fallback",
+                "released": True,
+                "next_executor_status": "pending",
+            }
+        ]
 
     request = store.load_task_request(request_id=request.request_id)
-    resume_wait = advance_stage(
+    after_browser_wait = advance_stage(
         store=store,
         request=request,
         workflow=workflow,
-        stage_code="resume_competitor_rows_after_browser_fallback",
+        stage_code="browser_fallback",
     )
-    assert resume_wait["action"] == "waiting"
-    resume_job = _latest_stage_job(
+    assert after_browser_wait["action"] == "waiting"
+    after_browser_job = _latest_stage_job(
         store,
         request_id=request.request_id,
-        stage_code="resume_competitor_rows_after_browser_fallback",
+        stage_code="refresh_competitor_rows",
         job_code="competitor_row_refresh",
     )
-    assert resume_job["payload"]["normalized_product_result"]["source"] == "browser"
-    assert resume_job["payload"]["browser_fallback_resolved"] is True
+    assert after_browser_job["payload"]["normalized_product_result"]["source"] == "browser"
+    assert after_browser_job["payload"]["browser_fallback_resolved"] is True
 
     _mark_api_job_success(
         store,
-        job_id=str(resume_job["job_id"]),
+        job_id=str(after_browser_job["job_id"]),
         summary={"row_status": "success"},
         result={
             "row_status": "success",
@@ -1719,13 +1719,13 @@ def test_keyword_runtime_row_browser_fallback_resumes_before_summary(runtime_db_
     )
 
     request = store.load_task_request(request_id=request.request_id)
-    resume_done = advance_stage(
+    after_browser_done = advance_stage(
         store=store,
         request=request,
         workflow=workflow,
-        stage_code="resume_competitor_rows_after_browser_fallback",
+        stage_code="refresh_competitor_rows",
     )
-    assert resume_done["next_stage"] == "ready_for_summary"
+    assert after_browser_done["next_stage"] == "ready_for_summary"
 
     request = store.update_task_request(
         request_id=request.request_id,

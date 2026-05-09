@@ -222,7 +222,7 @@ def test_watchdog_waiting_children_scan_leaves_fallback_required_for_workflow_st
     assert store.payloads == []
 
 
-def test_successful_browser_resume_prevents_repeated_selection_row_fallback_dispatch() -> None:
+def test_after_browser_row_job_prevents_repeated_selection_row_fallback_dispatch() -> None:
     class FakeStore:
         def list_api_worker_jobs_for_request(self, *, request_id: str) -> list[dict[str, Any]]:
             assert request_id == "req-1"
@@ -253,13 +253,14 @@ def test_successful_browser_resume_prevents_repeated_selection_row_fallback_disp
                     },
                 },
                 {
-                    "job_id": "row-resume",
+                    "job_id": "row-after-browser",
                     "job_code": "selection_row_refresh",
                     "business_key": "row-1",
                     "status": "success",
                     "payload": {
-                        "stage_code": "resume_selection_rows_after_browser_fallback",
+                        "stage_code": "refresh_selection_rows",
                         "source_record_id": "row-1",
+                        "browser_fallback_resolved": True,
                     },
                     "result": {"handler_result": {"status": "success", "result": {}}},
                 },

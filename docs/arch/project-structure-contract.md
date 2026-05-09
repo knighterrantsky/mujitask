@@ -45,6 +45,8 @@ skills/{skill_code}/skill.spec.yaml
 task_code
   -> domains/{domain}/tasks/{task_code}.py
   -> domains/{domain}/workflows/{workflow_code}.py
+  -> domains/{domain}/flows/{workflow_code}/orchestrator.py
+  -> domains/{domain}/flows/{workflow_code}/stages/{stage_code}.py
   -> domains/{domain}/jobs/{job_code}.py
   -> capabilities/{capability_role}/{system}/{handler_code}_handler.py
   -> domains/{domain}/mappers/{mapper_module}.py 或 projections/{projection_module}.py
@@ -74,6 +76,9 @@ console script 或 agent/CLI 请求
   -> control_plane/supervisor/execution_supervisor.py
   -> control_plane/reconciler/views.py
   -> control_plane/watchdog/scanner.py
+  -> infrastructure/runtime/runtime_store.py
+  -> infrastructure/runtime/repositories/**
+  -> infrastructure/runtime/queries/**
   -> src/automation_business_scaffold/project_env.py
   -> src/automation_business_scaffold/config.py
 ```
@@ -143,7 +148,7 @@ skills/{skill_code}/
 | `domains/{domain}/mappers/` | 输入源业务语义转换，例如飞书表 source adapter | handler registry key、外部 transport |
 | `domains/{domain}/projections/` | 输出字段投影，例如飞书写回 projection mapper | handler registry key、外部 transport |
 | `domains/{domain}/policies/` | workflow policy、幂等、timeout、summary 策略 | 外部 transport、worker loop |
-| `domains/{domain}/flows/` | workflow stage 推进和业务编排实现细节 | 稳定 handler/job contract 事实来源、部署配置源 |
+| `domains/{domain}/flows/` | workflow stage 推进和业务编排实现细节；top-level workflow 使用同名 package，row-level 主 job 使用 leaf package | 稳定 handler/job contract 事实来源、部署配置源 |
 | `contracts/handler/` | handler contract、allowlist、registry primitives 和 handler lookup registry | 具体业务字段映射、外部系统 client |
 | `contracts/workflow/` | Workflow/Job contract model、runtime task shell、manifest | 业务流程大段实现 |
 | `capabilities/input_sources/` | Feishu/Dingding 等输入源 handler | 表级业务筛选策略 |
@@ -151,12 +156,77 @@ skills/{skill_code}/
 | `capabilities/channels/` | Feishu/outbox/Discord/Dingding 等输出通道 handler | workflow summary 生成逻辑 |
 | `capabilities/persistence/` | Fact DB/Object Store 等持久化 handler | 业务字段语义 |
 | `control_plane/` | task request 生命周期、executor/worker claim、Execution Supervisor、Reconciler、Watchdog、outbox、runtime config | 飞书字段映射、TikTok/FastMoss 业务策略、业务专用 daemon |
-| `infrastructure/` | 外部系统客户端、存储、Runtime Store、Fact Store、浏览器桥接等基础设施 | 业务筛选、字段映射、写回投影、终态判断等业务语义 |
+| `infrastructure/` | 外部系统客户端、存储、RuntimeStore façade、Runtime repositories/queries、Fact Store、浏览器桥接等基础设施 | 业务筛选、字段映射、写回投影、终态判断等业务语义 |
 | `models/` | 跨层使用的数据模型 | 外部 API 调用流程、业务专用模型（业务模型归 domain） |
 | `validators/` | 输入和业务数据校验 | runtime 编排 |
 | `acceptance/` | 验收比较、runtime projection、测试投影工具 | runtime 主路径依赖 |
 
 新增逻辑优先落入 `domains/`、`capabilities/`、`control_plane/`、`contracts/` 和 `infrastructure/` client/store 等职责明确的 owner，而不是继续往 `models/`、`validators/` 这类泛化目录堆放。`models/` 只放跨层共享的数据模型，域内模型随 domain 定义；`validators/` 只放通用校验函数；`infrastructure/` 是技术驱动层，不能承载业务筛选、字段映射、投影和终态判断。
+
+### 4.1 当前重构后的 Flow Package 结构
+
+Top-level workflow 的运行推进逻辑必须使用同名 package:
+
+```text
+domains/{domain}/flows/{workflow_code}/
+  orchestrator.py
+  context/
+    models.py
+    runtime_views.py
+    stage_inputs.py
+    decision_models.py
+    summary_inputs.py
+  stages/
+    {stage_code}.py
+  policies/
+  summary.py
+```
+
+当前 TikTok top-level workflow package:
+
+| workflow_code | package |
+| --- | --- |
+| `refresh_current_competitor_table` | `domains/tiktok/flows/refresh_current_competitor_table/` |
+| `search_keyword_competitor_products` | `domains/tiktok/flows/search_keyword_competitor_products/` |
+| `search_keyword_selection_products` | `domains/tiktok/flows/search_keyword_selection_products/` |
+| `sync_tk_influencer_pool` | `domains/tiktok/flows/sync_tk_influencer_pool/` |
+| `tiktok_fastmoss_product_ingest` | `domains/tiktok/flows/tiktok_fastmoss_product_ingest/` |
+
+Row-level leaf flow package:
+
+| row flow | package |
+| --- | --- |
+| `selection_row_refresh` | `domains/tiktok/flows/selection_row_refresh/` |
+| `competitor_row_refresh` | `domains/tiktok/flows/competitor_row_refresh/` |
+
+约束:
+
+- `orchestrator.py` 保持薄入口，只做 public runtime entrypoint、stage dispatch 和必要的 child completion release glue。
+- `stages/{stage_code}.py` 承接单个 stage 的推进逻辑，不能把多个 workflow 的共享大逻辑堆回 generic helper。
+- `context/**` 只放 typed model、runtime view、stage input、decision model 和 summary input；不能导入 provider client、runtime repository、capability handler 或 control plane。
+- `summary.py` 负责最终 summary、result 和 outbox payload 组装。
+- `__init__.py` 不作为业务导出面；runtime import 应指向具体模块。
+
+### 4.2 RuntimeStore 拆分结构
+
+Runtime DB 技术 owner 使用 façade + repository/query 结构:
+
+```text
+infrastructure/runtime/
+  runtime_store.py
+  repositories/
+    api_worker_job_repo.py
+    task_execution_repo.py
+    notification_outbox_repo.py
+    artifact_object_repo.py
+    task_request_repo.py
+  queries/
+    request_status_query.py
+    watchdog_query.py
+    db_health_query.py
+```
+
+`RuntimeStore` public class path 保持稳定，但 `__init__` 不执行 DDL。Runtime schema DDL 只允许通过显式 bootstrap / migration 入口执行。
 
 ## 5. 命名契约
 

@@ -155,14 +155,11 @@ def _build_row_result(
 ) -> dict[str, Any]:
     candidate_key = str(candidate_context.get("candidate_key") or "")
     seed_context = _seed_context_by_candidate_key(store=store, request_id=request_id).get(candidate_key, {})
-    row_jobs = [
-        *_api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_selection_rows"),
-        *_api_jobs_for_stage(
-            store=store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        ),
-    ]
+    row_jobs = _api_jobs_for_stage(
+        store=store,
+        request_id=request_id,
+        stage_code="refresh_selection_rows",
+    )
     row_job = _latest_row_job(
         row_jobs,
         source_record_id=str(seed_context.get("source_record_id") or ""),

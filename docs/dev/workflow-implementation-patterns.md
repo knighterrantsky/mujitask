@@ -181,6 +181,62 @@ domains/{domain}/workflows/{workflow_code}.py
 - 把 stage 顺序写进 code 名称，例如 `stage1`、`v2`。
 - 文件超过 300 行。超过时说明字段解释、异常修补或业务筛选逻辑正在渗入 workflow 定义，应把可复用 rule builder、stage 模式、summary/idempotency/timeout/watchdog 规则下沉到 `contracts/workflow` 或 `domains/{domain}/policies`，让 workflow 保持"装配"而非"包办"。
 
+### 4.3.1 Workflow Runtime Flow Package Pattern
+
+复杂 workflow 的运行推进逻辑必须落到同名 flow package，而不是继续堆在 `workflows/{workflow_code}.py` 或单个长 flow 文件里。
+
+项目目录:
+
+```text
+domains/{domain}/flows/{workflow_code}/
+  orchestrator.py
+  context/
+    models.py
+    runtime_views.py
+    stage_inputs.py
+    decision_models.py
+    summary_inputs.py
+  stages/
+    {stage_code}.py
+  policies/
+  summary.py
+```
+
+职责:
+
+- `orchestrator.py`: public runtime entrypoint、stage module dispatch、child completion release glue。
+- `stages/{stage_code}.py`: 单个 stage 的推进逻辑，读取 RuntimeStore façade 暴露的状态，返回 stage decision。
+- `context/runtime_views.py`: 从 Runtime DB row / job result 读取 workflow 需要的只读视图。
+- `context/stage_inputs.py`: 构造 stage/job payload 所需输入。
+- `context/decision_models.py`: stage decision、waiting/advance/finalize 等小型数据结构。
+- `context/summary_inputs.py`: summary/result/outbox 组装所需只读输入。
+- `policies/**`: workflow 本地业务策略。
+- `summary.py`: 最终 summary、result 和 outbox payload。
+
+禁止:
+
+- `context/**` 导入 provider client、runtime repository、capability handler 或 control plane。
+- `orchestrator.py` 承载每个 stage 的业务推进细节。
+- `stages/**` 通过 generic helper/shared kernel 隐式承载多个 workflow 的业务语义。
+- `__init__.py` 重新导出业务 runtime surface；runtime import 应指向具体模块。
+
+当前已包化的 top-level TikTok workflow:
+
+| workflow_code | flow package |
+| --- | --- |
+| `refresh_current_competitor_table` | `flows/refresh_current_competitor_table/` |
+| `search_keyword_competitor_products` | `flows/search_keyword_competitor_products/` |
+| `search_keyword_selection_products` | `flows/search_keyword_selection_products/` |
+| `sync_tk_influencer_pool` | `flows/sync_tk_influencer_pool/` |
+| `tiktok_fastmoss_product_ingest` | `flows/tiktok_fastmoss_product_ingest/` |
+
+Row-level leaf flow package 只表达单个主 job 内部串行 pipeline，不表达 top-level workflow stage DAG:
+
+| row flow | package |
+| --- | --- |
+| `selection_row_refresh` | `flows/selection_row_refresh/` |
+| `competitor_row_refresh` | `flows/competitor_row_refresh/` |
+
 ### 4.4 Job Contract Pattern
 
 项目目录:

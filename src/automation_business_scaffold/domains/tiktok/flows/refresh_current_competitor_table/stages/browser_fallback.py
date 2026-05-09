@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
@@ -101,27 +101,93 @@ def _advance_browser_fallback(
 
     if _any_browser_executions_active(executions):
         return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
-    resumable = _browser_resume_candidates(store=store, request_id=request.request_id)
+    after_browser_candidates = _browser_after_browser_candidates(
+        store=store,
+        request_id=request.request_id,
+    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "after_browser_candidate_count": len(after_browser_candidates),
+            "status": "success" if after_browser_candidates else "failed",
         },
     )
-    if resumable:
-        return {
-            "action": "advance",
-            "next_stage": "resume_competitor_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
-        }
+    if after_browser_candidates:
+        row_stage_code = "collect_product_data"
+        row_job_def = workflow.require_job("competitor_row_refresh")
+        row_jobs = [
+            _after_browser_row_job(
+                request=request,
+                workflow=workflow,
+                stage_code=row_stage_code,
+                row_job_def=row_job_def,
+                candidate=candidate,
+            )
+            for candidate in after_browser_candidates
+        ]
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=row_job_def.job_code,
+            jobs=row_jobs,
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "execution_count": len(executions),
+                "after_browser_candidate_count": len(after_browser_candidates),
+                "row_dispatch": dispatch,
+                "status": "success",
+            },
+        )
+        return _waiting(
+            stage_code=row_stage_code,
+            message="Enqueued competitor row refresh after browser fallback.",
+            details={
+                "created_count": int(dispatch["created_count"]),
+                "after_browser_candidate_count": len(after_browser_candidates),
+            },
+        )
     return {
         "action": "advance",
         "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "details": {"execution_count": len(executions), "after_browser_candidate_count": 0},
+    }
+
+
+def _after_browser_row_job(
+    *,
+    request: Any,
+    workflow: WorkflowDefinition,
+    stage_code: str,
+    row_job_def: Any,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _after_browser_row_payload(stage_code=stage_code, candidate=candidate)
+    keys = render_job_keys(
+        row_job_def,
+        request.payload,
+        candidate,
+        payload,
+        request_id=request.request_id,
+        task_code=request.task_code,
+        workflow_code=workflow.workflow_code,
+        stage_code=stage_code,
+        job_code=row_job_def.job_code,
+    )
+    return {
+        "business_key": keys["business_key"],
+        "dedupe_key": build_stage_local_dedupe_key(
+            f"{keys['dedupe_key']}:after-browser-fallback",
+            row_job_def.job_code,
+        ),
+        "payload": payload,
+        "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
     }
 
 

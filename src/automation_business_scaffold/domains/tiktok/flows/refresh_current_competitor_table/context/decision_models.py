@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -45,27 +44,20 @@ from automation_business_scaffold.domains.tiktok.workflows import get_workflow_d
 from .models import *
 
 
-def _resume_stage_from_premature_summary(
+def _browser_stage_from_premature_summary(
     *,
     store: RuntimeStore,
     request: Any,
     workflow: WorkflowDefinition,
     current_stage: str,
 ) -> str:
-    from .runtime_views import _browser_resume_candidates
+    from .runtime_views import _browser_after_browser_candidates
 
-    return recover_browser_fallback_resume_stage(
-        store,
-        request_id=request.request_id,
-        current_stage=current_stage,
-        summary_stage_code=workflow.summary_policy.summary_stage_code,
-        continuation_stage_codes=("resume_competitor_rows_after_browser_fallback",),
-        continuation_candidate_ready=bool(
-            _browser_resume_candidates(store=store, request_id=request.request_id)
-        ),
-        browser_stage_code="browser_fallback",
-        resume_stage_code="resume_competitor_rows_after_browser_fallback",
-    )
+    if current_stage != workflow.summary_policy.summary_stage_code:
+        return ""
+    if _browser_after_browser_candidates(store=store, request_id=request.request_id):
+        return "browser_fallback"
+    return ""
 
 def _resolve_final_status_from_rows(
     *,

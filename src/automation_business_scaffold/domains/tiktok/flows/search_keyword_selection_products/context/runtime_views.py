@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -131,14 +130,7 @@ def _successful_seed_contexts(store: RuntimeStore, *, request_id: str) -> list[d
     ]
 
 def _all_selection_row_refresh_jobs(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
-    return [
-        *_api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_selection_rows"),
-        *_api_jobs_for_stage(
-            store=store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        ),
-    ]
+    return _api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_selection_rows")
 
 def _selection_row_has_final_status(
     store: RuntimeStore,
@@ -153,22 +145,26 @@ def _selection_row_has_final_status(
     )
     return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
 
-def _selection_row_has_successful_resume(
+def _selection_row_has_after_browser_terminal(
     store: RuntimeStore,
     *,
     request_id: str,
     source_record_id: str,
 ) -> bool:
     row_job = _latest_row_job(
-        _api_jobs_for_stage(
-            store=store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        ),
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store=store,
+                request_id=request_id,
+                stage_code="refresh_selection_rows",
+            )
+            if coerce_mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
         source_record_id=source_record_id,
         job_code="selection_row_refresh",
     )
-    return _record_effective_status(row_job) in {"success", "partial_success", "skipped"}
+    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
 
 def _pending_selection_seed_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     return [

@@ -666,7 +666,10 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
         )
 
     def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
-        if context.payload["stage_code"] == "refresh_selection_rows":
+        if (
+            context.payload["stage_code"] == "refresh_selection_rows"
+            and not context.payload.get("browser_fallback_resolved")
+        ):
             error = HandlerError(
                 error_type="browser_fallback_required",
                 error_code="tiktok_product_browser_fetch_required",
@@ -705,7 +708,8 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
                 },
                 next_action=HandlerNextAction(type="browser_fallback", payload=browser_payload),
             )
-        assert context.payload["stage_code"] == "resume_selection_rows_after_browser_fallback"
+        assert context.payload["stage_code"] == "refresh_selection_rows"
+        assert context.payload["browser_fallback_resolved"] is True
         assert context.payload["normalized_product_result"]["source"] == "browser"
         return HandlerResult.success(
             context,
@@ -787,13 +791,13 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     assert browser_worker["parent_updates"] == [
         {
             "request_id": request_id,
-            "stage_code": "resume_selection_rows_after_browser_fallback",
+            "stage_code": "selection_row_browser_fallback",
             "released": True,
             "next_executor_status": "pending",
         }
     ]
     status_after_browser = _selection_status(runtime_db_url, request_id)
-    assert status_after_browser["current_stage"] == "resume_selection_rows_after_browser_fallback"
+    assert status_after_browser["current_stage"] == "selection_row_browser_fallback"
     stored_execution = _stage_executions(
         status_after_browser,
         stage_code="selection_row_browser_fallback",
@@ -803,30 +807,31 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     selection_fallback_stage = importlib.import_module(
         "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.selection_row_browser_fallback"
     )
-    selection_resume_stage = importlib.import_module(
-        "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.resume_selection_rows_after_browser_fallback"
-    )
     settings = runtime_orchestrator.build_runtime_settings(_runtime_params(runtime_db_url))
     store = runtime_orchestrator.create_runtime_store(settings)
     assert selection_fallback_stage._selection_row_browser_fallback_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )
-    assert selection_resume_stage._selection_row_browser_resume_candidates(  # noqa: SLF001
+    assert selection_fallback_stage._selection_row_after_browser_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )
-    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert resume_wait["current_stage"] == "resume_selection_rows_after_browser_fallback"
-    resume_jobs = _stage_jobs(
-        resume_wait,
-        stage_code="resume_selection_rows_after_browser_fallback",
+    after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert after_browser_wait["current_stage"] == "refresh_selection_rows"
+    after_browser_jobs = _stage_jobs(
+        after_browser_wait,
+        stage_code="refresh_selection_rows",
         job_code="selection_row_refresh",
     )
-    assert len(resume_jobs) == 1
+    assert [
+        job
+        for job in after_browser_jobs
+        if job["payload"].get("browser_fallback_resolved")
+    ]
 
-    resumed_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert resumed_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
+    after_browser_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert after_browser_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
     assert finalized["request_status"] == "success"
@@ -887,7 +892,11 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
 
     def fake_selection_row_refresh(context: HandlerContext) -> HandlerResult:
         source_record_id = str(context.payload["source_record_id"])
-        if context.payload["stage_code"] == "refresh_selection_rows" and source_record_id == SEED_RECORD_ID:
+        if (
+            context.payload["stage_code"] == "refresh_selection_rows"
+            and source_record_id == SEED_RECORD_ID
+            and not context.payload.get("browser_fallback_resolved")
+        ):
             error = HandlerError(
                 error_type="browser_fallback_required",
                 error_code="tiktok_product_browser_fetch_required",
@@ -1017,13 +1026,17 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
     runtime_orchestrator.execute_browser_once(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
     )
-    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    resume_jobs = _stage_jobs(
-        resume_wait,
-        stage_code="resume_selection_rows_after_browser_fallback",
+    after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    after_browser_jobs = _stage_jobs(
+        after_browser_wait,
+        stage_code="refresh_selection_rows",
         job_code="selection_row_refresh",
     )
-    assert [job["payload"]["source_record_id"] for job in resume_jobs] == [SEED_RECORD_ID]
+    assert [
+        job["payload"]["source_record_id"]
+        for job in after_browser_jobs
+        if job["payload"].get("browser_fallback_resolved")
+    ] == [SEED_RECORD_ID]
 
     runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     second_refresh_stage = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
@@ -1037,8 +1050,10 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
     )
     assert [job["payload"]["source_record_id"] for job in all_refresh_jobs] == [
         SEED_RECORD_ID,
+        SEED_RECORD_ID,
         SECOND_SEED_RECORD_ID,
     ]
+    assert all_refresh_jobs[1]["payload"].get("browser_fallback_resolved") is True
 
     second_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert second_row["api_worker_job"]["payload"]["source_record_id"] == SECOND_SEED_RECORD_ID

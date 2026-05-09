@@ -89,7 +89,7 @@ def test_selection_keyword_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
+        "after_browser_candidate_count",
         "enqueue_task_executions",
         "Waiting for selection row browser fallback executions to finish.",
         "Row-level browser fallback is owned by task_execution/browser-runloop",
@@ -128,7 +128,7 @@ def test_product_ingest_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
+        "after_browser_candidate_count",
         "enqueue_task_executions",
         "Waiting for selection row browser fallback executions to finish.",
         "Row-level browser fallback is owned by task_execution/browser-runloop",
@@ -176,7 +176,7 @@ def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "browser_fallback",
-        "resume_competitor_rows_after_browser_fallback",
+        "after_browser_candidate_count",
         "enqueue_task_executions",
         "Waiting for browser fallback executions to finish.",
         "Row-level browser fallback is owned by task_execution/browser-runloop",

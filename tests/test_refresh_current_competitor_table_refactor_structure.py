@@ -19,7 +19,6 @@ STAGE_CODES = {
     "dispatch_product_collection",
     "collect_product_data",
     "browser_fallback",
-    "resume_competitor_rows_after_browser_fallback",
     "ready_for_summary",
 }
 

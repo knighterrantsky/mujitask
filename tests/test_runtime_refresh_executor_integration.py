@@ -126,7 +126,7 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
             _emit_progress(context, "tiktok_request_fetch_from_browser_result")
             return HandlerResult.success(
                 context,
-                summary={"transport": "browser_resume"},
+                summary={"transport": "browser_after_fallback"},
                 result={"normalized_product_result": normalized},
             )
         if request_mode == "fallback":
@@ -386,30 +386,34 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SOURCE_RECORD_ID
     assert browser_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "resume_competitor_rows_after_browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
+            {
+                "request_id": request_id,
+                "stage_code": "browser_fallback",
+                "released": True,
+                "next_executor_status": "pending",
+            }
+        ]
+
+    after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert after_browser_wait["request_id"] == request_id
+    assert after_browser_wait["request_status"] == "waiting_children"
+    assert after_browser_wait["current_stage"] == "collect_product_data"
+    after_browser_jobs = [
+        job
+        for job in _stage_jobs(
+            after_browser_wait,
+            stage_code="collect_product_data",
+            job_code="competitor_row_refresh",
+        )
+        if job["payload"].get("browser_fallback_resolved")
     ]
+    assert len(after_browser_jobs) == 1
+    assert after_browser_jobs[0]["payload"]["normalized_product_result"]["source"] == "browser"
+    assert after_browser_jobs[0]["payload"]["force_fallback"] is False
 
-    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert resume_wait["request_id"] == request_id
-    assert resume_wait["request_status"] == "waiting_children"
-    assert resume_wait["current_stage"] == "resume_competitor_rows_after_browser_fallback"
-    resume_jobs = _stage_jobs(
-        resume_wait,
-        stage_code="resume_competitor_rows_after_browser_fallback",
-        job_code="competitor_row_refresh",
-    )
-    assert len(resume_jobs) == 1
-    assert resume_jobs[0]["payload"]["normalized_product_result"]["source"] == "browser"
-    assert resume_jobs[0]["payload"]["force_fallback"] is False
-
-    resumed_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert resumed_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
-    assert resumed_row["api_worker_job"]["result"]["row_status"] == "success"
+    after_browser_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert after_browser_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
+    assert after_browser_row["api_worker_job"]["result"]["row_status"] == "success"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -425,7 +429,7 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["media_status"] == "success"
     assert row_result["fact_status"] == "success"
     assert row_result["writeback_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 1
+    assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 2
     assert status_payload["result"]["stage_summary"]["browser_fallback"]["total_count"] == 1
 
 

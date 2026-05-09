@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -53,6 +52,27 @@ def _row_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any
     payload = extract_effective_result_payload(latest)
     return _normalize_source_rows(payload.get("source_rows"))
 
+def _row_has_after_browser_terminal(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store=store,
+                request_id=request_id,
+                stage_code="collect_product_data",
+            )
+            if coerce_mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
+        source_record_id=source_record_id,
+        job_code="competitor_row_refresh",
+    )
+    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
+
 def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     row_index = {row["source_record_id"]: row for row in _row_contexts(store, request_id=request_id)}
@@ -72,6 +92,12 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             else {}
         )
         source_record_id = _first_text(result.get("source_record_id"), payload.get("source_record_id"))
+        if _row_has_after_browser_terminal(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         row_context = row_index.get(source_record_id, _minimal_row_context(payload))
         fallback_source_job_id = _first_text(
             browser_payload.get("fallback_source_job_id"),
@@ -113,7 +139,7 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
         candidates.append(candidate)
     return candidates
 
-def _browser_resume_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
+def _browser_after_browser_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     fallback_by_key = {
         str(candidate.get("fallback_key") or ""): candidate
         for candidate in _browser_fallback_candidates(store=store, request_id=request_id)

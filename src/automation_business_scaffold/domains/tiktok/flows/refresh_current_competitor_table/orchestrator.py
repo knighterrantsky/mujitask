@@ -15,7 +15,6 @@ _STAGE_MODULES = {
     "dispatch_product_collection": "dispatch_product_collection",
     "collect_product_data": "collect_product_data",
     "browser_fallback": "browser_fallback",
-    "resume_competitor_rows_after_browser_fallback": "resume_competitor_rows_after_browser_fallback",
 }
 
 
@@ -57,18 +56,18 @@ def release_request_after_child_completion(
     current_stage = str(request.current_stage or "").strip()
     if not current_stage:
         return []
-    resumed_stage = _resume_stage_from_premature_summary(
+    browser_stage = _browser_stage_from_premature_summary(
         store=store,
         request=request,
         workflow=workflow,
         current_stage=current_stage,
     )
-    if resumed_stage:
+    if browser_stage:
         store.update_task_request(
             request_id=request_id,
             status="pending",
-            current_stage=resumed_stage,
-            progress_stage=resumed_stage,
+            current_stage=browser_stage,
+            progress_stage=browser_stage,
             worker_id="",
             lease_until=0.0,
             heartbeat_at=0.0,
@@ -77,7 +76,7 @@ def release_request_after_child_completion(
         return [
             {
                 "request_id": request_id,
-                "stage_code": resumed_stage,
+                "stage_code": browser_stage,
                 "released": True,
                 "next_executor_status": "pending",
             }

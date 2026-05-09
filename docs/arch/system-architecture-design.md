@@ -64,7 +64,7 @@ flowchart TD
 
     subgraph L4["Layer 4: Infrastructure"]
         Clients["External Clients"]
-        Stores["RuntimeStore / FactStore / ObjectStore"]
+        Stores["RuntimeStore / FactStore / ObjectStore<br/>facade + repositories / queries"]
         Schema["Schema / Migration"]
         Obs["Observability"]
     end
@@ -113,7 +113,7 @@ flowchart TD
 | Runtime Control Plane | `src/automation_business_scaffold/control_plane/`、`src/automation_business_scaffold/apps/daemons/`、`project_env.py`、`config.py` | task request 生命周期、executor、worker claim、supervisor、reconciler、watchdog、outbox、runtime config | Feishu 表字段、TikTok/FastMoss 业务策略、业务专用 daemon |
 | Domain Orchestration | `src/automation_business_scaffold/domains/tiktok/tasks/`、`workflows/`、`jobs/`、`flows/`、`mappers/`、`projections/`、`policies/` | task/workflow/job、业务 mapper、projection、policy、业务组合 flow | 外部系统底层 client、Runtime DB store、daemon main |
 | Capability | `src/automation_business_scaffold/capabilities/input_sources/`、`fact_sources/`、`persistence/`、`channels/`、`browser/`、`media/`、handler registry/contract | 通用 worker 能力: 输入源读取、事实采集、事实入库、媒体同步、飞书写回、outbox 分发、浏览器采集 | 单个业务的字段筛选、业务投影、终态汇总 |
-| Infrastructure | `infrastructure/feishu/`、`infrastructure/fastmoss/`、`infrastructure/runtime/`、`infrastructure/facts/`、`infrastructure/artifacts/`、`infrastructure/browser/`、`infrastructure/rate_limit/` | 外部 client、Runtime Store、Fact Store、Object Store、browser bridge、限速 | task_code/workflow_code/job_code 业务决策 |
+| Infrastructure | `infrastructure/feishu/`、`infrastructure/fastmoss/`、`infrastructure/runtime/`、`infrastructure/runtime/repositories/`、`infrastructure/runtime/queries/`、`infrastructure/facts/`、`infrastructure/artifacts/`、`infrastructure/browser/`、`infrastructure/rate_limit/` | 外部 client、RuntimeStore façade、Runtime table repositories、Runtime read-model queries、Fact Store、Object Store、browser bridge、限速 | task_code/workflow_code/job_code 业务决策 |
 | Deployment / Configuration | `.env.example`、`scripts/execution_control/`、`scripts/deploy/`、`config/deployment/`、`config/browser_profiles.example.json`、`skill.local.env.example` | 项目配置、runtime 配置、agent 配置、launchd/deploy/dev/ops 脚本 | secret 真值、Python 业务实现、handler 逻辑 |
 
 正式 runtime 主路径必须落在上表列出的项目层。Legacy `business/` 目录已删除。
@@ -223,6 +223,48 @@ domains/{business_domain}/
 
 Domain 层可以引用 capability handler contract，但不直接调用 infrastructure client。Domain 层可以定义 mapper/projection/policy，但不能把这些注册成 runtime handler code。
 
+当前 TikTok workflow 已采用包化 flow 结构。`workflows/{workflow_code}.py` 只保留 declarative stage/job DAG、timeout、watchdog 和 summary policy；运行推进逻辑放到同名 flow package:
+
+```text
+domains/tiktok/flows/{workflow_code}/
+  orchestrator.py
+  context/
+    models.py
+    runtime_views.py
+    stage_inputs.py
+    decision_models.py
+    summary_inputs.py
+  stages/
+    {stage_code}.py
+  policies/
+  summary.py
+```
+
+当前 top-level workflow packages:
+
+| workflow_code | flow package |
+| --- | --- |
+| `refresh_current_competitor_table` | `domains/tiktok/flows/refresh_current_competitor_table/` |
+| `search_keyword_competitor_products` | `domains/tiktok/flows/search_keyword_competitor_products/` |
+| `search_keyword_selection_products` | `domains/tiktok/flows/search_keyword_selection_products/` |
+| `sync_tk_influencer_pool` | `domains/tiktok/flows/sync_tk_influencer_pool/` |
+| `tiktok_fastmoss_product_ingest` | `domains/tiktok/flows/tiktok_fastmoss_product_ingest/` |
+
+当前 row-level leaf flow packages:
+
+| row flow | 职责 |
+| --- | --- |
+| `domains/tiktok/flows/selection_row_refresh/` | 选品行级主 job 内部串行 pipeline |
+| `domains/tiktok/flows/competitor_row_refresh/` | 竞品行级主 job 内部串行 pipeline |
+
+Flow package 约束:
+
+- `orchestrator.py` 只做 public runtime entrypoint、stage module dispatch 和 child completion release glue。
+- `stages/{stage_code}.py` 承接对应 stage 的推进逻辑，并返回 stage decision。
+- `context/**` 只提供 typed models、runtime views、stage inputs、decision models 和 summary inputs；不得导入 provider client、capability handler、runtime repository 或 control_plane。
+- `summary.py` 拥有最终 summary、result 和 outbox payload 组装。
+- `__init__.py` 不作为业务导出面，不重新制造旧的 flow surface。
+
 ## 7. Capability Layer
 
 Capability Layer 是可复用能力层。handler 应按“能力”命名，而不是按具体业务命名。
@@ -284,6 +326,22 @@ flowchart TD
 - 配置值必须归一化: 小于 `0` 视为 `0`，`max < min` 时交换，`0/0` 表示本地测试或明确配置下关闭 pacing；生产配置不应关闭。
 - retry backoff 是错误恢复策略，不替代正常请求 pacing；一次请求因 429/5xx 重试时，重试前仍应保留 retry backoff，下一次独立 request 前仍应经过 pacer。
 - runtime evidence 至少记录 provider/resource key、delay_seconds、request_started_at、request_finished_at；不记录 token、cookie、payload secret。
+
+RuntimeStore 当前采用 façade + repository/query 拆分:
+
+| 位置 | 职责 |
+| --- | --- |
+| `infrastructure/runtime/runtime_store.py` | public `RuntimeStore` façade，保持调用入口稳定，组合 repositories / queries |
+| `infrastructure/runtime/repositories/api_worker_job_repo.py` | `api_worker_job` enqueue、claim、heartbeat、progress、terminal/retry/load |
+| `infrastructure/runtime/repositories/task_execution_repo.py` | browser `task_execution` enqueue、claim、heartbeat、progress、terminal/load |
+| `infrastructure/runtime/repositories/notification_outbox_repo.py` | outbox create/load、claim、sent、retry/fail |
+| `infrastructure/runtime/repositories/artifact_object_repo.py` | `artifact_object` replace persistence |
+| `infrastructure/runtime/repositories/task_request_repo.py` | task request persistence primitives |
+| `infrastructure/runtime/queries/request_status_query.py` | request status/result/outbox/artifact read model |
+| `infrastructure/runtime/queries/watchdog_query.py` | watchdog scan row read model |
+| `infrastructure/runtime/queries/db_health_query.py` | DB connection health read-only query |
+
+`RuntimeStore.__init__` 不执行 DDL；schema bootstrap 只通过显式 bootstrap / migration 入口执行。生产 daemon / worker claim 路径只能读写 Runtime 数据，不能创建或修改 schema。
 
 数据落点:
 
@@ -370,7 +428,7 @@ sequenceDiagram
     Exec->>WF: load workflow definition
     WF-->>Exec: stage/job DAG
     Exec->>DB: insert api_worker_job / task_execution / notification_outbox
-    Exec->>DB: mark waiting_children or ready_for_summary
+    Exec->>DB: mark status=waiting or current_stage=ready_for_summary,status=pending
 ```
 
 ### 10.2 Worker、Supervisor 与 Reconciler
@@ -390,10 +448,10 @@ sequenceDiagram
     H->>D: call business customization when declared by job payload
     D-->>H: mapped object / policy decision / projection
     H-->>S: result / retryable error / fatal error
-    S->>DB: mark success / retry_wait / failed
+    S->>DB: mark finished+result_status or pending+available_at
     W->>Rec: trigger reconcile(request_id)
     Rec->>DB: aggregate child terminal states
-    Rec->>DB: advance parent request or keep waiting_children
+    Rec->>DB: advance parent request or keep status=waiting
 ```
 
 ### 10.3 Watchdog 兜底
@@ -405,15 +463,15 @@ sequenceDiagram
     participant Rec as Reconciler
 
     loop watchdog tick
-        WD->>DB: scan running/sending/waiting_children
+        WD->>DB: scan running/sending/waiting
         alt lease expired or stale progress
-            WD->>DB: retry_wait or failed
+            WD->>DB: pending+next_retry_at or finished+failed
         else execution timeout
-            WD->>DB: timeout -> retry_wait or failed
+            WD->>DB: timeout -> pending+next_retry_at or finished+failed
         else parent waiting but children terminal
             WD->>Rec: reconcile(request_id)
         else outbox sending timeout
-            WD->>DB: outbox retry_wait or failed
+            WD->>DB: outbox pending+next_retry_at or failed
         end
     end
 ```

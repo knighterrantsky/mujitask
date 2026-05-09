@@ -6,6 +6,5 @@ __all__ = [
     "dispatch_selection_row_refresh_jobs",
     "refresh_selection_rows",
     "selection_row_browser_fallback",
-    "resume_selection_rows_after_browser_fallback",
     "ready_for_summary",
 ]

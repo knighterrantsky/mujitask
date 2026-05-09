@@ -262,53 +262,6 @@ def extract_effective_summary_payload(record_or_payload: RecordLike) -> dict[str
     return {}
 
 
-def recover_stage_after_browser_summary_promotion(
-    *,
-    current_stage: str,
-    summary_stage_code: str,
-    browser_records: Iterable[RecordLike],
-    continuation_started: bool,
-    continuation_candidate_ready: bool,
-    resume_stage_code: str = "browser_fallback",
-) -> str:
-    if current_stage != summary_stage_code:
-        return ""
-    browser_record_list = [_as_dict(record) for record in browser_records if _as_dict(record)]
-    if not browser_record_list:
-        return ""
-    if any(str(record.get("status") or "") in _ACTIVE_RECORD_STATUSES for record in browser_record_list):
-        return ""
-    if not any(_effective_outcome_status(record) in {"success", "partial_success", "skipped"} for record in browser_record_list):
-        return ""
-    if continuation_started:
-        return ""
-    return resume_stage_code if continuation_candidate_ready else ""
-
-
-def recover_browser_fallback_resume_stage(
-    store: Any,
-    *,
-    request_id: str,
-    current_stage: str,
-    summary_stage_code: str,
-    continuation_stage_codes: Iterable[str],
-    continuation_candidate_ready: bool,
-    browser_stage_code: str = "browser_fallback",
-    resume_stage_code: str = "browser_fallback",
-) -> str:
-    return recover_stage_after_browser_summary_promotion(
-        current_stage=current_stage,
-        summary_stage_code=summary_stage_code,
-        browser_records=stage_child_records(store, request_id=request_id, stage_code=browser_stage_code),
-        continuation_started=any(
-            stage_child_records(store, request_id=request_id, stage_code=stage_code)
-            for stage_code in continuation_stage_codes
-        ),
-        continuation_candidate_ready=continuation_candidate_ready,
-        resume_stage_code=resume_stage_code,
-    )
-
-
 def is_fallback_required(record_or_payload: RecordLike) -> bool:
     handler_status = extract_handler_result_status(record_or_payload)
     if handler_status == "fallback_required":
@@ -811,8 +764,6 @@ __all__ = [
     "is_fallback_required",
     "merge_stage_contexts",
     "record_effective_status",
-    "recover_browser_fallback_resume_stage",
-    "recover_stage_after_browser_summary_promotion",
     "render_job_keys",
     "render_key_template",
     "select_latest_successful_api_job",

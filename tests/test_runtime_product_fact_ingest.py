@@ -139,7 +139,10 @@ def _bind_api_handlers_for_browser_fallback(monkeypatch: pytest.MonkeyPatch) -> 
         progress_callback = context.metadata.get("progress_callback")
         if callable(progress_callback):
             progress_callback("selection_row_refresh", message="selection row refresh")
-        if context.payload["stage_code"] == "collect_selection_rows":
+        if (
+            context.payload["stage_code"] == "collect_selection_rows"
+            and not context.payload.get("browser_fallback_resolved")
+        ):
             error = HandlerError(
                 error_type="browser_fallback_required",
                 error_code="tiktok_product_browser_fetch_required",
@@ -177,7 +180,8 @@ def _bind_api_handlers_for_browser_fallback(monkeypatch: pytest.MonkeyPatch) -> 
                 },
                 next_action=HandlerNextAction(type="browser_fallback", payload=browser_payload),
             )
-        assert context.payload["stage_code"] == "resume_selection_rows_after_browser_fallback"
+        assert context.payload["stage_code"] == "collect_selection_rows"
+        assert context.payload["browser_fallback_resolved"] is True
         assert context.payload["normalized_product_result"]["source"] == "browser"
         if callable(progress_callback):
             progress_callback("selection_row_refresh", message="browser fallback collected product")
@@ -382,25 +386,29 @@ def test_product_fact_browser_fallback_path_from_request_handler(
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "resume_selection_rows_after_browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+            {
+                "request_id": request_id,
+                "stage_code": "selection_row_browser_fallback",
+                "released": True,
+                "next_executor_status": "pending",
+            }
+        ]
 
-    resume_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
-    assert resume_wait["current_stage"] == "resume_selection_rows_after_browser_fallback"
-    resume_jobs = _stage_jobs(
-        resume_wait,
-        stage_code="resume_selection_rows_after_browser_fallback",
+    after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert after_browser_wait["current_stage"] == "collect_selection_rows"
+    after_browser_jobs = _stage_jobs(
+        after_browser_wait,
+        stage_code="collect_selection_rows",
         job_code="selection_row_refresh",
     )
-    assert len(resume_jobs) == 1
+    assert [
+        job
+        for job in after_browser_jobs
+        if job["payload"].get("browser_fallback_resolved")
+    ]
 
-    resumed_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
-    assert resumed_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
+    after_browser_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert after_browser_row["api_worker_job"]["payload"]["normalized_product_result"]["source"] == "browser"
 
     finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert finalized["request_id"] == request_id
@@ -414,21 +422,22 @@ def test_product_fact_browser_fallback_path_from_request_handler(
         item
         for item in refreshed["api_worker_jobs"]
         if item["job_code"] == "selection_row_refresh"
-        and item["payload"]["stage_code"] == "resume_selection_rows_after_browser_fallback"
+        and item["payload"]["stage_code"] == "collect_selection_rows"
+        and item["payload"].get("browser_fallback_resolved")
     )
     assert row_job["status"] == "success"
     assert row_job["result"]["handler_result"]["summary"]["browser_fallback_used"] is True
     assert refreshed["result"]["rows"][0]["row_status"] == "success"
 
 
-def test_product_fact_resume_stage_backfills_missing_resume_jobs(runtime_db_url: str) -> None:
+def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime_db_url: str) -> None:
     submitted = _submit_ingest_request(runtime_db_url)
     request_id = str(submitted["request_id"])
     store = _load_store(runtime_db_url)
     store.update_task_request(
         request_id=request_id,
         status="waiting_children",
-        current_stage="resume_selection_rows_after_browser_fallback",
+        current_stage="selection_row_browser_fallback",
     )
     product_ids = ("123", "456")
     collect_enqueue = store.enqueue_api_worker_jobs(
@@ -539,57 +548,61 @@ def test_product_fact_resume_stage_backfills_missing_resume_jobs(runtime_db_url:
             },
         )
     from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.runtime_views import (
-        _selection_row_browser_resume_candidates,
+        _selection_row_after_browser_candidates,
     )
     from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.stage_inputs import (
-        _selection_row_resume_job,
+        _selection_row_after_browser_job,
     )
     from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     request = store.load_task_request(request_id=request_id)
     workflow = get_workflow_definition("tiktok_fastmoss_product_ingest")
     row_job_def = workflow.require_job("selection_row_refresh")
-    candidates = _selection_row_browser_resume_candidates(  # noqa: SLF001
+    candidates = _selection_row_after_browser_candidates(  # noqa: SLF001
         store=store,
         request_id=request_id,
     )
     assert len(candidates) == 2
-    existing_resume = store.enqueue_api_worker_jobs(
+    existing_after_browser = store.enqueue_api_worker_jobs(
         request_id=request_id,
         task_code="tiktok_fastmoss_product_ingest",
         job_code="selection_row_refresh",
         jobs=[
-            _selection_row_resume_job(  # noqa: SLF001
+            _selection_row_after_browser_job(  # noqa: SLF001
                 request=request,
                 workflow=workflow,
-                stage_code="resume_selection_rows_after_browser_fallback",
+                stage_code="collect_selection_rows",
                 row_job_def=row_job_def,
                 candidate=candidates[0],
             )
         ],
     )
-    assert existing_resume["created_count"] == 1
+    assert existing_after_browser["created_count"] == 1
     store.update_task_request(
         request_id=request_id,
         status="pending",
-        current_stage="resume_selection_rows_after_browser_fallback",
+        current_stage="selection_row_browser_fallback",
     )
 
     payload = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
 
-    assert payload["current_stage"] == "resume_selection_rows_after_browser_fallback"
+    assert payload["current_stage"] == "collect_selection_rows"
     assert payload.get("created_count") == 1, payload
     status_payload = runtime_orchestrator.get_task_request_status(
         "tiktok_fastmoss_product_ingest",
         _runtime_params(runtime_db_url, control_action="status", request_id=request_id),
     )
-    resume_jobs = _stage_jobs(
-        status_payload,
-        stage_code="resume_selection_rows_after_browser_fallback",
-        job_code="selection_row_refresh",
-    )
-    assert len(resume_jobs) == 2
-    assert {job["payload"]["source_record_id"] for job in resume_jobs} == {"row-123", "row-456"}
+    after_browser_jobs = [
+        job
+        for job in _stage_jobs(
+            status_payload,
+            stage_code="collect_selection_rows",
+            job_code="selection_row_refresh",
+        )
+        if job["payload"].get("browser_fallback_resolved")
+    ]
+    assert len(after_browser_jobs) == 2
+    assert {job["payload"]["source_record_id"] for job in after_browser_jobs} == {"row-123", "row-456"}
 
 
 def test_product_fact_final_executor_once_summarizes_and_creates_notification_outbox(runtime_db_url: str) -> None:

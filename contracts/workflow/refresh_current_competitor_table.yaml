@@ -44,16 +44,12 @@ stages:
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
     projection_mapper: competitor_table_projection_mapper
-    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回 fallback_required 和 browser_fallback_payload，不允许在 API worker 内联执行 browser handler
+    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回 wait/fallback signal 和 browser_fallback_payload，不允许在 API worker 内联执行 browser handler
   - stage_code: browser_fallback
     job_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
     handler_code: browser_runloop
     runtime_table: task_execution
-    purpose: 由 workflow 将 row-level fallback_required 显式派发到 task_execution，等待 browser-runloop claim 并完成浏览器生命周期
-  - stage_code: resume_competitor_rows_after_browser_fallback
-    job_code: competitor_row_refresh
-    handler_code: competitor_row_refresh
-    purpose: browser fallback 成功后，仅对可恢复行重新派发 competitor_row_refresh，并注入浏览器结果或 FastMoss security fallback attempt 标记
+    purpose: 由 workflow 将 row-level wait/fallback signal 显式派发到 task_execution，等待 browser-runloop claim 并完成浏览器生命周期
   - stage_code: ready_for_summary
     handler_code: outbox_dispatch
     purpose: 汇总行级结果并写通知 outbox
@@ -61,10 +57,13 @@ stages:
 protected_invariants:
   - 一条候选飞书记录最多创建一个 competitor_row_refresh 主 job
   - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于该主 job 内部步骤
-  - Row-level browser fallback is owned by task_execution/browser-runloop; competitor_row_refresh 只能返回 fallback_required，不允许直接 import browser capability 或 run_supervised_handler inline fallback
+  - Row-level browser fallback is owned by task_execution/browser-runloop; competitor_row_refresh 只能返回 wait/fallback signal，不允许直接 import browser capability 或 run_supervised_handler inline fallback
   - API worker 不允许以 worker_type=browser_worker 或 ChildRunnerConfig 内联执行 tiktok_product_browser_fetch / fastmoss_security_browser_resolve
   - workflow 必须通过 RuntimeStore.enqueue_task_executions() 派发 browser fallback，并等待 “Waiting for browser fallback executions to finish.”
-  - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总 resume 后的最终 competitor_row_refresh 结果，且不得存在 active browser execution 或 active resume job
+  - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status or final result_status; pending/running/waiting/finished/cancelled are lifecycle states, success/partial_success/failed/skipped are terminal result_status values
+  - TikTok browser fallback may substitute the current TikTok collection stage output through task_execution.result_json normalized_product_result and artifact refs; FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage
+  - Browser task_execution terminal 后，executor 只结清当前 competitor_row_refresh 的 wait 引用并让同一个行级主 job 回到 pending；不得创建独立恢复 stage 或第二个行级业务事实源
+  - browser task_execution success is not a row-level business terminal result; ready_for_summary can only summarize final competitor_row_refresh row_status/result_status and must have no active browser execution or unresolved wait/fallback reference
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch / fastmoss_security_browser_resolve child task_execution
   - 商品状态不是 12 个自动维护字段，不参与 pending 判断

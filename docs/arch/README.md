@@ -43,12 +43,8 @@
 - [选品采集与关键词搜索选品写入 Workflow 设计](./workflow-selection-table-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 - [竞品采集与关键词搜索竞品写入 Workflow 设计](./workflow-competitor-table-design.md)
-- [关键词搜索选品写入结构化重构说明](./refactor-search-keyword-selection-products.md)
-- [关键词搜索竞品写入结构化重构说明](./refactor-search-keyword-competitor-products.md)
-- [竞品采集结构化重构说明](./refactor-refresh-current-competitor-table.md)
-- [达人池同步结构化重构说明](./refactor-sync-tk-influencer-pool.md)
-- [选品采集结构化重构说明](./refactor-tiktok-fastmoss-product-ingest.md)
-- [RuntimeStore Phase 2 重构说明](./refactor-runtime-store-phase-2.md)
+
+阶段性 refactor 说明完成后不再保留为 active 架构文档；当前 workflow / Runtime 事实只从上面的 workflow 文档、Runtime 文档和 `contracts/**` 读取。
 
 正式商品流程命名:
 

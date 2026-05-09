@@ -115,27 +115,59 @@ def _advance_selection_row_browser_fallback(
             "current_stage": stage_code,
             "message": "Waiting for selection row browser fallback executions to finish.",
         }
-    resumable = _selection_row_browser_resume_candidates(store=store, request_id=request.request_id)
+    after_browser_candidates = _selection_row_after_browser_candidates(store=store, request_id=request.request_id)
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "after_browser_candidate_count": len(after_browser_candidates),
+            "status": "success" if after_browser_candidates else "failed",
         },
     )
-    if resumable:
+    if after_browser_candidates:
+        row_stage_code = "collect_selection_rows"
+        row_job_def = workflow.require_job("selection_row_refresh")
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=request.task_code,
+            job_code=row_job_def.job_code,
+            jobs=[
+                _selection_row_after_browser_job(
+                    request=request,
+                    workflow=workflow,
+                    stage_code=row_stage_code,
+                    row_job_def=row_job_def,
+                    candidate=candidate,
+                )
+                for candidate in after_browser_candidates
+            ],
+        )
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "execution_count": len(executions),
+                "after_browser_candidate_count": len(after_browser_candidates),
+                "row_dispatch": dispatch,
+                "status": "success",
+            },
+        )
         return {
-            "action": "advance",
-            "next_stage": "resume_selection_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
+            "action": "waiting",
+            "current_stage": row_stage_code,
+            "message": "Enqueued selection row refresh after browser fallback.",
+            "details": {
+                "created_count": int(dispatch["created_count"]),
+                "after_browser_candidate_count": len(after_browser_candidates),
+            },
         }
     return {
         "action": "advance",
         "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "details": {"execution_count": len(executions), "after_browser_candidate_count": 0},
     }
 
 

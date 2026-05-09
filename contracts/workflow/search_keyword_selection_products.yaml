@@ -45,17 +45,13 @@ stages:
   - stage_code: refresh_selection_rows
     job_code: selection_row_refresh
     flow_code: selection_row_pipeline
-    invariant: Downstream collection uses the same row-level selection pipeline and may only return fallback_required; it must not execute browser fallback inline in the API worker.
+    invariant: Downstream collection uses the same row-level selection pipeline and may only emit a wait/fallback signal; it must not execute browser fallback inline in the API worker.
   - stage_code: selection_row_browser_fallback
     job_code:
       - tiktok_product_browser_fetch
       - fastmoss_security_browser_resolve
     runtime_table: task_execution
     invariant: Row-level browser fallback is owned by task_execution/browser-runloop, never by inline API worker execution.
-  - stage_code: resume_selection_rows_after_browser_fallback
-    job_code: selection_row_refresh
-    flow_code: selection_row_pipeline
-    invariant: Only rows with successful browser fallback executions are retried, with the browser result or FastMoss verification evidence injected into the row payload.
   - stage_code: ready_for_summary
     job_code: task_completed_notification
 
@@ -69,9 +65,11 @@ protected_invariants:
   - If FastMoss returns a price range, the maximum price in that range is used for the price threshold.
   - Price filtering is a candidate filter, not a pagination early-stop condition.
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.
-  - selection_row_refresh may report fallback_required with fallback_handler and browser_fallback_payload, but must not import browser capability handlers or call supervisor/runloop inline.
-  - selection_row_browser_fallback must enqueue task_execution rows and wait for browser-runloop terminal results before resume_selection_rows_after_browser_fallback.
-  - fallback_required, browser task_execution success, and seed write success are not detail refresh terminal statuses; ready_for_summary requires final row_status for every newly inserted seed row and no active browser/resume jobs.
+  - selection_row_refresh may report a wait/fallback signal with fallback_handler and browser_fallback_payload; compatibility result may still include fallback_required, but it is not a Runtime DB lifecycle status or final row status.
+  - selection_row_browser_fallback must enqueue task_execution rows and wait for browser-runloop terminal results before the same selection_row_refresh row job can become pending again.
+  - pending/running/waiting/finished/cancelled are execution lifecycle states; success/partial_success/failed/skipped are terminal result_status values.
+  - TikTok browser fallback may substitute the current TikTok collection stage output through task_execution.result_json normalized_product_result and artifact refs; FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage.
+  - fallback_required, browser task_execution success, and seed write success are not detail refresh terminal statuses; ready_for_summary requires final row_status/result_status for every newly inserted seed row and no active browser executions or unresolved wait/fallback references.
 
 payload_defaults:
   sales_7d_threshold: 500

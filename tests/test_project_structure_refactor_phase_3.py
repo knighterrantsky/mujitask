@@ -13,7 +13,6 @@ FLOW_STAGE_CODES = {
         "dispatch_selection_row_refresh_jobs",
         "refresh_selection_rows",
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
         "ready_for_summary",
     },
     "search_keyword_competitor_products": {
@@ -22,7 +21,6 @@ FLOW_STAGE_CODES = {
         "dispatch_row_refresh_jobs",
         "refresh_competitor_rows",
         "browser_fallback",
-        "resume_competitor_rows_after_browser_fallback",
         "ready_for_summary",
     },
     "refresh_current_competitor_table": {
@@ -30,7 +28,6 @@ FLOW_STAGE_CODES = {
         "dispatch_product_collection",
         "collect_product_data",
         "browser_fallback",
-        "resume_competitor_rows_after_browser_fallback",
         "ready_for_summary",
     },
     "sync_tk_influencer_pool": {
@@ -50,7 +47,6 @@ FLOW_STAGE_CODES = {
         "dispatch_selection_row_refresh",
         "collect_selection_rows",
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
         "ready_for_summary",
     },
 }

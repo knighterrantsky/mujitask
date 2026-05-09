@@ -165,10 +165,6 @@ def _build_row_result(
         store=store,
         request_id=request_id,
         stage_code="refresh_competitor_rows",
-    ) + _api_jobs_for_stage(
-        store=store,
-        request_id=request_id,
-        stage_code="resume_competitor_rows_after_browser_fallback",
     )
     row_job = _latest_row_job(
         row_jobs,
