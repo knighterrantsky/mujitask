@@ -55,6 +55,45 @@ Agent Skill / RPC Agent Service / CLI
 
 Watchdog 不在主推进链路上。Watchdog 只观察 Runtime DB 中的异常状态，并按契约执行 retry、fail 或 parent repair。
 
+### 3.1 Executor / Worker / Reconciler 调度语义
+
+Runtime 控制面只调度和收敛，不解释 TikTok、FastMoss、飞书字段语义。
+
+`executor_daemon` 的职责:
+
+- 只 claim `task_request.status=pending` 的顶层请求。
+- 根据 `task_code/current_stage/stage_cursor_json` 选择 workflow stage，并创建或推进对应 `api_worker_job` / `task_execution`。
+- 当 stage 需要等待 child job、browser fallback 或外部可观测事件时，把 `task_request` 或触发的行级 `api_worker_job` 标记为 `status=waiting`。对 row-serial browser fallback，waiting row job 是唯一 fallback 待处理事实，`task_execution` 是浏览器任务事实；任何 wait 引用只能作为观测冗余，不能成为第二套流程事实源。
+- 对 browser fallback，executor 负责调度和数据交换: 读取 handler 返回的业务化 browser 请求，创建对应 `task_execution`，在 browser task 终态后把 browser result 引用、FastMoss cookie cache metadata 或失败证据写回原 row job，再把原 row job 改回 `pending` 或收敛为终态。
+- 当 Reconciler 判断等待条件解除时，把顶层请求改回 `status=pending` 并保留或推进 `current_stage`，例如 `current_stage=ready_for_summary`。
+- 只汇总终态结果、写 summary/outbox，不直接执行 handler、不解析 browser 页面数据、不写业务字段 mapper；summary gate 只看终态 row job / task 事实，不看 `after_browser_candidates` 这类派生 candidate 数量。
+
+`api_worker` 的职责:
+
+- 只 claim `api_worker_job.status=pending` 且 `available_at <= now` 的 job。
+- 通过 Execution Supervisor 调用对应 API/IO handler，写入 `result_json`、`summary_json`、`error_text`、progress 和 `result_status`。
+- 遇到需要 browser fallback 的业务场景时，只能返回“需要某个 browser handler 处理这件事”的业务化请求；不得内联执行 browser handler，不得写 `fallback_source_job_id` 这类 runtime 关联字段，也不得把 `fallback_required` 写成 Runtime DB lifecycle status。
+
+`browser_worker` 的职责:
+
+- 只 claim `task_execution.status=pending` 且 `available_at <= now` 的 browser job。
+- 持有 `resource_lease` 后执行 browser handler，并把截图、HTML、raw response、审计证据等大对象写入对象存储 / `artifact_object`。
+- 小型结构化结果写入 `task_execution.result_json`；FastMoss cookie value 直接写入 `fastmoss_session_cookie_cache`，result/log/summary 只允许脱敏 metadata。
+
+`Reconciler` 的职责:
+
+- 从 Runtime DB 读取 child `api_worker_job` / `task_execution` 的 `status/result_status`，不依赖进程内 callback。
+- 对 `status=waiting` 的 parent 或 row job，检查 Runtime DB 中对应 child `api_worker_job` / `task_execution` 是否终态。row-serial fallback 下，同一请求的 waiting row job 与未终态 browser `task_execution` 构成最小关联事实；不依赖派生 candidate 列表判断是否继续。
+- child 仍有 `pending/running/waiting` 时保持 parent `waiting`。
+- child 全部终态时，按 workflow contract 推进: TikTok browser fetch 可由 executor/runtime 把 browser result 引用写回原 row job，作为当前 stage 输出；FastMoss security resolve 只写回脱敏 cache metadata 并让原 FastMoss handler/stage 重试一次。
+- summary 只汇总 `status=finished` 且带 `result_status` 的业务结果；browser child success、seed write success 或 fallback wait 信号都不能直接计入详情采集成功。
+
+`Watchdog` 的职责:
+
+- 扫描 lease 过期、heartbeat 失联、progress 卡住、`waiting` 引用已终态但 parent 未推进、`pending` 重试等待超时和 outbox sending 卡住。
+- 对可恢复记录回到 `pending` 并设置 `available_at/next_retry_at`；对不可恢复记录写入 `status=finished,result_status=failed` 或 `status=cancelled`。
+- 不做正常 workflow 推进，不生成业务 summary，不补写 TikTok / FastMoss / Feishu 字段。
+
 ## 4. 配置契约
 
 Project Configuration 的优先级为:

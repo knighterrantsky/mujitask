@@ -22,7 +22,6 @@ STAGE_CODES = (
     "dispatch_selection_row_refresh_jobs",
     "refresh_selection_rows",
     "selection_row_browser_fallback",
-    "resume_selection_rows_after_browser_fallback",
     "ready_for_summary",
 )
 
@@ -87,8 +86,7 @@ def test_selection_keyword_new_package_files_remain_scoped() -> None:
         "stages/fastmoss_security_browser_fallback.py": 180,
         "stages/dispatch_selection_row_refresh_jobs.py": 80,
         "stages/refresh_selection_rows.py": 120,
-        "stages/selection_row_browser_fallback.py": 420,
-        "stages/resume_selection_rows_after_browser_fallback.py": 140,
+        "stages/selection_row_browser_fallback.py": 470,
         "stages/ready_for_summary.py": 40,
     }
     for relative_path, limit in max_lines.items():

@@ -18,7 +18,7 @@ owners:
         reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
     responsibilities:
       - decide what business targets to collect
-      - decide business filtering and continuation strategy
+      - decide business filtering and row follow-up strategy
       - decide which projection mapper to use
       - decide whether a workflow enters fastmoss_security_browser_fallback and whether to retry the original FastMoss handler after browser resolution
     forbidden:

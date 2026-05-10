@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -53,6 +52,27 @@ def _row_contexts(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any
     payload = extract_effective_result_payload(latest)
     return _normalize_source_rows(payload.get("source_rows"))
 
+def _row_has_after_browser_terminal(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store=store,
+                request_id=request_id,
+                stage_code="collect_product_data",
+            )
+            if coerce_mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
+        source_record_id=source_record_id,
+        job_code="competitor_row_refresh",
+    )
+    return _record_effective_status(row_job) in {"success", "partial_success", "failed", "skipped"}
+
 def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     row_index = {row["source_record_id"]: row for row in _row_contexts(store, request_id=request_id)}
@@ -72,16 +92,16 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             else {}
         )
         source_record_id = _first_text(result.get("source_record_id"), payload.get("source_record_id"))
+        if _row_has_after_browser_terminal(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         row_context = row_index.get(source_record_id, _minimal_row_context(payload))
-        fallback_source_job_id = _first_text(
-            browser_payload.get("fallback_source_job_id"),
-            result.get("fallback_source_job_id"),
-            job.get("job_id"),
-        )
         browser_payload = {
             **browser_payload,
             "source_record_id": source_record_id,
-            "fallback_source_job_id": fallback_source_job_id,
         }
         candidate = dict(row_context)
         candidate.update(
@@ -92,7 +112,6 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
                 ),
                 "fallback_handler": fallback_handler,
                 "fallback_reason": _first_text(result.get("fallback_reason")),
-                "fallback_source_job_id": fallback_source_job_id,
                 "row_job_id": str(job.get("job_id") or ""),
                 "row_payload": payload,
                 "row_result": result,
@@ -111,39 +130,6 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             }
         )
         candidates.append(candidate)
-    return candidates
-
-def _browser_resume_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
-    fallback_by_key = {
-        str(candidate.get("fallback_key") or ""): candidate
-        for candidate in _browser_fallback_candidates(store=store, request_id=request_id)
-    }
-    candidates: list[dict[str, Any]] = []
-    for execution in _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback"):
-        if _record_effective_status(execution) != "success":
-            continue
-        payload = dict(execution.payload or {})
-        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
-        source_record_id = _first_text(payload.get("source_record_id"))
-        fallback_key = _row_fallback_key(
-            source_record_id=source_record_id,
-            fallback_handler=fallback_handler,
-        )
-        fallback_candidate = fallback_by_key.get(fallback_key)
-        if not fallback_candidate:
-            continue
-        execution_payload = extract_effective_result_payload(execution)
-        if fallback_handler == "tiktok_product_browser_fetch":
-            normalized = execution_payload.get("normalized_product_result")
-            if not isinstance(normalized, Mapping) or not normalized:
-                continue
-        candidates.append(
-            {
-                **dict(fallback_candidate),
-                "browser_execution_id": str(execution.execution_id),
-                "browser_execution_payload": execution_payload,
-            }
-        )
     return candidates
 
 def _media_sync_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
@@ -268,8 +254,8 @@ def _record_effective_status(record: Any) -> str:
             if isinstance(handler_result, Mapping):
                 if _is_unavailable_result(handler_result):
                     return "unavailable"
-                return str(handler_result.get("status") or record.status or "")
-        return str(getattr(record, "status", "") or "")
+                return str(handler_result.get("status") or getattr(record, "result_status", "") or record.status or "")
+        return str(getattr(record, "result_status", "") or getattr(record, "status", "") or "")
     if isinstance(record, Mapping):
         result = dict(record.get("result") or {})
         if _is_unavailable_result(result) or _is_unavailable_result(record):
@@ -278,8 +264,8 @@ def _record_effective_status(record: Any) -> str:
         if isinstance(handler_result, Mapping):
             if _is_unavailable_result(handler_result):
                 return "unavailable"
-            return str(handler_result.get("status") or record.get("status") or "")
-        return str(record.get("status") or "")
+            return str(handler_result.get("status") or record.get("result_status") or record.get("status") or "")
+        return str(record.get("result_status") or record.get("status") or "")
     return ""
 
 __all__ = [name for name in globals() if not name.startswith('__')]

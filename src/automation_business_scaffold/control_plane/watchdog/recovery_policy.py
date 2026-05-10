@@ -22,7 +22,7 @@ from automation_business_scaffold.control_plane.watchdog.models import (
 def decide_watchdog_action(candidate: WatchdogCandidate) -> WatchdogAction:
     target_table = candidate.target_table
     fail_status = str(candidate.metadata.get("fail_status") or FAIL_STATUS_BY_TABLE.get(target_table) or "failed")
-    retry_status = str(candidate.metadata.get("retry_status") or RETRY_STATUS_BY_TABLE.get(target_table) or "retry_wait")
+    retry_status = str(candidate.metadata.get("retry_status") or RETRY_STATUS_BY_TABLE.get(target_table) or "pending")
 
     if candidate.rule_code == WAITING_CHILDREN_RULE:
         return _repair_waiting_children(candidate, target_table=target_table)
@@ -48,8 +48,8 @@ def apply_watchdog_action(store: Any, action: WatchdogAction) -> dict[str, Any]:
 
 
 def _repair_waiting_children(candidate: WatchdogCandidate, *, target_table: str) -> WatchdogAction:
-    next_status = str(candidate.metadata.get("repair_status") or "ready_for_summary")
-    reason = candidate.reason or "Parent request is stuck in waiting_children after all children became terminal."
+    next_status = str(candidate.metadata.get("repair_status") or "pending")
+    reason = candidate.reason or "Parent request is stuck in waiting after all children became terminal."
     return WatchdogAction(
         action_type=REPAIR_ACTION,
         rule_code=candidate.rule_code,
@@ -58,7 +58,7 @@ def _repair_waiting_children(candidate: WatchdogCandidate, *, target_table: str)
         target_status=candidate.target_status,
         request_id=candidate.request_id,
         next_status=next_status,
-        error_type="waiting_children_unreconciled",
+        error_type="waiting_unreconciled",
         reason=reason,
         repair_operation="reconcile_parent_waiting_children",
         metadata=_action_metadata(

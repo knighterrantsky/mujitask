@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -55,14 +54,11 @@ def _build_row_result(
     row_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     source_record_id = str(row_context.get("source_record_id") or "")
-    collect_jobs = [
-        *_api_jobs_for_stage(store=store, request_id=request_id, stage_code="collect_product_data"),
-        *_api_jobs_for_stage(
-            store=store,
-            request_id=request_id,
-            stage_code="resume_competitor_rows_after_browser_fallback",
-        ),
-    ]
+    collect_jobs = _api_jobs_for_stage(
+        store=store,
+        request_id=request_id,
+        stage_code="collect_product_data",
+    )
     row_job = _latest_row_job(collect_jobs, source_record_id=source_record_id, job_code="competitor_row_refresh")
     row_payload = extract_effective_result_payload(row_job)
     step_timeline = row_payload.get("step_timeline") if isinstance(row_payload.get("step_timeline"), list) else []

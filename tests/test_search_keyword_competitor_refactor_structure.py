@@ -18,7 +18,6 @@ STAGE_CODES = (
     "dispatch_row_refresh_jobs",
     "refresh_competitor_rows",
     "browser_fallback",
-    "resume_competitor_rows_after_browser_fallback",
     "ready_for_summary",
 )
 
@@ -109,7 +108,7 @@ def test_competitor_package_has_policy_modules_but_no_shared_kernel() -> None:
         for path in (COMPETITOR_FLOW_PACKAGE / "policies").glob("*.py")
         if path.name != "__init__.py"
     }
-    assert policy_files == {"candidate_filter.py", "dedupe.py", "fallback.py", "resume.py"}
+    assert policy_files == {"candidate_filter.py", "dedupe.py", "fallback.py"}
 
     forbidden_paths = (
         PACKAGE_ROOT / "domains" / "tiktok" / "flows" / "keyword_shared",

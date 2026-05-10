@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,

@@ -99,7 +99,7 @@ def test_watchdog_scan_decides_retry_for_lease_expired_job() -> None:
     assert payload["counts_by_action"]["retry"] == 1
     assert payload["outcomes"][0]["action"]["rule_code"] == LEASE_EXPIRED_RULE
     assert payload["outcomes"][0]["action"]["action_type"] == "retry"
-    assert payload["outcomes"][0]["action"]["next_status"] == "retry_wait"
+    assert payload["outcomes"][0]["action"]["next_status"] == "pending"
     assert payload["outcomes"][0]["action"]["error_type"] == "lease_expired"
     assert store.applied_actions[0]["target_id"] == "job-1"
 
@@ -139,7 +139,7 @@ def test_watchdog_scan_decides_fail_when_stale_progress_budget_is_exhausted() ->
     outcome = payload["outcomes"][0]
     assert outcome["action"]["rule_code"] == STALE_PROGRESS_RULE
     assert outcome["action"]["action_type"] == "fail"
-    assert outcome["action"]["next_status"] == "failed"
+    assert outcome["action"]["next_status"] == "finished"
     assert outcome["action"]["error_type"] == "stale_progress"
     assert outcome["action"]["error_code"] == "job_no_progress_timeout"
 
@@ -173,7 +173,7 @@ def test_watchdog_scan_decides_repair_for_waiting_children_parent() -> None:
         {
             "target_table": "task_request",
             "request_id": "req-3",
-            "status": "waiting_children",
+            "status": "waiting",
             "progress_stage": "product_collection",
         }
     )
@@ -184,8 +184,8 @@ def test_watchdog_scan_decides_repair_for_waiting_children_parent() -> None:
     outcome = payload["outcomes"][0]
     assert outcome["action"]["rule_code"] == WAITING_CHILDREN_RULE
     assert outcome["action"]["repair_operation"] == "reconcile_parent_waiting_children"
-    assert outcome["action"]["next_status"] == "ready_for_summary"
-    assert outcome["action"]["error_type"] == "waiting_children_unreconciled"
+    assert outcome["action"]["next_status"] == "pending"
+    assert outcome["action"]["error_type"] == "waiting_unreconciled"
 
 
 def test_watchdog_scan_decides_fail_for_timed_out_outbox_when_retries_exhausted() -> None:
@@ -280,7 +280,7 @@ def test_decide_watchdog_action_fails_execution_timeout() -> None:
 
     assert action.rule_code == EXECUTION_TIMEOUT_RULE
     assert action.action_type == "fail"
-    assert action.next_status == "failed"
+    assert action.next_status == "finished"
     assert action.error_type == "timeout"
     assert action.error_code == "job_total_timeout"
 

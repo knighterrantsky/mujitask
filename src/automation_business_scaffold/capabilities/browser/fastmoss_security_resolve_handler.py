@@ -183,7 +183,6 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         "slider_captcha_audit_artifact_refs": coerce_mapping_list(browser_result.get("slider_captcha_audit_artifact_refs")),
         "browser_diagnostic_artifact_refs": coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs")),
         "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
-        "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
     }
     return success_result(context, summary=summary, result=result)
 
@@ -285,7 +284,6 @@ def _browser_resolve_result_payload(
                 browser_result.get("browser_diagnostic_artifact_refs")
             ),
             "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
-            "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
         }
     )
 
@@ -683,6 +681,8 @@ def _runtime_db_url(payload: Mapping[str, Any], *, fastmoss_settings: Mapping[st
         request_payload.get("db_url"),
         fastmoss_settings.get("execution_control_db_url"),
         fastmoss_settings.get("db_url"),
+        os.environ.get("BUSINESS_EXECUTION_CONTROL_DB_URL"),
+        os.environ.get("EXECUTION_CONTROL_DB_URL"),
     )
 
 

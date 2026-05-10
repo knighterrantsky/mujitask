@@ -10,13 +10,11 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     has_active_records as _has_active_children,
-    recover_browser_fallback_resume_stage,
     stage_child_records as _stage_child_records,
 )
 
 from .stages.browser_fallback import (
     _browser_fallback_candidates,
-    _browser_resume_candidates,
 )
 
 _STAGE_MODULES = {
@@ -25,7 +23,6 @@ _STAGE_MODULES = {
     "dispatch_row_refresh_jobs": "dispatch_row_refresh_jobs",
     "refresh_competitor_rows": "refresh_competitor_rows",
     "browser_fallback": "browser_fallback",
-    "resume_competitor_rows_after_browser_fallback": "resume_competitor_rows_after_browser_fallback",
 }
 
 
@@ -77,15 +74,10 @@ def release_request_after_child_completion(
     workflow = get_workflow_definition(KEYWORD_TASK_CODE)
     current_stage = str(request.current_stage or "").strip()
     if current_stage == workflow.summary_policy.summary_stage_code:
-        recovery_stage = recover_browser_fallback_resume_stage(
-            store,
-            request_id=request_id,
-            current_stage=current_stage,
-            summary_stage_code=workflow.summary_policy.summary_stage_code,
-            continuation_stage_codes=("resume_competitor_rows_after_browser_fallback",),
-            continuation_candidate_ready=bool(_browser_resume_candidates(store=store, request_id=request_id)),
-            browser_stage_code="browser_fallback",
-            resume_stage_code="resume_competitor_rows_after_browser_fallback",
+        recovery_stage = (
+            "browser_fallback"
+            if _browser_fallback_candidates(store=store, request_id=request_id)
+            else ""
         )
         if recovery_stage:
             store.update_task_request(

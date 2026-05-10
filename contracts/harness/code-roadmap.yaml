@@ -261,7 +261,7 @@ features:
       - docs/arch/project-architecture-contract.md
       - docs/arch/workflow-design-guidelines.md
       - docs/dev/module-guide.md
-      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/arch/workflow-selection-table-design.md
       - contracts/facts/product-fact-collection.yaml
       - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_selection_products.py
       - src/automation_business_scaffold/domains/tiktok/workflows/search_keyword_selection_products.py
@@ -284,7 +284,7 @@ features:
     allowed_paths:
       - contracts/harness/code-roadmap.yaml
       - contracts/workflow/search_keyword_selection_products.yaml
-      - docs/arch/refactor-search-keyword-selection-products.md
+      - docs/arch/workflow-selection-table-design.md
       - docs/dev/module-guide.md
       - src/automation_business_scaffold/contracts/workflow/search_keyword_selection_products.yaml
       - src/automation_business_scaffold/contracts/handler/domain_mapping.py
@@ -420,9 +420,9 @@ features:
       - docs/arch/project-architecture-contract.md
       - docs/arch/workflow-design-guidelines.md
       - docs/dev/module-guide.md
-      - docs/arch/refactor-search-keyword-selection-products.md
-      - docs/arch/refactor-search-keyword-competitor-products.md
-      - docs/arch/refactor-runtime-store-phase-2.md
+      - docs/arch/workflow-selection-table-design.md
+      - docs/arch/workflow-competitor-table-design.md
+      - docs/arch/runtime-db-schema-design.md
       - contracts/harness/architecture-ownership.yaml
       - contracts/harness/code-roadmap.yaml
       - src/automation_business_scaffold/domains/tiktok/tasks/search_keyword_competitor_products.py
@@ -440,9 +440,9 @@ features:
       - docs/arch/project-architecture-contract.md
       - docs/arch/workflow-design-guidelines.md
       - docs/dev/module-guide.md
-      - docs/arch/refactor-search-keyword-selection-products.md
-      - docs/arch/refactor-search-keyword-competitor-products.md
-      - docs/arch/refactor-runtime-store-phase-2.md
+      - docs/arch/workflow-selection-table-design.md
+      - docs/arch/workflow-competitor-table-design.md
+      - docs/arch/runtime-db-schema-design.md
       - contracts/harness/architecture-ownership.yaml
       - contracts/facts/product-fact-collection.yaml
       - contracts/workflow/search_keyword_competitor_products.yaml
@@ -492,11 +492,9 @@ features:
       - docs/arch/project-architecture-contract.md
       - docs/arch/workflow-design-guidelines.md
       - docs/dev/module-guide.md
-      - docs/arch/refactor-search-keyword-selection-products.md
-      - docs/arch/refactor-search-keyword-competitor-products.md
-      - docs/arch/refactor-refresh-current-competitor-table.md
-      - docs/arch/refactor-sync-tk-influencer-pool.md
-      - docs/arch/refactor-tiktok-fastmoss-product-ingest.md
+      - docs/arch/workflow-selection-table-design.md
+      - docs/arch/workflow-competitor-table-design.md
+      - docs/arch/workflow-influencer-pool-sync-design.md
       - contracts/harness/architecture-ownership.yaml
       - contracts/harness/code-roadmap.yaml
       - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table
@@ -512,9 +510,9 @@ features:
       - docs/arch/project-architecture-contract.md
       - docs/arch/workflow-design-guidelines.md
       - docs/dev/module-guide.md
-      - docs/arch/refactor-refresh-current-competitor-table.md
-      - docs/arch/refactor-sync-tk-influencer-pool.md
-      - docs/arch/refactor-tiktok-fastmoss-product-ingest.md
+      - docs/arch/workflow-competitor-table-design.md
+      - docs/arch/workflow-influencer-pool-sync-design.md
+      - docs/arch/workflow-selection-table-design.md
       - contracts/harness/architecture-ownership.yaml
       - contracts/facts/product-fact-collection.yaml
       - contracts/workflow/refresh_current_competitor_table.yaml

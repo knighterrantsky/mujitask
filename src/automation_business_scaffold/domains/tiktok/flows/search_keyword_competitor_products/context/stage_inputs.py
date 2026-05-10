@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -55,9 +54,6 @@ def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str,
         ("fastmoss_base_url", "base_url"),
         ("region", "region"),
         ("fastmoss_timeout", "timeout"),
-        ("browser_cookies", "browser_cookies"),
-        ("execution_control_db_url", "execution_control_db_url"),
-        ("db_url", "db_url"),
         ("fastmoss_cookie_cache_namespace", "cookie_cache_namespace"),
         ("fastmoss_cookie_cache_enabled", "cookie_cache_enabled"),
         ("fastmoss_cookie_cache_ttl_seconds", "cookie_cache_ttl_seconds"),
@@ -105,7 +101,6 @@ def _fastmoss_security_fallback_payload_from_job(import_job: Mapping[str, Any]) 
         "search_digest": _first_text(job_payload.get("search_digest"), search_request.get("search_digest")),
         "search_request": search_request,
         "security_context": security_context,
-        "fallback_source_job_id": _first_text(result_payload.get("fallback_source_job_id"), import_job.get("job_id")),
     }
 
 def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
@@ -344,10 +339,10 @@ def _record_effective_status(record: Any) -> str:
     if record is None:
         return ""
     if isinstance(record, Mapping):
-        status = str(record.get("status") or "")
+        status = str(record.get("result_status") or record.get("status") or "")
         handler_status = extract_handler_result_status(record)
         return handler_status or status
-    status = str(getattr(record, "status", "") or "")
+    status = str(getattr(record, "result_status", "") or getattr(record, "status", "") or "")
     handler_status = extract_handler_result_status(record)
     return handler_status or status
 

@@ -109,7 +109,7 @@ def test_tiktok_fastmoss_product_ingest_submit_then_executor_once_dispatches_req
     step = _extract_step_output(dispatched)
 
     assert step["request_id"] == request_id
-    assert step["request_status"] == "waiting_children"
+    assert step["request_status"] == "waiting"
     assert step["current_stage"] == "collect_selection_rows"
     job_codes = {job["job_code"] for job in step["api_worker_jobs"]}
     assert job_codes == {"selection_row_refresh"}

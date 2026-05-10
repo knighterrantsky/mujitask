@@ -23,6 +23,7 @@ def ensure_runtime_schema(engine: Any) -> None:
             payload_json TEXT NOT NULL DEFAULT '{}',
             idempotency_key TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
+            result_status TEXT NOT NULL DEFAULT '',
             current_stage TEXT NOT NULL DEFAULT '',
             progress_stage TEXT NOT NULL DEFAULT '',
             stage_cursor_json TEXT NOT NULL DEFAULT '{}',
@@ -60,6 +61,7 @@ def ensure_runtime_schema(engine: Any) -> None:
             dedupe_key TEXT NOT NULL DEFAULT '',
             resource_code TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
+            result_status TEXT NOT NULL DEFAULT '',
             queue_seq INTEGER NOT NULL,
             progress_stage TEXT NOT NULL DEFAULT '',
             available_at DOUBLE PRECISION NOT NULL,
@@ -117,6 +119,7 @@ def ensure_runtime_schema(engine: Any) -> None:
             business_key TEXT NOT NULL DEFAULT '',
             dedupe_key TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
+            result_status TEXT NOT NULL DEFAULT '',
             stage TEXT NOT NULL DEFAULT '',
             progress_stage TEXT NOT NULL DEFAULT '',
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -358,6 +361,12 @@ def ensure_runtime_schema(engine: Any) -> None:
         _ensure_column(
             connection,
             table_name="task_request",
+            column_name="result_status",
+            column_definition="TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            connection,
+            table_name="task_request",
             column_name="worker_id",
             column_definition="TEXT NOT NULL DEFAULT ''",
         )
@@ -408,6 +417,12 @@ def ensure_runtime_schema(engine: Any) -> None:
             connection,
             table_name="task_request",
             column_name="dead_letter_reason",
+            column_definition="TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            connection,
+            table_name="task_execution",
+            column_name="result_status",
             column_definition="TEXT NOT NULL DEFAULT ''",
         )
         _ensure_column(
@@ -474,6 +489,12 @@ def ensure_runtime_schema(engine: Any) -> None:
             connection,
             table_name="task_execution",
             column_name="dead_letter_reason",
+            column_definition="TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            connection,
+            table_name="api_worker_job",
+            column_name="result_status",
             column_definition="TEXT NOT NULL DEFAULT ''",
         )
         _ensure_column(
@@ -806,4 +827,3 @@ def _ensure_postgres_double_precision_columns(connection: Any) -> None:
                 f"ALTER TABLE {table_name} ALTER COLUMN {column_name} "
                 f"TYPE DOUBLE PRECISION USING {column_name}::double precision"
             )
-

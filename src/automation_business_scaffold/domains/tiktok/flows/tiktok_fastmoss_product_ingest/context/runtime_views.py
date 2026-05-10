@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -48,14 +47,28 @@ from .decision_models import *
 
 
 def _row_refresh_jobs_for_summary(*, store: RuntimeStore, request_id: str) -> list[dict[str, Any]]:
-    return [
-        *_api_jobs_for_stage(store, request_id=request_id, stage_code="collect_selection_rows"),
-        *_api_jobs_for_stage(
-            store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        ),
-    ]
+    return _api_jobs_for_stage(store, request_id=request_id, stage_code="collect_selection_rows")
+
+def _selection_row_has_after_browser_terminal(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    source_record_id: str,
+) -> bool:
+    row_job = _latest_row_job(
+        [
+            job
+            for job in _api_jobs_for_stage(
+                store,
+                request_id=request_id,
+                stage_code="collect_selection_rows",
+            )
+            if _mapping(job.get("payload")).get("browser_fallback_resolved")
+        ],
+        source_record_id=source_record_id,
+        job_code="selection_row_refresh",
+    )
+    return _handler_status_from_api_job(row_job) in {"success", "partial_success", "failed", "skipped"}
 
 def _selection_row_browser_fallback_candidates(
     store: RuntimeStore,
@@ -90,22 +103,22 @@ def _selection_row_browser_fallback_candidates(
             result_payload.get("source_record_id"),
             row_payload.get("source_record_id"),
         )
+        if _selection_row_has_after_browser_terminal(
+            store=store,
+            request_id=request_id,
+            source_record_id=source_record_id,
+        ):
+            continue
         business_entity_key = _first_non_empty(
             result_payload.get("business_entity_key"),
             row_payload.get("business_key"),
             job.get("business_key"),
             source_record_id,
         )
-        fallback_source_job_id = _first_non_empty(
-            browser_payload.get("fallback_source_job_id"),
-            result_payload.get("fallback_source_job_id"),
-            job.get("job_id"),
-        )
         browser_payload = {
             **browser_payload,
             "source_record_id": source_record_id,
             "business_entity_key": business_entity_key,
-            "fallback_source_job_id": fallback_source_job_id,
         }
         product_identity = _mapping(result_payload.get("product_identity")) or _mapping(
             row_payload.get("product_identity")
@@ -135,49 +148,6 @@ def _selection_row_browser_fallback_candidates(
                 "normalized_product_result": _mapping(
                     result_payload.get("normalized_product_result")
                 ),
-            }
-        )
-    return candidates
-
-def _selection_row_browser_resume_candidates(
-    store: RuntimeStore,
-    *,
-    request_id: str,
-) -> list[dict[str, Any]]:
-    fallback_by_key = {
-        str(candidate.get("fallback_key") or ""): candidate
-        for candidate in _selection_row_browser_fallback_candidates(store=store, request_id=request_id)
-    }
-    candidates: list[dict[str, Any]] = []
-    for execution in _browser_executions_for_stage(
-        store,
-        request_id=request_id,
-        stage_code="selection_row_browser_fallback",
-    ):
-        if _handler_status_from_execution(execution) != "success":
-            continue
-        payload = dict(execution.payload or {})
-        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
-        source_record_id = _first_non_empty(payload.get("source_record_id"))
-        business_entity_key = _first_non_empty(payload.get("business_entity_key"))
-        fallback_key = _row_fallback_key(
-            source_record_id=source_record_id,
-            business_entity_key=business_entity_key,
-            fallback_handler=fallback_handler,
-        )
-        fallback_candidate = fallback_by_key.get(fallback_key)
-        if not fallback_candidate:
-            continue
-        execution_payload = extract_effective_result_payload(execution)
-        if fallback_handler == "tiktok_product_browser_fetch" and not _mapping(
-            execution_payload.get("normalized_product_result")
-        ):
-            continue
-        candidates.append(
-            {
-                **dict(fallback_candidate),
-                "browser_execution_id": str(execution.execution_id),
-                "browser_execution_payload": execution_payload,
             }
         )
     return candidates
@@ -300,6 +270,22 @@ def _latest_api_job_by_code(jobs: list[dict[str, Any]], job_code: str) -> dict[s
             return job
     return {}
 
+def _latest_row_job(
+    jobs: list[dict[str, Any]],
+    *,
+    source_record_id: str,
+    job_code: str,
+) -> dict[str, Any] | None:
+    selected: dict[str, Any] | None = None
+    for job in jobs:
+        if str(job.get("job_code") or "") != job_code:
+            continue
+        payload = dict(job.get("payload") or {})
+        if str(payload.get("source_record_id") or "") != source_record_id:
+            continue
+        selected = job
+    return selected
+
 def _any_api_jobs_active(jobs: list[dict[str, Any]]) -> bool:
     return any(str(job.get("status") or "") in ACTIVE_API_JOB_STATUSES for job in jobs)
 
@@ -310,7 +296,7 @@ def _handler_status_from_api_job(job: Mapping[str, Any] | None) -> str:
     if not job:
         return ""
     handler_result = _job_handler_result(job)
-    return str(handler_result.get("status") or job.get("status") or "")
+    return str(handler_result.get("status") or job.get("result_status") or job.get("status") or "")
 
 def _handler_status_from_execution(execution: Any) -> str:
     if execution is None:
@@ -318,8 +304,8 @@ def _handler_status_from_execution(execution: Any) -> str:
     result = dict(execution.result or {})
     handler_result = result.get("handler_result")
     if isinstance(handler_result, Mapping):
-        return str(handler_result.get("status") or execution.status or "")
-    return str(execution.status or "")
+        return str(handler_result.get("status") or getattr(execution, "result_status", "") or execution.status or "")
+    return str(getattr(execution, "result_status", "") or execution.status or "")
 
 def _job_handler_result(job: Mapping[str, Any] | None) -> dict[str, Any]:
     if not job:

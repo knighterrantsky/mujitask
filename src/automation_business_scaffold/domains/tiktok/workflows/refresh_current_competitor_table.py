@@ -109,26 +109,12 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
                     StageJobBinding(
                         job_code="tiktok_product_browser_fetch",
                         flow_code="tiktok_product_browser_fetch",
-                        result_consumer="normalized product result for competitor row refresh resume",
+                        result_consumer="normalized product result for competitor row refresh after browser fallback",
                     ),
                     StageJobBinding(
                         job_code="fastmoss_security_browser_resolve",
                         flow_code="fastmoss_security_browser_resolve",
-                        result_consumer="cookie cache metadata for competitor row refresh resume",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="resume_competitor_rows_after_browser_fallback",
-                description="Retry only competitor row refresh jobs whose browser fallback execution succeeded.",
-                execution_mode="worker_jobs",
-                enter_condition="browser fallback produced resumable row inputs",
-                exit_condition="resumed competitor row refresh jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="competitor_row_refresh",
-                        flow_code="competitor_row_pipeline",
-                        result_consumer="row terminal result after browser fallback",
+                        result_consumer="cookie cache metadata for competitor row refresh after browser fallback",
                     ),
                 ),
             ),
@@ -173,13 +159,8 @@ def build_refresh_current_competitor_table_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="browser_fallback",
-                to_stage_code="resume_competitor_rows_after_browser_fallback",
-                condition="browser fallback task_executions produced resumable row inputs",
-            ),
-            TransitionDefinition(
-                from_stage_code="resume_competitor_rows_after_browser_fallback",
-                to_stage_code="ready_for_summary",
-                condition="resumed competitor row refresh jobs are terminal",
+                to_stage_code="collect_product_data",
+                condition="browser fallback task_executions produced row inputs for the same competitor row stage",
             ),
             TransitionDefinition(
                 from_stage_code="collect_product_data",

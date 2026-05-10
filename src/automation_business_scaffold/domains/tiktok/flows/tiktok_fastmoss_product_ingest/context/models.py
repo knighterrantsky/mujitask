@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -44,7 +43,7 @@ from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper i
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
 
-ACTIVE_API_JOB_STATUSES = {"pending", "running", "retry_wait"}
+ACTIVE_API_JOB_STATUSES = {"pending", "running"}
 
 FACT_PERSISTENCE_PASSTHROUGH_KEYS = (
     "persistence",

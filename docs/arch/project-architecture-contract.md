@@ -47,7 +47,7 @@ src/{project}/
       policies/             # 业务级 retry/idempotency/selection/filter/finalize policy
       mappers/              # 业务数据映射，不接触外部 transport
       projections/          # 写回视图/表格/消息的投影
-      flows/                # 业务组合逻辑，只编排 domain 内能力
+      flows/                # 业务组合逻辑；top-level workflow 用同名 package + stages/context/policies/summary
 
   capabilities/
     input_sources/
@@ -69,7 +69,8 @@ src/{project}/
 
   infrastructure/
     clients/                # Feishu/FastMoss/TikTok/AWS/MinIO/Postgres client
-    stores/                 # RuntimeStore/FactStore/ObjectStore 实现
+    runtime/                # RuntimeStore façade、repositories、queries、schema availability
+    stores/                 # FactStore/ObjectStore 等技术存储实现
     schemas/                # DB schema/migration contract
     observability/          # logging/metrics/tracing
 
@@ -128,12 +129,15 @@ scripts/
 | Policy | `domains/{domain}/policies/` | `{policy_code}.py` | selection/filter/retry/idempotency/finalize 业务决策 |
 | Mapper | `domains/{domain}/mappers/` | `{source}_{business_object}_mapper.py` | 输入行、事实记录到业务对象的映射 |
 | Projection | `domains/{domain}/projections/` | `{destination}_{view}_projection.py` | 写回表格、消息、视图字段 |
+| Top-level Flow Package | `domains/{domain}/flows/{workflow_code}/` | `orchestrator.py`、`stages/{stage_code}.py`、`context/**`、`policies/**`、`summary.py` | workflow runtime 推进实现；不能成为 handler registry key |
+| Row-level Leaf Flow Package | `domains/{domain}/flows/{row_flow_code}/` | `orchestrator.py`、内部 step/context/policy 模块 | 单个行级主 job 内部串行 pipeline；不表达 top-level workflow stage DAG |
 | Input Source Handler | `capabilities/input_sources/{source}/` | `{capability}_handler.py` | Feishu / Dingding 表格等业务输入读取 |
 | Fact Source Handler | `capabilities/fact_sources/{source}/` | `{entity}_fetch_handler.py` | TikTok / FastMoss / AWS 等事实采集 |
 | Persistence Handler | `capabilities/persistence/{store}/` | `{operation}_handler.py` | database/object storage 能力，不写业务规则 |
 | Channel Handler | `capabilities/channels/{channel}/` | `{message_type}_handler.py` | Feishu / Dingding / Discord 等出站通道 |
 | Browser / Media Capability | `capabilities/browser/`、`capabilities/media/` | `{capability}_handler.py` | profile/CDP、截图、下载、转存 |
-| Client / Store | `infrastructure/clients/`、`infrastructure/stores/` | `{system}_client.py`、`{store}_store.py` | 底层技术实现，不知道 workflow |
+| Runtime Repository / Query | `infrastructure/runtime/repositories/`、`infrastructure/runtime/queries/` | `{table_or_read_model}_repo.py`、`{read_model}_query.py` | Runtime table persistence 和只读视图；不知道 workflow 业务语义 |
+| Client / Store | `infrastructure/clients/`、`infrastructure/stores/`、`infrastructure/facts/`、`infrastructure/artifacts/` | `{system}_client.py`、`{store}_store.py` | 底层技术实现，不知道 workflow |
 
 ## 5. 外部系统分类
 
@@ -164,6 +168,8 @@ scripts/
 3. Workflow 编排
    在 `domains/{domain}/workflows/{workflow_code}` 定义 stage、job DAG、依赖、终态规则、summary contract 和 outbox 触发点。
 
+   复杂 workflow 的运行推进实现放入同名 `domains/{domain}/flows/{workflow_code}/` package。当前已完成包化的 TikTok top-level workflow 包括 `search_keyword_selection_products`、`search_keyword_competitor_products`、`refresh_current_competitor_table`、`sync_tk_influencer_pool` 和 `tiktok_fastmoss_product_ingest`。包内 `orchestrator.py` 只负责 stage dispatch，`stages/{stage_code}.py` 负责单 stage 推进，`context/**` 只提供 runtime views / stage inputs / decision models / summary inputs，`summary.py` 负责最终 summary/result/outbox payload。
+
 4. Job Contract
    在 `domains/{domain}/jobs/{job_code}` 定义可执行单元，绑定 capability handler，例如 `feishu_table_read`、`fastmoss_product_fetch`、`fact_bundle_upsert`。业务复合 job 的 runtime adapter 也放在 domain job 文件中，并进入 domain flow；Job 可以引用 mapper/projection/policy code，但不能实现 transport。
 
@@ -174,7 +180,7 @@ scripts/
    TikTok、FastMoss、AWS 等事实来源放 `capabilities/fact_sources/{source}`；事实标准化、去重、可信度、落库 key 规则放 `domains/{domain}/policies` 或 `domains/{domain}/mappers`。
 
 7. 数据库与文件存储
-   DB / Object Store capability 放 `capabilities/persistence`，具体 Postgres / MinIO / S3 client 放 `infrastructure/stores`。业务不得直接绕过 store 写底层 client。
+   DB / Object Store capability 放 `capabilities/persistence`。Runtime DB public 入口是 `infrastructure/runtime/runtime_store.py` 的 `RuntimeStore` façade，具体 table owner 放 `infrastructure/runtime/repositories/**`，read model 放 `infrastructure/runtime/queries/**`；Fact DB / MinIO / S3 技术实现放 `infrastructure/facts`、`infrastructure/artifacts` 或对应 store/client。业务不得直接绕过 store 写底层 client。
 
 8. 输出通道
    飞书写回字段放 `domains/{domain}/projections`；飞书、钉钉、Discord 通知通道放 `capabilities/channels/{channel}`。所有最终通知必须通过 outbox，workflow 不直接调用通道 API。

@@ -16,7 +16,6 @@ FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB = JobDefinition(
     payload_contract=contract(
         "fastmoss_security_browser_resolve_payload",
         required_field("search_request", "Original FastMoss search request context.", type_hint="dict[str, Any]"),
-        required_field("fallback_source_job_id", "Keyword seed import job that triggered the fallback.", type_hint="str"),
         optional_field("resource_code", "Browser resource or profile affinity key.", type_hint="str"),
         optional_field("fastmoss", "FastMoss login and browser settings.", type_hint="dict[str, Any]"),
     ),

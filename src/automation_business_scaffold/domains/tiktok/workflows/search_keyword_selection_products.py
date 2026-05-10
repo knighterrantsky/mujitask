@@ -122,26 +122,12 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
                     StageJobBinding(
                         job_code="tiktok_product_browser_fetch",
                         flow_code="tiktok_product_browser_fetch",
-                        result_consumer="normalized product result for row refresh resume",
+                        result_consumer="normalized product result for row refresh after browser fallback",
                     ),
                     StageJobBinding(
                         job_code="fastmoss_security_browser_resolve",
                         flow_code="fastmoss_security_browser_resolve",
-                        result_consumer="cookie cache metadata for row refresh resume",
-                    ),
-                ),
-            ),
-            StageDefinition(
-                stage_code="resume_selection_rows_after_browser_fallback",
-                description="Retry only selection row refresh jobs whose browser fallback execution succeeded.",
-                execution_mode="worker_jobs",
-                enter_condition="selection row browser fallback produced resumable results",
-                exit_condition="resumed selection row refresh jobs are terminal",
-                job_bindings=(
-                    StageJobBinding(
-                        job_code="selection_row_refresh",
-                        flow_code="selection_row_pipeline",
-                        result_consumer="row terminal result after browser fallback",
+                        result_consumer="cookie cache metadata for row refresh after browser fallback",
                     ),
                 ),
             ),
@@ -195,13 +181,8 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="selection_row_browser_fallback",
-                to_stage_code="resume_selection_rows_after_browser_fallback",
-                condition="browser fallback task_executions produced resumable results",
-            ),
-            TransitionDefinition(
-                from_stage_code="resume_selection_rows_after_browser_fallback",
-                to_stage_code="ready_for_summary",
-                condition="resumed selection row refresh jobs are terminal",
+                to_stage_code="refresh_selection_rows",
+                condition="browser fallback task_executions produced row inputs for the same selection row stage",
             ),
             TransitionDefinition(
                 from_stage_code="refresh_selection_rows",

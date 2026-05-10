@@ -61,9 +61,9 @@ def _submit_waiting_request(store: RuntimeStore, *, case_id: str):
     assert claimed.request_id == request.request_id
     return store.update_task_request(
         request_id=request.request_id,
-        status="waiting_children",
-        current_stage="waiting_children",
-        progress_stage="waiting_children",
+        status="waiting",
+        current_stage="waiting",
+        progress_stage="waiting",
         worker_id="",
         lease_until=0.0,
         heartbeat_at=0.0,
@@ -386,37 +386,43 @@ def test_watchdog_apply_once_persists_retry_fail_repair_and_is_idempotent(runtim
     assert stale_request.stage_cursor == {}
 
     lease_job = store.load_api_worker_job(job_id=ids["lease_job_id"])
-    assert lease_job["status"] == "retry_wait"
+    assert lease_job["status"] == "pending"
+    assert lease_job["result_status"] == ""
     assert lease_job["worker_id"] == ""
     assert lease_job["lease_until"] == 0.0
     assert lease_job["error_type"] == "lease_expired"
 
     timed_out_execution = store.load_task_execution(execution_id=ids["timeout_execution_id"])
-    assert timed_out_execution.status == "failed"
+    assert timed_out_execution.status == "finished"
+    assert timed_out_execution.result_status == "failed"
     assert timed_out_execution.error_type == "timeout"
     assert timed_out_execution.dead_letter_reason == "watchdog_failed"
 
     retry_execution = store.load_task_execution(execution_id=ids["retry_execution_id"])
-    assert retry_execution.status == "failed"
+    assert retry_execution.status == "finished"
+    assert retry_execution.result_status == "failed"
     assert retry_execution.worker_id == ""
     assert retry_execution.error_type == "timeout"
     assert retry_execution.error_code == "job_total_timeout"
     assert retry_execution.dead_letter_reason == "watchdog_failed"
 
     failed_api_job = store.load_api_worker_job(job_id=ids["api_fail_job_id"])
-    assert failed_api_job["status"] == "failed"
+    assert failed_api_job["status"] == "finished"
+    assert failed_api_job["result_status"] == "failed"
     assert failed_api_job["worker_id"] == ""
     assert failed_api_job["lease_until"] == 0.0
     assert failed_api_job["error_type"] == "timeout"
     assert failed_api_job["dead_letter_reason"] == "watchdog_failed"
 
     repaired_request = store.load_task_request(request_id=ids["repair_request_id"])
-    assert repaired_request.status == "ready_for_summary"
+    assert repaired_request.status == "pending"
+    assert repaired_request.current_stage == "ready_for_summary"
     assert repaired_request.child_total_count == 1
     assert repaired_request.child_terminal_count == 1
 
     priority_job = store.load_api_worker_job(job_id=ids["priority_job_id"])
-    assert priority_job["status"] == "failed"
+    assert priority_job["status"] == "finished"
+    assert priority_job["result_status"] == "failed"
     assert priority_job["error_type"] == "timeout"
     assert priority_job["error_code"] == "job_total_timeout"
 
@@ -460,8 +466,10 @@ def test_watchdog_apply_skips_stale_runtime_candidate(runtime_db_url) -> None:
     result = store.apply_watchdog_action(action=action.to_dict())
 
     assert result["applied"] is False
-    assert result["status"] == "success"
-    assert store.load_api_worker_job(job_id=ids["lease_job_id"])["status"] == "success"
+    assert result["status"] == "finished"
+    loaded = store.load_api_worker_job(job_id=ids["lease_job_id"])
+    assert loaded["status"] == "finished"
+    assert loaded["result_status"] == "success"
 
 
 def test_watchdog_apply_skips_refreshed_same_status_runtime_candidate(runtime_db_url) -> None:

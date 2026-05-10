@@ -13,10 +13,10 @@ RecordLike: TypeAlias = Mapping[str, Any] | object | None
 
 _FORMATTER = Formatter()
 _SUCCESSFUL_HANDLER_STATUSES = frozenset({"success", "partial_success"})
-_SUCCESSFUL_RECORD_STATUSES = frozenset({"success"})
+_SUCCESSFUL_RECORD_STATUSES = frozenset({"success", "partial_success"})
 _FAILURE_HANDLER_STATUSES = frozenset({"failed", "fallback_required"})
-_ACTIVE_RECORD_STATUSES = frozenset({"pending", "running", "retry_wait"})
-_TERMINAL_RECORD_STATUSES = frozenset({"success", "failed", "skipped", "cancelled"})
+_ACTIVE_RECORD_STATUSES = frozenset({"pending", "running"})
+_TERMINAL_RECORD_STATUSES = frozenset({"finished", "cancelled", "success", "failed", "skipped"})
 _TERMINAL_HANDLER_STATUSES = frozenset({"success", "skipped", "partial_success", "failed", "fallback_required"})
 
 
@@ -223,7 +223,7 @@ def extract_handler_result_status(record_or_payload: RecordLike, *, default: str
     if handler_result:
         return str(handler_result.get("status") or default)
     payload = _as_dict(record_or_payload)
-    return str(payload.get("status") or default)
+    return str(payload.get("result_status") or payload.get("status") or default)
 
 
 def extract_effective_result_payload(record_or_payload: RecordLike) -> dict[str, Any]:
@@ -260,53 +260,6 @@ def extract_effective_summary_payload(record_or_payload: RecordLike) -> dict[str
     if isinstance(inner, Mapping):
         return {str(key): _clone_value(value) for key, value in inner.items()}
     return {}
-
-
-def recover_stage_after_browser_summary_promotion(
-    *,
-    current_stage: str,
-    summary_stage_code: str,
-    browser_records: Iterable[RecordLike],
-    continuation_started: bool,
-    continuation_candidate_ready: bool,
-    resume_stage_code: str = "browser_fallback",
-) -> str:
-    if current_stage != summary_stage_code:
-        return ""
-    browser_record_list = [_as_dict(record) for record in browser_records if _as_dict(record)]
-    if not browser_record_list:
-        return ""
-    if any(str(record.get("status") or "") in _ACTIVE_RECORD_STATUSES for record in browser_record_list):
-        return ""
-    if not any(_effective_outcome_status(record) in {"success", "partial_success", "skipped"} for record in browser_record_list):
-        return ""
-    if continuation_started:
-        return ""
-    return resume_stage_code if continuation_candidate_ready else ""
-
-
-def recover_browser_fallback_resume_stage(
-    store: Any,
-    *,
-    request_id: str,
-    current_stage: str,
-    summary_stage_code: str,
-    continuation_stage_codes: Iterable[str],
-    continuation_candidate_ready: bool,
-    browser_stage_code: str = "browser_fallback",
-    resume_stage_code: str = "browser_fallback",
-) -> str:
-    return recover_stage_after_browser_summary_promotion(
-        current_stage=current_stage,
-        summary_stage_code=summary_stage_code,
-        browser_records=stage_child_records(store, request_id=request_id, stage_code=browser_stage_code),
-        continuation_started=any(
-            stage_child_records(store, request_id=request_id, stage_code=stage_code)
-            for stage_code in continuation_stage_codes
-        ),
-        continuation_candidate_ready=continuation_candidate_ready,
-        resume_stage_code=resume_stage_code,
-    )
 
 
 def is_fallback_required(record_or_payload: RecordLike) -> bool:
@@ -361,7 +314,7 @@ def select_latest_successful_record(
         record = _as_dict(record_like)
         if str(record.get(code_field) or "") != code_value:
             continue
-        record_status = str(record.get("status") or "")
+        record_status = str(record.get("result_status") or record.get("status") or "")
         handler_status = extract_handler_result_status(record)
         if record_status not in accepted_record_statuses and handler_status not in accepted_handler_statuses:
             continue
@@ -524,7 +477,8 @@ def record_effective_status(record_or_payload: RecordLike) -> str:
         return _effective_outcome_status(record)
     status = str(getattr(record_or_payload, "status", "") or "")
     handler_status = extract_handler_result_status(getattr(record_or_payload, "result", {}) or {})
-    return handler_status or status
+    result_status = str(getattr(record_or_payload, "result_status", "") or "")
+    return handler_status or result_status or status
 
 
 def timeout_seconds_for_workflow(workflow: Any, target_code: str) -> float:
@@ -727,8 +681,10 @@ def _stringify_template_value(value: Any) -> str:
 
 def _looks_like_handler_result(value: Mapping[str, Any]) -> bool:
     status = value.get("status")
+    lifecycle_statuses = {"pending", "running", "waiting", "finished", "cancelled"}
     return isinstance(status, str) and (
-        "handler_code" in value or "job_id" in value or "request_id" in value
+        status not in lifecycle_statuses
+        and ("handler_code" in value or "job_id" in value or "request_id" in value)
     )
 
 
@@ -736,7 +692,7 @@ def _effective_outcome_status(record: Mapping[str, Any]) -> str:
     handler_status = extract_handler_result_status(record)
     if handler_status:
         return handler_status
-    return str(record.get("status") or "")
+    return str(record.get("result_status") or record.get("status") or "")
 
 
 def _record_code(record: Mapping[str, Any]) -> str:
@@ -811,8 +767,6 @@ __all__ = [
     "is_fallback_required",
     "merge_stage_contexts",
     "record_effective_status",
-    "recover_browser_fallback_resume_stage",
-    "recover_stage_after_browser_summary_promotion",
     "render_job_keys",
     "render_key_template",
     "select_latest_successful_api_job",

@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -99,10 +98,6 @@ def _browser_execution_payload(
         "source_record_id": str(candidate.get("source_record_id") or ""),
         "business_entity_key": str(candidate.get("business_entity_key") or ""),
         "fallback_handler": fallback_handler,
-        "fallback_source_job_id": _first_text(
-            fallback_payload.get("fallback_source_job_id"),
-            candidate.get("row_job_id"),
-        ),
     }
     payload.update(_artifact_settings_from_request_payload(request.payload))
     if fallback_handler == "fastmoss_security_browser_resolve":
@@ -117,7 +112,7 @@ def _browser_execution_payload(
             payload["fastmoss"] = fastmoss_settings
     return _compact_mapping(payload)
 
-def _resume_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
+def _after_browser_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
     fallback_handler = str(candidate.get("fallback_handler") or "")
     payload = dict(candidate.get("row_payload") or {}) if isinstance(candidate.get("row_payload"), Mapping) else {}
     browser_payload = (
@@ -131,7 +126,8 @@ def _resume_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dic
             "browser_fallback_resolved": True,
             "browser_fallback_handler": fallback_handler,
             "browser_execution_id": str(candidate.get("browser_execution_id") or ""),
-            "fallback_source_job_id": str(candidate.get("row_job_id") or ""),
+            "browser_execution_status": str(candidate.get("browser_execution_status") or ""),
+            "browser_fallback_failed": str(candidate.get("browser_execution_status") or "") not in {"success", "partial_success"},
             "force_fallback": False,
             "fallback_reason": "",
         }
@@ -563,7 +559,7 @@ def _lookup_nested(source: Any, *keys: str) -> str:
     return ""
 
 def _effective_tiktok_result(*, tiktok_job: Mapping[str, Any] | None, browser_execution: Any) -> dict[str, Any]:
-    if browser_execution is not None and str(browser_execution.status or "") == "success":
+    if browser_execution is not None and str(getattr(browser_execution, "result_status", "") or browser_execution.status or "") == "success":
         return extract_effective_result_payload(browser_execution)
     return extract_effective_result_payload(tiktok_job)
 

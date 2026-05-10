@@ -119,7 +119,6 @@ def advance(
         }
         if retry_after_fastmoss_browser:
             payload["fastmoss_security_browser_fallback_attempt"] = 1
-            payload["fallback_source_job_id"] = str((latest_import_job or {}).get("job_id") or "")
         keys = render_job_keys(
             job_def,
             request.payload,

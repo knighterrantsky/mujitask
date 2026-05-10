@@ -14,6 +14,16 @@ from automation_business_scaffold.infrastructure.runtime.persistence_primitives 
 from automation_business_scaffold.infrastructure.runtime.runtime_records import RuntimeTaskExecutionRecord
 
 DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
+FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
+
+
+def _result_status_from_handler_result(result: dict[str, Any], *, default: str) -> str:
+    handler_result = result.get("handler_result")
+    if isinstance(handler_result, dict):
+        handler_status = str(handler_result.get("status") or "")
+        if handler_status in FINAL_RESULT_STATUSES:
+            return handler_status
+    return default
 
 
 class TaskExecutionRepository:
@@ -52,7 +62,7 @@ class TaskExecutionRepository:
                                 SELECT execution_id, request_id, status
                                 FROM task_execution
                                 WHERE dedupe_key = :dedupe_key
-                                  AND status IN ('pending', 'running', 'retry_wait')
+                                  AND status IN ('pending', 'running')
                                 LIMIT 1
                                 """
                             ),
@@ -183,7 +193,7 @@ class TaskExecutionRepository:
                         """
                         SELECT *
                         FROM task_execution
-                        WHERE status IN ('pending', 'retry_wait')
+                        WHERE status = 'pending'
                           AND available_at <= :available_at
                           AND (:request_id = '' OR request_id = :request_id)
                         ORDER BY queue_seq ASC, created_at ASC
@@ -262,7 +272,7 @@ class TaskExecutionRepository:
                             progress_seq = COALESCE(progress_seq, 0) + 1,
                             progress_message = :progress_message
                         WHERE execution_id = :execution_id
-                          AND status IN ('pending', 'retry_wait')
+                          AND status = 'pending'
                         """
                     ),
                     {
@@ -344,7 +354,7 @@ class TaskExecutionRepository:
                 .mappings()
                 .first()
             )
-            if row is None or str(row["status"] or "") not in {"pending", "retry_wait"}:
+            if row is None or str(row["status"] or "") != "pending":
                 return None
             if _coerce_float(row["available_at"]) > now:
                 return None
@@ -413,7 +423,7 @@ class TaskExecutionRepository:
                         progress_seq = COALESCE(progress_seq, 0) + 1,
                         progress_message = :progress_message
                     WHERE execution_id = :execution_id
-                      AND status IN ('pending', 'retry_wait')
+                      AND status = 'pending'
                     """
                 ),
                 {
@@ -580,7 +590,8 @@ class TaskExecutionRepository:
                 self._text(
                     """
                     UPDATE task_execution
-                    SET status = :status,
+                    SET status = 'finished',
+                        result_status = :result_status,
                         run_id = :run_id,
                         progress_stage = :progress_stage,
                         summary_json = :summary_json,
@@ -603,7 +614,7 @@ class TaskExecutionRepository:
                     """
                 ),
                 {
-                    "status": status,
+                    "result_status": _result_status_from_handler_result(result, default=status),
                     "run_id": run_id,
                     "progress_stage": status,
                     "summary_json": _json_dumps(summary),
@@ -709,16 +720,19 @@ class TaskExecutionRepository:
             )
             if row is None:
                 return self.load_task_execution(execution_id=execution_id)
-            status = "retry_wait"
+            status = "pending"
+            result_status = ""
             available_at = now + max(retry_delay_seconds, 0.1)
             if int(row["attempt_count"] or 0) >= int(row["max_attempts"] or 1):
-                status = "failed"
+                status = "finished"
+                result_status = "failed"
                 available_at = now
             update_result = connection.execute(
                 self._text(
                     """
                     UPDATE task_execution
                     SET status = :status,
+                        result_status = :result_status,
                         run_id = :run_id,
                         progress_stage = :progress_stage,
                         summary_json = :summary_json,
@@ -731,7 +745,7 @@ class TaskExecutionRepository:
                         worker_pid = 0,
                         available_at = :available_at,
                         updated_at = :updated_at,
-                        finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END,
+                        finished_at = CASE WHEN :result_status = 'failed' THEN :updated_at ELSE finished_at END,
                         heartbeat_at = :heartbeat_at,
                         last_progress_at = :last_progress_at,
                         progress_seq = COALESCE(progress_seq, 0) + 1,
@@ -743,6 +757,7 @@ class TaskExecutionRepository:
                 ),
                 {
                     "status": status,
+                    "result_status": result_status,
                     "run_id": run_id,
                     "progress_stage": status,
                     "summary_json": _json_dumps(summary or {}),
@@ -750,7 +765,7 @@ class TaskExecutionRepository:
                     "error_text": error_text,
                     "error_type": error_type,
                     "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
+                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if result_status == "failed" else ""),
                     "available_at": available_at,
                     "updated_at": now,
                     "heartbeat_at": now,

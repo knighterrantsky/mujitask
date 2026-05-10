@@ -10,6 +10,7 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 
 from ..context.decision_models import _waiting
 from .browser_fallback import _browser_fallback_candidates
+from .dispatch_row_refresh_jobs import enqueue_next_competitor_row_refresh
 
 
 STAGE_CODE = "refresh_competitor_rows"
@@ -44,4 +45,29 @@ def advance(
             "next_stage": "browser_fallback",
             "details": {"fallback_candidate_count": len(fallback_candidates)},
         }
+    row_dispatch = enqueue_next_competitor_row_refresh(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=stage_code,
+    )
+    if int(row_dispatch.get("created_count") or 0) > 0 or bool(row_dispatch.get("already_active")):
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "collect_job_count": len(jobs),
+                "pending_seed_count": int(row_dispatch.get("pending_seed_count") or 0),
+                "row_dispatch": row_dispatch,
+            },
+        )
+        return _waiting(
+            stage_code=stage_code,
+            message="Waiting for next competitor row refresh job to finish.",
+            details={
+                "created_count": int(row_dispatch.get("created_count") or 0),
+                "pending_seed_count": int(row_dispatch.get("pending_seed_count") or 0),
+            },
+        )
     return {"action": "advance", "next_stage": "ready_for_summary", "details": {"collect_job_count": len(jobs)}}

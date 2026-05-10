@@ -123,7 +123,7 @@ def test_request_dispatch_waiting_path_updates_parent_request(monkeypatch) -> No
 
     assert payload["daemon_status"] == "processed"
     assert payload["success_count"] == 1
-    assert any(update.get("status") == "waiting_children" for update in store.updates)
+    assert any(update.get("status") == "waiting" for update in store.updates)
 
 
 def test_runner_public_api_and_browser_worker_facades_delegate(monkeypatch) -> None:
@@ -172,4 +172,4 @@ def test_watchdog_scan_glue_and_recovery_policy_are_separate_paths() -> None:
 
     assert missing == ()
     assert action.action_type == "retry"
-    assert action.next_status == "retry_wait"
+    assert action.next_status == "pending"

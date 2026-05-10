@@ -57,13 +57,14 @@ def test_api_worker_fallback_required_keeps_transport_and_workflow_semantics_sep
     marked_calls: list[dict[str, Any]] = []
 
     class FakeStore:
-        def mark_api_worker_job_success(self, **kwargs: Any) -> dict[str, Any]:
+        def mark_api_worker_job_waiting(self, **kwargs: Any) -> dict[str, Any]:
             marked_calls.append(dict(kwargs))
-            return {"status": "success", "stage": kwargs["stage"]}
+            return {"status": "waiting", "result_status": "", "stage": kwargs["stage"]}
 
     outcome = SimpleNamespace(
         should_mark_failed=False,
         worker_result=SimpleNamespace(status="fallback_required"),
+        error=None,
         storage_summary=lambda: {"handler_status": "fallback_required"},
         storage_result=lambda: {
             "handler_result": {"status": "fallback_required", "result": {"fallback_required": True}}
@@ -78,9 +79,10 @@ def test_api_worker_fallback_required_keeps_transport_and_workflow_semantics_sep
         retry_delay_seconds=1.0,
     )
 
-    assert marked_job["status"] == "success"
+    assert marked_job["status"] == "waiting"
+    assert marked_job["result_status"] == ""
     assert marked_job["stage"] == "browser_fallback_required"
-    assert success_count == 1
+    assert success_count == 0
     assert failed_count == 0
     assert marked_calls[0]["result"]["handler_result"]["status"] == "fallback_required"
 
@@ -142,7 +144,7 @@ def test_request_lifecycle_repair_does_not_promote_fallback_required_to_summary(
         [
             {
                 "request_id": "req-1",
-                "status": "waiting_children",
+                "status": "waiting",
                 "current_stage": "refresh_selection_rows",
             },
             {
@@ -166,7 +168,7 @@ def test_request_lifecycle_repair_does_not_promote_fallback_required_to_summary(
             None,
             {
                 "request_id": "req-1",
-                "status": "waiting_children",
+                "status": "waiting",
                 "current_stage": "refresh_selection_rows",
             },
         ]
@@ -178,18 +180,18 @@ def test_request_lifecycle_repair_does_not_promote_fallback_required_to_summary(
 
     assert result["transitioned"] is False
     assert result["fallback_required_count"] == 1
-    assert result["request"].status == "waiting_children"
+    assert result["request"].status == "waiting"
     assert "SET status = 'ready_for_summary'" not in "\n".join(connection.statements)
 
 
-def test_watchdog_waiting_children_scan_leaves_fallback_required_for_workflow_stage() -> None:
+def test_watchdog_waiting_scan_leaves_fallback_required_for_workflow_stage() -> None:
     class FakeStore:
         def __init__(self) -> None:
             self._engine = _FakeEngine(_RecordingConnection([]))
             self.payloads: list[dict[str, Any]] = []
 
         def _scan_runtime_rows(self, **_kwargs: Any) -> list[dict[str, Any]]:
-            return [{"request_id": "req-1", "status": "waiting_children"}]
+            return [{"request_id": "req-1", "status": "waiting"}]
 
         @staticmethod
         def _request_from_row(row: dict[str, Any]) -> SimpleNamespace:
@@ -222,7 +224,7 @@ def test_watchdog_waiting_children_scan_leaves_fallback_required_for_workflow_st
     assert store.payloads == []
 
 
-def test_successful_browser_resume_prevents_repeated_selection_row_fallback_dispatch() -> None:
+def test_after_browser_row_job_prevents_repeated_selection_row_fallback_dispatch() -> None:
     class FakeStore:
         def list_api_worker_jobs_for_request(self, *, request_id: str) -> list[dict[str, Any]]:
             assert request_id == "req-1"
@@ -253,13 +255,14 @@ def test_successful_browser_resume_prevents_repeated_selection_row_fallback_disp
                     },
                 },
                 {
-                    "job_id": "row-resume",
+                    "job_id": "row-after-browser",
                     "job_code": "selection_row_refresh",
                     "business_key": "row-1",
                     "status": "success",
                     "payload": {
-                        "stage_code": "resume_selection_rows_after_browser_fallback",
+                        "stage_code": "refresh_selection_rows",
                         "source_record_id": "row-1",
+                        "browser_fallback_resolved": True,
                     },
                     "result": {"handler_result": {"status": "success", "result": {}}},
                 },

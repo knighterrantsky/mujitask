@@ -13,7 +13,6 @@ def tiktok_browser_fallback_payload(
     source_record_id: str,
     identity: Mapping[str, Any],
     source_context: Mapping[str, Any],
-    fallback_source_job_id: str,
 ) -> dict[str, Any]:
     return {
         **dict(request_payload),
@@ -26,7 +25,6 @@ def tiktok_browser_fallback_payload(
         ),
         "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
         "source_context": dict(source_context),
-        "fallback_source_job_id": fallback_source_job_id,
     }
 
 

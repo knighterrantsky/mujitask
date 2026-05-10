@@ -36,8 +36,6 @@ runtime_flow:
       module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.refresh_selection_rows
     - stage_code: selection_row_browser_fallback
       module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.selection_row_browser_fallback
-    - stage_code: resume_selection_rows_after_browser_fallback
-      module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.resume_selection_rows_after_browser_fallback
     - stage_code: ready_for_summary
       module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.ready_for_summary
 custom_logic:

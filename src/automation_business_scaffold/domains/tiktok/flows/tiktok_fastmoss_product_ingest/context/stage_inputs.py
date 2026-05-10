@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -60,10 +59,6 @@ def _selection_row_browser_execution_payload(
         "business_entity_key": str(candidate.get("business_entity_key") or ""),
         "candidate_key": str(candidate.get("candidate_key") or ""),
         "fallback_handler": fallback_handler,
-        "fallback_source_job_id": _first_non_empty(
-            _mapping(candidate.get("browser_fallback_payload")).get("fallback_source_job_id"),
-            candidate.get("row_job_id"),
-        ),
         "product_identity": _mapping(candidate.get("product_identity")),
         "normalized_product_url": str(candidate.get("normalized_product_url") or ""),
     }
@@ -74,54 +69,7 @@ def _selection_row_browser_execution_payload(
         payload.setdefault("verification_request", _mapping(payload.get("verification_request")))
     return compact_dict(payload)
 
-def _selection_row_resume_job(
-    *,
-    request: Any,
-    workflow: WorkflowDefinition,
-    stage_code: str,
-    row_job_def: Any,
-    candidate: Mapping[str, Any],
-) -> dict[str, Any]:
-    payload = _selection_row_resume_payload(stage_code=stage_code, candidate=candidate)
-    product_identity = _mapping(candidate.get("product_identity"))
-    resume_key = _first_non_empty(
-        candidate.get("source_record_id"),
-        candidate.get("business_entity_key"),
-        candidate.get("candidate_key"),
-        product_identity.get("product_id"),
-        product_identity.get("normalized_product_url"),
-    )
-    candidate_context = {
-        **dict(candidate),
-        "source_record_id_or_product_id": resume_key,
-    }
-    payload_context = {
-        **payload,
-        "source_record_id_or_product_id": resume_key,
-    }
-    keys = render_job_keys(
-        row_job_def,
-        request.payload,
-        candidate_context,
-        payload_context,
-        request_id=request.request_id,
-        task_code=request.task_code,
-        workflow_code=workflow.workflow_code,
-        stage_code=stage_code,
-        job_code=row_job_def.job_code,
-    )
-    dedupe_base = keys["dedupe_key"] or f"{request.request_id}:{stage_code}:{resume_key}"
-    return {
-        "business_key": keys["business_key"] or resume_key,
-        "dedupe_key": build_stage_local_dedupe_key(
-            f"{dedupe_base}:after-browser-fallback",
-            row_job_def.job_code,
-        ),
-        "payload": payload,
-        "max_execution_seconds": _timeout_seconds(workflow, row_job_def.job_code),
-    }
-
-def _selection_row_resume_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
+def _selection_row_after_browser_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
     fallback_handler = str(candidate.get("fallback_handler") or "")
     payload = dict(_mapping(candidate.get("row_payload")))
     browser_payload = _mapping(candidate.get("browser_execution_payload"))
@@ -131,7 +79,8 @@ def _selection_row_resume_payload(*, stage_code: str, candidate: Mapping[str, An
             "browser_fallback_resolved": True,
             "browser_fallback_handler": fallback_handler,
             "browser_execution_id": str(candidate.get("browser_execution_id") or ""),
-            "fallback_source_job_id": str(candidate.get("row_job_id") or ""),
+            "browser_execution_status": str(candidate.get("browser_execution_status") or ""),
+            "browser_fallback_failed": str(candidate.get("browser_execution_status") or "") not in {"success", "partial_success"},
             "force_fallback": False,
             "fallback_reason": "",
         }

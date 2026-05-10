@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     extract_handler_result_status,
     has_active_records as _has_active_children,
     is_fallback_required,
-    recover_browser_fallback_resume_stage,
     render_job_keys,
     select_latest_successful_api_job,
     select_latest_successful_api_job_result,
@@ -107,7 +106,7 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         creator_sync_failed_count = sum(
             1
             for job in matched_sync_jobs
-            if str(job.get("status") or "") in {"failed", "cancelled"}
+            if str(job.get("result_status") or job.get("status") or "") in {"failed", "cancelled"}
             or extract_handler_result_status(job) in {"failed", "fallback_required"}
         )
         influencer_write_success_count = sum(_sync_influencer_write_success_count(job) for job in matched_sync_jobs)
@@ -119,7 +118,7 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
             extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES for job in matched_product_jobs
         )
         product_job_failed = any(
-            str(job.get("status") or "") in {"failed", "cancelled"}
+            str(job.get("result_status") or job.get("status") or "") in {"failed", "cancelled"}
             or extract_handler_result_status(job) in {"failed", "fallback_required"}
             for job in matched_product_jobs
         )

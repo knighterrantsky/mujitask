@@ -13,8 +13,8 @@ class FallbackDecision:
 
 
 @dataclass(frozen=True)
-class ResumeDecision:
-    resumable: bool
+class AfterBrowserDecision:
+    can_continue: bool
     source_record_id: str
     handler_code: str
     payload: Mapping[str, Any] | None = None

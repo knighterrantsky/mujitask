@@ -58,7 +58,6 @@ def advance(
             "search_digest": str(fallback_payload.get("search_digest") or (import_job.get("payload") or {}).get("search_digest") or ""),
             "search_request": dict(fallback_payload.get("search_request") or {}),
             "security_context": dict(fallback_payload.get("security_context") or {}),
-            "fallback_source_job_id": str(import_job.get("job_id") or ""),
             "request_payload": dict(request.payload or {}),
         }
         fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
@@ -100,7 +99,6 @@ def advance(
             payload={
                 "status": "pending",
                 "browser_dispatch": dispatch,
-                "fallback_source_job_id": str(import_job.get("job_id") or ""),
                 "search_request": dict(fallback_payload.get("search_request") or {}),
             },
         )
@@ -124,7 +122,6 @@ def advance(
                 "status": "success",
                 "verified_path": str(execution_payload.get("verified_path") or "/api/goods/V2/search"),
                 "cookie_cache": dict(execution_payload.get("cookie_cache") or {}),
-                "fallback_source_job_id": str((execution.payload or {}).get("fallback_source_job_id") or ""),
             },
         )
         return {

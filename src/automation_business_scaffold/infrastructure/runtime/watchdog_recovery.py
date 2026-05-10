@@ -20,7 +20,7 @@ class WatchdogRecoveryCoordinator:
         max_limit = max(int(limit or 100), 1)
         rows = self._scan_runtime_rows(
             table_name="task_request",
-            statuses=("waiting_children",),
+            statuses=("waiting",),
             predicate_sql="1 = 1",
             predicate_params={},
             limit=max_limit,
@@ -44,7 +44,7 @@ class WatchdogRecoveryCoordinator:
                         request_id=request.request_id,
                         status=request.status,
                         record=request.to_dict(),
-                        reason="Parent request is still waiting_children even though all child work is terminal.",
+                        reason="Parent request is still waiting even though all child work is terminal.",
                         metadata=counts,
                     )
                 )
@@ -137,17 +137,15 @@ class WatchdogRecoveryCoordinator:
                     "applied": applied,
                     "transitioned": applied,
                 }
-            status = next_status or ("failed" if action_type == "fail" else "pending")
+            status = next_status or ("finished" if action_type == "fail" else "pending")
+            result_status = "failed" if action_type == "fail" else ""
             with self._engine.begin() as connection:
                 result = connection.execute(
                     self._text(
                         """
                         UPDATE task_request
-                        SET status = CASE
-                                WHEN :action_type = 'retry' AND current_stage = 'ready_for_summary'
-                                    THEN 'ready_for_summary'
-                                ELSE :status
-                            END,
+                        SET status = :status,
+                            result_status = :result_status,
                             current_stage = CASE
                                 WHEN :action_type = 'retry' AND current_stage <> 'ready_for_summary'
                                     THEN ''
@@ -186,6 +184,7 @@ class WatchdogRecoveryCoordinator:
                         "target_status": target_status,
                         "action_type": action_type,
                         "status": status,
+                        "result_status": result_status,
                         "progress_stage": status,
                         "error_text": reason,
                         "error_type": error_type,
@@ -208,13 +207,16 @@ class WatchdogRecoveryCoordinator:
             return {"target_table": target_table, "target_id": target_id, "action_type": action_type, "applied": applied, "status": updated.status}
 
         if target_table == "api_worker_job":
-            status = next_status or ("failed" if action_type == "fail" else "retry_wait")
+            will_fail = action_type == "fail"
+            status = next_status or ("finished" if will_fail else "pending")
+            result_status = "failed" if will_fail else ""
             with self._engine.begin() as connection:
                 result = connection.execute(
                     self._text(
                         """
                         UPDATE api_worker_job
                         SET status = :status,
+                            result_status = :result_status,
                             stage = :stage,
                             progress_stage = :progress_stage,
                             worker_id = '',
@@ -228,7 +230,7 @@ class WatchdogRecoveryCoordinator:
                             heartbeat_at = :heartbeat_at,
                             last_progress_at = :last_progress_at,
                             updated_at = :updated_at,
-                            finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                            finished_at = CASE WHEN :result_status = 'failed' THEN :updated_at ELSE finished_at END
                         WHERE job_id = :job_id
                           AND (:target_status = '' OR status = :target_status)
                           AND (:guard_run_id = 0 OR run_id = :observed_run_id)
@@ -244,6 +246,7 @@ class WatchdogRecoveryCoordinator:
                         "job_id": target_id,
                         "target_status": target_status,
                         "status": status,
+                        "result_status": result_status,
                         "stage": status,
                         "progress_stage": status,
                         "available_at": now,
@@ -289,13 +292,16 @@ class WatchdogRecoveryCoordinator:
 
         if target_table == "task_execution":
             execution = self.load_task_execution(execution_id=target_id)
-            status = next_status or ("failed" if action_type == "fail" else "retry_wait")
+            will_fail = action_type == "fail"
+            status = next_status or ("finished" if will_fail else "pending")
+            result_status = "failed" if will_fail else ""
             with self._engine.begin() as connection:
                 result = connection.execute(
                     self._text(
                         """
                         UPDATE task_execution
                         SET status = :status,
+                            result_status = :result_status,
                             progress_stage = :progress_stage,
                             worker_id = '',
                             worker_pid = 0,
@@ -307,7 +313,7 @@ class WatchdogRecoveryCoordinator:
                             heartbeat_at = :heartbeat_at,
                             last_progress_at = :last_progress_at,
                             updated_at = :updated_at,
-                            finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                            finished_at = CASE WHEN :result_status = 'failed' THEN :updated_at ELSE finished_at END
                         WHERE execution_id = :execution_id
                           AND (:target_status = '' OR status = :target_status)
                           AND (:guard_run_id = 0 OR run_id = :observed_run_id)
@@ -331,6 +337,7 @@ class WatchdogRecoveryCoordinator:
                         "execution_id": target_id,
                         "target_status": target_status,
                         "status": status,
+                        "result_status": result_status,
                         "progress_stage": status,
                         "error_text": reason,
                         "error_type": error_type,

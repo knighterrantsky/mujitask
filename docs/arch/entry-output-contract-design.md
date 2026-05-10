@@ -43,7 +43,7 @@
 
 - 不传 `run_mode`。`run_mode` 只属于本地调试或测试 submit override，不是正式 Skill 契约。
 - 不传 Runtime DB、Fact DB、MinIO/S3 endpoint、access key、secret key、bucket 等真实运行配置。
-- 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key` 这类连接或密钥字段。
+- 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key`、`browser_cookies` 这类连接、密钥或会话凭据字段。
 - 不从 `skill.local.env` 读取浏览器固定资源配置；`BROWSER_PROFILE_REF`、`BROWSER_PROVIDER_NAME`、`BROWSER_PROFILE_ID`、`BROWSER_WORKSPACE_ID`、`BROWSER_PROFILES_FILE`、`DEFAULT_PROFILE_REF` 这类默认值属于项目运行配置。正式 Skill 只允许用户通过 CLI 参数显式覆盖本次业务使用的 `profile_ref`。
 
 正式 submit 由 Runtime 控制面从项目运行配置解析 Runtime DB、Fact DB 和对象存储，并在创建 `task_request` 前做 preflight。缺 Runtime DB、Fact DB、artifact provider、bucket 或 MinIO/S3 必填配置时，submit 必须被拒绝，不能让后续 handler 退化成 `dry_run` 或本地 `local` 成功。
@@ -61,7 +61,9 @@
 | `ok` | submit 是否成功 |
 | `request_id` | Runtime DB 顶层任务 ID |
 | `task_code` | 顶层任务类型 |
-| `status` | 当前任务状态，通常为 `pending` 或 `waiting_children` |
+| `status` | 当前生命周期状态，提交成功后通常为 `pending`；长流程查询时可能为 `pending/running/waiting/finished/cancelled` |
+| `result_status` | 终态业务结果；仅 `status=finished` 时出现，取值 `success/partial_success/failed/skipped` |
+| `current_stage` | 当前 workflow stage，例如 `read_selection_rows`、`refresh_selection_rows`、`ready_for_summary` |
 | `message` | 面向调用方的简短说明 |
 | `result_url` | 可选，后续查询或回执入口 |
 | `reply_target` | 可选，最终通知目标 |
@@ -124,12 +126,26 @@ CLI / OpenClaw 兼容输出可继续使用 `__OPENCLAW_RESULT__` 作为最终一
 | --- | --- |
 | `request_id` | 顶层任务 |
 | `task_code` | 任务类型 |
-| `final_status` | `success / failed / partial_success` |
+| `status` | 顶层任务生命周期状态，终态为 `finished` 或 `cancelled` |
+| `result_status` | 终态业务结果，`success / failed / partial_success / skipped` |
+| `final_status` | 对旧调用方兼容的业务终态别名，等价于 `result_status`，不再表达执行生命周期 |
 | `summary` | 业务摘要 |
 | `counts` | 成功、失败、跳过、去重等计数 |
 | `failed_items` | 失败明细摘要，不放超大 payload |
 | `artifact_uri_prefix` | 可选，运行产物入口 |
 | `run_object_key` / `steps_object_key` / `stdout_object_key` | 可选，关键 artifact 索引 |
+
+状态查询必须遵守 Runtime DB 的双状态语义:
+
+| 字段 | 对外语义 |
+| --- | --- |
+| `status=pending` | 等待 executor/worker 按当前 stage 或 `available_at` 推进 |
+| `status=running` | 当前记录被 executor/worker claim |
+| `status=waiting` | 正在等待 child job、browser fallback 或外部可观测事件；等待引用可在调试详情中展示脱敏摘要 |
+| `status=finished` | 生命周期完成，必须带 `result_status` |
+| `status=cancelled` | 执行取消；取消原因在 error/result metadata 中 |
+
+`ready_for_summary` 是 `current_stage`，不是 `status`。`fallback_required` 是兼容期 handler wait signal，不作为对外任务状态返回；如需展示，可在调试详情中呈现为 `status=waiting` 的等待原因。
 
 ## 5. 查询契约
 

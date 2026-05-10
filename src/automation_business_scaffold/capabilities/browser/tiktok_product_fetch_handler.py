@@ -73,7 +73,6 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                         "availability_status": "unavailable",
                         "unavailable_message": str(exc),
                         "artifact_refs": [],
-                        "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
                     },
                 )
             except Exception as exc:
@@ -139,7 +138,6 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "slider_captcha_audit_artifact_refs": coerce_mapping_list(
             normalized.get("slider_captcha_audit_artifact_refs")
         ),
-        "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
     }
     return success_result(context, summary=summary, result=result)
 

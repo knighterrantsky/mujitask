@@ -15,17 +15,18 @@ class RuntimeRequestLifecycle:
                     """
                     SELECT
                         COUNT(*) AS total_count,
-                        SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
+                        SUM(CASE WHEN status IN ('finished', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
                         SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,
                             COALESCE(
                                 NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                NULLIF(result_status, ''),
                                 status
                             ) AS effective_status
                         FROM task_execution
@@ -44,17 +45,18 @@ class RuntimeRequestLifecycle:
                     """
                     SELECT
                         COUNT(*) AS total_count,
-                        SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
+                        SUM(CASE WHEN status IN ('finished', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
                         SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,
                             COALESCE(
                                 NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                NULLIF(result_status, ''),
                                 status
                             ) AS effective_status
                         FROM api_worker_job
@@ -127,7 +129,7 @@ class RuntimeRequestLifecycle:
 
             transitioned = False
             if (
-                str(request_row["status"] or "") == "waiting_children"
+                str(request_row["status"] or "") == "waiting"
                 and counts["active_count"] == 0
                 and counts["fallback_required_count"] == 0
             ):
@@ -135,7 +137,8 @@ class RuntimeRequestLifecycle:
                     store._text(
                         """
                         UPDATE task_request
-                        SET status = 'ready_for_summary',
+                        SET status = 'pending',
+                            result_status = '',
                             current_stage = 'ready_for_summary',
                             progress_stage = 'ready_for_summary',
                             last_progress_at = :last_progress_at,
@@ -224,7 +227,7 @@ class RuntimeRequestLifecycle:
         if request_row is None:
             return
         if (
-            str(request_row["status"]) == "waiting_children"
+            str(request_row["status"]) == "waiting"
             and int(stats["total_count"] or 0) > 0
             and int(stats["active_count"] or 0) == 0
             and int(stats["fallback_required_count"] or 0) == 0
@@ -233,7 +236,8 @@ class RuntimeRequestLifecycle:
                 self._store._text(
                     """
                     UPDATE task_request
-                    SET status = 'ready_for_summary',
+                    SET status = 'pending',
+                        result_status = '',
                         current_stage = 'ready_for_summary',
                         updated_at = :updated_at
                     WHERE request_id = :request_id
@@ -249,17 +253,18 @@ class RuntimeRequestLifecycle:
                     """
                     SELECT
                         COUNT(*) AS total_count,
-                        SUM(CASE WHEN status IN ('success', 'failed', 'skipped', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
+                        SUM(CASE WHEN status IN ('finished', 'cancelled') THEN 1 ELSE 0 END) AS terminal_count,
                         SUM(CASE WHEN effective_status IN ('success', 'partial_success') THEN 1 ELSE 0 END) AS success_count,
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,
                             COALESCE(
                                 NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
+                                NULLIF(result_status, ''),
                                 status
                             ) AS effective_status
                         FROM task_execution

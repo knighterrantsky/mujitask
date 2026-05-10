@@ -34,12 +34,13 @@ from automation_business_scaffold.infrastructure.runtime.repositories import (
 from automation_business_scaffold.infrastructure.runtime.watchdog_recovery import WatchdogRecoveryCoordinator
 
 
-ACTIVE_EXECUTION_STATUSES = {"pending", "running", "retry_wait"}
-TERMINAL_EXECUTION_STATUSES = {"success", "failed", "skipped", "cancelled"}
-ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "retry_wait"}
-TERMINAL_API_WORKER_JOB_STATUSES = {"success", "failed", "skipped", "cancelled"}
-TERMINAL_REQUEST_STATUSES = {"success", "failed", "cancelled"}
-DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES = ("running", "waiting_children")
+ACTIVE_EXECUTION_STATUSES = {"pending", "running"}
+TERMINAL_EXECUTION_STATUSES = {"finished", "cancelled"}
+ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running"}
+TERMINAL_API_WORKER_JOB_STATUSES = {"finished", "cancelled"}
+TERMINAL_REQUEST_STATUSES = {"finished", "cancelled"}
+FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
+DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES = ("running", "waiting")
 DEFAULT_ACTIVE_JOB_SCAN_STATUSES = ("running",)
 DEFAULT_OUTBOX_SCAN_STATUSES = ("sending",)
 DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
@@ -69,6 +70,27 @@ def _load_json_list(raw_value: str | None) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         return []
     return [dict(item) for item in payload if isinstance(item, Mapping)]
+
+
+def _result_status_from_legacy_status(status: str | None) -> str:
+    normalized = str(status or "").strip()
+    return normalized if normalized in FINAL_RESULT_STATUSES else ""
+
+
+def _normalize_result_status(status: str | None) -> str:
+    normalized = str(status or "").strip()
+    return normalized if normalized in FINAL_RESULT_STATUSES else ""
+
+
+def _normalize_lifecycle_status(status: str | None) -> str:
+    normalized = str(status or "").strip()
+    if normalized in FINAL_RESULT_STATUSES:
+        return "finished"
+    if normalized == "waiting_children":
+        return "waiting"
+    if normalized in {"ready_for_summary", "retry_wait"}:
+        return "pending"
+    return normalized
 
 
 def _coerce_float(value: Any) -> float:
@@ -191,6 +213,7 @@ class RuntimeStore:
             project_code=str(row["project_code"]),
             task_code=str(row["task_code"] or row["task_name"] or ""),
             status=str(row["status"]),
+            result_status=str(row.get("result_status", "") or ""),
             payload=_load_json_dict(row["payload_json"]),
             current_stage=str(row["current_stage"] or ""),
             progress_stage=str(row.get("progress_stage", "") or ""),
@@ -233,6 +256,7 @@ class RuntimeStore:
             dedupe_key=str(row["dedupe_key"] or ""),
             resource_code=str(row["resource_code"] or ""),
             status=str(row["status"]),
+            result_status=str(row.get("result_status", "") or ""),
             queue_seq=int(row["queue_seq"]),
             progress_stage=str(row.get("progress_stage", "") or ""),
             available_at=_coerce_float(row["available_at"]),
@@ -330,6 +354,7 @@ class RuntimeStore:
             "business_key": str(row["business_key"] or ""),
             "dedupe_key": str(row["dedupe_key"] or ""),
             "status": str(row["status"] or ""),
+            "result_status": str(row.get("result_status", "") or ""),
             "stage": str(row["stage"] or ""),
             "progress_stage": str(row.get("progress_stage", "") or ""),
             "attempt_count": int(row["attempt_count"] or 0),
@@ -475,7 +500,7 @@ class RuntimeStore:
         for row in expired_rows:
             request_id = str(row["request_id"])
             current_stage = str(row["current_stage"] or "").strip()
-            reset_status = "ready_for_summary" if current_stage == "ready_for_summary" else "pending"
+            reset_status = "pending"
             reset_stage = "ready_for_summary" if current_stage == "ready_for_summary" else ""
             reset_cursor = None if current_stage == "ready_for_summary" else "{}"
             values: dict[str, Any] = {
@@ -521,7 +546,7 @@ class RuntimeStore:
                         """
                         SELECT *
                         FROM task_request
-                        WHERE status IN ('pending', 'ready_for_summary')
+                        WHERE status = 'pending'
                         ORDER BY created_at ASC
                         LIMIT 1
                         """
@@ -577,6 +602,7 @@ class RuntimeStore:
         *,
         request_id: str,
         status: str | None = None,
+        result_status: str | None = None,
         current_stage: str | None = None,
         progress_stage: str | None = None,
         summary: dict[str, Any] | None = None,
@@ -601,9 +627,24 @@ class RuntimeStore:
     ) -> RuntimeTaskRequestRecord:
         assignments = ["updated_at = :updated_at"]
         values: dict[str, Any] = {"request_id": request_id, "updated_at": time.time()}
+        original_status = str(status or "")
+        legacy_result_status = _result_status_from_legacy_status(original_status)
         if status is not None:
+            status = _normalize_lifecycle_status(status)
             assignments.append("status = :status")
             values["status"] = status
+        if result_status is not None:
+            assignments.append("result_status = :result_status")
+            values["result_status"] = _normalize_result_status(result_status)
+        elif status is not None:
+            if legacy_result_status:
+                assignments.append("result_status = :result_status")
+                values["result_status"] = legacy_result_status
+            elif status in {"pending", "running", "waiting", "cancelled"}:
+                assignments.append("result_status = :result_status")
+                values["result_status"] = ""
+        if current_stage is None and original_status == "ready_for_summary":
+            current_stage = "ready_for_summary"
         if current_stage is not None:
             assignments.append("current_stage = :current_stage")
             values["current_stage"] = current_stage
@@ -783,6 +824,42 @@ class RuntimeStore:
         stage: str = "completed",
     ) -> dict[str, Any]:
         return self._api_worker_job_repo.mark_api_worker_job_success(job_id=job_id, run_id=run_id, summary=summary, result=result, stage=stage)
+
+    def mark_api_worker_job_waiting(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        stage: str,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+    ) -> dict[str, Any]:
+        return self._api_worker_job_repo.mark_api_worker_job_waiting(
+            job_id=job_id,
+            run_id=run_id,
+            summary=summary,
+            result=result,
+            stage=stage,
+            error_text=error_text,
+            error_type=error_type,
+            error_code=error_code,
+        )
+
+    def requeue_waiting_api_worker_job(
+        self,
+        *,
+        job_id: str,
+        payload: dict[str, Any],
+        stage: str = "queued",
+    ) -> dict[str, Any]:
+        return self._api_worker_job_repo.requeue_waiting_api_worker_job(
+            job_id=job_id,
+            payload=payload,
+            stage=stage,
+        )
 
     def mark_api_worker_job_retry_or_failed(
         self,

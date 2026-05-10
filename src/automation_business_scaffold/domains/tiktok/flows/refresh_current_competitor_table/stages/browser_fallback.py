@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     update_request_stage_cursor as _update_request_cursor,
@@ -26,7 +26,7 @@ def _advance_browser_fallback(
     if not fallback_candidates and not executions:
         return {
             "action": "advance",
-            "next_stage": "ready_for_summary",
+            "next_stage": "collect_product_data",
             "details": {"fallback_row_count": 0},
         }
 
@@ -101,28 +101,79 @@ def _advance_browser_fallback(
 
     if _any_browser_executions_active(executions):
         return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
-    resumable = _browser_resume_candidates(store=store, request_id=request.request_id)
+    requeued_jobs = _requeue_competitor_rows_after_browser(
+        store=store,
+        stage_code="collect_product_data",
+        fallback_candidates=fallback_candidates,
+        executions=executions,
+    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "requeued_row_count": len(requeued_jobs),
+            "status": "success" if requeued_jobs else "failed",
         },
     )
-    if resumable:
-        return {
-            "action": "advance",
-            "next_stage": "resume_competitor_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
-        }
+    if requeued_jobs:
+        return _waiting(
+            stage_code="collect_product_data",
+            message="Requeued competitor row refresh after browser fallback.",
+            details={
+                "requeued_row_count": len(requeued_jobs),
+            },
+        )
     return {
         "action": "advance",
-        "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "next_stage": "collect_product_data",
+        "details": {"execution_count": len(executions), "requeued_row_count": 0},
     }
+
+
+def _requeue_competitor_rows_after_browser(
+    *,
+    store: RuntimeStore,
+    stage_code: str,
+    fallback_candidates: list[dict[str, Any]],
+    executions: list[Any],
+) -> list[dict[str, Any]]:
+    requeued: list[dict[str, Any]] = []
+    terminal_by_key: dict[str, Any] = {}
+    for execution in executions:
+        if str(getattr(execution, "status", "") or "") not in {"finished", "cancelled"}:
+            continue
+        payload = dict(execution.payload or {})
+        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
+        source_record_id = _first_text(payload.get("source_record_id"))
+        terminal_by_key[
+            _row_fallback_key(
+                source_record_id=source_record_id,
+                fallback_handler=fallback_handler,
+            )
+        ] = execution
+
+    for candidate in fallback_candidates:
+        execution = terminal_by_key.get(str(candidate.get("fallback_key") or ""))
+        if execution is None:
+            continue
+        requeued.append(
+            store.requeue_waiting_api_worker_job(
+                job_id=str(candidate.get("row_job_id") or ""),
+                payload=_after_browser_row_payload(
+                    stage_code=stage_code,
+                    candidate={
+                        **dict(candidate),
+                        "browser_execution_id": str(execution.execution_id),
+                        "browser_execution_payload": extract_effective_result_payload(execution),
+                        "browser_execution_status": extract_handler_result_status(execution),
+                    },
+                ),
+                stage=stage_code,
+            )
+        )
+    return requeued
 
 
 def advance(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:

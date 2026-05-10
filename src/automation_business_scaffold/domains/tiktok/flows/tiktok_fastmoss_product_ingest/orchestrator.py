@@ -17,7 +17,6 @@ _STAGE_MODULES = {
     "dispatch_selection_row_refresh": "dispatch_selection_row_refresh",
     "collect_selection_rows": "collect_selection_rows",
     "selection_row_browser_fallback": "selection_row_browser_fallback",
-    "resume_selection_rows_after_browser_fallback": "resume_selection_rows_after_browser_fallback",
 }
 
 
@@ -71,14 +70,9 @@ def release_request_after_child_completion(
         return []
     if (
         current_stage == workflow.summary_policy.summary_stage_code
-        and _selection_row_browser_resume_candidates(store=store, request_id=request_id)
-        and not _api_jobs_for_stage(
-            store,
-            request_id=request_id,
-            stage_code="resume_selection_rows_after_browser_fallback",
-        )
+        and _selection_row_browser_fallback_candidates(store=store, request_id=request_id)
     ):
-        next_stage = "resume_selection_rows_after_browser_fallback"
+        next_stage = "selection_row_browser_fallback"
         store.update_task_request(
             request_id=request_id,
             status="pending",
@@ -107,18 +101,11 @@ def release_request_after_child_completion(
         return []
     if _has_active_children(child_records):
         return []
-    next_stage = current_stage
-    if current_stage == "selection_row_browser_fallback" and _selection_row_browser_resume_candidates(
-        store=store,
-        request_id=request_id,
-    ):
-        next_stage = "resume_selection_rows_after_browser_fallback"
-
     store.update_task_request(
         request_id=request_id,
         status="pending",
-        current_stage=next_stage,
-        progress_stage=next_stage,
+        current_stage=current_stage,
+        progress_stage=current_stage,
         worker_id="",
         lease_until=0.0,
         heartbeat_at=0.0,
@@ -128,7 +115,7 @@ def release_request_after_child_completion(
     return [
         {
             "request_id": request_id,
-            "stage_code": next_stage,
+            "stage_code": current_stage,
             "released": True,
             "next_executor_status": "pending",
         }

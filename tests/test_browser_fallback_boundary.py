@@ -89,10 +89,9 @@ def test_selection_keyword_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
-        "enqueue_task_executions",
-        "Waiting for selection row browser fallback executions to finish.",
-        "Row-level browser fallback is owned by task_execution/browser-runloop",
+        "Waiting row job is the only pending fallback fact",
+        "task_execution is the browser task fact",
+        "executor/runtime",
     )
     combined = "\n".join((workflow_source, runtime_source, contract_source))
     missing = [token for token in required_tokens if token not in combined]
@@ -128,10 +127,9 @@ def test_product_ingest_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "selection_row_browser_fallback",
-        "resume_selection_rows_after_browser_fallback",
-        "enqueue_task_executions",
-        "Waiting for selection row browser fallback executions to finish.",
-        "Row-level browser fallback is owned by task_execution/browser-runloop",
+        "Waiting row job is the only pending fallback fact",
+        "task_execution is the browser task fact",
+        "executor/runtime",
     )
     combined = "\n".join((workflow_source, runtime_source, contract_source))
     missing = [token for token in required_tokens if token not in combined]
@@ -176,10 +174,9 @@ def test_refresh_competitor_workflow_owns_row_browser_fallback_stage() -> None:
 
     required_tokens = (
         "browser_fallback",
-        "resume_competitor_rows_after_browser_fallback",
-        "enqueue_task_executions",
-        "Waiting for browser fallback executions to finish.",
-        "Row-level browser fallback is owned by task_execution/browser-runloop",
+        "Waiting competitor_row_refresh is the only pending row-level fallback fact",
+        "task_execution is the browser task fact",
+        "executor/runtime",
     )
     combined = "\n".join((workflow_source, row_by_url_workflow_source, runtime_source, contract_source))
     missing = [token for token in required_tokens if token not in combined]

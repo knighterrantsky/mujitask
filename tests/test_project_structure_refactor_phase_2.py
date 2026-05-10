@@ -17,7 +17,6 @@ SELECTION_STAGE_CODES = {
     "dispatch_selection_row_refresh_jobs",
     "refresh_selection_rows",
     "selection_row_browser_fallback",
-    "resume_selection_rows_after_browser_fallback",
     "ready_for_summary",
 }
 COMPETITOR_STAGE_CODES = {
@@ -26,7 +25,6 @@ COMPETITOR_STAGE_CODES = {
     "dispatch_row_refresh_jobs",
     "refresh_competitor_rows",
     "browser_fallback",
-    "resume_competitor_rows_after_browser_fallback",
     "ready_for_summary",
 }
 

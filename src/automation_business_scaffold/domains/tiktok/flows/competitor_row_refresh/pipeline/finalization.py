@@ -164,7 +164,6 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
                 "normalized_product_url": first_non_empty(payload.get("normalized_product_url"), identity.get("normalized_product_url")),
                 "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
                 "source_context": source_context,
-                "fallback_source_job_id": first_non_empty(tiktok_payload.get("fallback_source_job_id"), context.job_id),
             },
             fallback_reason=first_non_empty(tiktok_payload.get("fallback_reason"), "tiktok_request_fallback_required"),
         )
@@ -303,16 +302,11 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
                         "request_payload": dict(request_payload),
                         "source_record_id": source_record_id,
                         "product_identity": dict(identity),
-                        "fallback_source_job_id": first_non_empty(
-                            fastmoss_result.result.get("fallback_source_job_id"),
-                            fastmoss_context.job_id,
-                        ),
                     },
                     fallback_reason="fastmoss_api_security_verification",
                 )
             runtime_evidence["fastmoss_security_browser_fallback"] = {
                 "status": "already_attempted",
-                "fallback_source_job_id": first_non_empty(payload.get("fallback_source_job_id")),
             }
             step_timeline.append(
                 {
@@ -756,8 +750,6 @@ def _fastmoss_security_browser_fallback_attempted(*sources: Mapping[str, Any]) -
             attempt_count = 0
         if attempt_count > 0:
             return True
-        if first_non_empty(source.get("fallback_source_job_id")):
-            return True
     return False
 
 
@@ -1010,4 +1002,3 @@ def _number_value(*values: Any) -> float | None:
         except ValueError:
             continue
     return None
-

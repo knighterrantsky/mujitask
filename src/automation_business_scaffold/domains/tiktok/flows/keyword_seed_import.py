@@ -285,12 +285,10 @@ def _fastmoss_security_fallback_payload(
         "response_code": first_non_empty(details.get("response_code"), raw_payload.get("code")),
         "data_id": first_non_empty(data.get("id")),
         "ext_is_login": first_non_empty(ext.get("is_login")),
-        "fallback_source_job_id": search_result.job_id,
     }
     return {
         "fallback_required": True,
         "fallback_reason": "fastmoss_search_security_verification",
-        "fallback_source_job_id": context.job_id,
         "fastmoss_product_search_job_id": search_result.job_id,
         "search_request": _redact_search_request(search_request),
         "security_context": {key: value for key, value in security_context.items() if value not in ("", None)},

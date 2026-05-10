@@ -12,9 +12,21 @@ from automation_business_scaffold.infrastructure.runtime.persistence_primitives 
     resolve_runtime_seconds as _resolve_runtime_seconds,
 )
 
-ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "retry_wait"}
-TERMINAL_API_WORKER_JOB_STATUSES = {"success", "failed", "skipped", "cancelled"}
+ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running"}
+TERMINAL_API_WORKER_JOB_STATUSES = {"finished", "cancelled", "success", "failed", "skipped"}
+FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
 DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
+
+
+def _result_status_from_handler_result(result: dict[str, Any], *, default: str) -> str:
+    handler_result = result.get("handler_result")
+    if isinstance(handler_result, dict):
+        handler_status = str(handler_result.get("status") or "")
+        if handler_status in FINAL_RESULT_STATUSES:
+            return handler_status
+        if handler_status == "fallback_required":
+            return ""
+    return default
 
 
 class ApiWorkerJobRepository:
@@ -231,8 +243,8 @@ class ApiWorkerJobRepository:
                         JOIN task_request request ON request.request_id = job.request_id
                         WHERE (:request_id = '' OR job.request_id = :request_id)
                           AND (:job_code = '' OR job.job_code = :job_code)
-                          AND request.status = 'waiting_children'
-                          AND job.status IN ('pending', 'retry_wait')
+                          AND request.status = 'waiting'
+                          AND job.status = 'pending'
                           AND job.available_at <= :available_at
                         ORDER BY job.available_at ASC, job.created_at ASC
                         LIMIT 1
@@ -292,7 +304,7 @@ class ApiWorkerJobRepository:
                         progress_seq = COALESCE(progress_seq, 0) + 1,
                         progress_message = :progress_message
                     WHERE job_id = :job_id
-                      AND status IN ('pending', 'retry_wait')
+                      AND status = 'pending'
                     """
                 ),
                 {
@@ -399,7 +411,8 @@ class ApiWorkerJobRepository:
                 self._text(
                     """
                     UPDATE api_worker_job
-                    SET status = 'success',
+                    SET status = 'finished',
+                        result_status = :result_status,
                         stage = :stage,
                         progress_stage = :progress_stage,
                         run_id = :run_id,
@@ -425,6 +438,7 @@ class ApiWorkerJobRepository:
                 ),
                 {
                     "job_id": job_id,
+                    "result_status": _result_status_from_handler_result(result, default="success"),
                     "stage": stage,
                     "progress_stage": stage,
                     "run_id": run_id,
@@ -435,6 +449,120 @@ class ApiWorkerJobRepository:
                     "progress_message": "API worker job succeeded.",
                     "updated_at": now,
                     "finished_at": now,
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def mark_api_worker_job_waiting(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        stage: str,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'waiting',
+                        result_status = '',
+                        stage = :stage,
+                        progress_stage = :progress_stage,
+                        run_id = :run_id,
+                        summary_json = :summary_json,
+                        result_json = :result_json,
+                        error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = '',
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message,
+                        updated_at = :updated_at,
+                        finished_at = NULL
+                    WHERE job_id = :job_id
+                      AND run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "stage": stage,
+                    "progress_stage": stage,
+                    "summary_json": _json_dumps(summary),
+                    "result_json": _json_dumps(result),
+                    "error_text": str(error_text or ""),
+                    "error_type": str(error_type or ""),
+                    "error_code": str(error_code or ""),
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": "API worker job is waiting for external work.",
+                    "updated_at": now,
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def requeue_waiting_api_worker_job(
+        self,
+        *,
+        job_id: str,
+        payload: dict[str, Any],
+        stage: str = "queued",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'pending',
+                        result_status = '',
+                        stage = :stage,
+                        progress_stage = :progress_stage,
+                        payload_json = :payload_json,
+                        summary_json = '{}',
+                        result_json = '{}',
+                        error_text = '',
+                        error_type = '',
+                        error_code = '',
+                        dead_letter_reason = '',
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        available_at = :available_at,
+                        run_id = '',
+                        updated_at = :updated_at,
+                        started_at = NULL,
+                        finished_at = NULL,
+                        heartbeat_at = NULL,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message
+                    WHERE job_id = :job_id
+                      AND status = 'waiting'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "stage": stage,
+                    "progress_stage": stage,
+                    "payload_json": _json_dumps(payload),
+                    "available_at": now,
+                    "updated_at": now,
+                    "last_progress_at": now,
+                    "progress_message": "API worker job requeued after waiting work completed.",
                 },
             )
         return self.load_api_worker_job(job_id=job_id)
@@ -475,13 +603,16 @@ class ApiWorkerJobRepository:
                 return self.load_api_worker_job(job_id=job_id)
             attempt_count = int(row["attempt_count"] or 0)
             max_attempts = int(row["max_attempts"] or 1)
-            status = "retry_wait" if attempt_count < max_attempts else "failed"
-            available_at = now + max(retry_delay_seconds, 0.1) if status == "retry_wait" else now
+            will_retry = attempt_count < max_attempts
+            status = "pending" if will_retry else "finished"
+            result_status = "" if will_retry else "failed"
+            available_at = now + max(retry_delay_seconds, 0.1) if will_retry else now
             connection.execute(
                 self._text(
                     """
                     UPDATE api_worker_job
                     SET status = :status,
+                        result_status = :result_status,
                         stage = :stage,
                         progress_stage = :progress_stage,
                         run_id = :run_id,
@@ -500,7 +631,7 @@ class ApiWorkerJobRepository:
                         progress_seq = COALESCE(progress_seq, 0) + 1,
                         progress_message = :progress_message,
                         updated_at = :updated_at,
-                        finished_at = CASE WHEN :status = 'failed' THEN :updated_at ELSE finished_at END
+                        finished_at = CASE WHEN :result_status = 'failed' THEN :updated_at ELSE finished_at END
                     WHERE job_id = :job_id
                       AND run_id = :run_id
                       AND status = 'running'
@@ -509,15 +640,16 @@ class ApiWorkerJobRepository:
                 {
                     "job_id": job_id,
                     "status": status,
-                    "stage": "retry_wait" if status == "retry_wait" else "failed",
-                    "progress_stage": "retry_wait" if status == "retry_wait" else "failed",
+                    "result_status": result_status,
+                    "stage": "retry_wait" if will_retry else "failed",
+                    "progress_stage": "retry_wait" if will_retry else "failed",
                     "run_id": run_id,
                     "summary_json": _json_dumps(summary or {}),
                     "result_json": _json_dumps(result or {}),
                     "error_text": error_text,
                     "error_type": error_type,
                     "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if status == "failed" else ""),
+                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if not will_retry else ""),
                     "available_at": available_at,
                     "heartbeat_at": now,
                     "last_progress_at": now,
@@ -577,11 +709,13 @@ class ApiWorkerJobRepository:
                 connection.execute(
                     self._text(
                         """
-                        SELECT status, COUNT(*) AS count
+                        SELECT
+                            COALESCE(NULLIF(result_status, ''), status) AS status,
+                            COUNT(*) AS count
                         FROM api_worker_job
                         WHERE request_id = :request_id
                           AND (:job_code = '' OR job_code = :job_code)
-                        GROUP BY status
+                        GROUP BY COALESCE(NULLIF(result_status, ''), status)
                         """
                     ),
                     {"request_id": request_id, "job_code": job_code},

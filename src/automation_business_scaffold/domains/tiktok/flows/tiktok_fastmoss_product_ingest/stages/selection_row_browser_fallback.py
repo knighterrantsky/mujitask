@@ -33,7 +33,7 @@ def _advance_selection_row_browser_fallback(
     if not fallback_candidates and not executions:
         return {
             "action": "advance",
-            "next_stage": "ready_for_summary",
+            "next_stage": "collect_selection_rows",
             "details": {"fallback_candidate_count": 0},
         }
     if not executions and fallback_candidates:
@@ -115,28 +115,82 @@ def _advance_selection_row_browser_fallback(
             "current_stage": stage_code,
             "message": "Waiting for selection row browser fallback executions to finish.",
         }
-    resumable = _selection_row_browser_resume_candidates(store=store, request_id=request.request_id)
+    requeued_jobs = _requeue_selection_rows_after_browser(
+        store=store,
+        stage_code="collect_selection_rows",
+        fallback_candidates=fallback_candidates,
+        executions=executions,
+    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "resumable_count": len(resumable),
-            "status": "success" if resumable else "failed",
+            "requeued_row_count": len(requeued_jobs),
+            "status": "success" if requeued_jobs else "failed",
         },
     )
-    if resumable:
+    if requeued_jobs:
         return {
-            "action": "advance",
-            "next_stage": "resume_selection_rows_after_browser_fallback",
-            "details": {"resumable_count": len(resumable)},
+            "action": "waiting",
+            "current_stage": "collect_selection_rows",
+            "message": "Requeued selection row refresh after browser fallback.",
+            "details": {
+                "requeued_row_count": len(requeued_jobs),
+            },
         }
     return {
         "action": "advance",
-        "next_stage": "ready_for_summary",
-        "details": {"execution_count": len(executions), "resumable_count": 0},
+        "next_stage": "collect_selection_rows",
+        "details": {"execution_count": len(executions), "requeued_row_count": 0},
     }
+
+
+def _requeue_selection_rows_after_browser(
+    *,
+    store: RuntimeStore,
+    stage_code: str,
+    fallback_candidates: list[dict[str, Any]],
+    executions: list[Any],
+) -> list[dict[str, Any]]:
+    requeued: list[dict[str, Any]] = []
+    terminal_by_key: dict[str, Any] = {}
+    for execution in executions:
+        if str(getattr(execution, "status", "") or "") not in {"finished", "cancelled"}:
+            continue
+        payload = dict(execution.payload or {})
+        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
+        source_record_id = _first_non_empty(payload.get("source_record_id"))
+        business_entity_key = _first_non_empty(payload.get("business_entity_key"))
+        terminal_by_key[
+            _row_fallback_key(
+                source_record_id=source_record_id,
+                business_entity_key=business_entity_key,
+                fallback_handler=fallback_handler,
+            )
+        ] = execution
+
+    for candidate in fallback_candidates:
+        execution = terminal_by_key.get(str(candidate.get("fallback_key") or ""))
+        if execution is None:
+            continue
+        requeued.append(
+            store.requeue_waiting_api_worker_job(
+                job_id=str(candidate.get("row_job_id") or ""),
+                payload=_selection_row_after_browser_payload(
+                    stage_code=stage_code,
+                    candidate={
+                        **dict(candidate),
+                        "browser_execution_id": str(execution.execution_id),
+                        "browser_execution_payload": extract_effective_result_payload(execution),
+                        "browser_execution_status": extract_handler_result_status(execution),
+                    },
+                ),
+                stage=stage_code,
+            )
+        )
+    return requeued
 
 
 def advance(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:

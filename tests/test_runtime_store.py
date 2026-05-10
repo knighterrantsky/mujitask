@@ -115,7 +115,7 @@ def test_api_worker_job_queue_round_trip(runtime_db_url):
     _ = store.claim_next_task_request(worker_id="executor-a", lease_seconds=30.0)
     store.update_task_request(
         request_id=request.request_id,
-        status="waiting_children",
+        status="waiting",
         current_stage="waiting_api_worker",
         worker_id="",
         lease_until=0.0,
@@ -154,7 +154,81 @@ def test_api_worker_job_queue_round_trip(runtime_db_url):
     assert summary["total"] == 1
     assert summary["success_count"] == 1
     assert summary["active_count"] == 0
-    assert store.load_api_worker_job(job_id=claimed["job_id"])["progress_stage"] == "completed"
+    stored_job = store.load_api_worker_job(job_id=claimed["job_id"])
+    assert stored_job["status"] == "finished"
+    assert stored_job["result_status"] == "success"
+    assert stored_job["progress_stage"] == "completed"
+
+
+def test_runtime_status_lifecycle_is_separate_from_result_status(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="tiktok_fastmoss_product_ingest",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/123"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=request.request_id,
+        status="waiting_children",
+        current_stage="collect_product_data",
+    )
+    waiting_request = store.load_task_request(request_id=request.request_id)
+
+    assert waiting_request.status == "waiting"
+    assert waiting_request.result_status == ""
+
+    enqueue = store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code="tiktok_fastmoss_product_ingest",
+        job_code="tiktok_product_request_fetch",
+        jobs=[
+            {
+                "business_key": "123",
+                "dedupe_key": f"{request.request_id}:status-semantics",
+                "payload": {"product_url": "https://www.tiktok.com/shop/pdp/123"},
+                "max_attempts": 2,
+            }
+        ],
+    )
+    job_id = str(enqueue["created_records"][0]["job_id"])
+    claimed = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+    assert claimed is not None
+    retry = store.mark_api_worker_job_retry_or_failed(
+        job_id=job_id,
+        run_id=str(claimed["run_id"]),
+        error_text="temporary",
+        retry_delay_seconds=60.0,
+    )
+
+    assert retry["status"] == "pending"
+    assert retry["result_status"] == ""
+    assert retry["available_at"] > time.time()
+
+    with store._engine.begin() as connection:  # noqa: SLF001
+        connection.execute(
+            store._text("UPDATE api_worker_job SET available_at = :available_at WHERE job_id = :job_id"),
+            {"job_id": job_id, "available_at": time.time() - 1.0},
+        )
+    claimed_again = store.claim_next_api_worker_job(worker_id="api-worker-b", lease_seconds=30.0)
+    assert claimed_again is not None
+    finished = store.mark_api_worker_job_success(
+        job_id=job_id,
+        run_id=str(claimed_again["run_id"]),
+        summary={"total": 1, "counts": {"success": 1}},
+        result={"handler_result": {"status": "success", "result": {"product_id": "123"}}},
+    )
+
+    assert finished["status"] == "finished"
+    assert finished["result_status"] == "success"
+
+    store.update_task_request(
+        request_id=request.request_id,
+        status="ready_for_summary",
+    )
+    summary_ready = store.load_task_request(request_id=request.request_id)
+    assert summary_ready.status == "pending"
+    assert summary_ready.current_stage == "ready_for_summary"
 
 
 def test_fastmoss_cookie_cache_round_trip(runtime_db_url):

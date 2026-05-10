@@ -91,7 +91,8 @@ Runtime 数据库是执行控制面。它回答的问题是:
 - 哪些 job 正在 running?
 - 哪些 job 失败后等待重试?
 - 哪个 worker 持有哪个资源 lease?
-- 父任务是否可以进入 `ready_for_summary`?
+- 父任务是否处于 `waiting`，等待哪些 child job / browser execution?
+- 父任务当前 `current_stage` 是否已经推进到 `ready_for_summary`?
 - 哪些通知待发送?
 - 某次执行留下了哪些 artifact?
 
@@ -127,6 +128,8 @@ erDiagram
 - Runtime DB 存任务状态，不存最终业务事实的主档。
 - 任何 worker 都不能只依赖内存状态推进任务。
 - 所有 job 必须有可查询的 `status`、`attempt_count`、`worker_id`、`heartbeat_at`、`lease_until` 或等价字段。
+- `status` 只表达生命周期: `pending/running/waiting/finished/cancelled`。业务终态写在 `result_status=success/partial_success/failed/skipped`。
+- 历史 `retry_wait` 语义应表达为 `status=pending` + 未来的 `available_at/next_retry_at`；历史 `waiting_children` 表达为 `status=waiting` + 等待引用；`ready_for_summary` 是 `current_stage`，不是 lifecycle status。
 - 父任务收敛必须基于 Runtime DB 中的子任务状态。
 - `outbox` 和主业务状态分离，通知失败不应反向污染业务完成状态。
 - `artifact_object` 只保存索引，不保存大文件内容。
