@@ -296,7 +296,6 @@ def test_fastmoss_security_browser_resolve_preserves_audit_on_security_failure(
         _browser_handler_context(
             {
                 "execution_control_db_url": runtime_db_url,
-                "fallback_source_job_id": "seed-job-1",
                 "search_request": {
                     "keyword": SEARCH_QUERY,
                     "search_query": SEARCH_QUERY,
@@ -378,7 +377,7 @@ def test_fastmoss_security_browser_resolve_preserves_audit_on_security_failure(
     assert result.summary["slider_artifact_count"] == 1
     assert result.summary["browser_diagnostic_artifact_count"] == 1
     assert result.result["verification"]["data_id"] == "299522"
-    assert result.result["fallback_source_job_id"] == "seed-job-1"
+    assert "fallback_source_job_id" not in result.result
     assert result.result["browser_cookie_export"]["cookie_count"] == 1
     assert result.result["browser_cookie_export"]["has_fd_tk"] is True
     attempt = result.result["slider_resolution"]["attempts"][0]
@@ -1166,7 +1165,6 @@ def _mark_api_job_fastmoss_security_fallback_required(
         "result": {
             "fallback_required": True,
             "fallback_reason": "fastmoss_search_security_verification",
-            "fallback_source_job_id": job_id,
             "search_request": search_request,
             "security_context": {
                 "method": "GET",
@@ -1230,7 +1228,6 @@ def _mark_competitor_row_refresh_fallback_required(
         "normalized_product_url": payload.get("normalized_product_url") or PRODUCT_URL,
         "source_record_id": payload.get("source_record_id") or "seed-row-1",
         "business_entity_key": payload.get("business_key") or f"product:{PRODUCT_ID}",
-        "fallback_source_job_id": job_id,
     }
     handler_result = {
         "status": "fallback_required",

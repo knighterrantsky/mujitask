@@ -16,7 +16,6 @@ TIKTOK_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
     payload_contract=contract(
         "tiktok_product_browser_fetch_payload",
         required_field("product_identity", "Normalized TikTok product key or URL bundle.", type_hint="dict[str, Any]"),
-        required_field("fallback_source_job_id", "Request/API job that triggered the fallback.", type_hint="str"),
         optional_field("resource_code", "Browser resource or profile affinity key.", type_hint="str"),
         optional_field("normalized_product_url", "Canonical product URL for resource and artifact naming.", type_hint="str"),
     ),
@@ -24,7 +23,6 @@ TIKTOK_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
         "tiktok_product_browser_fetch_result",
         required_field("normalized_product_result", "Normalized TikTok product result contract.", type_hint="dict[str, Any]"),
         optional_field("artifact_refs", "Browser artifacts stored for audit or parsing.", type_hint="list[str]"),
-        optional_field("fallback_source_job_id", "Original request/API job id.", type_hint="str"),
     ),
     business_key_template="{normalized_product_url}",
     dedupe_key_template="{request_id}:{job_code}:{normalized_product_url}",

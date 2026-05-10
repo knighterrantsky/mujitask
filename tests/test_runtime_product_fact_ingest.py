@@ -158,7 +158,6 @@ def _bind_api_handlers_for_browser_fallback(monkeypatch: pytest.MonkeyPatch) -> 
                 "product_identity": dict(context.payload["product_identity"]),
                 "normalized_product_url": DIRECT_PRODUCT_URL,
                 "source_record_id": str(context.payload.get("source_record_id") or ""),
-                "fallback_source_job_id": context.job_id,
             }
             return HandlerResult.fallback_required(
                 context,
@@ -486,7 +485,7 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
         claimed = store.claim_next_api_worker_job(worker_id="pytest-api", lease_seconds=30.0)
         assert claimed is not None
         product_id = str(claimed["business_key"])
-        store.mark_api_worker_job_success(
+        store.mark_api_worker_job_waiting(
             job_id=claimed["job_id"],
             run_id=claimed["run_id"],
             summary={"row_status": "fallback_required", "fallback_handler": "tiktok_product_browser_fetch"},
@@ -507,16 +506,18 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
                             "source_record_id": f"row-{product_id}",
                             "business_entity_key": product_id,
                             "normalized_product_url": f"https://www.tiktok.com/shop/pdp/{product_id}",
-                            "product_identity": {
-                                "product_id": product_id,
-                                "normalized_product_url": f"https://www.tiktok.com/shop/pdp/{product_id}",
+                                "product_identity": {
+                                    "product_id": product_id,
+                                    "normalized_product_url": f"https://www.tiktok.com/shop/pdp/{product_id}",
+                                },
                             },
-                            "fallback_source_job_id": claimed["job_id"],
                         },
-                    },
                     "next_action": {"type": "browser_fallback", "payload": {}},
                 }
             },
+            stage="browser_fallback_required",
+            error_type="browser_fallback_required",
+            error_code="tiktok_product_browser_fetch_required",
         )
     store.enqueue_task_executions(
         request_id=request_id,
@@ -566,37 +567,10 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
                 }
             },
         )
-    from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.runtime_views import (
-        _selection_row_after_browser_candidates,
-    )
-    from automation_business_scaffold.domains.tiktok.flows.tiktok_fastmoss_product_ingest.context.stage_inputs import (
-        _selection_row_after_browser_job,
-    )
     from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
     request = store.load_task_request(request_id=request_id)
     workflow = get_workflow_definition("tiktok_fastmoss_product_ingest")
-    row_job_def = workflow.require_job("selection_row_refresh")
-    candidates = _selection_row_after_browser_candidates(  # noqa: SLF001
-        store=store,
-        request_id=request_id,
-    )
-    assert len(candidates) == 2
-    existing_after_browser = store.enqueue_api_worker_jobs(
-        request_id=request_id,
-        task_code="tiktok_fastmoss_product_ingest",
-        job_code="selection_row_refresh",
-        jobs=[
-            _selection_row_after_browser_job(  # noqa: SLF001
-                request=request,
-                workflow=workflow,
-                stage_code="collect_selection_rows",
-                row_job_def=row_job_def,
-                candidate=candidates[0],
-            )
-        ],
-    )
-    assert existing_after_browser["created_count"] == 1
     store.update_task_request(
         request_id=request_id,
         status="pending",
@@ -606,12 +580,11 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
     payload = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
 
     assert payload["current_stage"] == "collect_selection_rows"
-    assert payload.get("created_count") == 1, payload
     status_payload = runtime_orchestrator.get_task_request_status(
         "tiktok_fastmoss_product_ingest",
         _runtime_params(runtime_db_url, control_action="status", request_id=request_id),
     )
-    after_browser_jobs = [
+    requeued_browser_jobs = [
         job
         for job in _stage_jobs(
             status_payload,
@@ -620,8 +593,8 @@ def test_product_fact_browser_stage_backfills_missing_after_browser_jobs(runtime
         )
         if job["payload"].get("browser_fallback_resolved")
     ]
-    assert len(after_browser_jobs) == 2
-    assert {job["payload"]["source_record_id"] for job in after_browser_jobs} == {"row-123", "row-456"}
+    assert len(requeued_browser_jobs) == 2
+    assert {job["payload"]["source_record_id"] for job in requeued_browser_jobs} == {"row-123", "row-456"}
 
 
 def test_product_fact_final_executor_once_summarizes_and_creates_notification_outbox(runtime_db_url: str) -> None:

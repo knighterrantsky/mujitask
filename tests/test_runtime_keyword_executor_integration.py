@@ -182,13 +182,11 @@ def _bind_keyword_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
                 result={
                     "fallback_required": True,
                     "fallback_reason": "request_blocked",
-                    "fallback_source_job_id": context.job_id,
                 },
                 next_action=HandlerNextAction(
                     type="browser_fallback",
                     payload={
                         "product_identity": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
-                        "fallback_source_job_id": context.job_id,
                     },
                 ),
             )
@@ -686,7 +684,6 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
                 "product_identity": dict(context.payload["product_identity"]),
                 "normalized_product_url": context.payload["normalized_product_url"],
                 "source_record_id": context.payload["source_record_id"],
-                "fallback_source_job_id": context.job_id,
             }
             return HandlerResult.fallback_required(
                 context,
@@ -818,10 +815,6 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
         store=store,
         request_id=request_id,
     )
-    assert selection_fallback_stage._selection_row_after_browser_candidates(  # noqa: SLF001
-        store=store,
-        request_id=request_id,
-    )
     after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert after_browser_wait["current_stage"] == "refresh_selection_rows"
     after_browser_jobs = _stage_jobs(
@@ -914,7 +907,6 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
                 "product_identity": dict(context.payload["product_identity"]),
                 "normalized_product_url": context.payload["normalized_product_url"],
                 "source_record_id": source_record_id,
-                "fallback_source_job_id": context.job_id,
             }
             return HandlerResult.fallback_required(
                 context,
@@ -1055,10 +1047,9 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
     )
     assert [job["payload"]["source_record_id"] for job in all_refresh_jobs] == [
         SEED_RECORD_ID,
-        SEED_RECORD_ID,
         SECOND_SEED_RECORD_ID,
     ]
-    assert all_refresh_jobs[1]["payload"].get("browser_fallback_resolved") is True
+    assert all_refresh_jobs[0]["payload"].get("browser_fallback_resolved") is True
 
     second_row = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert second_row["api_worker_job"]["payload"]["source_record_id"] == SECOND_SEED_RECORD_ID

@@ -14,7 +14,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 )
 
 from .stages.selection_row_browser_fallback import (
-    _selection_row_after_browser_candidates as _after_browser_candidates,
     _selection_row_browser_fallback_candidates as _fallback_candidates,
 )
 
@@ -79,7 +78,7 @@ def release_request_after_child_completion(
     recovery_stage = (
         "selection_row_browser_fallback"
         if current_stage == workflow.summary_policy.summary_stage_code
-        and _after_browser_candidates(store=store, request_id=request_id)
+        and _fallback_candidates(store=store, request_id=request_id)
         else ""
     )
     if recovery_stage:
@@ -135,11 +134,3 @@ def _selection_row_browser_fallback_candidates(
     request_id: str,
 ) -> list[dict[str, Any]]:
     return _fallback_candidates(store=store, request_id=request_id)
-
-
-def _selection_row_after_browser_candidates(
-    store: Any,
-    *,
-    request_id: str,
-) -> list[dict[str, Any]]:
-    return _after_browser_candidates(store=store, request_id=request_id)

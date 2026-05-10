@@ -265,7 +265,6 @@ def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(
             result={
                 "fallback_required": True,
                 "fallback_reason": "request_signal_security_check",
-                "fallback_source_job_id": context.job_id,
                 "request_attempt": {
                     "attempted": True,
                     "request_source": "live_request",
@@ -301,9 +300,7 @@ def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(
     assert result.next_action.type == "browser_fallback"
     assert result.summary["fallback_handler"] == "tiktok_product_browser_fetch"
     assert result.result["row_status"] == "fallback_required"
-    assert result.result["browser_fallback_payload"]["fallback_source_job_id"].endswith(
-        ":tiktok_request"
-    )
+    assert "fallback_source_job_id" not in result.result["browser_fallback_payload"]
     assert result.result["step_timeline"][1] == {
         "step": "browser_fallback",
         "status": "fallback_required",

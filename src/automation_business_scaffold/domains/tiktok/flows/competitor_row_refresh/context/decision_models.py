@@ -14,8 +14,6 @@ def fastmoss_security_browser_fallback_attempted(*sources: Mapping[str, Any]) ->
             attempt_count = 0
         if attempt_count > 0:
             return True
-        if first_non_empty(source.get("fallback_source_job_id")):
-            return True
     return False
 
 

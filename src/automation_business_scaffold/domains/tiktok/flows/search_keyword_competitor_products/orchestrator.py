@@ -14,7 +14,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 )
 
 from .stages.browser_fallback import (
-    _browser_after_browser_candidates,
     _browser_fallback_candidates,
 )
 
@@ -77,7 +76,7 @@ def release_request_after_child_completion(
     if current_stage == workflow.summary_policy.summary_stage_code:
         recovery_stage = (
             "browser_fallback"
-            if _browser_after_browser_candidates(store=store, request_id=request_id)
+            if _browser_fallback_candidates(store=store, request_id=request_id)
             else ""
         )
         if recovery_stage:

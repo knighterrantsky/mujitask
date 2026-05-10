@@ -146,13 +146,11 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
                 result={
                     "fallback_required": True,
                     "fallback_reason": "request_blocked",
-                    "fallback_source_job_id": context.job_id,
                 },
                 next_action=HandlerNextAction(
                     type="browser_fallback",
                     payload={
                         "product_identity": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
-                        "fallback_source_job_id": context.job_id,
                     },
                 ),
             )
@@ -432,7 +430,7 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["media_status"] == "success"
     assert row_result["fact_status"] == "success"
     assert row_result["writeback_status"] == "success"
-    assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 2
+    assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 1
     assert status_payload["result"]["stage_summary"]["browser_fallback"]["total_count"] == 1
 
 

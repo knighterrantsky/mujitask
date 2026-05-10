@@ -115,16 +115,10 @@ def _selection_row_browser_fallback_candidates(
             job.get("business_key"),
             source_record_id,
         )
-        fallback_source_job_id = _first_non_empty(
-            browser_payload.get("fallback_source_job_id"),
-            result_payload.get("fallback_source_job_id"),
-            job.get("job_id"),
-        )
         browser_payload = {
             **browser_payload,
             "source_record_id": source_record_id,
             "business_entity_key": business_entity_key,
-            "fallback_source_job_id": fallback_source_job_id,
         }
         product_identity = _mapping(result_payload.get("product_identity")) or _mapping(
             row_payload.get("product_identity")
@@ -154,49 +148,6 @@ def _selection_row_browser_fallback_candidates(
                 "normalized_product_result": _mapping(
                     result_payload.get("normalized_product_result")
                 ),
-            }
-        )
-    return candidates
-
-def _selection_row_after_browser_candidates(
-    store: RuntimeStore,
-    *,
-    request_id: str,
-) -> list[dict[str, Any]]:
-    fallback_by_key = {
-        str(candidate.get("fallback_key") or ""): candidate
-        for candidate in _selection_row_browser_fallback_candidates(store=store, request_id=request_id)
-    }
-    candidates: list[dict[str, Any]] = []
-    for execution in _browser_executions_for_stage(
-        store,
-        request_id=request_id,
-        stage_code="selection_row_browser_fallback",
-    ):
-        if _handler_status_from_execution(execution) != "success":
-            continue
-        payload = dict(execution.payload or {})
-        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
-        source_record_id = _first_non_empty(payload.get("source_record_id"))
-        business_entity_key = _first_non_empty(payload.get("business_entity_key"))
-        fallback_key = _row_fallback_key(
-            source_record_id=source_record_id,
-            business_entity_key=business_entity_key,
-            fallback_handler=fallback_handler,
-        )
-        fallback_candidate = fallback_by_key.get(fallback_key)
-        if not fallback_candidate:
-            continue
-        execution_payload = extract_effective_result_payload(execution)
-        if fallback_handler == "tiktok_product_browser_fetch" and not _mapping(
-            execution_payload.get("normalized_product_result")
-        ):
-            continue
-        candidates.append(
-            {
-                **dict(fallback_candidate),
-                "browser_execution_id": str(execution.execution_id),
-                "browser_execution_payload": execution_payload,
             }
         )
     return candidates

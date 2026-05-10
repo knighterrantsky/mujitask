@@ -99,15 +99,9 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
         ):
             continue
         row_context = row_index.get(source_record_id, _minimal_row_context(payload))
-        fallback_source_job_id = _first_text(
-            browser_payload.get("fallback_source_job_id"),
-            result.get("fallback_source_job_id"),
-            job.get("job_id"),
-        )
         browser_payload = {
             **browser_payload,
             "source_record_id": source_record_id,
-            "fallback_source_job_id": fallback_source_job_id,
         }
         candidate = dict(row_context)
         candidate.update(
@@ -118,7 +112,6 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
                 ),
                 "fallback_handler": fallback_handler,
                 "fallback_reason": _first_text(result.get("fallback_reason")),
-                "fallback_source_job_id": fallback_source_job_id,
                 "row_job_id": str(job.get("job_id") or ""),
                 "row_payload": payload,
                 "row_result": result,
@@ -137,39 +130,6 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             }
         )
         candidates.append(candidate)
-    return candidates
-
-def _browser_after_browser_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
-    fallback_by_key = {
-        str(candidate.get("fallback_key") or ""): candidate
-        for candidate in _browser_fallback_candidates(store=store, request_id=request_id)
-    }
-    candidates: list[dict[str, Any]] = []
-    for execution in _browser_executions_for_stage(store=store, request_id=request_id, stage_code="browser_fallback"):
-        if _record_effective_status(execution) != "success":
-            continue
-        payload = dict(execution.payload or {})
-        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
-        source_record_id = _first_text(payload.get("source_record_id"))
-        fallback_key = _row_fallback_key(
-            source_record_id=source_record_id,
-            fallback_handler=fallback_handler,
-        )
-        fallback_candidate = fallback_by_key.get(fallback_key)
-        if not fallback_candidate:
-            continue
-        execution_payload = extract_effective_result_payload(execution)
-        if fallback_handler == "tiktok_product_browser_fetch":
-            normalized = execution_payload.get("normalized_product_result")
-            if not isinstance(normalized, Mapping) or not normalized:
-                continue
-        candidates.append(
-            {
-                **dict(fallback_candidate),
-                "browser_execution_id": str(execution.execution_id),
-                "browser_execution_payload": execution_payload,
-            }
-        )
     return candidates
 
 def _media_sync_candidates(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:

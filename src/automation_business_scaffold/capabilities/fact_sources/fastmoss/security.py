@@ -126,7 +126,6 @@ def fastmoss_security_fallback_payload(
         {
             "fallback_required": True,
             "fallback_reason": "fastmoss_api_security_verification",
-            "fallback_source_job_id": context.job_id,
             "source_handler_code": context.handler_code,
             "retry_handler_code": context.handler_code,
             "operation": operation,

@@ -25,7 +25,6 @@ TIKTOK_PRODUCT_REQUEST_FETCH_JOB = JobDefinition(
         optional_field("normalized_product_result", "Normalized TikTok product result contract.", type_hint="dict[str, Any]"),
         optional_field("fallback_required", "Whether browser fallback should be dispatched.", type_hint="bool"),
         optional_field("fallback_reason", "Stable fallback reason code.", type_hint="str"),
-        optional_field("fallback_source_job_id", "Source API job that requested fallback.", type_hint="str"),
     ),
     business_key_template="{product_id_or_url}",
     dedupe_key_template="{request_id}:{stage_code}:{product_id_or_url}",

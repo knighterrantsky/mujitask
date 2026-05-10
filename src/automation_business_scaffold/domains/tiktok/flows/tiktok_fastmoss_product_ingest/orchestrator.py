@@ -70,7 +70,7 @@ def release_request_after_child_completion(
         return []
     if (
         current_stage == workflow.summary_policy.summary_stage_code
-        and _selection_row_after_browser_candidates(store=store, request_id=request_id)
+        and _selection_row_browser_fallback_candidates(store=store, request_id=request_id)
     ):
         next_stage = "selection_row_browser_fallback"
         store.update_task_request(

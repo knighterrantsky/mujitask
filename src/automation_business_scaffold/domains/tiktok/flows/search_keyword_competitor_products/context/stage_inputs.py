@@ -101,7 +101,6 @@ def _fastmoss_security_fallback_payload_from_job(import_job: Mapping[str, Any]) 
         "search_digest": _first_text(job_payload.get("search_digest"), search_request.get("search_digest")),
         "search_request": search_request,
         "security_context": security_context,
-        "fallback_source_job_id": _first_text(result_payload.get("fallback_source_job_id"), import_job.get("job_id")),
     }
 
 def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:

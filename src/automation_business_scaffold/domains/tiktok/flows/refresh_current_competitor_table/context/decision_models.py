@@ -51,11 +51,11 @@ def _browser_stage_from_premature_summary(
     workflow: WorkflowDefinition,
     current_stage: str,
 ) -> str:
-    from .runtime_views import _browser_after_browser_candidates
+    from .runtime_views import _browser_fallback_candidates
 
     if current_stage != workflow.summary_policy.summary_stage_code:
         return ""
-    if _browser_after_browser_candidates(store=store, request_id=request.request_id):
+    if _browser_fallback_candidates(store=store, request_id=request.request_id):
         return "browser_fallback"
     return ""
 

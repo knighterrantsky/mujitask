@@ -98,10 +98,6 @@ def _browser_execution_payload(
         "source_record_id": str(candidate.get("source_record_id") or ""),
         "business_entity_key": str(candidate.get("business_entity_key") or ""),
         "fallback_handler": fallback_handler,
-        "fallback_source_job_id": _first_text(
-            fallback_payload.get("fallback_source_job_id"),
-            candidate.get("row_job_id"),
-        ),
     }
     payload.update(_artifact_settings_from_request_payload(request.payload))
     if fallback_handler == "fastmoss_security_browser_resolve":
@@ -130,7 +126,8 @@ def _after_browser_row_payload(*, stage_code: str, candidate: Mapping[str, Any])
             "browser_fallback_resolved": True,
             "browser_fallback_handler": fallback_handler,
             "browser_execution_id": str(candidate.get("browser_execution_id") or ""),
-            "fallback_source_job_id": str(candidate.get("row_job_id") or ""),
+            "browser_execution_status": str(candidate.get("browser_execution_status") or ""),
+            "browser_fallback_failed": str(candidate.get("browser_execution_status") or "") not in {"success", "partial_success"},
             "force_fallback": False,
             "fallback_reason": "",
         }

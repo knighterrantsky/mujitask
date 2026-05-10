@@ -162,7 +162,6 @@ def tiktok_product_request_fetch_handler(context: HandlerContext) -> HandlerResu
         "normalized_product_result": normalized,
         "fallback_required": False,
         "fallback_reason": "",
-        "fallback_source_job_id": "",
         "request_attempt": request_attempt,
     }
     summary = {
@@ -644,14 +643,12 @@ def _browser_fallback_result(
             {
                 "product_identity": identity,
                 "normalized_product_url": identity.get("normalized_product_url"),
-                "fallback_source_job_id": context.job_id,
             }
         ),
     )
     result = {
         "fallback_required": True,
         "fallback_reason": fallback_reason,
-        "fallback_source_job_id": context.job_id,
         "request_attempt": dict(request_attempt or {}),
     }
     summary = {
