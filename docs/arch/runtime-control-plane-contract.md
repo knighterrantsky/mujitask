@@ -61,7 +61,7 @@ Runtime 控制面只调度和收敛，不解释 TikTok、FastMoss、飞书字段
 
 `executor_daemon` 的职责:
 
-- 只 claim `task_request.status=pending` 的顶层请求。
+- 只 claim `task_request.status=pending` 的顶层请求，并且必须遵守顶层任务全局串行: 当存在更早创建且尚未 `finished/cancelled` 的 `task_request` 时，后续 `pending` 请求只能排队，不能提前推进。
 - 根据 `task_code/current_stage/stage_cursor_json` 选择 workflow stage，并创建或推进对应 `api_worker_job` / `task_execution`。
 - 当 stage 需要等待 child job、browser fallback 或外部可观测事件时，把 `task_request` 或触发的行级 `api_worker_job` 标记为 `status=waiting`。对 row-serial browser fallback，waiting row job 是唯一 fallback 待处理事实，`task_execution` 是浏览器任务事实；任何 wait 引用只能作为观测冗余，不能成为第二套流程事实源。
 - 对 browser fallback，executor 负责调度和数据交换: 读取 handler 返回的业务化 browser 请求，创建对应 `task_execution`，在 browser task 终态后把 browser result 引用、FastMoss cookie cache metadata 或失败证据写回原 row job，再把原 row job 改回 `pending` 或收敛为终态。
@@ -70,13 +70,13 @@ Runtime 控制面只调度和收敛，不解释 TikTok、FastMoss、飞书字段
 
 `api_worker` 的职责:
 
-- 只 claim `api_worker_job.status=pending` 且 `available_at <= now` 的 job。
+- 只 claim `api_worker_job.status=pending` 且 `available_at <= now` 的 job；常驻 worker 默认只能消费当前最早未终态 `task_request` 下的 job，避免旧任务仍在写回/收敛时新任务提前读写飞书或外部系统。
 - 通过 Execution Supervisor 调用对应 API/IO handler，写入 `result_json`、`summary_json`、`error_text`、progress 和 `result_status`。
 - 遇到需要 browser fallback 的业务场景时，只能返回“需要某个 browser handler 处理这件事”的业务化请求；不得内联执行 browser handler，不得写 `fallback_source_job_id` 这类 runtime 关联字段，也不得把 `fallback_required` 写成 Runtime DB lifecycle status。
 
 `browser_worker` 的职责:
 
-- 只 claim `task_execution.status=pending` 且 `available_at <= now` 的 browser job。
+- 只 claim `task_execution.status=pending` 且 `available_at <= now` 的 browser job；常驻 worker 默认同样受最早未终态 `task_request` 约束，浏览器 fallback 不得越过更早任务的未完成 API/writeback 阶段。
 - 持有 `resource_lease` 后执行 browser handler，并把截图、HTML、raw response、审计证据等大对象写入对象存储 / `artifact_object`。
 - 小型结构化结果写入 `task_execution.result_json`；FastMoss cookie value 直接写入 `fastmoss_session_cookie_cache`，result/log/summary 只允许脱敏 metadata。
 

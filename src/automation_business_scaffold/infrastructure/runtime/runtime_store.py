@@ -545,8 +545,14 @@ class RuntimeStore:
                     self._text(
                         """
                         SELECT *
-                        FROM task_request
-                        WHERE status = 'pending'
+                        FROM task_request request
+                        WHERE request.status = 'pending'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM task_request older
+                              WHERE older.created_at < request.created_at
+                                AND older.status NOT IN ('finished', 'cancelled')
+                          )
                         ORDER BY created_at ASC
                         LIMIT 1
                         """

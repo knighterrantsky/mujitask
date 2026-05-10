@@ -66,6 +66,205 @@ def test_claim_next_task_request_requeues_ready_for_summary_without_reset(runtim
     assert reclaimed.worker_id == "worker-b"
 
 
+def test_claim_next_task_request_waits_for_older_nonterminal_request(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    older = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="sync_tk_influencer_pool",
+        payload={"source_table_ref": "feishu://competitor"},
+        requested_by="pytest",
+    )
+    claimed = store.claim_next_task_request(worker_id="executor-a", lease_seconds=30.0)
+    assert claimed is not None
+    assert claimed.request_id == older.request_id
+    store.update_task_request(
+        request_id=older.request_id,
+        status="waiting",
+        current_stage="writeback_competitor_status",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+    )
+    newer = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="search_keyword_selection_products",
+        payload={"search_keyword": "graduation"},
+        requested_by="pytest",
+    )
+
+    blocked = store.claim_next_task_request(worker_id="executor-b", lease_seconds=30.0)
+
+    assert blocked is None
+    store.update_task_request(
+        request_id=older.request_id,
+        status="finished",
+        result_status="success",
+        current_stage="completed",
+        finished_at=time.time(),
+    )
+    next_claimed = store.claim_next_task_request(worker_id="executor-b", lease_seconds=30.0)
+    assert next_claimed is not None
+    assert next_claimed.request_id == newer.request_id
+
+
+def test_claim_next_api_worker_job_waits_for_older_nonterminal_request(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    older = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="sync_tk_influencer_pool",
+        payload={"source_table_ref": "feishu://competitor"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=older.request_id,
+        status="waiting",
+        current_stage="writeback_competitor_status",
+    )
+    newer = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="search_keyword_selection_products",
+        payload={"search_keyword": "graduation"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=newer.request_id,
+        status="waiting",
+        current_stage="refresh_selection_rows",
+    )
+    enqueue = store.enqueue_api_worker_jobs(
+        request_id=newer.request_id,
+        task_code="search_keyword_selection_products",
+        job_code="selection_row_refresh",
+        jobs=[
+            {
+                "business_key": "newer-row",
+                "dedupe_key": f"{newer.request_id}:newer-row",
+                "payload": {"stage_code": "refresh_selection_rows"},
+            }
+        ],
+    )
+
+    blocked = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+
+    assert enqueue["created_count"] == 1
+    assert blocked is None
+    explicit = store.claim_next_api_worker_job(
+        worker_id="api-worker-a",
+        lease_seconds=30.0,
+        request_id=newer.request_id,
+    )
+    assert explicit is not None
+    assert explicit["request_id"] == newer.request_id
+
+
+def test_claim_next_api_worker_job_prefers_oldest_nonterminal_request(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    older = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="sync_tk_influencer_pool",
+        payload={"source_table_ref": "feishu://competitor"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=older.request_id,
+        status="waiting",
+        current_stage="writeback_competitor_status",
+    )
+    newer = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="search_keyword_selection_products",
+        payload={"search_keyword": "graduation"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=newer.request_id,
+        status="waiting",
+        current_stage="refresh_selection_rows",
+    )
+    store.enqueue_api_worker_jobs(
+        request_id=newer.request_id,
+        task_code="search_keyword_selection_products",
+        job_code="selection_row_refresh",
+        jobs=[
+            {
+                "business_key": "newer-row",
+                "dedupe_key": f"{newer.request_id}:newer-row",
+                "payload": {"stage_code": "refresh_selection_rows"},
+            }
+        ],
+    )
+    store.enqueue_api_worker_jobs(
+        request_id=older.request_id,
+        task_code="sync_tk_influencer_pool",
+        job_code="feishu_table_write",
+        jobs=[
+            {
+                "business_key": "older-writeback",
+                "dedupe_key": f"{older.request_id}:older-writeback",
+                "payload": {"stage_code": "writeback_competitor_status"},
+            }
+        ],
+    )
+
+    claimed = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+
+    assert claimed is not None
+    assert claimed["request_id"] == older.request_id
+    assert claimed["job_code"] == "feishu_table_write"
+
+
+def test_claim_next_browser_execution_waits_for_older_nonterminal_request(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    older = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="sync_tk_influencer_pool",
+        payload={"source_table_ref": "feishu://competitor"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=older.request_id,
+        status="waiting",
+        current_stage="writeback_competitor_status",
+    )
+    newer = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="search_keyword_selection_products",
+        payload={"search_keyword": "graduation"},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=newer.request_id,
+        status="waiting",
+        current_stage="selection_row_browser_fallback",
+    )
+    store.enqueue_task_executions(
+        request_id=newer.request_id,
+        item_code="tiktok_product_browser_fetch",
+        workflow_code="search_keyword_selection_products",
+        items=[
+            {
+                "business_key": "newer-browser",
+                "dedupe_key": f"{newer.request_id}:newer-browser",
+                "payload": {"stage_code": "selection_row_browser_fallback"},
+            }
+        ],
+    )
+
+    blocked = store.claim_next_browser_execution(worker_id="browser-a", lease_seconds=30.0)
+
+    assert blocked is None
+    store.update_task_request(
+        request_id=older.request_id,
+        status="finished",
+        result_status="success",
+        current_stage="completed",
+        finished_at=time.time(),
+    )
+    claimed = store.claim_next_browser_execution(worker_id="browser-a", lease_seconds=30.0)
+    assert claimed is not None
+    assert claimed.request_id == newer.request_id
+
+
 def test_claim_next_outbox_requeues_expired_sending_record(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     outbox = store.create_notification_outbox(

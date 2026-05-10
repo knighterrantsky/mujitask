@@ -191,12 +191,22 @@ class TaskExecutionRepository:
                 connection.execute(
                     self._text(
                         """
-                        SELECT *
-                        FROM task_execution
-                        WHERE status = 'pending'
-                          AND available_at <= :available_at
-                          AND (:request_id = '' OR request_id = :request_id)
-                        ORDER BY queue_seq ASC, created_at ASC
+                        SELECT execution.*
+                        FROM task_execution execution
+                        JOIN task_request request ON request.request_id = execution.request_id
+                        WHERE execution.status = 'pending'
+                          AND execution.available_at <= :available_at
+                          AND (:request_id = '' OR execution.request_id = :request_id)
+                          AND (
+                              :request_id <> ''
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM task_request older
+                                  WHERE older.created_at < request.created_at
+                                    AND older.status NOT IN ('finished', 'cancelled')
+                              )
+                          )
+                        ORDER BY request.created_at ASC, execution.queue_seq ASC, execution.created_at ASC
                         """
                     ),
                     {"available_at": now, "request_id": normalized_request_id},

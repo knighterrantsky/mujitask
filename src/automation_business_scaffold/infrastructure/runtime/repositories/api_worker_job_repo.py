@@ -246,7 +246,16 @@ class ApiWorkerJobRepository:
                           AND request.status = 'waiting'
                           AND job.status = 'pending'
                           AND job.available_at <= :available_at
-                        ORDER BY job.available_at ASC, job.created_at ASC
+                          AND (
+                              :request_id <> ''
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM task_request older
+                                  WHERE older.created_at < request.created_at
+                                    AND older.status NOT IN ('finished', 'cancelled')
+                              )
+                          )
+                        ORDER BY request.created_at ASC, job.available_at ASC, job.created_at ASC
                         LIMIT 1
                         """
                     ),

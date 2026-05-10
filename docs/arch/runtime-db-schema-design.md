@@ -107,6 +107,8 @@ Runtime DB 必须区分“执行生命周期”和“业务结果”。`status` 
 - `api_worker_job.status=pending`: api_worker 可以 claim API/IO job。
 - `task_execution.status=pending`: browser_worker 可以 claim browser job。
 
+顶层任务默认全局串行。常驻 executor/worker 只能推进当前最早创建且尚未 `finished/cancelled` 的 `task_request`；后续请求即使已经是 `pending`，也必须等更早请求完成、取消或被显式指定 `request_id` 的调试路径处理后才能被常驻队列 claim。这个约束防止两个真实业务任务同时读写同一组飞书表、FactDB 或对象资产，尤其避免达人同步尚未完成竞品表状态写回时，选品/竞品采集任务提前开始。
+
 FastMoss fetch、TikTok fetch 这类 handler 内部步骤本身不是 Runtime DB 记录，不能单独拥有 `pending`。只有当 workflow 或行级 pipeline 为它创建了 `api_worker_job` / `task_execution` 记录时，才有 Runtime 生命周期状态。
 
 #### Row-Serial Browser Fallback 最小事实
