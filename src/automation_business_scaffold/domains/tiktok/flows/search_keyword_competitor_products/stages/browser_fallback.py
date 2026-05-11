@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from automation_business_scaffold.contracts.handler.shared import coerce_mapping
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
@@ -43,9 +43,12 @@ from ..context.decision_models import (
     _waiting,
 )
 
+if TYPE_CHECKING:
+    from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+    from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+
 
 STAGE_CODE = "browser_fallback"
-
 
 def advance(
     *,
@@ -62,16 +65,20 @@ def advance(
             "next_stage": "refresh_competitor_rows",
             "details": {"fallback_candidate_count": 0},
         }
-    if not executions and fallback_candidates:
+    dispatch_candidates = _fallback_candidates_needing_dispatch(
+        fallback_candidates=fallback_candidates,
+        executions=executions,
+    )
+    if dispatch_candidates:
         dispatches: dict[str, Any] = {}
         for fallback_handler in sorted(
-            {str(candidate.get("fallback_handler") or "") for candidate in fallback_candidates}
+            {str(candidate.get("fallback_handler") or "") for candidate in dispatch_candidates}
         ):
             if not fallback_handler:
                 continue
             job_def = workflow.require_job(fallback_handler)
             items: list[dict[str, Any]] = []
-            for candidate in fallback_candidates:
+            for candidate in dispatch_candidates:
                 if str(candidate.get("fallback_handler") or "") != fallback_handler:
                     continue
                 payload = _browser_execution_payload(
@@ -121,7 +128,11 @@ def advance(
             store=store,
             request=request,
             stage_code=stage_code,
-            payload={"browser_dispatches": dispatches, "fallback_candidate_count": len(fallback_candidates)},
+            payload={
+                "browser_dispatches": dispatches,
+                "fallback_candidate_count": len(fallback_candidates),
+                "dispatch_candidate_count": len(dispatch_candidates),
+            },
         )
         return _waiting(
             stage_code=stage_code,
@@ -355,6 +366,37 @@ def _after_browser_row_payload(*, stage_code: str, candidate: Mapping[str, Any])
     return _compact_mapping(payload)
 
 
+def _browser_execution_fallback_key(execution: Any) -> str:
+    payload = dict(getattr(execution, "payload", None) or {})
+    fallback_handler = str(getattr(execution, "item_code", "") or payload.get("fallback_handler") or "")
+    source_record_id = _first_text(payload.get("source_record_id"))
+    business_entity_key = _first_text(payload.get("business_entity_key"), payload.get("candidate_key"))
+    if not fallback_handler or not _first_text(source_record_id, business_entity_key):
+        return ""
+    return _row_fallback_key(
+        source_record_id=source_record_id,
+        business_entity_key=business_entity_key,
+        fallback_handler=fallback_handler,
+    )
+
+
+def _fallback_candidates_needing_dispatch(
+    *,
+    fallback_candidates: list[dict[str, Any]],
+    executions: list[Any],
+) -> list[dict[str, Any]]:
+    existing_keys = {
+        key
+        for execution in executions
+        if (key := _browser_execution_fallback_key(execution))
+    }
+    return [
+        candidate
+        for candidate in fallback_candidates
+        if str(candidate.get("fallback_key") or "") not in existing_keys
+    ]
+
+
 def _requeue_competitor_rows_after_browser(
     *,
     store: RuntimeStore,
@@ -367,17 +409,9 @@ def _requeue_competitor_rows_after_browser(
     for execution in executions:
         if str(getattr(execution, "status", "") or "") not in {"finished", "cancelled"}:
             continue
-        payload = dict(execution.payload or {})
-        fallback_handler = str(execution.item_code or payload.get("fallback_handler") or "")
-        source_record_id = _first_text(payload.get("source_record_id"))
-        business_entity_key = _first_text(payload.get("business_entity_key"), payload.get("candidate_key"))
-        terminal_by_key[
-            _row_fallback_key(
-                source_record_id=source_record_id,
-                business_entity_key=business_entity_key,
-                fallback_handler=fallback_handler,
-            )
-        ] = execution
+        fallback_key = _browser_execution_fallback_key(execution)
+        if fallback_key:
+            terminal_by_key[fallback_key] = execution
 
     for candidate in fallback_candidates:
         execution = terminal_by_key.get(str(candidate.get("fallback_key") or ""))

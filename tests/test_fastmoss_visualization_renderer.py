@@ -62,8 +62,9 @@ def test_fastmoss_visualization_renderer_invokes_node_and_writes_manifest(tmp_pa
     renderer_package_json = tmp_path / "renderer-package.json"
 
     def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
-        del cwd, check, capture_output, text, timeout
+        del check, capture_output, text, timeout
         captured["command"] = command
+        captured["cwd"] = cwd
         captured["env"] = env
         output_dir = Path(command[-1])
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +105,36 @@ def test_fastmoss_visualization_renderer_invokes_node_and_writes_manifest(tmp_pa
         str(result.input_path),
         str(tmp_path),
     ]
+    assert captured["cwd"] == str(renderer_package_json.parent)
     assert captured["env"]["RENDERER_PACKAGE_JSON"] == str(renderer_package_json)
+
+
+def test_fastmoss_visualization_renderer_uses_configured_cwd(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    renderer_package_json = tmp_path / "renderer-package.json"
+    renderer_cwd = tmp_path / "renderer-cwd"
+    renderer_cwd.mkdir()
+
+    def fake_runner(command, *, cwd, env, check, capture_output, text, timeout):
+        del env, check, capture_output, text, timeout
+        captured["cwd"] = cwd
+        output_dir = Path(command[-1])
+        for chart_name in DEFAULT_FASTMOSS_VISUALIZATION_CHARTS:
+            (output_dir / f"{chart_name}.png").write_bytes(b"png")
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    FastMossVisualizationRenderer(
+        renderer_package_json=renderer_package_json,
+        renderer_cwd=renderer_cwd,
+        command_runner=fake_runner,
+    ).render_product_charts(
+        product_id=PRODUCT_ID,
+        overview_payload=_overview_payload(),
+        product_sku_payload=_product_sku_payload(),
+        output_dir=tmp_path,
+    )
+
+    assert captured["cwd"] == str(renderer_cwd)
 
 
 def test_fastmoss_visualization_renderer_rejects_unknown_chart(tmp_path: Path) -> None:

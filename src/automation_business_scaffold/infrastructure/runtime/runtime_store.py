@@ -39,6 +39,7 @@ TERMINAL_EXECUTION_STATUSES = {"finished", "cancelled"}
 ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running"}
 TERMINAL_API_WORKER_JOB_STATUSES = {"finished", "cancelled"}
 TERMINAL_REQUEST_STATUSES = {"finished", "cancelled"}
+CANCELLING_REQUEST_STATUS = "cancelling"
 FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
 DEFAULT_ACTIVE_REQUEST_SCAN_STATUSES = ("running", "waiting")
 DEFAULT_ACTIVE_JOB_SCAN_STATUSES = ("running",)
@@ -546,8 +547,8 @@ class RuntimeStore:
                         """
                         SELECT *
                         FROM task_request
-                        WHERE status = 'pending'
-                        ORDER BY created_at ASC
+                        WHERE status NOT IN ('finished', 'cancelled')
+                        ORDER BY created_at ASC, request_id ASC
                         LIMIT 1
                         """
                     )
@@ -558,6 +559,10 @@ class RuntimeStore:
             if row is None:
                 return None
             request = self._request_from_row(row)
+            if request.status == CANCELLING_REQUEST_STATUS:
+                return request
+            if request.status != "pending":
+                return None
             connection.execute(
                 self._text(
                     """
@@ -596,6 +601,77 @@ class RuntimeStore:
             if updated_row is None:
                 return None
             return self._request_from_row(updated_row)
+
+    def cancel_task_request(self, *, request_id: str) -> dict[str, Any]:
+        self._ensure_runtime_schema_ready()
+        now = time.time()
+        with self._engine.begin() as connection:
+            request_row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM task_request
+                        WHERE request_id = :request_id
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    ),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+            if request_row is None:
+                raise ValueError("Task request not found.")
+            previous_status = str(request_row["status"] or "")
+            if previous_status in {"finished", "cancelled"}:
+                counts = self._request_lifecycle.aggregate_children(connection, request_id=request_id)
+                return {
+                    "request": self._request_from_row(request_row),
+                    "applied": False,
+                    "previous_status": previous_status,
+                    "cancelled_api_worker_job_count": 0,
+                    "cancelled_task_execution_count": 0,
+                    **counts,
+                }
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE task_request
+                    SET status = 'cancelling',
+                        result_status = '',
+                        progress_stage = 'cancelling',
+                        worker_id = '',
+                        lease_until = NULL,
+                        heartbeat_at = NULL,
+                        last_progress_at = :last_progress_at,
+                        updated_at = :updated_at,
+                        finished_at = NULL
+                    WHERE request_id = :request_id
+                    """
+                ),
+                {"request_id": request_id, "last_progress_at": now, "updated_at": now},
+            )
+            cancel_counts = self._request_lifecycle.cancel_non_running_children(
+                connection,
+                request_id=request_id,
+                now=now,
+            )
+            self._request_lifecycle.refresh_child_counts(connection, request_id=request_id, now=now)
+        outcome = self.reconcile_cancelling_request(request_id=request_id)
+        return {
+            **outcome,
+            "applied": previous_status != "cancelling",
+            "previous_status": previous_status,
+            "cancelled_api_worker_job_count": cancel_counts["cancelled_api_worker_job_count"]
+            + int(outcome.get("cancelled_api_worker_job_count", 0)),
+            "cancelled_task_execution_count": cancel_counts["cancelled_task_execution_count"]
+            + int(outcome.get("cancelled_task_execution_count", 0)),
+        }
+
+    def reconcile_cancelling_request(self, *, request_id: str) -> dict[str, Any]:
+        return self._request_lifecycle.reconcile_cancelling_request(request_id=request_id)
 
     def update_task_request(
         self,
@@ -640,7 +716,7 @@ class RuntimeStore:
             if legacy_result_status:
                 assignments.append("result_status = :result_status")
                 values["result_status"] = legacy_result_status
-            elif status in {"pending", "running", "waiting", "cancelled"}:
+            elif status in {"pending", "running", "waiting", "cancelling", "cancelled"}:
                 assignments.append("result_status = :result_status")
                 values["result_status"] = ""
         if current_stage is None and original_status == "ready_for_summary":

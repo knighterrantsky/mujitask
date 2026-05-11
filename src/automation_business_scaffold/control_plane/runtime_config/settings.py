@@ -30,6 +30,7 @@ CONTROL_ACTION_ALIASES = {
     "queue": "submit",
     "status": "status",
     "result": "result",
+    "cancel": "cancel",
     "load": "status",
     "executor_once": "executor_once",
     "api_worker_once": "api_worker_once",

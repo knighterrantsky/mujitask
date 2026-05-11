@@ -44,6 +44,35 @@ class TaskExecutionRepository:
         created_records: list[RuntimeTaskExecutionRecord] = []
         skipped_records: list[dict[str, Any]] = []
         with self._engine.begin() as connection:
+            parent_row = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT status
+                        FROM task_request
+                        WHERE request_id = :request_id
+                        LIMIT 1
+                        """
+                    ),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+            if parent_row is not None and str(parent_row["status"] or "") in {"cancelling", "cancelled", "finished"}:
+                return {
+                    "created_count": 0,
+                    "skipped_count": len(items),
+                    "created_records": [],
+                    "skipped_records": [
+                        {
+                            "business_key": str(item.get("business_key", "") or ""),
+                            "dedupe_key": str(item.get("dedupe_key", "") or ""),
+                            "status": "parent_not_active",
+                        }
+                        for item in items
+                    ],
+                }
             next_queue_seq = int(
                 connection.execute(
                     self._text("SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM task_execution")
@@ -191,12 +220,26 @@ class TaskExecutionRepository:
                 connection.execute(
                     self._text(
                         """
-                        SELECT *
-                        FROM task_execution
-                        WHERE status = 'pending'
-                          AND available_at <= :available_at
-                          AND (:request_id = '' OR request_id = :request_id)
-                        ORDER BY queue_seq ASC, created_at ASC
+                        SELECT execution.*
+                        FROM task_execution execution
+                        JOIN task_request request ON request.request_id = execution.request_id
+                        WHERE execution.status = 'pending'
+                          AND execution.available_at <= :available_at
+                          AND (:request_id = '' OR execution.request_id = :request_id)
+                          AND request.status = 'waiting'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM task_request older_request
+                              WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                AND (
+                                    older_request.created_at < request.created_at
+                                    OR (
+                                        older_request.created_at = request.created_at
+                                        AND older_request.request_id < request.request_id
+                                    )
+                                )
+                          )
+                        ORDER BY execution.queue_seq ASC, execution.created_at ASC
                         """
                     ),
                     {"available_at": now, "request_id": normalized_request_id},
@@ -273,6 +316,24 @@ class TaskExecutionRepository:
                             progress_message = :progress_message
                         WHERE execution_id = :execution_id
                           AND status = 'pending'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM task_request request
+                              WHERE request.request_id = task_execution.request_id
+                                AND request.status = 'waiting'
+                                AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM task_request older_request
+                                    WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                      AND (
+                                          older_request.created_at < request.created_at
+                                          OR (
+                                              older_request.created_at = request.created_at
+                                              AND older_request.request_id < request.request_id
+                                          )
+                                      )
+                                )
+                          )
                         """
                     ),
                     {
@@ -705,11 +766,12 @@ class TaskExecutionRepository:
                 connection.execute(
                     self._text(
                         """
-                        SELECT *
-                        FROM task_execution
-                        WHERE execution_id = :execution_id
-                          AND run_id = :run_id
-                          AND status = 'running'
+                        SELECT execution.*, request.status AS request_status
+                        FROM task_execution execution
+                        JOIN task_request request ON request.request_id = execution.request_id
+                        WHERE execution.execution_id = :execution_id
+                          AND execution.run_id = :run_id
+                          AND execution.status = 'running'
                         LIMIT 1
                         """
                     ),
@@ -720,10 +782,11 @@ class TaskExecutionRepository:
             )
             if row is None:
                 return self.load_task_execution(execution_id=execution_id)
-            status = "pending"
+            parent_cancelling = str(row["request_status"] or "") == "cancelling"
+            status = "cancelled" if parent_cancelling else "pending"
             result_status = ""
-            available_at = now + max(retry_delay_seconds, 0.1)
-            if int(row["attempt_count"] or 0) >= int(row["max_attempts"] or 1):
+            available_at = now if parent_cancelling else now + max(retry_delay_seconds, 0.1)
+            if not parent_cancelling and int(row["attempt_count"] or 0) >= int(row["max_attempts"] or 1):
                 status = "finished"
                 result_status = "failed"
                 available_at = now
@@ -765,7 +828,7 @@ class TaskExecutionRepository:
                     "error_text": error_text,
                     "error_type": error_type,
                     "error_code": error_code,
-                    "dead_letter_reason": dead_letter_reason or ("max_attempts_exhausted" if result_status == "failed" else ""),
+                    "dead_letter_reason": dead_letter_reason or ("parent_request_cancelling" if parent_cancelling else ("max_attempts_exhausted" if result_status == "failed" else "")),
                     "available_at": available_at,
                     "updated_at": now,
                     "heartbeat_at": now,

@@ -77,6 +77,8 @@ def _build_refresh_competitor_outbox_message(
     rows = [_build_refresh_competitor_outbox_row(item) for item in row_results]
     success_count = sum(1 for item in rows if item.get("status") == "success")
     failed_count = sum(1 for item in rows if item.get("status") == "fail")
+    partial_count = sum(1 for item in rows if item.get("status") == "partial_success")
+    cancelled_count = sum(1 for item in rows if item.get("status") == "cancelled")
     return {
         "request_id": request_id,
         "task_code": task_code,
@@ -85,13 +87,15 @@ def _build_refresh_competitor_outbox_message(
         "updated_count": success_count,
         "success_count": success_count,
         "failed_count": failed_count,
+        "partial_count": partial_count,
+        "cancelled_count": cancelled_count,
         "rows": rows,
     }
 
 
 def _build_refresh_competitor_outbox_row(row: dict[str, Any]) -> dict[str, Any]:
     row_status = str(row.get("row_status") or "").strip()
-    status = "success" if row_status in {"success", "unavailable"} else "fail"
+    status = _outbox_row_status(row_status)
     payload: dict[str, Any] = {
         "sku": str(row.get("product_id") or "").strip(),
         "product_id": str(row.get("product_id") or "").strip(),
@@ -103,6 +107,18 @@ def _build_refresh_competitor_outbox_row(row: dict[str, Any]) -> dict[str, Any]:
     if status == "fail":
         payload["failure_reason"] = _refresh_competitor_failure_reason(row)
     return payload
+
+
+def _outbox_row_status(row_status: str) -> str:
+    if row_status in {"success", "unavailable"}:
+        return "success"
+    if row_status == "partial_success":
+        return "partial_success"
+    if row_status == "cancelled":
+        return "cancelled"
+    if row_status in {"skipped", "skip_existing"}:
+        return "skipped"
+    return "fail"
 
 
 def _refresh_competitor_failure_reason(row: dict[str, Any]) -> str:
@@ -151,7 +167,8 @@ def _build_keyword_outbox_message(
         "seed_failed_count": _sum_counts(seed_status_counts, ("fail", "failed", "error")),
         "row_success_count": sum(1 for item in rows if item.get("status") == "success"),
         "row_failed_count": sum(1 for item in rows if item.get("status") == "fail"),
-        "row_partial_count": int(summary.get("row_partial_count") or 0),
+        "row_partial_count": sum(1 for item in rows if item.get("status") == "partial_success"),
+        "row_cancelled_count": sum(1 for item in rows if item.get("status") == "cancelled"),
         "rows": rows,
     }
 
@@ -297,6 +314,8 @@ def _render_keyword_plain_text(payload: dict[str, Any], *, include_rows: bool) -
         f"种子跳过：{payload.get('seed_skipped_count', 0)} 条",
         f"种子失败：{payload.get('seed_failed_count', 0)} 条",
         f"详情成功：{payload.get('row_success_count', 0)} 条",
+        f"详情部分成功：{payload.get('row_partial_count', 0)} 条",
+        f"详情取消：{payload.get('row_cancelled_count', 0)} 条",
         f"详情失败：{payload.get('row_failed_count', 0)} 条",
     ]
     filter_text = _format_filter_info(payload.get("search_filter_info"))
@@ -411,6 +430,8 @@ def _render_refresh_plain_text(payload: dict[str, Any], *, include_rows: bool) -
         f"总数：{payload.get('total_count', 0)} 条",
         f"更新：{payload.get('updated_count', 0)} 条",
         f"成功：{payload.get('success_count', 0)} 条",
+        f"部分成功：{payload.get('partial_count', 0)} 条",
+        f"取消：{payload.get('cancelled_count', 0)} 条",
         f"失败：{payload.get('failed_count', 0)} 条",
     ]
     warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []

@@ -980,6 +980,46 @@ def test_keyword_search_parameter_mapper_keeps_zero_as_unlimited_candidate_limit
     assert mapped["output_conditions"] == {"max_candidates": 0}
 
 
+def test_keyword_outbox_detail_reports_partial_and_cancelled_rows_separately() -> None:
+    message = build_tiktok_outbox_message_text(
+        request_id="req-keyword",
+        task_code=TASK_CODE,
+        summary={"final_status": "partial_success"},
+        result={
+            "search_query": "Easter",
+            "candidate_total_count": 4,
+            "seed_write_results": [
+                {"product_id": "sku-success", "status": "success"},
+                {"product_id": "sku-partial", "status": "success"},
+                {"product_id": "sku-cancelled", "status": "success"},
+                {"product_id": "sku-failed", "status": "success"},
+            ],
+            "row_results": [
+                {"source_record_id": "rec-success", "product_id": "sku-success", "row_status": "success"},
+                {"source_record_id": "rec-partial", "product_id": "sku-partial", "row_status": "partial_success"},
+                {"source_record_id": "rec-cancelled", "product_id": "sku-cancelled", "row_status": "cancelled"},
+                {
+                    "source_record_id": "rec-failed",
+                    "product_id": "sku-failed",
+                    "row_status": "failed",
+                    "failure_reason": "writeback_failed",
+                },
+            ],
+        },
+    )
+
+    assert "详情成功：1 条" in message
+    assert "详情部分成功：1 条" in message
+    assert "详情取消：1 条" in message
+    assert "详情失败：1 条" in message
+    assert "status: success" in message
+    assert "status: partial_success" in message
+    assert "status: cancelled" in message
+    assert "status: fail" in message
+    assert "failure_reason: row_status=partial_success" not in message
+    assert "failure_reason: writeback_failed" in message
+
+
 def test_keyword_outbox_detail_hides_existing_records() -> None:
     message = build_tiktok_outbox_message_text(
         request_id="req-keyword",
@@ -1526,6 +1566,99 @@ def test_keyword_runtime_module_is_loadable_and_happy_path_finalizes(runtime_db_
     assert "候选：1 条" in message_text
     assert "详情成功：1 条" in message_text
     assert "1. SKU 123456789" in message_text
+
+
+def test_keyword_summary_marks_unqueued_success_seed_cancelled_when_parent_cancelled(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_keyword_request(runtime_db_url)
+    seed_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
+    assert seed_waiting["action"] == "waiting"
+    seed_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="keyword_seed_import",
+        job_code="keyword_seed_import",
+    )
+    seeds = []
+    for index, product_id in enumerate((PRODUCT_ID, "987654321000000002"), start=1):
+        product_url = f"https://www.tiktok.com/view/product/{product_id}"
+        seeds.append(
+            {
+                "candidate_key": f"product:{product_id}",
+                "business_entity_key": f"product:{product_id}",
+                "product_identity": {
+                    "product_id": product_id,
+                    "product_url": product_url,
+                    "normalized_product_url": product_url,
+                },
+                "product_id": product_id,
+                "product_url": product_url,
+                "normalized_product_url": product_url,
+                "search_query": SEARCH_QUERY,
+                "search_rank": index,
+                "source_context": {"product_id": product_id, "product_url": product_url},
+                "source_record_id": f"seed-row-{index}",
+                "seed_status": "success",
+                "target_record_ids": [f"seed-row-{index}"],
+                "feishu_row": {"record_id": f"seed-row-{index}"},
+            }
+        )
+    _mark_api_job_success(
+        store,
+        job_id=str(seed_job["job_id"]),
+        summary={"candidate_count": 2, "written_count": 2},
+        result={
+            "normalized_candidates": seeds,
+            "seed_contexts": seeds,
+            "seed_write_results": [{"product_id": item["product_id"], "status": "success"} for item in seeds],
+            "written_count": 2,
+            "skipped_count": 0,
+            "failed_count": 0,
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    seed_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
+    assert seed_advance["next_stage"] == "dispatch_row_refresh_jobs"
+
+    request = store.load_task_request(request_id=request.request_id)
+    dispatch_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_row_refresh_jobs",
+    )
+    assert dispatch_advance["next_stage"] == "refresh_competitor_rows"
+    row_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="refresh_competitor_rows",
+        job_code="competitor_row_refresh",
+    )
+    _mark_api_job_success(
+        store,
+        job_id=str(row_job["job_id"]),
+        summary={"row_status": "success"},
+        result={"row_status": "success"},
+    )
+    request = store.update_task_request(
+        request_id=request.request_id,
+        status="cancelled",
+        current_stage="ready_for_summary",
+        progress_stage="ready_for_summary",
+    )
+
+    finalized = finalize_request(store=store, request=request, workflow=workflow)
+    rows_by_source = {row["source_record_id"]: row for row in finalized["result"]["row_results"]}
+
+    assert rows_by_source["seed-row-1"]["row_status"] == "success"
+    assert rows_by_source["seed-row-2"]["row_status"] == "cancelled"
+    assert finalized["summary"]["row_success_count"] == 1
+    assert finalized["summary"]["row_cancelled_count"] == 1
+    assert finalized["summary"]["row_failed_count"] == 0
+    message_text = finalized["outbox"][0]["payload"]["message_text"]
+    assert "详情成功：1 条" in message_text
+    assert "详情取消：1 条" in message_text
+    assert "详情失败：0 条" in message_text
 
 
 def test_keyword_runtime_dispatches_competitor_rows_serially(runtime_db_url: str) -> None:

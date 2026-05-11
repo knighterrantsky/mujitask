@@ -39,6 +39,8 @@ PRODUCT_ID = "123456789"
 SECOND_PRODUCT_ID = "987654321"
 PRODUCT_URL = "https://www.tiktok.com/shop/pdp/123456789"
 SECOND_PRODUCT_URL = "https://www.tiktok.com/shop/pdp/987654321"
+FASTMOSS_PHONE_ENV = "PYTEST_FASTMOSS_PHONE"
+FASTMOSS_PASSWORD_ENV = "PYTEST_FASTMOSS_PASSWORD"
 
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -419,6 +421,9 @@ def test_keyword_executor_integration_happy_path(
             "next_executor_status": "pending",
         }
     ]
+    released_status = _status(runtime_db_url, request_id)
+    assert released_status["request_status"] == "pending"
+    assert released_status["current_stage"] == "keyword_seed_import"
 
     refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert refresh_wait["request_status"] == "waiting"
@@ -1061,6 +1066,84 @@ def test_selection_keyword_executor_keeps_row_pipeline_serial_when_first_row_nee
         SEED_RECORD_ID,
         SECOND_SEED_RECORD_ID,
     ]
+
+
+def test_keyword_executor_propagates_fastmoss_env_refs_to_seed_import(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert load_workflow_runtime(TASK_CODE) is not None
+    _bind_keyword_api_handlers(monkeypatch, request_mode="success")
+
+    submitted = _submit_keyword_request(
+        runtime_db_url,
+        fastmoss_phone_env=FASTMOSS_PHONE_ENV,
+        fastmoss_password_env=FASTMOSS_PASSWORD_ENV,
+    )
+    request_id = str(submitted["request_id"])
+
+    seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert seed_wait["request_id"] == request_id
+    seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
+    assert len(seed_jobs) == 1
+    fastmoss = seed_jobs[0]["payload"]["search_request"]["fastmoss"]
+    assert fastmoss["phone_env"] == FASTMOSS_PHONE_ENV
+    assert fastmoss["password_env"] == FASTMOSS_PASSWORD_ENV
+    assert "phone" not in fastmoss
+    assert "password" not in fastmoss
+
+
+def test_selection_keyword_executor_propagates_fastmoss_env_refs_to_seed_import(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert load_workflow_runtime(SELECTION_TASK_CODE) is not None
+    registry = build_api_handler_registry()
+
+    def fake_keyword_seed_import(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            summary={"candidate_count": 0, "written_count": 0, "skipped_count": 0, "failed_count": 0},
+            result={
+                "search_parameters": dict(context.payload.get("search_request") or {}),
+                "normalized_candidates": [],
+                "seed_contexts": [],
+                "seed_write_results": [],
+                "written_count": 0,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "target_record_ids": [],
+            },
+        )
+
+    register_api_handler(registry, "keyword_seed_import", fake_keyword_seed_import)
+    monkeypatch.setattr(runtime_orchestrator, "build_api_handler_registry", lambda: registry, raising=False)
+    monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
+
+    task = SearchKeywordSelectionProductsTask()
+    submitted = task.run_runtime_request(
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            search_query=SEARCH_QUERY,
+            selection_table_ref=SELECTION_TABLE_REF,
+            reply_target="reply://selection-fastmoss-env",
+            source_channel_code="console",
+            fastmoss_phone_env=FASTMOSS_PHONE_ENV,
+            fastmoss_password_env=FASTMOSS_PASSWORD_ENV,
+        )
+    )
+    request_id = str(submitted["request_id"])
+
+    seed_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert seed_wait["request_id"] == request_id
+    seed_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
+    assert len(seed_jobs) == 1
+    fastmoss = seed_jobs[0]["payload"]["search_request"]["fastmoss"]
+    assert fastmoss["phone_env"] == FASTMOSS_PHONE_ENV
+    assert fastmoss["password_env"] == FASTMOSS_PASSWORD_ENV
+    assert "phone" not in fastmoss
+    assert "password" not in fastmoss
 
 
 def test_keyword_executor_passes_zero_candidate_limit_to_seed_import(

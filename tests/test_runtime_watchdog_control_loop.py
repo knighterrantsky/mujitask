@@ -112,7 +112,8 @@ def test_normal_job_records_run_ownership_and_finishes(runtime_db_url: str) -> N
         result={"case_id": "normal-a"},
     )
 
-    assert succeeded["status"] == "success"
+    assert succeeded["status"] == "finished"
+    assert succeeded["result_status"] == "success"
     assert succeeded["finished_at"] > 0
     assert succeeded["run_id"] == claimed["run_id"]
 
@@ -150,7 +151,8 @@ def test_watchdog_marks_total_timeout_failed_then_kills_worker(
 
     failed = store.load_api_worker_job(job_id=str(claimed["job_id"]))
     assert payload["applied_count"] == 1
-    assert failed["status"] == "failed"
+    assert failed["status"] == "finished"
+    assert failed["result_status"] == "failed"
     assert failed["error_type"] == "timeout"
     assert failed["error_code"] == "job_total_timeout"
     assert killed == [22222]
@@ -188,7 +190,8 @@ def test_watchdog_detects_no_progress_while_heartbeat_is_alive(
     watchdog_scanner.execute_watchdog_scan_once({"apply_actions": True}, store=store)
 
     failed = store.load_api_worker_job(job_id=str(claimed["job_id"]))
-    assert failed["status"] == "failed"
+    assert failed["status"] == "finished"
+    assert failed["result_status"] == "failed"
     assert failed["error_code"] == "job_no_progress_timeout"
     assert failed["heartbeat_at"] >= heartbeat_before
     assert killed == [33333]
@@ -218,7 +221,8 @@ def test_watchdog_detects_worker_heartbeat_timeout(runtime_db_url: str) -> None:
 
     failed = store.load_api_worker_job(job_id=str(claimed["job_id"]))
     assert payload["applied_count"] == 1
-    assert failed["status"] == "failed"
+    assert failed["status"] == "finished"
+    assert failed["result_status"] == "failed"
     assert failed["error_code"] == "worker_heartbeat_timeout"
     assert payload["outcomes"][0]["store_result"]["kill_result"]["reason"] == "missing_worker_pid"
 
@@ -271,9 +275,14 @@ def test_queue_recovers_after_watchdog_failed_job_and_new_worker_claims_next(
         result={"case_id": "c-normal"},
     )
 
-    assert store.load_api_worker_job(job_id=str(job_a["job_id"]))["status"] == "success"
-    assert store.load_api_worker_job(job_id=str(job_b["job_id"]))["error_code"] == "job_total_timeout"
-    assert store.load_api_worker_job(job_id=str(job_c["job_id"]))["status"] == "success"
+    stored_a = store.load_api_worker_job(job_id=str(job_a["job_id"]))
+    stored_b = store.load_api_worker_job(job_id=str(job_b["job_id"]))
+    stored_c = store.load_api_worker_job(job_id=str(job_c["job_id"]))
+    assert stored_a["status"] == "finished"
+    assert stored_a["result_status"] == "success"
+    assert stored_b["error_code"] == "job_total_timeout"
+    assert stored_c["status"] == "finished"
+    assert stored_c["result_status"] == "success"
     assert killed == [22222]
     assert job_c["worker_pid"] == 33333
     assert job_c["worker_pid"] != job_b["worker_pid"]
