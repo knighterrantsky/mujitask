@@ -2,12 +2,12 @@
 name: "mujitask-tiktok-feishu-sync"
 description: >-
   Submits OpenClaw task requests for the current TikTok/TK Feishu workflows:
-  competitor-table refresh, competitor keyword search, influencer-pool sync,
-  selection-table ingest, and selection keyword search. Use only when the user explicitly
-  asks to run, sync, update, complete, search, collect, or write data to TK竞品收集, TK选品收集,
-  or TK达人池. Do not use for conceptual questions, strategy discussion, skill review,
-  configuration support, or general FastMoss questions without an explicit table/workflow
-  target.
+  competitor-table refresh, competitor keyword search, batch keyword search,
+  influencer-pool sync, selection-table ingest, and selection keyword search. Use only
+  when the user explicitly asks to run, sync, update, complete, search, collect, or write
+  data to TK竞品收集, TK选品收集, or TK达人池. Do not use for conceptual questions, strategy
+  discussion, skill review, configuration support, or general FastMoss questions without
+  an explicit table/workflow target.
 metadata:
   short-description: "TK选品、竞品、达人池与FastMoss任务提交"
 ---
@@ -18,8 +18,10 @@ metadata:
 
 ## Purpose
 
-- Use this skill to submit one top-level OpenClaw task request for the current TikTok/TK Feishu business workflows.
-- This skill only submits the task and returns `request_id`.
+- Use this skill to preview and then submit confirmed OpenClaw task requests for the current TikTok/TK Feishu business workflows.
+- Every side-effecting task submission must show a confirmation preview first and submit only after the user explicitly confirms.
+- Use this skill to preview and then submit confirmed batch keyword-search requests; each confirmed keyword row submits one existing Runtime task request.
+- Single-task confirmations return one `request_id`; confirmed batch keyword submissions return one `request_id` per row.
 - The actual execution, table writeback, retry behavior, and final Feishu notification are handled by Runtime workflow, workers, and outbox.
 
 ## Source of truth
@@ -53,6 +55,8 @@ Use this skill only when the user explicitly asks to submit one of these workflo
 
 - Refresh or manually run the current `TK竞品收集` competitor-table workflow.
 - Search keyword products and write new competitor seed rows to `TK竞品收集`.
+- Preview any task submission inputs, then submit only after explicit confirmation.
+- Preview a batch of keyword-search rows for `TK竞品收集` or `TK选品收集`, then submit only after explicit confirmation.
 - Sync influencer data from `TK竞品收集` to `TK达人池`.
 - Ingest or complete data for `TK选品收集`.
 - Search keyword products and write new selection seed rows to `TK选品收集`.
@@ -86,6 +90,17 @@ Do not use this skill when the user is only:
 - saying only “FastMoss”, “TK竞品”, “写入飞书”, or “更新当前表” without a clear workflow or target table
 
 ## Required inputs
+
+### `confirmation`
+
+Explicit user confirmation for the latest task preview.
+
+Rules:
+
+- Required before running any command that submits Runtime task requests.
+- Accepted confirmations must clearly approve the latest preview, such as `确认提交`, `提交`, `确认执行`, or `没问题，提交`.
+- Do not treat casual acknowledgement such as `好`, `可以`, or unrelated follow-up text as confirmation unless it clearly refers to submitting the previewed task.
+- If the user changes any input after preview, regenerate the preview and require confirmation again.
 
 ### `product_url`
 
@@ -168,6 +183,20 @@ Rules:
 - User says `不限制候选数`, `全部`, or `所有满足条件商品` -> `0`.
 - User says `最多 50 个`, `抓 50 条`, or `候选 50 条` -> `50`.
 
+### `batch_keyword_items`
+
+Confirmed batch keyword rows containing only keyword and sales threshold.
+
+Rules:
+
+- Use only after a batch keyword preview has been shown and the user explicitly confirms submission.
+- Each row must contain `search_keyword` and may contain `threshold_type` plus `threshold_value`.
+- Support line-based input where each non-threshold line is a keyword and the final threshold line applies to all keywords.
+- Example line-based input: `Splatter Ball`, `Splatter Ball 1`, `Splatter Ball 2`, `Splatter Ball 3`, final line `总销量>200` -> four rows with `threshold_type=total_sales` and `threshold_value=200`.
+- Allowed `threshold_type` values are `sales_7d` and `total_sales`; `total_sales` is only for `TK竞品收集`.
+- Do not include filters, max candidates, price threshold, or other optional parameters in v1 batch rows.
+- If the user asks to change a row, regenerate the preview instead of submitting.
+
 ## Supported workflows
 
 ### `competitor_table_refresh`
@@ -245,6 +274,22 @@ Default inputs:
 - `sales_7d_threshold`: `500`
 - `price_range_max_threshold`: `10.99`
 
+### `batch_keyword_search_submit`
+
+- Kind: operational_sub_intent
+- Parent task code: `search_keyword_competitor_products`
+- Mode: confirmed_batch_keyword_search
+- Target table: `TK竞品收集`, `TK选品收集`
+
+Use only after the user explicitly confirms the latest formatted batch keyword-search preview. The preview itself is generated by the skill without running a command.
+
+Business behavior summary:
+
+- Submit one existing keyword Runtime task per confirmed row.
+- Batch rows contain only keyword and sales threshold in v1.
+- Runtime request FIFO handles execution order; this wrapper only submits rows sequentially.
+- Return one request_id per successfully submitted row.
+
 ### `product_url_complete`
 
 - Kind: operational_sub_intent
@@ -270,22 +315,34 @@ Use only when the user explicitly mentions competitor row, competitor URL, or `�
 3. Extract only the inputs required by that workflow.
 4. Apply workflow-specific defaults.
 5. Validate missing or ambiguous inputs.
-6. Run exactly one command.
-7. Wait until the command exits and emits `__OPENCLAW_RESULT__`.
-8. Parse `request_id`.
-9. Reply using the required output format.
-10. Do not poll Runtime jobs after task submission.
+6. Before any Runtime submission command, generate a confirmation preview in chat and do not run a command yet.
+7. Single-task previews must show task type, target table, extracted required inputs, and defaults that will be applied.
+8. Batch keyword-search previews must show only target table, row count, keyword, and threshold.
+9. Batch keyword-search previews must not expose filters, max candidates, price threshold, or other optional parameters in v1.
+10. For line-based batch keyword input, treat each non-threshold line as a keyword and the final threshold line as a global threshold applied to every keyword.
+11. Submit only after the user explicitly confirms the latest preview.
+12. If the user changes any input after preview, regenerate the preview and require confirmation again.
+13. For confirmed batch keyword search, run `batch_keyword_search_submit` once with normalized keyword rows, then report one request_id per submitted row.
+14. For confirmed non-batch workflows, run exactly one command and parse `request_id`.
+15. Wait until the command exits and emits `__OPENCLAW_RESULT__`.
+16. Parse `request_id` for single-task submissions or `request_ids` for batch submissions.
+17. Reply using the required output format.
+18. Do not poll Runtime jobs after task submission.
 
 ## Intent precedence
 
-1. If the user explicitly says `竞品`, `竞品表`, or `TK竞品收集` and asks for keyword search or collection, choose `keyword_competitor_search`.
-2. If the user explicitly says `选品`, `选品表`, or `TK选品收集` and asks for keyword search or collection, choose `keyword_selection_search`.
-3. If the user asks to complete, ingest, scan, or update `TK选品收集` without keyword-search semantics, choose `selection_table_ingest`.
-4. If the user asks to manually refresh, sync, or update the current competitor table, choose `competitor_table_refresh`.
-5. If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
-6. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
-7. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
-8. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
+1. If the user confirms the latest formatted batch keyword-search preview, choose `batch_keyword_search_submit`.
+2. If the user confirms the latest non-batch task preview, choose the matching submit intent and run its command.
+3. If the user asks for multiple keyword searches in one request, generate a formatted batch preview first; do not submit until confirmation.
+4. If the user provides multiple keyword lines plus a final threshold line, parse it as batch keyword input and apply the final threshold to every keyword row.
+5. If the user explicitly says `竞品`, `竞品表`, or `TK竞品收集` and asks for keyword search or collection, choose `keyword_competitor_search` for one keyword or batch preview for multiple keywords.
+6. If the user explicitly says `选品`, `选品表`, or `TK选品收集` and asks for keyword search or collection, choose `keyword_selection_search` for one keyword or batch preview for multiple keywords.
+7. If the user asks to complete, ingest, scan, or update `TK选品收集` without keyword-search semantics, choose `selection_table_ingest`.
+8. If the user asks to manually refresh, sync, or update the current competitor table, choose `competitor_table_refresh`.
+9. If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
+10. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
+11. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
+12. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
 
 ## Commands
 
@@ -319,6 +376,12 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "selection_table_in
 
 ```bash
 bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
+```
+
+### `batch_keyword_search_submit`
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "batch_keyword_search_submit" --target-intent "<keyword_competitor_search|keyword_selection_search>" --items-json '<batch_keyword_items>'
 ```
 
 ### `product_url_complete`
@@ -362,9 +425,14 @@ Examples:
 ## Guardrails
 
 - Do not submit a task unless the user explicitly asks to run, update, sync, complete, collect, search-and-write, or submit.
+- Do not run any Runtime submission command before showing a confirmation preview and receiving explicit confirmation.
+- Do not treat the initial task request itself as confirmation; it only authorizes generating a preview.
 - Do not route `选品表` requests to competitor workflows.
 - Do not route `竞品表` requests to selection workflows.
 - Do not use a generic keyword-search workflow when the target table is ambiguous.
+- Do not submit batch keyword searches during preview; wait for explicit confirmation.
+- Do not accept filters, custom max candidates, price threshold, or other optional parameters in v1 batch keyword rows.
+- Do not submit stale batch preview content if the user asks to modify any row; regenerate the preview first.
 - Do not ask users for credentials, tokens, table IDs, browser profiles, Runtime DB, or deployment settings.
 - Do not print configuration values.
 - Do not expose cookies, tokens, env vars, stack traces, table IDs, or browser profile paths.
@@ -377,6 +445,11 @@ Examples:
 
 - Keyword search without keyword: ask only for the keyword.
 - Keyword search without target table: ask whether to write to `TK竞品收集` or `TK选品收集`.
+- Every side-effecting task request: preview extracted inputs and defaults first, then wait for explicit confirmation before running the command.
+- Batch keyword search: preview only keyword and threshold, then wait for explicit confirmation.
+- Line-based batch keyword search: each non-threshold line is a keyword; the final threshold line applies to all keywords.
+- Batch keyword search with filters or custom max candidates: explain that v1 only supports keyword and threshold, then preview supported fields only or ask the user to simplify.
+- Batch keyword search row modification after preview: regenerate preview and wait for confirmation again.
 - Single-URL workflow with multiple URLs: ask for one URL.
 - TikTok URL without table semantics: use `product_url_complete` only if the user asks to complete a product; otherwise ask for the intended workflow.
 - Wrapper exits without `request_id`: treat as failed submission.
@@ -393,8 +466,11 @@ Before replying, verify:
 - Target table matches the selected workflow.
 - Formal workflow maps to a valid `task_code`.
 - Operational sub-intent maps to a valid `parent_task_code`.
+- A confirmation preview was shown before any submission command.
+- The user explicitly confirmed the latest preview before any submission command.
 - The command emitted `__OPENCLAW_RESULT__`.
-- Successful reply contains only `request_id: <request_id>`.
+- Successful single-task reply contains only `request_id: <request_id>`.
+- Successful batch submit reply lists each keyword row with its `request_id`.
 - Failure reply uses `任务提交失败：<short safe reason>`.
 
 ## Examples
@@ -404,7 +480,7 @@ Intent: `competitor_table_refresh`
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 帮我查询关键字 east egg 的 7日销量大于200的 TK 商品，写入 TK竞品收集
@@ -418,7 +494,7 @@ Inputs:
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 帮我按关键词 east egg 搜索 7日销量大于500 且价格大于10.99 的 TK 商品，写入 TK选品表
@@ -432,7 +508,24 @@ Inputs:
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
+```
+
+User: Splatter Ball
+Splatter Ball 1
+Splatter Ball 2
+Splatter Ball 3
+总销量>200
+写入 TK竞品收集
+Intent: `batch_keyword_search_submit`
+Inputs:
+
+- `batch_keyword_items`: `four previewed rows with threshold_type total_sales and threshold_value 200`
+
+Reply:
+
+```text
+先展示只包含关键词和阈值的确认预览；用户确认后回复每行 `request_id`.
 ```
 
 User: 补全TK选品表
@@ -440,7 +533,7 @@ Intent: `selection_table_ingest`
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 达人池同步
@@ -448,7 +541,7 @@ Intent: `influencer_pool_sync`
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 补全这个商品 https://www.tiktok.com/shop/pdp/123
@@ -460,7 +553,7 @@ Inputs:
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 竞品表单行补全 https://www.tiktok.com/shop/pdp/123
@@ -472,7 +565,7 @@ Inputs:
 Reply:
 
 ```text
-request_id: <request_id>
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 ## Negative activation examples

@@ -14,7 +14,7 @@ cases:
   - id: keyword-competitor-search
     user: 帮我查询关键字 east egg 的 7日销量大于200的 TK 商品，写入 TK竞品收集
     expected_intent: keyword_competitor_search
-    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --max-candidates <max_candidates>
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --max-candidates <max_candidates>
     expected_task_code: search_keyword_competitor_products
     expected_defaults:
       sales_7d_threshold: 200
@@ -34,6 +34,15 @@ cases:
     must_not_include:
       - keyword_competitor_search
       - TK竞品收集
+
+  - id: batch-keyword-search-submit
+    user: "确认提交刚才生成的批量关键词搜索任务：Splatter Ball、Splatter Ball 1、Splatter Ball 2、Splatter Ball 3，总销量>200"
+    expected_intent: batch_keyword_search_submit
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "batch_keyword_search_submit" --target-intent "<keyword_competitor_search|keyword_selection_search>" --items-json '<batch_keyword_items>'
+    expected_parent_task_code: search_keyword_competitor_products
+    must_not_include:
+      - filters
+      - max_candidates
 
   - id: selection-table-ingest
     user: 补全TK选品表
