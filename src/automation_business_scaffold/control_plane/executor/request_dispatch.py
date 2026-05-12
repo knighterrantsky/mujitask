@@ -37,9 +37,38 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
 
     refresh_request_aggregate_counts(store, request_id=request.request_id)
     request = store.load_task_request(request_id=request.request_id)
+    if getattr(request, "status", "") == "cancelling":
+        outcome = store.reconcile_cancelling_request(request_id=request.request_id)
+        payload = build_runtime_request_payload(
+            store=store,
+            request_id=request.request_id,
+            control_action="executor_once",
+            message="Executor reconciled cancelling task request.",
+        )
+        payload.update(
+            {
+                "daemon_status": "processed",
+                "processed_count": 1,
+                "success_count": 0,
+                "failed_count": 0,
+                "cancel": outcome,
+            }
+        )
+        return payload
     workflow = get_workflow_definition(request.task_code)
     runtime = resolve_workflow_runtime(request.task_code)
     current_stage = str(request.current_stage or "").strip() or workflow.entry_stage_code
+
+    if getattr(request, "status", "") == "cancelling":
+        outcome = store.reconcile_cancelling_request(request_id=request.request_id)
+        payload = build_runtime_request_payload(
+            store=store,
+            request_id=request.request_id,
+            control_action="executor_once",
+            message="Executor stopped normal workflow for cancelling task request.",
+        )
+        payload.update({"daemon_status": "processed", "processed_count": 1, "cancel": outcome})
+        return payload
 
     if runtime is None:
         finalized = finalize_not_ready_request(
@@ -61,6 +90,16 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {}
     for _ in range(MAX_EXECUTOR_STAGE_HOPS):
         request = store.load_task_request(request_id=request.request_id)
+        if getattr(request, "status", "") == "cancelling":
+            outcome = store.reconcile_cancelling_request(request_id=request.request_id)
+            payload = build_runtime_request_payload(
+                store=store,
+                request_id=request.request_id,
+                control_action="executor_once",
+                message="Executor stopped normal workflow for cancelling task request.",
+            )
+            payload.update({"daemon_status": "processed", "processed_count": 1, "cancel": outcome})
+            return payload
         current_stage = str(request.current_stage or "").strip() or workflow.entry_stage_code
 
         if current_stage == workflow.summary_policy.summary_stage_code:
@@ -196,6 +235,10 @@ def finalize_not_ready_request(
 
 def release_request_after_child_completion(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     request = store.load_task_request(request_id=request_id)
+    if getattr(request, "status", "") == "cancelling":
+        return [store.reconcile_cancelling_request(request_id=request_id)]
+    if request.status in {"finished", "cancelled"}:
+        return []
     runtime = resolve_workflow_runtime(request.task_code)
     if runtime is None:
         return []

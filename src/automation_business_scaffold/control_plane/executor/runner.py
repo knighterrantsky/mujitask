@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-import os
-import time
 from typing import Any, Mapping
 
 from automation_business_scaffold.config import get_execution_control_defaults
-from automation_business_scaffold.control_plane.executor.looping import (
-    build_child_runner_config,
-    run_control_loop,
-    supervisor_error_payload,
-)
-from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
+from automation_business_scaffold.control_plane.executor.looping import run_control_loop
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
@@ -19,18 +12,13 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     SELECTION_KEYWORD_TASK_CODE,
     REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE,
     REFRESH_TASK_CODE,
-    build_idle_payload,
     build_request_payload,
     build_runtime_settings,
     create_runtime_store,
     ensure_formal_task_code,
     normalize_control_action,
 )
-from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
-    ExecutionSupervisorCallbacks,
-    ExecutionSupervisorOutcome,
-    run_supervised_handler,
-)
+from automation_business_scaffold.control_plane.supervisor.execution_supervisor import ExecutionSupervisorOutcome
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
@@ -168,6 +156,10 @@ def run_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any]:
         return submit_task_request(normalized_task_code, params)
     if action in {"status", "result"}:
         return get_task_request_status(normalized_task_code, params)
+    if action == "cancel":
+        from automation_business_scaffold.control_plane.task_requests.cancel import cancel
+
+        return cancel(normalized_task_code, params)
     if action == "executor_once":
         return execute_executor_once(params)
     if action == "api_worker_once":

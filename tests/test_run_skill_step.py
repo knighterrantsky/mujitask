@@ -794,6 +794,8 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     assert captured_calls[0]["task_name"] == "search_keyword_competitor_products"
     assert "control_action=submit" in captured_calls[0]["params"]
     assert "search_keyword=Easter Basket Stuffers" in captured_calls[0]["params"]
+    assert "fastmoss_phone_env=FASTMOSS_PHONE" in captured_calls[0]["params"]
+    assert "fastmoss_password_env=FASTMOSS_PASSWORD" in captured_calls[0]["params"]
     assert emitted["request_id"] == "req-keyword-123"
     assert emitted["request_status"] == "pending"
 
@@ -864,6 +866,8 @@ def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatc
     assert "sales_7d_threshold=500" in params
     assert "product_price_threshold=10.99" in params
     assert "keyword_workflow_mode=selection" in params
+    assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
+    assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
     assert emitted["request_id"] == "req-selection-keyword-123"
     assert emitted["request_status"] == "pending"
 

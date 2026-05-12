@@ -95,7 +95,11 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         retry_delay_seconds=settings.retry_delay_seconds,
     )
 
-    parent_updates = release_request_after_child_completion(store, request_id=str(job["request_id"]))
+    parent_request = store.load_task_request(request_id=str(job["request_id"]))
+    if parent_request.status == "cancelling":
+        parent_updates = [store.reconcile_cancelling_request(request_id=str(job["request_id"]))]
+    else:
+        parent_updates = release_request_after_child_completion(store, request_id=str(job["request_id"]))
     payload = build_runtime_request_payload(
         store=store,
         request_id=str(job["request_id"]),
@@ -194,7 +198,11 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         retry_delay_seconds=settings.retry_delay_seconds,
     )
 
-    parent_updates = release_request_after_child_completion(store, request_id=execution.request_id)
+    parent_request = store.load_task_request(request_id=execution.request_id)
+    if parent_request.status == "cancelling":
+        parent_updates = [store.reconcile_cancelling_request(request_id=execution.request_id)]
+    else:
+        parent_updates = release_request_after_child_completion(store, request_id=execution.request_id)
     payload = build_runtime_request_payload(
         store=store,
         request_id=execution.request_id,

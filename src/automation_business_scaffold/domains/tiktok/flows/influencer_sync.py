@@ -137,6 +137,42 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         coerce_mapping(creator_payload.get("creator_fact_bundle")),
     )
 
+    media_result_payload: dict[str, Any] = {}
+    media_refs = list(creator_payload.get("media_refs") or [])
+    if media_refs:
+        media_result = media_asset_sync_handler(
+            _child_context(
+                context,
+                handler_code="media_asset_sync",
+                payload={
+                    "request_payload": request_payload,
+                    "request_id": context.request_id,
+                    "task_code": payload.get("task_code"),
+                    "workflow_code": payload.get("workflow_code"),
+                    "stage_code": payload.get("stage_code"),
+                    "asset_refs": media_refs,
+                    "requires_object_storage": True,
+                    "require_object_storage": True,
+                    "source_context": {"creator_id": creator_id, "product_hits": product_hits},
+                },
+                step_code="media_asset_sync",
+            )
+        )
+        internal_steps["media_asset_sync"] = media_result.status
+        media_result_payload = dict(media_result.result)
+        warnings.extend(media_result.warnings)
+    else:
+        internal_steps["media_asset_sync"] = "skipped"
+
+    fact_bundle = merge_fact_bundles(
+        fact_bundle,
+        coerce_mapping(media_result_payload.get("media_fact_bundle")),
+    )
+    creator_payload["fact_bundle"] = fact_bundle
+    creator_payload["media_refs"] = _merge_media_refs(
+        list(creator_payload.get("media_refs") or []),
+        coerce_mapping_list(media_result_payload.get("synced_assets")),
+    )
     fact_result = fact_bundle_upsert_handler(
         _child_context(
             context,
@@ -173,33 +209,6 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
             result={"creator_fetch_result": creator_payload, "fact_result": fact_result.result, "product_hits": product_hits},
         )
     warnings.extend(fact_result.warnings)
-
-    media_result_payload: dict[str, Any] = {}
-    media_refs = list(creator_payload.get("media_refs") or [])
-    if media_refs:
-        media_result = media_asset_sync_handler(
-            _child_context(
-                context,
-                handler_code="media_asset_sync",
-                payload={
-                    "request_payload": request_payload,
-                    "request_id": context.request_id,
-                    "task_code": payload.get("task_code"),
-                    "workflow_code": payload.get("workflow_code"),
-                    "stage_code": payload.get("stage_code"),
-                    "asset_refs": media_refs,
-                    "requires_object_storage": True,
-                    "require_object_storage": True,
-                    "source_context": {"creator_id": creator_id, "product_hits": product_hits},
-                },
-                step_code="media_asset_sync",
-            )
-        )
-        internal_steps["media_asset_sync"] = media_result.status
-        media_result_payload = dict(media_result.result)
-        warnings.extend(media_result.warnings)
-    else:
-        internal_steps["media_asset_sync"] = "skipped"
 
     write_payload = _influencer_pool_write_payload(payload, creator_payload=creator_payload, product_hits=product_hits)
     influencer_write = feishu_table_write_handler(
@@ -479,6 +488,47 @@ def _status_writeback_payload(payload: Mapping[str, Any], *, hit: Mapping[str, A
 
 def _final_product_status(influencer_write: HandlerResult) -> str:
     return "已完成" if influencer_write.status in {"success", "partial_success", "skipped"} else "失败重试"
+
+
+def _merge_media_refs(existing_refs: list[Any], synced_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = [dict(item) for item in existing_refs if isinstance(item, Mapping)]
+    seen = {
+        _media_ref_key(ref)
+        for ref in refs
+        if _media_ref_key(ref)
+    }
+    for asset in synced_assets:
+        ref = {
+            "entity_key": asset.get("entity_key"),
+            "entity_type": asset.get("entity_type"),
+            "entity_external_id": asset.get("entity_external_id"),
+            "media_role": asset.get("media_role"),
+            "media_type": asset.get("media_role"),
+            "source_url": asset.get("source_url"),
+            "local_path": asset.get("local_path"),
+            "source_path": asset.get("source_path"),
+            "object_key": asset.get("object_key"),
+            "remote_uri": asset.get("remote_uri"),
+            "file_token": asset.get("file_token"),
+            "source_platform": asset.get("source_platform"),
+            "metadata": coerce_mapping(asset.get("metadata")),
+        }
+        key = _media_ref_key(ref)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+    return refs
+
+
+def _media_ref_key(ref: Mapping[str, Any]) -> str:
+    return ":".join(
+        [
+            first_non_empty(ref.get("entity_type")),
+            first_non_empty(ref.get("entity_external_id")),
+            first_non_empty(ref.get("source_url"), ref.get("local_path"), ref.get("object_key"), ref.get("remote_uri")),
+        ]
+    )
 
 
 def _hit_group_terminal(hit: Mapping[str, Any]) -> bool:

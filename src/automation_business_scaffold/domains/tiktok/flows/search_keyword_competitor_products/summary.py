@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     all_child_records as _all_child_records,
@@ -24,13 +24,16 @@ from .context.runtime_views import (
     _seed_contexts,
 )
 from .context.stage_inputs import (
-    _effective_tiktok_result,
     _first_text,
     _latest_candidate_execution,
     _latest_candidate_job,
     _latest_row_job,
     _record_effective_status,
 )
+
+if TYPE_CHECKING:
+    from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+    from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 
 def finalize_request(
@@ -41,7 +44,15 @@ def finalize_request(
     force_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_contexts = _candidate_contexts(store=store, request_id=request.request_id)
-    row_results = [_build_row_result(store=store, request_id=request.request_id, candidate_context=row) for row in candidate_contexts]
+    row_results = [
+        _build_row_result(
+            store=store,
+            request_id=request.request_id,
+            request_status=str(request.status or ""),
+            candidate_context=row,
+        )
+        for row in candidate_contexts
+    ]
     child_records = _all_child_records(store=store, request_id=request.request_id)
     child_outcome = summarize_child_outcomes(child_records, optional_codes=OPTIONAL_FINAL_STATUS_CODES)
     explicit_final_status = str((force_result or {}).get("final_status") or "")
@@ -80,6 +91,7 @@ def finalize_request(
         "row_success_count": sum(1 for item in row_results if item["row_status"] == "success"),
         "row_failed_count": sum(1 for item in row_results if item["row_status"] == "failed"),
         "row_partial_count": sum(1 for item in row_results if item["row_status"] == "partial_success"),
+        "row_cancelled_count": sum(1 for item in row_results if item["row_status"] == "cancelled"),
         "warnings": warnings,
     }
     result = {
@@ -159,6 +171,7 @@ def _build_row_result(
     *,
     store: RuntimeStore,
     request_id: str,
+    request_status: str,
     candidate_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     candidate_key = str(candidate_context.get("candidate_key") or "")
@@ -232,6 +245,7 @@ def _build_row_result(
 
     row_status = _derive_row_status(
         seed_status=str(seed_context.get("seed_status") or ""),
+        request_status=request_status,
         tiktok_job=tiktok_job,
         fastmoss_job=fastmoss_job,
         browser_execution=browser_execution,
@@ -258,6 +272,7 @@ def _build_row_result(
 def _derive_row_status(
     *,
     seed_status: str,
+    request_status: str,
     tiktok_job: Mapping[str, Any] | None,
     fastmoss_job: Mapping[str, Any] | None,
     browser_execution: Any,
@@ -276,6 +291,8 @@ def _derive_row_status(
     ]
     if seed_status == "skipped" and not any(status for status in statuses[1:]):
         return "skipped"
+    if seed_status == "success" and request_status == "cancelled" and not any(status for status in statuses[1:]):
+        return "cancelled"
     if "success" in {_record_effective_status(write_job), _record_effective_status(fact_job)} and "failed" not in statuses:
         return "success"
     if "success" in statuses or "partial_success" in statuses:
@@ -332,4 +349,6 @@ def _collect_warnings(row_results: list[dict[str, Any]]) -> list[str]:
             warnings.append(f"partial_success:{row['candidate_key']}")
         if row["row_status"] == "failed":
             warnings.append(f"failed:{row['candidate_key']}")
+        if row["row_status"] == "cancelled":
+            warnings.append(f"cancelled:{row['candidate_key']}")
     return warnings

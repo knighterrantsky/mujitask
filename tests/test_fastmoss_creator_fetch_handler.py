@@ -148,6 +148,13 @@ def test_default_api_registry_binds_fastmoss_creator_fetch_and_maps_contract() -
         ("follower_count", 128000),
         ("video_sale_amount", 32000),
     }
+    product_media_ref = next(
+        ref for ref in result.result["media_refs"] if ref["media_role"] == "product_image"
+    )
+    assert product_media_ref["entity_key"] == "fastmoss_product:1732183068040729370"
+    assert product_media_ref["entity_type"] == "product"
+    assert product_media_ref["entity_external_id"] == "1732183068040729370"
+    assert product_media_ref["source_url"] == "https://example.com/product.png"
     assert any(ref["media_type"] == "creator_avatar" for ref in result.result["media_refs"])
     assert any(ref.endswith("/author.goods_list") for ref in result.result["raw_response_refs"])
     assert result.result["fact_bundle"]["relations"]["creator_videos"][0]["video_id"] == (
@@ -186,6 +193,37 @@ def test_fastmoss_creator_fetch_uses_first_contact_when_email_missing() -> None:
 
     assert result.status == "success"
     assert result.result["creator_fact_bundle"]["contact"]["normalized_text"] == "https://example.com/bio"
+
+
+def test_fastmoss_creator_fetch_adds_relations_for_all_source_product_hits() -> None:
+    payload = _creator_payload()
+    payload["source_context"] = {
+        "product_hits": [
+            {
+                "source_record_id": "rec-1",
+                "product_id": "1732183068040729370",
+                "holiday": "Graduation",
+                "matched_product_sold_count": 72,
+            },
+            {
+                "source_record_id": "rec-2",
+                "product_id": "1732183068040729371",
+                "holiday": "Easter",
+                "matched_product_sold_count": 88,
+            },
+        ]
+    }
+    payload["fastmoss_creator_bundle"]["goods_list"] = {"list": []}
+
+    result = fastmoss_creator_fetch_handler(_context(payload))
+
+    assert result.status == "success"
+    product_relations = result.result["fact_bundle"]["relations"]["creator_products"]
+    relation_by_product = {relation["product_id"]: relation for relation in product_relations}
+    assert set(relation_by_product) == {"1732183068040729370", "1732183068040729371"}
+    assert relation_by_product["1732183068040729370"]["source_record_id"] == "rec-1"
+    assert relation_by_product["1732183068040729371"]["source_record_id"] == "rec-2"
+    assert relation_by_product["1732183068040729371"]["sold_count"] == 88
 
 
 def test_fastmoss_creator_fetch_skips_without_payload_or_live_config() -> None:

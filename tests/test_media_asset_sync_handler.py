@@ -74,6 +74,46 @@ def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypa
     assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
 
 
+def test_media_asset_sync_uses_product_entity_key_for_download_path(monkeypatch, tmp_path) -> None:
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int):
+        del timeout
+        requested_urls.append(request.full_url)
+        return _FakeResponse()
+
+    monkeypatch.setattr(asset_sync_handler, "urlopen", fake_urlopen)
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "sync_referenced_files": True,
+                "media_download_dir": str(tmp_path / "downloads"),
+                "asset_refs": [
+                    {
+                        "entity_key": "product:1730964478199763166",
+                        "media_role": "product_image",
+                        "source_url": "https://cdn.example.com/main.webp",
+                        "source_platform": "fastmoss",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert requested_urls == ["https://cdn.example.com/main.webp"]
+    asset = result.result["synced_assets"][0]
+    assert asset["entity_type"] == "product"
+    assert asset["entity_external_id"] == "1730964478199763166"
+    assert asset["product_id"] == "1730964478199763166"
+    assert "/1730964478199763166/" in asset["local_path"]
+    assert "unknown-product" not in asset["local_path"]
+
+
 def test_media_asset_sync_reuses_duplicate_source_url_within_same_run(monkeypatch, tmp_path) -> None:
     requested_urls: list[str] = []
 

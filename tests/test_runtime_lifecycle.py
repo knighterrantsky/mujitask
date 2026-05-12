@@ -344,7 +344,7 @@ def test_runtime_timeout_scans_and_outbox_lease_reclaim_helpers(runtime_db_url):
     assert reclaimed[0].error_code == "outbox_lease_expired"
 
 
-def test_reconcile_request_waiting_children_idempotently_promotes_ready_for_summary(runtime_db_url):
+def test_reconcile_request_waiting_children_releases_current_stage(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     request = _submit_request(store)
     store.update_task_request(
@@ -416,7 +416,8 @@ def test_reconcile_request_waiting_children_idempotently_promotes_ready_for_summ
     assert second_reconcile["transitioned"] is False
     assert second_reconcile["active_count"] == 0
     assert second_reconcile["request"].status == "pending"
-    assert second_reconcile["request"].current_stage == "ready_for_summary"
+    assert second_reconcile["request"].current_stage == "collect_product_data"
+    assert second_reconcile["request"].progress_stage == "collect_product_data"
     assert second_reconcile["child_total_count"] == 2
     assert second_reconcile["child_terminal_count"] == 2
     assert second_reconcile["child_success_count"] == 2

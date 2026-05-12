@@ -20,7 +20,11 @@ class RuntimeRequestLifecycle:
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                        SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+                        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                        SUM(CASE WHEN status IN ('pending', 'running', 'waiting') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,
@@ -50,7 +54,11 @@ class RuntimeRequestLifecycle:
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                        SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+                        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                        SUM(CASE WHEN status IN ('pending', 'running', 'waiting') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,
@@ -77,6 +85,10 @@ class RuntimeRequestLifecycle:
             "skipped_count": int(task_stats.get("skipped_count") or 0) + int(api_stats.get("skipped_count") or 0),
             "fallback_required_count": int(task_stats.get("fallback_required_count") or 0)
             + int(api_stats.get("fallback_required_count") or 0),
+            "pending_count": int(task_stats.get("pending_count") or 0) + int(api_stats.get("pending_count") or 0),
+            "waiting_count": int(task_stats.get("waiting_count") or 0) + int(api_stats.get("waiting_count") or 0),
+            "running_count": int(task_stats.get("running_count") or 0) + int(api_stats.get("running_count") or 0),
+            "cancelled_count": int(task_stats.get("cancelled_count") or 0) + int(api_stats.get("cancelled_count") or 0),
             "active_count": int(task_stats.get("active_count") or 0) + int(api_stats.get("active_count") or 0),
         }
 
@@ -139,8 +151,7 @@ class RuntimeRequestLifecycle:
                         UPDATE task_request
                         SET status = 'pending',
                             result_status = '',
-                            current_stage = 'ready_for_summary',
-                            progress_stage = 'ready_for_summary',
+                            progress_stage = current_stage,
                             last_progress_at = :last_progress_at,
                             updated_at = :updated_at
                         WHERE request_id = :request_id
@@ -181,11 +192,140 @@ class RuntimeRequestLifecycle:
             "child_failed_count": counts["failed_count"],
             "child_skipped_count": counts["skipped_count"],
             "fallback_required_count": counts["fallback_required_count"],
+            "pending_count": counts["pending_count"],
+            "waiting_count": counts["waiting_count"],
+            "running_count": counts["running_count"],
+            "cancelled_count": counts["cancelled_count"],
             "active_count": counts["active_count"],
         }
 
+    def cancel_non_running_children(self, connection: Any, *, request_id: str, now: float) -> dict[str, int]:
+        api_result = connection.execute(
+            self._store._text(
+                """
+                UPDATE api_worker_job
+                SET status = 'cancelled',
+                    result_status = '',
+                    stage = 'cancelled',
+                    progress_stage = 'cancelled',
+                    worker_id = '',
+                    worker_pid = 0,
+                    lease_until = NULL,
+                    heartbeat_at = NULL,
+                    last_progress_at = :last_progress_at,
+                    progress_message = 'API worker job cancelled with parent request.',
+                    updated_at = :updated_at,
+                    finished_at = :finished_at
+                WHERE request_id = :request_id
+                  AND status IN ('pending', 'waiting')
+                """
+            ),
+            {"request_id": request_id, "last_progress_at": now, "updated_at": now, "finished_at": now},
+        )
+        execution_result = connection.execute(
+            self._store._text(
+                """
+                UPDATE task_execution
+                SET status = 'cancelled',
+                    result_status = '',
+                    progress_stage = 'cancelled',
+                    worker_id = '',
+                    worker_pid = 0,
+                    heartbeat_at = NULL,
+                    last_progress_at = :last_progress_at,
+                    progress_message = 'Browser execution cancelled with parent request.',
+                    updated_at = :updated_at,
+                    finished_at = :finished_at
+                WHERE request_id = :request_id
+                  AND status IN ('pending', 'waiting')
+                """
+            ),
+            {"request_id": request_id, "last_progress_at": now, "updated_at": now, "finished_at": now},
+        )
+        return {
+            "cancelled_api_worker_job_count": int(api_result.rowcount or 0),
+            "cancelled_task_execution_count": int(execution_result.rowcount or 0),
+        }
+
+    def reconcile_cancelling_request(self, *, request_id: str) -> dict[str, Any]:
+        now = time.time()
+        store = self._store
+        with store._engine.begin() as connection:
+            request_row = (
+                connection.execute(
+                    store._text(
+                        """
+                        SELECT *
+                        FROM task_request
+                        WHERE request_id = :request_id
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    ),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+            if request_row is None:
+                raise ValueError("Task request not found.")
+            if str(request_row["status"] or "") != "cancelling":
+                counts = self.aggregate_children(connection, request_id=request_id)
+                return {
+                    "request": store._request_from_row(request_row),
+                    "transitioned": False,
+                    "cancelled_api_worker_job_count": 0,
+                    "cancelled_task_execution_count": 0,
+                    **counts,
+                }
+            cancel_counts = self.cancel_non_running_children(connection, request_id=request_id, now=now)
+            counts = self.aggregate_children(connection, request_id=request_id)
+            transitioned = counts["running_count"] == 0
+            if transitioned:
+                connection.execute(
+                    store._text(
+                        """
+                        UPDATE task_request
+                        SET status = 'cancelled',
+                            result_status = '',
+                            progress_stage = 'cancelled',
+                            worker_id = '',
+                            lease_until = NULL,
+                            heartbeat_at = NULL,
+                            last_progress_at = :last_progress_at,
+                            updated_at = :updated_at,
+                            finished_at = :finished_at
+                        WHERE request_id = :request_id
+                          AND status = 'cancelling'
+                        """
+                    ),
+                    {
+                        "request_id": request_id,
+                        "last_progress_at": now,
+                        "updated_at": now,
+                        "finished_at": now,
+                    },
+                )
+            self.refresh_child_counts(connection, request_id=request_id, now=now)
+            updated_row = (
+                connection.execute(
+                    store._text("SELECT * FROM task_request WHERE request_id = :request_id LIMIT 1"),
+                    {"request_id": request_id},
+                )
+                .mappings()
+                .first()
+            )
+        if updated_row is None:
+            raise ValueError("Task request not found after cancellation reconcile.")
+        return {
+            "request": store._request_from_row(updated_row),
+            "transitioned": transitioned,
+            **cancel_counts,
+            **counts,
+        }
+
     def refresh_child_counts(self, connection: Any, *, request_id: str, now: float) -> None:
-        stats = self._task_execution_stats(connection, request_id=request_id)
+        stats = self.aggregate_children(connection, request_id=request_id)
         connection.execute(
             self._store._text(
                 """
@@ -238,7 +378,7 @@ class RuntimeRequestLifecycle:
                     UPDATE task_request
                     SET status = 'pending',
                         result_status = '',
-                        current_stage = 'ready_for_summary',
+                        progress_stage = current_stage,
                         updated_at = :updated_at
                     WHERE request_id = :request_id
                     """
@@ -258,7 +398,11 @@ class RuntimeRequestLifecycle:
                         SUM(CASE WHEN effective_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                         SUM(CASE WHEN effective_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
                         SUM(CASE WHEN effective_status = 'fallback_required' THEN 1 ELSE 0 END) AS fallback_required_count,
-                        SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS active_count
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                        SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+                        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                        SUM(CASE WHEN status IN ('pending', 'running', 'waiting') THEN 1 ELSE 0 END) AS active_count
                     FROM (
                         SELECT
                             status,

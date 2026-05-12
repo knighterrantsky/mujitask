@@ -59,6 +59,7 @@ class FastMossVisualizationRenderer:
         node_binary: str | None = None,
         renderer_script_path: str | os.PathLike[str] | None = None,
         renderer_package_json: str | os.PathLike[str] | None = None,
+        renderer_cwd: str | os.PathLike[str] | None = None,
         timeout_seconds: float = 60.0,
         command_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
@@ -71,6 +72,11 @@ class FastMossVisualizationRenderer:
             os.environ.get("FASTMOSS_VISUALIZATION_RENDERER_PACKAGE_JSON"),
             os.environ.get("RENDERER_PACKAGE_JSON"),
             _default_renderer_package_json(),
+        )
+        self.renderer_cwd = _first_non_empty(
+            renderer_cwd,
+            os.environ.get("FASTMOSS_VISUALIZATION_RENDERER_CWD"),
+            os.environ.get("RENDERER_CWD"),
         )
         self.timeout_seconds = float(timeout_seconds)
         self._command_runner = command_runner or subprocess.run
@@ -244,8 +250,12 @@ class FastMossVisualizationRenderer:
         output_dir: Path,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        renderer_cwd = Path(self.renderer_cwd) if self.renderer_cwd else self.renderer_script_path.parent
         if self.renderer_package_json:
-            env["RENDERER_PACKAGE_JSON"] = str(self.renderer_package_json)
+            package_json_path = Path(self.renderer_package_json)
+            if not self.renderer_cwd:
+                renderer_cwd = package_json_path.parent
+            env["RENDERER_PACKAGE_JSON"] = str(package_json_path)
         command = [
             self.node_binary,
             str(self.renderer_script_path),
@@ -255,7 +265,7 @@ class FastMossVisualizationRenderer:
         try:
             return self._command_runner(
                 command,
-                cwd=str(Path.cwd()),
+                cwd=str(renderer_cwd),
                 env=env,
                 check=False,
                 capture_output=True,

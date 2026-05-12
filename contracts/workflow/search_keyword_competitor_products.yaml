@@ -25,6 +25,21 @@ projection_mappers:
 parameter_mappers:
   - keyword_search_parameter_mapper
 
+payload_contract:
+  fastmoss_phone_env:
+    type: env_ref
+    required: false
+    source: skill_payload
+    invariant: Contains an environment variable name, not a FastMoss phone value.
+  fastmoss_password_env:
+    type: env_ref
+    required: false
+    source: skill_payload
+    invariant: Contains an environment variable name, not a FastMoss password value.
+  propagation:
+    - keyword_seed_import.payload.search_request.fastmoss.phone_env
+    - keyword_seed_import.payload.search_request.fastmoss.password_env
+
 persistence_requirements:
   requires_fact_db: true
   requires_object_storage: true

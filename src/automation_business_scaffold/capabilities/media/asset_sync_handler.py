@@ -497,12 +497,21 @@ def _object_storage_requirement_error(
 
 
 def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = "") -> dict[str, Any]:
-    entity_external_id = first_non_empty(asset.get("entity_external_id"), asset.get("product_id"), fallback_product_id)
+    entity_key_type, entity_key_external_id = _entity_parts_from_key(asset.get("entity_key"))
+    entity_type = first_non_empty(asset.get("entity_type"), entity_key_type, "product")
+    entity_external_id = first_non_empty(
+        asset.get("entity_external_id"),
+        asset.get("product_id"),
+        entity_key_external_id if entity_type == entity_key_type else "",
+        fallback_product_id,
+    )
     return compact_dict(
         {
-            "entity_type": first_non_empty(asset.get("entity_type"), "product"),
+            "entity_key": asset.get("entity_key"),
+            "entity_type": entity_type,
             "entity_external_id": entity_external_id,
-            "media_role": first_non_empty(asset.get("media_role"), "asset"),
+            "product_id": first_non_empty(asset.get("product_id"), entity_external_id if entity_type == "product" else ""),
+            "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type"), "asset"),
             "source_url": asset.get("source_url"),
             "file_token": asset.get("file_token"),
             "local_path": asset.get("local_path"),
@@ -515,6 +524,16 @@ def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = 
             "metadata": coerce_mapping(asset.get("metadata")),
         }
     )
+
+
+def _entity_parts_from_key(value: Any) -> tuple[str, str]:
+    text = coerce_str(value)
+    if not text or ":" not in text:
+        return "", ""
+    entity_type, entity_external_id = text.split(":", 1)
+    if entity_type not in {"product", "creator", "video", "shop"}:
+        return "", ""
+    return entity_type, entity_external_id
 
 
 def _append_artifact_spec(
@@ -584,7 +603,15 @@ def _download_referenced_asset(
             f"{index:03d}-{hashlib.sha1(source_url.encode('utf-8')).hexdigest()[:12]}{suffix}",
         )
     )
-    product_id = _safe_segment(first_non_empty(asset.get("entity_external_id"), payload.get("product_id"), "unknown-product"))
+    product_id = _safe_segment(
+        first_non_empty(
+            asset.get("entity_external_id"),
+            asset.get("product_id"),
+            _entity_parts_from_key(asset.get("entity_key"))[1],
+            payload.get("product_id"),
+            "unknown-product",
+        )
+    )
     download_root = Path(
         first_non_empty(
             payload.get("media_download_dir"),

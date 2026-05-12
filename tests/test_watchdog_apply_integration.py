@@ -56,9 +56,6 @@ def _submit_request(
 
 def _submit_waiting_request(store: RuntimeStore, *, case_id: str):
     request = _submit_request(store, case_id=case_id)
-    claimed = store.claim_next_task_request(worker_id=f"executor-{case_id}", lease_seconds=600.0)
-    assert claimed is not None
-    assert claimed.request_id == request.request_id
     return store.update_task_request(
         request_id=request.request_id,
         status="waiting",
@@ -70,18 +67,59 @@ def _submit_waiting_request(store: RuntimeStore, *, case_id: str):
     )
 
 
+def _mark_api_job_running(store: RuntimeStore, *, job_id: str, worker_id: str) -> str:
+    run_id = f"{job_id}:watchdog-test-run"
+    now = time.time()
+    _set_row_fields(
+        store,
+        table_name="api_worker_job",
+        id_column="job_id",
+        id_value=job_id,
+        status="running",
+        stage="running",
+        progress_stage="job_claimed",
+        attempt_count=1,
+        run_id=run_id,
+        worker_id=worker_id,
+        lease_until=now + 600.0,
+        heartbeat_at=now,
+        started_at=now,
+        last_progress_at=now,
+    )
+    return run_id
+
+
+def _mark_execution_running(store: RuntimeStore, *, execution_id: str, worker_id: str) -> str:
+    run_id = f"{execution_id}:watchdog-test-run"
+    now = time.time()
+    _set_row_fields(
+        store,
+        table_name="task_execution",
+        id_column="execution_id",
+        id_value=execution_id,
+        status="running",
+        progress_stage="job_claimed",
+        attempt_count=1,
+        run_id=run_id,
+        worker_id=worker_id,
+        heartbeat_at=now,
+        started_at=now,
+        last_progress_at=now,
+    )
+    return run_id
+
+
 def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
     stale_request = _submit_request(store, case_id="stale-request")
-    claimed_stale_request = store.claim_next_task_request(
-        worker_id="executor-stale",
-        lease_seconds=600.0,
-    )
-    assert claimed_stale_request is not None
     store.update_task_request(
         request_id=stale_request.request_id,
+        status="running",
         current_stage="dispatch_children",
         progress_stage="dispatch_children",
         stage_cursor={"dispatch_children": {"offset": 1}},
+        worker_id="executor-stale",
+        lease_until=time.time() + 600.0,
+        heartbeat_at=time.time(),
     )
 
     lease_request = _submit_waiting_request(store, case_id="lease-job")
@@ -99,12 +137,7 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     lease_job_id = lease_jobs["created_records"][0]["job_id"]
-    claimed_lease_job = store.claim_next_api_worker_job(
-        worker_id="api-worker-lease",
-        lease_seconds=600.0,
-    )
-    assert claimed_lease_job is not None
-    assert claimed_lease_job["job_id"] == lease_job_id
+    _mark_api_job_running(store, job_id=lease_job_id, worker_id="api-worker-lease")
 
     timeout_request = _submit_waiting_request(store, case_id="timeout-execution")
     timeout_executions = store.enqueue_task_executions(
@@ -122,12 +155,7 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     timeout_execution_id = timeout_executions["created_records"][0]["execution_id"]
-    claimed_timeout_execution = store.claim_browser_execution(
-        execution_id=timeout_execution_id,
-        worker_id="browser-worker-timeout",
-        lease_seconds=600.0,
-    )
-    assert claimed_timeout_execution is not None
+    _mark_execution_running(store, execution_id=timeout_execution_id, worker_id="browser-worker-timeout")
 
     retry_execution_request = _submit_waiting_request(store, case_id="retry-execution")
     retry_executions = store.enqueue_task_executions(
@@ -145,12 +173,7 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     retry_execution_id = retry_executions["created_records"][0]["execution_id"]
-    claimed_retry_execution = store.claim_browser_execution(
-        execution_id=retry_execution_id,
-        worker_id="browser-worker-retry",
-        lease_seconds=600.0,
-    )
-    assert claimed_retry_execution is not None
+    _mark_execution_running(store, execution_id=retry_execution_id, worker_id="browser-worker-retry")
 
     api_fail_request = _submit_waiting_request(store, case_id="api-fail")
     api_fail_jobs = store.enqueue_api_worker_jobs(
@@ -168,12 +191,7 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     api_fail_job_id = api_fail_jobs["created_records"][0]["job_id"]
-    claimed_api_fail_job = store.claim_next_api_worker_job(
-        worker_id="api-worker-fail",
-        lease_seconds=600.0,
-    )
-    assert claimed_api_fail_job is not None
-    assert claimed_api_fail_job["job_id"] == api_fail_job_id
+    _mark_api_job_running(store, job_id=api_fail_job_id, worker_id="api-worker-fail")
 
     repair_request = _submit_waiting_request(store, case_id="repair-parent")
     repair_jobs = store.enqueue_api_worker_jobs(
@@ -189,15 +207,10 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     repair_job_id = repair_jobs["created_records"][0]["job_id"]
-    claimed_repair_job = store.claim_next_api_worker_job(
-        worker_id="api-worker-repair",
-        lease_seconds=600.0,
-    )
-    assert claimed_repair_job is not None
-    assert claimed_repair_job["job_id"] == repair_job_id
+    repair_run_id = _mark_api_job_running(store, job_id=repair_job_id, worker_id="api-worker-repair")
     store.mark_api_worker_job_success(
         job_id=repair_job_id,
-        run_id=claimed_repair_job["run_id"],
+        run_id=repair_run_id,
         summary={"handler_status": "success"},
         result={"case_id": "repair-parent"},
     )
@@ -218,12 +231,7 @@ def _seed_watchdog_runtime_records(store: RuntimeStore) -> dict[str, str]:
         ],
     )
     priority_job_id = priority_jobs["created_records"][0]["job_id"]
-    claimed_priority_job = store.claim_next_api_worker_job(
-        worker_id="api-worker-priority",
-        lease_seconds=600.0,
-    )
-    assert claimed_priority_job is not None
-    assert claimed_priority_job["job_id"] == priority_job_id
+    _mark_api_job_running(store, job_id=priority_job_id, worker_id="api-worker-priority")
 
     retry_outbox = store.create_notification_outbox(
         channel_code="noop",

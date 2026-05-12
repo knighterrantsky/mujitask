@@ -271,13 +271,12 @@ def test_selection_row_refresh_reuses_source_fields_when_tiktok_request_needs_br
     assert len(write_payloads) == 1
 
 
-def test_selection_row_refresh_writes_fastmoss_only_when_source_fields_incomplete(
+def test_selection_row_refresh_requires_browser_when_source_fields_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_payloads: list[dict[str, object]] = []
     context = HandlerContext(
-        request_id="req-selection-fastmoss-only",
-        job_id="job-selection-fastmoss-only",
+        request_id="req-selection-browser-required",
+        job_id="job-selection-browser-required",
         handler_code="selection_row_refresh",
         worker_type="api_worker",
         runtime_table="api_worker_job",
@@ -290,7 +289,7 @@ def test_selection_row_refresh_writes_fastmoss_only_when_source_fields_incomplet
                 "selection_table_ref": "https://example.feishu.cn/base/app?table=tbl",
                 "writeback_enabled": True,
             },
-            "source_record_id": "rec-fastmoss-only",
+            "source_record_id": "rec-browser-required",
             "target_table_ref": "https://example.feishu.cn/base/app?table=tbl",
             "product_identity": {
                 "product_id": PRODUCT_ID,
@@ -298,7 +297,7 @@ def test_selection_row_refresh_writes_fastmoss_only_when_source_fields_incomplet
                 "normalized_product_url": PRODUCT_URL,
             },
             "source_context": {
-                "source_record_id": "rec-fastmoss-only",
+                "source_record_id": "rec-browser-required",
                 "fields": {
                     "商品ID": PRODUCT_ID,
                     "商品链接": {"link": PRODUCT_URL, "text": PRODUCT_URL},
@@ -325,75 +324,29 @@ def test_selection_row_refresh_writes_fastmoss_only_when_source_fields_incomplet
             },
         )
 
-    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(
-            context,
-            result={
-                "product_fact_bundle": {
-                    "product_id": PRODUCT_ID,
-                    "raw_api_responses": [
-                        {
-                            "source_endpoint": "goods.base",
-                            "response_payload": {
-                                "data": {
-                                    "product": {
-                                        "sold_count": "1163",
-                                        "launch_time": 1755612244,
-                                    }
-                                }
-                            },
-                        },
-                        {
-                            "source_endpoint": "goods.overview",
-                            "request_params": {"d_type": 180},
-                            "response_payload": {
-                                "data": {"overview": {"sold_count": "1134"}},
-                            },
-                        },
-                    ],
-                },
-                "metrics_snapshot": {"overview": {"sales_180d": "1134"}},
-            },
-        )
-
-    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"persistence_mode": "database"})
-
-    def fail_chart_render(**kwargs: object) -> dict[str, object]:
-        raise AssertionError("chart render should be skipped for FastMoss-only writeback")
-
-    def fake_feishu_write(context: HandlerContext) -> HandlerResult:
-        write_payloads.append(dict(context.payload))
-        return HandlerResult.success(context, result={"written_count": 1})
+    def fail_unexpected_child(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} should not run before browser fallback")
 
     monkeypatch.setattr(
         selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
     )
-    monkeypatch.setattr(
-        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
-    )
-    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
-    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fail_chart_render)
-    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
+    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fail_unexpected_child)
+    monkeypatch.setattr(selection_row_refresh, "media_asset_sync_handler", fail_unexpected_child)
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fail_unexpected_child)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fail_unexpected_child)
 
     result = selection_row_refresh.run_selection_row_refresh_pipeline(context)
 
-    assert result.status == "partial_success"
-    assert result.result["row_status"] == "partial_success"
-    assert result.result["runtime_evidence"]["tiktok_fastmoss_only_backfill"] is True
-    assert any(
-        item.get("step") == "chart_render" and item.get("reason") == "fastmoss_only_backfill"
+    assert result.status == "fallback_required"
+    assert result.result["row_status"] == "fallback_required"
+    assert result.result["fallback_handler"] == "tiktok_product_browser_fetch"
+    assert result.result["browser_fallback_payload"]["source_record_id"] == "rec-browser-required"
+    assert "tiktok_fastmoss_only_backfill" not in result.result["runtime_evidence"]
+    assert "fastmoss_field_backfill" not in result.result["runtime_evidence"]
+    assert not any(
+        item.get("reason") == "fastmoss_only_backfill"
         for item in result.result["step_timeline"]
     )
-    fields = result.result["writeback_projection"]["fields"]
-    assert fields == {
-        "商品ID": PRODUCT_ID,
-        "商品链接": PRODUCT_URL,
-        "总销量": 1163.0,
-        "上架日期": "2025-08-19",
-        "180天销量": 1134.0,
-    }
-    assert write_payloads[0]["records"][0]["projection_fields"] == fields
 
 
 def test_selection_row_refresh_fails_before_write_when_required_chart_render_missing(

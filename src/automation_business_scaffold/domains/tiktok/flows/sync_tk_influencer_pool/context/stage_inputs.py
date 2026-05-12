@@ -698,7 +698,7 @@ def _write_record_business_context(source_context: Mapping[str, Any], result_pay
     }
 
 def _source_product_images_from_fields(source_fields: Mapping[str, Any]) -> list[Any]:
-    for key in ("图片", "商品图片", "带货商品图", "image", "image_url"):
+    for key in ("图片", "商品图片", "带货商品图", "商品主图", "image", "image_url"):
         value = source_fields.get(key)
         if isinstance(value, list):
             return list(value)

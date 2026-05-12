@@ -231,6 +231,118 @@ def test_runtime_status_lifecycle_is_separate_from_result_status(runtime_db_url)
     assert summary_ready.current_stage == "ready_for_summary"
 
 
+def test_cancel_pending_request_finishes_cancelled(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="tiktok_fastmoss_product_ingest",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/123"},
+        requested_by="pytest",
+    )
+
+    outcome = store.cancel_task_request(request_id=request.request_id)
+    claimed = store.claim_next_task_request(worker_id="executor-a", lease_seconds=30.0)
+    cancelled = store.load_task_request(request_id=request.request_id)
+
+    assert outcome["applied"] is True
+    assert cancelled.status == "cancelled"
+    assert cancelled.progress_stage == "cancelled"
+    assert claimed is None
+
+
+def test_cancel_waiting_request_with_running_child_drains_to_cancelled(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="tiktok_fastmoss_product_ingest",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/123"},
+        requested_by="pytest",
+    )
+    _ = store.claim_next_task_request(worker_id="executor-a", lease_seconds=30.0)
+    store.update_task_request(
+        request_id=request.request_id,
+        status="waiting",
+        current_stage="collect_product_data",
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+    )
+    store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code="tiktok_fastmoss_product_ingest",
+        job_code="tiktok_product_request_fetch",
+        jobs=[
+            {"business_key": "running", "dedupe_key": f"{request.request_id}:running", "payload": {}, "max_attempts": 2},
+            {"business_key": "pending", "dedupe_key": f"{request.request_id}:pending", "payload": {}, "max_attempts": 2},
+        ],
+    )
+    running = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+    assert running is not None
+
+    outcome = store.cancel_task_request(request_id=request.request_id)
+    cancelling = store.load_task_request(request_id=request.request_id)
+    jobs = {job["business_key"]: job for job in store.list_api_worker_jobs_for_request(request_id=request.request_id)}
+
+    assert outcome["request"].status == "cancelling"
+    assert cancelling.status == "cancelling"
+    assert jobs["running"]["status"] == "running"
+    assert jobs["pending"]["status"] == "cancelled"
+
+    store.mark_api_worker_job_success(
+        job_id=str(running["job_id"]),
+        run_id=str(running["run_id"]),
+        summary={"total": 1},
+        result={"handler_result": {"status": "success"}},
+    )
+    converged = store.reconcile_cancelling_request(request_id=request.request_id)
+
+    assert converged["request"].status == "cancelled"
+
+
+def test_cancelling_request_blocks_fifo_until_cancelled(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    older = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="tiktok_fastmoss_product_ingest",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/older"},
+        requested_by="pytest",
+    )
+    newer = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="tiktok_fastmoss_product_ingest",
+        payload={"product_url": "https://www.tiktok.com/shop/pdp/newer"},
+        requested_by="pytest",
+    )
+    _ = store.claim_next_task_request(worker_id="executor-a", lease_seconds=30.0)
+    store.update_task_request(request_id=older.request_id, status="waiting", current_stage="collect_product_data")
+    store.enqueue_api_worker_jobs(
+        request_id=older.request_id,
+        task_code="tiktok_fastmoss_product_ingest",
+        job_code="tiktok_product_request_fetch",
+        jobs=[{"business_key": "older-running", "dedupe_key": f"{older.request_id}:running", "payload": {}}],
+    )
+    running = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
+    assert running is not None
+    store.cancel_task_request(request_id=older.request_id)
+
+    blocked = store.claim_next_task_request(worker_id="executor-b", lease_seconds=30.0)
+
+    assert blocked is not None
+    assert blocked.request_id == older.request_id
+    assert blocked.status == "cancelling"
+    store.mark_api_worker_job_success(
+        job_id=str(running["job_id"]),
+        run_id=str(running["run_id"]),
+        summary={"total": 1},
+        result={"handler_result": {"status": "success"}},
+    )
+    store.reconcile_cancelling_request(request_id=older.request_id)
+    claimed_newer = store.claim_next_task_request(worker_id="executor-c", lease_seconds=30.0)
+
+    assert claimed_newer is not None
+    assert claimed_newer.request_id == newer.request_id
+
+
 def test_fastmoss_cookie_cache_round_trip(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     saved = store.save_fastmoss_cookie_cache(
