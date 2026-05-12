@@ -9,12 +9,17 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
 )
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    api_jobs_for_stage as _api_jobs_for_stage,
     has_active_records as _has_active_children,
     stage_child_records as _stage_child_records,
 )
 
 from .stages.browser_fallback import (
     _browser_fallback_candidates,
+)
+from .stages.dispatch_row_refresh_jobs import (
+    _pending_row_seeds,
+    _successful_seed_contexts,
 )
 
 _STAGE_MODULES = {
@@ -74,30 +79,10 @@ def release_request_after_child_completion(
     workflow = get_workflow_definition(KEYWORD_TASK_CODE)
     current_stage = str(request.current_stage or "").strip()
     if current_stage == workflow.summary_policy.summary_stage_code:
-        recovery_stage = (
-            "browser_fallback"
-            if _browser_fallback_candidates(store=store, request_id=request_id)
-            else ""
-        )
-        if recovery_stage:
-            store.update_task_request(
-                request_id=request_id,
-                status="pending",
-                current_stage=recovery_stage,
-                progress_stage=recovery_stage,
-                worker_id="",
-                lease_until=0.0,
-                heartbeat_at=0.0,
-                last_progress_at=time.time(),
-            )
-            return [
-                {
-                    "request_id": request_id,
-                    "stage_code": recovery_stage,
-                    "released": True,
-                    "next_executor_status": "pending",
-                }
-            ]
+        if _browser_fallback_candidates(store=store, request_id=request_id):
+            return _release_to_stage(store=store, request_id=request_id, stage_code="browser_fallback")
+        if _has_pending_success_seed_rows(store=store, request_id=request_id):
+            return _release_to_stage(store=store, request_id=request_id, stage_code="refresh_competitor_rows")
     if not current_stage:
         return []
     stage = workflow.require_stage(current_stage)
@@ -108,11 +93,21 @@ def release_request_after_child_completion(
     if not child_records or _has_active_children(child_records):
         return []
 
+    return _release_to_stage(store=store, request_id=request_id, stage_code=current_stage)
+
+
+def _has_pending_success_seed_rows(*, store: Any, request_id: str) -> bool:
+    seed_contexts = _successful_seed_contexts(store=store, request_id=request_id)
+    row_jobs = _api_jobs_for_stage(store=store, request_id=request_id, stage_code="refresh_competitor_rows")
+    return bool(_pending_row_seeds(seed_contexts=seed_contexts, row_jobs=row_jobs))
+
+
+def _release_to_stage(*, store: Any, request_id: str, stage_code: str) -> list[dict[str, Any]]:
     store.update_task_request(
         request_id=request_id,
         status="pending",
-        current_stage=current_stage,
-        progress_stage=current_stage,
+        current_stage=stage_code,
+        progress_stage=stage_code,
         worker_id="",
         lease_until=0.0,
         heartbeat_at=0.0,
@@ -121,7 +116,7 @@ def release_request_after_child_completion(
     return [
         {
             "request_id": request_id,
-            "stage_code": current_stage,
+            "stage_code": stage_code,
             "released": True,
             "next_executor_status": "pending",
         }

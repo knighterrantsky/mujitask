@@ -547,7 +547,7 @@ class RuntimeStore:
                         """
                         SELECT *
                         FROM task_request
-                        WHERE status NOT IN ('finished', 'cancelled')
+                        WHERE status IN ('pending', 'cancelling')
                         ORDER BY created_at ASC, request_id ASC
                         LIMIT 1
                         """
@@ -601,6 +601,27 @@ class RuntimeStore:
             if updated_row is None:
                 return None
             return self._request_from_row(updated_row)
+
+    def list_waiting_task_requests(self, *, limit: int = 16) -> list[RuntimeTaskRequestRecord]:
+        self._ensure_runtime_schema_ready()
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT *
+                        FROM task_request
+                        WHERE status = 'waiting'
+                        ORDER BY updated_at ASC, created_at ASC, request_id ASC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [self._request_from_row(row) for row in rows]
 
     def cancel_task_request(self, *, request_id: str) -> dict[str, Any]:
         self._ensure_runtime_schema_ready()

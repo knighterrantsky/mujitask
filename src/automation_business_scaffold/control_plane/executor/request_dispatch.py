@@ -24,7 +24,8 @@ WORKFLOW_RUNTIME_NOT_READY_MESSAGE = "No workflow runtime is registered for this
 def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
     settings = build_runtime_settings(params)
     store = create_runtime_store(settings)
-    request = store.claim_next_task_request(
+    request = _claim_next_reconcilable_request(
+        store=store,
         worker_id=settings.worker_id,
         lease_seconds=settings.lease_seconds,
     )
@@ -203,6 +204,27 @@ def execute_executor_once(params: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return exhausted
+
+
+def _claim_next_reconcilable_request(
+    *,
+    store: RuntimeStore,
+    worker_id: str,
+    lease_seconds: float,
+) -> Any | None:
+    request = store.claim_next_task_request(worker_id=worker_id, lease_seconds=lease_seconds)
+    if request is not None:
+        return request
+
+    for waiting_request in store.list_waiting_task_requests(limit=16):
+        refresh_request_aggregate_counts(store, request_id=waiting_request.request_id)
+        parent_updates = release_request_after_child_completion(store, request_id=waiting_request.request_id)
+        if not parent_updates:
+            continue
+        request = store.claim_next_task_request(worker_id=worker_id, lease_seconds=lease_seconds)
+        if request is not None:
+            return request
+    return None
 
 
 def finalize_not_ready_request(
