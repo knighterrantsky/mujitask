@@ -736,6 +736,27 @@ def test_main_selection_table_complete_submit_uses_selection_table_without_produ
     assert "fallback_allowed=true" in params
 
 
+def test_keyword_search_submit_params_include_total_sales_without_default_day7(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    params = module._keyword_search_submit_params(
+        python_bin=tmp_path / "python",
+        install_dir=tmp_path,
+        requested_profile_ref="",
+        fallback_profile_ref="roxy-tiktok",
+        search_keyword="gel blaster",
+        sales_7d_threshold="",
+        total_sales_threshold="200",
+        skip_fastmoss_login_validation=False,
+        ensure_ready=False,
+    )
+
+    assert "total_sales_threshold=200" in params
+    assert "sales_7d_threshold=200" not in params
+
+
 def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
@@ -794,10 +815,75 @@ def test_main_keyword_search_returns_after_submit(tmp_path, monkeypatch):
     assert captured_calls[0]["task_name"] == "search_keyword_competitor_products"
     assert "control_action=submit" in captured_calls[0]["params"]
     assert "search_keyword=Easter Basket Stuffers" in captured_calls[0]["params"]
+    assert "sales_7d_threshold=200" in captured_calls[0]["params"]
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in captured_calls[0]["params"]
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in captured_calls[0]["params"]
     assert emitted["request_id"] == "req-keyword-123"
     assert emitted["request_status"] == "pending"
+
+
+def test_main_keyword_search_total_sales_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-keyword-total-sales-123",
+                "request_status": "pending",
+                "summary": {"total": 1, "counts": {"queued": 1}},
+            },
+        )
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    exit_code = module.main(
+        [
+            "keyword-search-submit",
+            "--search-keyword",
+            "gel blaster",
+            "--total-sales-threshold",
+            "200",
+        ]
+    )
+
+    assert exit_code == 0
+    params = list(captured_calls[0]["params"])
+    assert captured_calls[0]["task_name"] == "search_keyword_competitor_products"
+    assert "search_keyword=gel blaster" in params
+    assert "total_sales_threshold=200" in params
+    assert "sales_7d_threshold=200" not in params
+    assert emitted["request_id"] == "req-keyword-total-sales-123"
 
 
 def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatch):
@@ -866,6 +952,7 @@ def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatc
     assert "sales_7d_threshold=500" in params
     assert "product_price_threshold=10.99" in params
     assert "keyword_workflow_mode=selection" in params
+    assert not any(item.startswith("total_sales_threshold=") for item in params)
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
     assert emitted["request_id"] == "req-selection-keyword-123"

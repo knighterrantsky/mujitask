@@ -99,8 +99,9 @@ protected_invariants:
   - 已存在商品直接跳过，不重复新增，也不重写现有记录
   - 新商品先写 SKU-ID、产品链接和 备注=通过搜索关键字：{关键词}
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
-  - max_candidates 默认 20；传 0 表示不按候选数截断，直到分页、FastMoss total、空页、无新商品或 below_min_day7_sold_count 等停止条件触发
-  - FastMoss 关键词搜索按 order=2,2 的 7 日销量倒序返回且存在 min_day7_sold_count 时，如果整页 day7_sold_count 最大值低于阈值，应停止继续翻页
+  - max_candidates 默认 20；传 0 表示不按候选数截断，直到分页、FastMoss total、空页、无新商品、below_min_day7_sold_count 或 below_min_sold_count 等停止条件触发
+  - FastMoss 关键词搜索默认按 order=2,2 的 7 日销量倒序返回且存在 min_day7_sold_count 时，如果整页 day7_sold_count 最大值低于阈值，应停止继续翻页
+  - FastMoss 关键词搜索明确按总销量排序时使用 order=3,2、columnKey=3、field=sold_count_show；存在 min_sold_count 时，如果整页 sold_count 最大值低于阈值，应停止继续翻页
   - FastMoss provider API 风控 fallback 对同一原始请求最多一次；browser fallback 成功判据是原始失败的 FastMoss API 请求不再返回 MSG_SAFE_0001，搜索场景必须验证原始 /api/goods/V2/search，商品详情页不能作为搜索风控解除成功判据
   - FastMoss browser fallback 只持久化 cookies，不是 API token；cookie value 不得出现在 summary/log/result 中
   - fastmoss_product_fetch、fastmoss_creator_fetch、fastmoss_shop_fetch、fastmoss_video_fetch 遇到 MSG_SAFE_0001 时必须返回业务化 browser request（兼容期可包含 fallback_required）、reason=fastmoss_api_security_verification 和脱敏 verification_request；成功解风控后只允许重试原 handler 一次

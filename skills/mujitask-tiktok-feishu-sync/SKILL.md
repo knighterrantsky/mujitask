@@ -122,6 +122,24 @@ Extraction examples:
 - 7d sales >= 300 -> 300
 - 销量阈值300 -> 300
 
+### `total_sales_threshold`
+
+Total cumulative sales threshold.
+
+Use only for `keyword_competitor_search` when the user explicitly says `总销量` or `累计销量`.
+
+Rules:
+
+- Extract from expressions such as `总销量超过 300`, `累计销量大于 200`, `total sales >= 300`.
+- Do not map plain `销量阈值` or `销量超过 N` to this input unless the user explicitly says total/cumulative sales.
+- When this input is present, do not add the default `sales_7d_threshold` unless the user also explicitly asks for a 7-day sales condition.
+
+Extraction examples:
+
+- 总销量超过300 -> 300
+- 累计销量大于200 -> 200
+- total sales >= 300 -> 300
+
 ### `price_range_max_threshold`
 
 Price-range maximum threshold.
@@ -282,7 +300,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "competitor_table_r
 ### `keyword_competitor_search`
 
 ```bash
-bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --max-candidates <max_candidates>
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --max-candidates <max_candidates>
 ```
 
 ### `influencer_pool_sync`
