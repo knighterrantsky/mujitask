@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -35,6 +36,12 @@ TK_FEISHU_TABLE_ENV_SLUGS = {
     TK_INFLUENCER_OUTREACH_TABLE_ALIAS: "TK_INFLUENCER_OUTREACH",
     TK_HOT_VIDEO_TABLE_ALIAS: "TK_HOT_VIDEO",
 }
+
+KEYWORD_COMPETITOR_SEARCH_INTENT = "keyword_competitor_search"
+KEYWORD_SELECTION_SEARCH_INTENT = "keyword_selection_search"
+BATCH_KEYWORD_MAX_ITEMS = 50
+BATCH_KEYWORD_ALLOWED_ITEM_KEYS = {"search_keyword", "threshold_type", "threshold_value"}
+BATCH_KEYWORD_ALLOWED_THRESHOLD_TYPES = {"", "sales_7d", "total_sales"}
 
 
 def _normalize_env_entry(value: str) -> str:
@@ -533,6 +540,261 @@ def _parse_param_items(items: list[str]) -> dict[str, Any]:
     return params
 
 
+def _batch_keyword_search_table_alias(target_intent: str) -> str:
+    if target_intent == KEYWORD_COMPETITOR_SEARCH_INTENT:
+        return TK_COMPETITOR_TABLE_ALIAS
+    if target_intent == KEYWORD_SELECTION_SEARCH_INTENT:
+        return TK_SELECTION_TABLE_ALIAS
+    raise ValueError("target_intent must be keyword_competitor_search or keyword_selection_search.")
+
+
+def _batch_keyword_search_task_name(target_intent: str) -> str:
+    if target_intent == KEYWORD_COMPETITOR_SEARCH_INTENT:
+        return "search_keyword_competitor_products"
+    if target_intent == KEYWORD_SELECTION_SEARCH_INTENT:
+        return "search_keyword_selection_products"
+    raise ValueError("target_intent must be keyword_competitor_search or keyword_selection_search.")
+
+
+def _string_field(payload: dict[str, Any], key: str) -> str:
+    return str(payload.get(key, "") or "").strip()
+
+
+def _normalize_batch_keyword_item(raw: Any, *, target_intent: str, row_index: int) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Batch keyword row {row_index} must be a JSON object.")
+    unsupported_keys = sorted(set(raw) - BATCH_KEYWORD_ALLOWED_ITEM_KEYS)
+    if unsupported_keys:
+        raise ValueError(
+            f"Batch keyword row {row_index} contains unsupported fields: {', '.join(unsupported_keys)}."
+        )
+
+    search_keyword = _string_field(raw, "search_keyword")
+    if not search_keyword:
+        raise ValueError(f"Batch keyword row {row_index} requires search_keyword.")
+
+    threshold_type = _string_field(raw, "threshold_type")
+    threshold_value = _string_field(raw, "threshold_value")
+    if threshold_type not in BATCH_KEYWORD_ALLOWED_THRESHOLD_TYPES:
+        raise ValueError(f"Batch keyword row {row_index} has unsupported threshold_type: {threshold_type}.")
+    if threshold_type and not threshold_value:
+        raise ValueError(f"Batch keyword row {row_index} requires threshold_value when threshold_type is set.")
+    if not threshold_type and threshold_value:
+        raise ValueError(f"Batch keyword row {row_index} requires threshold_type when threshold_value is set.")
+    if target_intent == KEYWORD_SELECTION_SEARCH_INTENT and threshold_type == "total_sales":
+        raise ValueError("Selection keyword batch rows do not support total_sales threshold.")
+
+    return {
+        "row_index": row_index,
+        "search_keyword": search_keyword,
+        "threshold_type": threshold_type,
+        "threshold_value": threshold_value,
+    }
+
+
+def _parse_batch_keyword_items(raw_json: str, *, target_intent: str) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("--items-json must be a valid JSON array.") from exc
+    if not isinstance(payload, list):
+        raise ValueError("--items-json must be a JSON array.")
+    if not payload:
+        raise ValueError("--items-json must contain at least one keyword row.")
+    if len(payload) > BATCH_KEYWORD_MAX_ITEMS:
+        raise ValueError(f"Batch keyword search supports at most {BATCH_KEYWORD_MAX_ITEMS} rows.")
+    return [
+        _normalize_batch_keyword_item(item, target_intent=target_intent, row_index=index)
+        for index, item in enumerate(payload, start=1)
+    ]
+
+
+def _batch_keyword_idempotency_key(*, target_intent: str, row: dict[str, Any]) -> str:
+    payload = _json_compact(
+        {
+            "target_intent": target_intent,
+            "row_index": row["row_index"],
+            "search_keyword": row["search_keyword"],
+            "threshold_type": row["threshold_type"],
+            "threshold_value": row["threshold_value"],
+        }
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"openclaw_batch_keyword:{target_intent}:{row['row_index']}:{digest}"
+
+
+def _batch_keyword_submit_params(
+    *,
+    target_intent: str,
+    row: dict[str, Any],
+    skill_env: dict[str, str],
+    table_refs: dict[str, Any],
+    competitor_table_ref: str,
+    competitor_table_url: str,
+    selection_table_ref: str,
+    selection_table_url: str,
+    python_bin: Path,
+    install_dir: Path,
+    requested_profile_ref: str,
+) -> list[str]:
+    if target_intent == KEYWORD_COMPETITOR_SEARCH_INTENT:
+        params = _append_runtime_params(
+            _append_feishu_table_refs(
+                [
+                    f"seed_table_ref={competitor_table_ref}",
+                    f"target_table_ref={competitor_table_ref}",
+                    f"table_url={competitor_table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    f"url_field_name={DEFAULT_URL_FIELD_NAME}",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
+            skill_env,
+        )
+        sales_7d_threshold = ""
+        total_sales_threshold = ""
+        if row["threshold_type"] == "total_sales":
+            total_sales_threshold = row["threshold_value"]
+        elif row["threshold_type"] == "sales_7d":
+            sales_7d_threshold = row["threshold_value"]
+        else:
+            sales_7d_threshold = "200"
+        params.extend(
+            _keyword_search_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=requested_profile_ref,
+                search_keyword=row["search_keyword"],
+                sales_7d_threshold=sales_7d_threshold,
+                total_sales_threshold=total_sales_threshold,
+                max_candidates="20",
+            )
+        )
+    elif target_intent == KEYWORD_SELECTION_SEARCH_INTENT:
+        params = _append_runtime_params(
+            _append_feishu_table_refs(
+                [
+                    f"selection_table_ref={selection_table_ref}",
+                    f"seed_table_ref={selection_table_ref}",
+                    f"target_table_ref={selection_table_ref}",
+                    f"table_url={selection_table_url}",
+                    "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN",
+                    "control_action=submit",
+                ],
+                table_refs,
+            ),
+            skill_env,
+        )
+        params.extend(
+            _keyword_search_submit_params(
+                python_bin=python_bin,
+                install_dir=install_dir,
+                requested_profile_ref=requested_profile_ref,
+                search_keyword=row["search_keyword"],
+                sales_7d_threshold=row["threshold_value"] if row["threshold_type"] == "sales_7d" else "500",
+                product_price_threshold="10.99",
+                keyword_workflow_mode="selection",
+            )
+        )
+    else:
+        raise ValueError("target_intent must be keyword_competitor_search or keyword_selection_search.")
+    params.append(f"idempotency_key={_batch_keyword_idempotency_key(target_intent=target_intent, row=row)}")
+    return params
+
+
+def _batch_keyword_message(items: list[dict[str, Any]], submitted_count: int, failed_count: int) -> str:
+    lines = [f"已提交批量关键词搜索任务：成功 {submitted_count} 个，失败 {failed_count} 个。"]
+    for item in items:
+        request_id = str(item.get("request_id") or "").strip()
+        error = str(item.get("error") or "").strip()
+        if request_id:
+            lines.append(f"{item['row_index']}. {item['search_keyword']} request_id: {request_id}")
+        else:
+            lines.append(f"{item['row_index']}. {item['search_keyword']} 提交失败：{error or 'unknown error'}")
+    return "\n".join(lines)
+
+
+def _submit_batch_keyword_items(
+    *,
+    target_intent: str,
+    items: list[dict[str, Any]],
+    skill_env: dict[str, str],
+    table_refs: dict[str, Any],
+    competitor_table_ref: str,
+    competitor_table_url: str,
+    selection_table_ref: str,
+    selection_table_url: str,
+    install_dir: Path,
+    python_bin: Path,
+    requested_profile_ref: str,
+    extra_env: dict[str, str],
+) -> dict[str, Any]:
+    task_name = _batch_keyword_search_task_name(target_intent)
+    result_items: list[dict[str, Any]] = []
+    request_ids: list[str] = []
+    for row in items:
+        params = _batch_keyword_submit_params(
+            target_intent=target_intent,
+            row=row,
+            skill_env=skill_env,
+            table_refs=table_refs,
+            competitor_table_ref=competitor_table_ref,
+            competitor_table_url=competitor_table_url,
+            selection_table_ref=selection_table_ref,
+            selection_table_url=selection_table_url,
+            python_bin=python_bin,
+            install_dir=install_dir,
+            requested_profile_ref=requested_profile_ref,
+        )
+        status, payload = _run_lightweight_submit_capture_payload(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name=task_name,
+            params=params,
+            stdout_prefix="batch-keyword-search-submit-step",
+            extra_env=extra_env,
+            accepted_message="Batch keyword search row accepted for asynchronous execution.",
+        )
+        result_item = {
+            "row_index": row["row_index"],
+            "search_keyword": row["search_keyword"],
+            "threshold_type": row["threshold_type"],
+            "threshold_value": row["threshold_value"],
+            "task_name": task_name,
+            "status": "success" if status == 0 else "failed",
+            "request_id": str(payload.get("request_id", "") or "") if isinstance(payload, dict) else "",
+            "request_status": str(payload.get("request_status", "") or "") if isinstance(payload, dict) else "",
+            "error": str(payload.get("error", "") or "") if isinstance(payload, dict) else "",
+        }
+        if result_item["request_id"]:
+            request_ids.append(result_item["request_id"])
+        result_items.append(result_item)
+
+    submitted_count = sum(1 for item in result_items if item["status"] == "success")
+    failed_count = len(result_items) - submitted_count
+    if submitted_count == len(result_items):
+        status = "success"
+    elif submitted_count:
+        status = "partial_success"
+    else:
+        status = "failed"
+    summary = {"total": len(result_items), "counts": {"submitted": submitted_count, "failed": failed_count}}
+    return {
+        "status": status,
+        "task_name": "batch_keyword_search",
+        "target_intent": target_intent,
+        "target_table": _batch_keyword_search_table_alias(target_intent),
+        "control_action": "submit",
+        "summary": summary,
+        "summary_text": _build_summary_text(summary),
+        "items": result_items,
+        "request_ids": request_ids,
+        "failed_item_count": failed_count,
+        "message": _batch_keyword_message(result_items, submitted_count, failed_count),
+    }
+
+
 def _build_summary_text(summary: dict[str, Any]) -> str:
     counts = summary.get("counts", {})
     if not isinstance(counts, dict) or not counts:
@@ -704,6 +966,15 @@ def _build_parser() -> argparse.ArgumentParser:
     selection_keyword_parser.add_argument("--sales-7d-threshold", default="500")
     selection_keyword_parser.add_argument("--price-range-max-threshold", default="10.99")
     selection_keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
+
+    batch_keyword_parser = subparsers.add_parser("batch-keyword-search-submit")
+    _add_profile_arg(batch_keyword_parser)
+    batch_keyword_parser.add_argument(
+        "--target-intent",
+        required=True,
+        choices=[KEYWORD_COMPETITOR_SEARCH_INTENT, KEYWORD_SELECTION_SEARCH_INTENT],
+    )
+    batch_keyword_parser.add_argument("--items-json", required=True)
 
     influencer_parser = subparsers.add_parser("influencer-pool-sync-submit")
     influencer_parser.add_argument("--max-source-rows", type=int, default=0)
@@ -973,6 +1244,24 @@ def main(argv: list[str] | None = None) -> int:
             extra_env=extra_env,
             accepted_message="Selection keyword search task accepted for asynchronous execution.",
         )
+
+    if args.command == "batch-keyword-search-submit":
+        items = _parse_batch_keyword_items(args.items_json, target_intent=args.target_intent)
+        payload = _submit_batch_keyword_items(
+            target_intent=args.target_intent,
+            items=items,
+            skill_env=skill_env,
+            table_refs=table_refs,
+            competitor_table_ref=competitor_table_ref,
+            competitor_table_url=competitor_table_url,
+            selection_table_ref=selection_table_ref,
+            selection_table_url=selection_table_url,
+            install_dir=install_dir,
+            python_bin=python_bin,
+            requested_profile_ref=args.profile_ref,
+            extra_env=extra_env,
+        )
+        return _emit_final_result(payload)
 
     if args.command == "influencer-pool-sync-submit":
         params, influencer_pool_env = _influencer_pool_sync_submit_params(

@@ -10,6 +10,8 @@ sales_7d_threshold=""
 total_sales_threshold=""
 price_range_max_threshold=""
 max_candidates=""
+target_intent=""
+items_json=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +41,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-candidates)
       max_candidates="${2:-}"
+      shift 2
+      ;;
+    --target-intent)
+      target_intent="${2:-}"
+      shift 2
+      ;;
+    --items-json)
+      items_json="${2:-}"
       shift 2
       ;;
     *)
@@ -76,6 +86,9 @@ case "$intent" in
     args+=(--sales-7d-threshold "${sales_7d_threshold:-500}")
     args+=(--price-range-max-threshold "${price_range_max_threshold:-10.99}")
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" "${args[@]}"
+    ;;
+  batch_keyword_search_submit)
+    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" batch-keyword-search-submit --target-intent "$target_intent" --items-json "$items_json"
     ;;
   product_url_complete)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" product-url-complete-submit --product-url "$product_url"

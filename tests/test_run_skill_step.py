@@ -959,6 +959,260 @@ def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatc
     assert emitted["request_status"] == "pending"
 
 
+def test_main_batch_keyword_competitor_search_submit_fans_out_rows(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        row_number = len(captured_calls)
+        return (0, {"status": "success", "request_id": f"req-batch-{row_number}", "request_status": "pending"})
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    items_json = json.dumps(
+        [
+            {"search_keyword": "dog toy", "threshold_type": "total_sales", "threshold_value": "300"},
+            {"search_keyword": "cat toy"},
+        ],
+        ensure_ascii=False,
+    )
+
+    exit_code = module.main(
+        [
+            "batch-keyword-search-submit",
+            "--target-intent",
+            "keyword_competitor_search",
+            "--items-json",
+            items_json,
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 2
+    assert all(call["task_name"] == "search_keyword_competitor_products" for call in captured_calls)
+    first_params = list(captured_calls[0]["params"])
+    second_params = list(captured_calls[1]["params"])
+    assert "search_keyword=dog toy" in first_params
+    assert "total_sales_threshold=300" in first_params
+    assert "sales_7d_threshold=200" not in first_params
+    assert "max_candidates=20" in first_params
+    assert "search_keyword=cat toy" in second_params
+    assert "sales_7d_threshold=200" in second_params
+    assert "max_candidates=20" in second_params
+    assert any(item.startswith("idempotency_key=") for item in first_params)
+    assert emitted["status"] == "success"
+    assert emitted["request_ids"] == ["req-batch-1", "req-batch-2"]
+    assert emitted["failed_item_count"] == 0
+
+
+def test_main_batch_keyword_selection_search_submit_uses_selection_defaults(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+    monkeypatch.setattr(
+        module,
+        "_run_lightweight_submit_capture_payload",
+        lambda **kwargs: (captured_calls.append(kwargs) or (0, {"status": "success", "request_id": "req-selection-batch"})),
+    )
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: emitted.update(payload) or 0)
+
+    items_json = json.dumps([{"search_keyword": "summer dress"}], ensure_ascii=False)
+
+    exit_code = module.main(
+        [
+            "batch-keyword-search-submit",
+            "--target-intent",
+            "keyword_selection_search",
+            "--items-json",
+            items_json,
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "search_keyword_selection_products"
+    params = list(captured_calls[0]["params"])
+    assert "selection_table_ref=feishu://mujitask/tk_selection" in params
+    assert "seed_table_ref=feishu://mujitask/tk_selection" in params
+    assert "target_table_ref=feishu://mujitask/tk_selection" in params
+    assert "search_keyword=summer dress" in params
+    assert "sales_7d_threshold=500" in params
+    assert "product_price_threshold=10.99" in params
+    assert "keyword_workflow_mode=selection" in params
+    assert not any(item.startswith("total_sales_threshold=") for item in params)
+    assert emitted["request_ids"] == ["req-selection-batch"]
+
+
+def test_batch_keyword_submit_rejects_unsupported_fields_before_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_lightweight_submit_capture_payload",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("submit should not run")),
+    )
+
+    items_json = json.dumps([{"search_keyword": "dog toy", "filters": {"region": "US"}}], ensure_ascii=False)
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        module.main(
+            [
+                "batch-keyword-search-submit",
+                "--target-intent",
+                "keyword_competitor_search",
+                "--items-json",
+                items_json,
+            ]
+        )
+
+
+def test_batch_keyword_selection_rejects_total_sales_before_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_lightweight_submit_capture_payload",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("submit should not run")),
+    )
+
+    items_json = json.dumps(
+        [{"search_keyword": "summer dress", "threshold_type": "total_sales", "threshold_value": "300"}],
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(ValueError, match="do not support total_sales"):
+        module.main(
+            [
+                "batch-keyword-search-submit",
+                "--target-intent",
+                "keyword_selection_search",
+                "--items-json",
+                items_json,
+            ]
+        )
+
+
+def test_main_batch_keyword_search_submit_reports_partial_success(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        if len(captured_calls) == 1:
+            return (0, {"status": "success", "request_id": "req-batch-ok", "request_status": "pending"})
+        return (1, {"status": "failed", "error": "boom"})
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: emitted.update(payload) or 0)
+
+    items_json = json.dumps([{"search_keyword": "dog toy"}, {"search_keyword": "cat toy"}], ensure_ascii=False)
+
+    exit_code = module.main(
+        [
+            "batch-keyword-search-submit",
+            "--target-intent",
+            "keyword_competitor_search",
+            "--items-json",
+            items_json,
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 2
+    assert emitted["status"] == "partial_success"
+    assert emitted["request_ids"] == ["req-batch-ok"]
+    assert emitted["failed_item_count"] == 1
+    assert emitted["items"][1]["error"] == "boom"
+
+
 def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
