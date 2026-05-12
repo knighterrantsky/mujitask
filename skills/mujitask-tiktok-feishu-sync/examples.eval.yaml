@@ -36,7 +36,7 @@ cases:
       - TK竞品收集
 
   - id: batch-keyword-search-submit
-    user: 确认提交刚才生成的批量关键词搜索任务
+    user: "确认提交刚才生成的批量关键词搜索任务：Splatter Ball、Splatter Ball 1、Splatter Ball 2、Splatter Ball 3，总销量>200"
     expected_intent: batch_keyword_search_submit
     expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "batch_keyword_search_submit" --target-intent "<keyword_competitor_search|keyword_selection_search>" --items-json '<batch_keyword_items>'
     expected_parent_task_code: search_keyword_competitor_products
