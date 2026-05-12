@@ -938,6 +938,27 @@ def test_keyword_search_parameter_mapper_builds_fastmoss_search_payload() -> Non
     assert mapped["output_conditions"]["business_conditions"]["min_day7_sold_count"] == "200"
 
 
+def test_keyword_search_parameter_mapper_builds_total_sales_payload() -> None:
+    mapped = keyword_search_parameter_mapper(
+        {
+            "search_keyword": "gel blaster",
+            "filters": {"country_code": "US"},
+            "total_sales_threshold": "200",
+            "max_candidates": "5",
+        }
+    )
+
+    assert mapped["sort"] == {
+        "field": "sold_count",
+        "direction": "desc",
+        "source_order": "3,2",
+        "source_column_key": "3",
+        "source_field": "sold_count_show",
+    }
+    assert mapped["output_conditions"]["business_conditions"] == {"min_sold_count": "200"}
+    assert "min_day7_sold_count" not in mapped["output_conditions"]["business_conditions"]
+
+
 def test_keyword_search_parameter_mapper_applies_selection_defaults() -> None:
     mapped = keyword_search_parameter_mapper(
         {

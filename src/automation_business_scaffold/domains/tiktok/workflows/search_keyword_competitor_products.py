@@ -43,6 +43,7 @@ def build_search_keyword_competitor_products_definition() -> WorkflowDefinition:
             required_field("search_query", "Keyword or normalized search query.", type_hint="str"),
             optional_field("filters", "FastMoss search filters.", type_hint="dict[str, Any]"),
             optional_field("output_conditions", "Candidate filtering and dedupe policy.", type_hint="dict[str, Any]"),
+            optional_field("total_sales_threshold", "Minimum cumulative sold count threshold.", type_hint="int"),
             optional_field(
                 "max_candidates",
                 "Upper bound for candidates to process; 0 means unlimited until pagination stops.",

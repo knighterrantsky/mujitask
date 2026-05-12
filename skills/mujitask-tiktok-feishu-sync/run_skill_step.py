@@ -353,6 +353,7 @@ def _keyword_search_submit_params(
     fallback_profile_ref: str = "",
     search_keyword: str,
     sales_7d_threshold: str,
+    total_sales_threshold: str = "",
     max_candidates: str = "",
     product_price_threshold: str = "",
     keyword_workflow_mode: str = "",
@@ -369,10 +370,19 @@ def _keyword_search_submit_params(
     params = [
         f"profile_ref={resolved_profile_ref}",
         f"search_keyword={search_keyword}",
-        f"sales_7d_threshold={sales_7d_threshold}",
-        "fastmoss_phone_env=FASTMOSS_PHONE",
-        "fastmoss_password_env=FASTMOSS_PASSWORD",
     ]
+    if total_sales_threshold != "":
+        params.append(f"total_sales_threshold={total_sales_threshold}")
+        if sales_7d_threshold != "":
+            params.append(f"sales_7d_threshold={sales_7d_threshold}")
+    else:
+        params.append(f"sales_7d_threshold={sales_7d_threshold}")
+    params.extend(
+        [
+            "fastmoss_phone_env=FASTMOSS_PHONE",
+            "fastmoss_password_env=FASTMOSS_PASSWORD",
+        ]
+    )
     if max_candidates != "":
         params.append(f"max_candidates={max_candidates}")
     if product_price_threshold != "":
@@ -683,7 +693,8 @@ def _build_parser() -> argparse.ArgumentParser:
     keyword_parser = subparsers.add_parser("keyword-search-submit")
     _add_profile_arg(keyword_parser)
     keyword_parser.add_argument("--search-keyword", required=True)
-    keyword_parser.add_argument("--sales-7d-threshold", default="200")
+    keyword_parser.add_argument("--sales-7d-threshold", default="")
+    keyword_parser.add_argument("--total-sales-threshold", default="")
     keyword_parser.add_argument("--max-candidates", default="20")
     keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
@@ -910,7 +921,8 @@ def main(argv: list[str] | None = None) -> int:
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
                 search_keyword=args.search_keyword,
-                sales_7d_threshold=args.sales_7d_threshold,
+                sales_7d_threshold=args.sales_7d_threshold or ("" if args.total_sales_threshold else "200"),
+                total_sales_threshold=args.total_sales_threshold,
                 max_candidates=args.max_candidates,
                 skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,
             )

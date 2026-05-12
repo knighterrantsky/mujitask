@@ -22,6 +22,9 @@ custom_logic:
     - code: keyword_search_parameter_mapper
       module: automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper
       export: keyword_search_parameter_mapper
+      supports:
+        - day7_sold_count_desc
+        - sold_count_desc
   policies:
     - code: table_workflow_policies
       module: automation_business_scaffold.domains.tiktok.policies.workflow_policies
@@ -37,6 +40,10 @@ custom_logic:
     - code: competitor_table_projection_mapper
       module: automation_business_scaffold.domains.tiktok.projections.feishu_competitor_projection
       export: competitor_table_projection_mapper
+implementation_constraints:
+  - keyword_search_parameter_mapper keeps default day7_sold_count/order=2,2 behavior for normal keyword competitor search.
+  - Explicit total_sales_threshold/min_sold_count switches FastMoss product search to sold_count/order=3,2 with columnKey=3 and field=sold_count_show.
+  - Total-sales pagination threshold stop uses below_min_sold_count and must not replace the existing below_min_day7_sold_count behavior.
 outbox:
   job_code: task_completed_notification
   handler_code: outbox_dispatch

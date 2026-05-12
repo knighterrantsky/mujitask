@@ -34,6 +34,7 @@ def _raw_search_page(
     *,
     product_id: str,
     day7_sold_count: int,
+    sold_count: object = "1.2K",
     title: str = "Halloween decoration",
     price: str = "$14.50 - 18.97",
 ) -> dict[str, object]:
@@ -52,7 +53,7 @@ def _raw_search_page(
                     "ori_price": "$20.00",
                     "crate": "8%",
                     "crate_show": "8%",
-                    "sold_count": "1.2K",
+                    "sold_count": sold_count,
                     "sale_amount": "$1234.50",
                     "yday_sold_count": 30,
                     "day7_sold_count": day7_sold_count,
@@ -233,6 +234,51 @@ def test_fastmoss_product_search_filters_by_price_range_max_amount(tmp_path: Pat
     assert result.result["candidates"][0]["matched_conditions"] == {"min_price_range_max_amount": True}
 
 
+def test_fastmoss_product_search_filters_by_total_sold_count(tmp_path: Path) -> None:
+    result = fastmoss_product_search_handler(
+        _context(
+            {
+                "search_mode": "keyword",
+                "keyword": "gel blaster",
+                "mock_fastmoss_search_pages": [
+                    {
+                        "page": 1,
+                        "response": _raw_search_page(
+                            product_id="1732039802895831738",
+                            day7_sold_count=38,
+                            sold_count=3246,
+                            title="Gel Blaster Electric toy",
+                        ),
+                    },
+                    {
+                        "page": 2,
+                        "response": _raw_search_page(
+                            product_id="1730000000000000001",
+                            day7_sold_count=300,
+                            sold_count=199,
+                            title="Below total sales product",
+                        ),
+                    },
+                ],
+                "output_conditions": {
+                    "max_candidates": 20,
+                    "business_conditions": {"min_sold_count": 200},
+                },
+                "artifact_root": str(tmp_path),
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["condition_summary"]["accepted_count"] == 1
+    assert result.result["condition_summary"]["rejected_count"] == 1
+    candidate = result.result["candidates"][0]
+    assert candidate["product_id"] == "1732039802895831738"
+    assert candidate["metrics"]["sold_count"] == 3246
+    assert candidate["metrics"]["day7_sold_count"] == 38
+    assert candidate["matched_conditions"] == {"min_sold_count": True}
+
+
 def test_fastmoss_product_search_keeps_existing_max_price_amount_semantics(tmp_path: Path) -> None:
     result = fastmoss_product_search_handler(
         _context(
@@ -409,6 +455,107 @@ def test_fastmoss_product_search_stops_when_day7_sorted_page_is_below_threshold(
     assert [candidate["product_id"] for candidate in result.result["candidates"]] == ["p1", "p2"]
 
 
+def test_fastmoss_product_search_stops_when_total_sales_sorted_page_is_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    pages = {
+        1: {
+            "code": 200,
+            "msg": "success!",
+            "data": {
+                "product_list": [
+                    {"product_id": "p1", "title": "Gel blaster one", "sold_count": 3246, "day7_sold_count": 38},
+                    {"product_id": "p2", "title": "Gel blaster two", "sold_count": 2736, "day7_sold_count": 0},
+                ],
+                "total": 100,
+            },
+            "ext": {"is_login": 1},
+        },
+        2: {
+            "code": 200,
+            "msg": "success!",
+            "data": {
+                "product_list": [
+                    {"product_id": "p3", "title": "Gel blaster low one", "sold_count": 199, "day7_sold_count": 300},
+                    {"product_id": "p4", "title": "Gel blaster low two", "sold_count": 120, "day7_sold_count": 280},
+                ],
+                "total": 100,
+            },
+            "ext": {"is_login": 1},
+        },
+    }
+
+    class FakeFastMossSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            calls.append(("init", dict(kwargs)))
+
+        def __enter__(self) -> "FakeFastMossSession":
+            calls.append(("enter", {}))
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            calls.append(("exit", {}))
+
+        def ensure_logged_in(self) -> dict[str, object]:
+            calls.append(("ensure_logged_in", {}))
+            return {"code": 200}
+
+        def search_products(self, words: str, **kwargs: object) -> dict[str, object]:
+            calls.append(("search_products", {"words": words, **kwargs}))
+            page = int(kwargs["page"])
+            assert page in pages
+            return pages[page]
+
+        def cookie_snapshot(self) -> dict[str, object]:
+            return {"has_fd_tk": True, "cookie_count": 1}
+
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.fact_sources.fastmoss.product_search_handler.FastMossHTTPSession",
+        FakeFastMossSession,
+    )
+
+    result = fastmoss_product_search_handler(
+        _context(
+            {
+                "keyword": "gel blaster",
+                "fastmoss": {
+                    "phone": "phone",
+                    "password": "password",
+                    "live_fetch": True,
+                    "fastmoss_api_request_delay_min_seconds": 0,
+                    "fastmoss_api_request_delay_max_seconds": 0,
+                },
+                "sort": {
+                    "field": "sold_count",
+                    "direction": "desc",
+                    "source_order": "3,2",
+                    "source_column_key": "3",
+                    "source_field": "sold_count_show",
+                },
+                "pagination": {"page": 1, "page_size": 2, "max_pages": 5, "stop_when_no_new_product": True},
+                "limit": 0,
+                "output_conditions": {"business_conditions": {"min_sold_count": 200}},
+                "page_request_delay_seconds": 0,
+                "raw_capture_policy": {"store_raw_response": False},
+            }
+        )
+    )
+
+    search_calls = [payload for name, payload in calls if name == "search_products"]
+    assert result.status == "success"
+    assert [call["page"] for call in search_calls] == [1, 2]
+    assert all(call["order"] == "3,2" for call in search_calls)
+    assert all(call["extra_params"] == {"columnKey": "3", "field": "sold_count_show"} for call in search_calls)
+    assert result.result["pagination"]["stop_reason"] == "below_min_sold_count"
+    assert result.result["pagination"]["has_more"] is False
+    assert result.result["pagination"]["fetched_pages"] == 2
+    assert result.result["condition_summary"]["raw_candidate_count"] == 4
+    assert result.result["condition_summary"]["accepted_count"] == 2
+    assert result.result["condition_summary"]["rejected_count"] == 2
+    assert [candidate["product_id"] for candidate in result.result["candidates"]] == ["p1", "p2"]
+
+
 def test_fastmoss_product_search_fetches_live_pages_with_one_session(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     pages = {
@@ -554,6 +701,10 @@ def test_fastmoss_product_search_refreshes_session_once_after_security_check(
                 },
                 "ext": {"is_login": 1},
             }
+
+        def export_cookies(self, *, domain_keyword: str = "fastmoss.com") -> list[dict[str, object]]:
+            del domain_keyword
+            return [{"name": "fd_tk", "value": "new-token", "domain": ".fastmoss.com", "path": "/", "secure": True}]
 
         def cookie_snapshot(self) -> dict[str, object]:
             return {"has_fd_tk": True, "cookie_count": 1}
@@ -725,6 +876,10 @@ def test_fastmoss_product_search_reports_security_verification_after_refresh_ret
                 method="GET",
                 path="/api/goods/V2/search",
             )
+
+        def export_cookies(self, *, domain_keyword: str = "fastmoss.com") -> list[dict[str, object]]:
+            del domain_keyword
+            return [{"name": "fd_tk", "value": "new-token", "domain": ".fastmoss.com", "path": "/", "secure": True}]
 
         def cookie_snapshot(self) -> dict[str, object]:
             return {"has_fd_tk": True, "cookie_count": 1}

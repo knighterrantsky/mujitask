@@ -85,6 +85,17 @@ inputs:
       - "近7天销量超过300 -> 300"
       - "7d sales >= 300 -> 300"
       - "销量阈值300 -> 300"
+  total_sales_threshold:
+    description: Total cumulative sales threshold.
+    usage: Use only for `keyword_competitor_search` when the user explicitly says `总销量` or `累计销量`.
+    extraction_rules:
+      - Extract from expressions such as `总销量超过 300`, `累计销量大于 200`, `total sales >= 300`.
+      - Do not map plain `销量阈值` or `销量超过 N` to this input unless the user explicitly says total/cumulative sales.
+      - When this input is present, do not add the default `sales_7d_threshold` unless the user also explicitly asks for a 7-day sales condition.
+    extraction_examples:
+      - "总销量超过300 -> 300"
+      - "累计销量大于200 -> 200"
+      - "total sales >= 300 -> 300"
   price_range_max_threshold:
     description: Price-range maximum threshold.
     usage: Use only for `keyword_selection_search`.
@@ -143,11 +154,12 @@ intents:
         - docs/arch/workflow-competitor-table-design.md
     description: Use when the user asks to search or collect keyword products and write new competitor rows to `TK竞品收集`.
     do_not_use: Do not use when the user says `选品`, `选品表`, or `TK选品收集`.
-    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --max-candidates <max_candidates>
+    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --max-candidates <max_candidates>
     required_inputs:
       - search_keyword
     optional_inputs:
       - sales_7d_threshold
+      - total_sales_threshold
       - max_candidates
     default_values:
       sales_7d_threshold: 200

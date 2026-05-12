@@ -7,6 +7,7 @@ intent=""
 product_url=""
 search_keyword=""
 sales_7d_threshold=""
+total_sales_threshold=""
 price_range_max_threshold=""
 max_candidates=""
 
@@ -26,6 +27,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sales-7d-threshold)
       sales_7d_threshold="${2:-}"
+      shift 2
+      ;;
+    --total-sales-threshold)
+      total_sales_threshold="${2:-}"
       shift 2
       ;;
     --price-range-max-threshold)
@@ -49,7 +54,14 @@ case "$intent" in
     ;;
   keyword_competitor_search)
     args=(keyword-search-submit --search-keyword "$search_keyword")
-    args+=(--sales-7d-threshold "${sales_7d_threshold:-200}")
+    if [[ -n "$total_sales_threshold" ]]; then
+      args+=(--total-sales-threshold "$total_sales_threshold")
+      if [[ -n "$sales_7d_threshold" ]]; then
+        args+=(--sales-7d-threshold "$sales_7d_threshold")
+      fi
+    else
+      args+=(--sales-7d-threshold "${sales_7d_threshold:-200}")
+    fi
     args+=(--max-candidates "${max_candidates:-20}")
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" "${args[@]}"
     ;;

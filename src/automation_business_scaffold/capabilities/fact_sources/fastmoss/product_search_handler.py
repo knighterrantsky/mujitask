@@ -222,6 +222,7 @@ def _resolve_fastmoss_product_search_query(payload: dict[str, Any]) -> dict[str,
         _source_order_from_sort(sort),
         "2,2",
     )
+    extra_params = {**extra_params, **_sort_extra_params_for_fastmoss_product_search(sort, source_order)}
     raw_capture_policy.setdefault("store_raw_response", True)
 
     return {
@@ -407,7 +408,9 @@ def _fetch_fastmoss_search_pages(
     stop_reason = "max_pages"
     page_request_delay_seconds = _non_negative_float(query.get("page_request_delay_seconds"), 0.0)
     min_day7_sold_count = _fastmoss_min_day7_sold_count(query)
+    min_sold_count = _fastmoss_min_sold_count(query)
     stop_on_day7_threshold = _fastmoss_query_uses_day7_desc(query) and min_day7_sold_count is not None
+    stop_on_sold_count_threshold = _fastmoss_query_uses_sold_count_desc(query) and min_sold_count is not None
     for _ in range(max(int(query["max_pages"]), 1)):
         if raw_pages and page_request_delay_seconds > 0:
             time.sleep(page_request_delay_seconds)
@@ -443,6 +446,9 @@ def _fetch_fastmoss_search_pages(
         if stop_on_day7_threshold and _fastmoss_page_below_min_day7_sold_count(rows, min_day7_sold_count):
             stop_reason = "below_min_day7_sold_count"
             break
+        if stop_on_sold_count_threshold and _fastmoss_page_below_min_sold_count(rows, min_sold_count):
+            stop_reason = "below_min_sold_count"
+            break
         if int(query["max_candidates"]) > 0 and len(seen_product_keys) >= int(query["max_candidates"]):
             stop_reason = "max_candidates"
             break
@@ -473,8 +479,21 @@ def _fastmoss_min_day7_sold_count(query: Mapping[str, Any]) -> int | float | Non
     return threshold
 
 
+def _fastmoss_min_sold_count(query: Mapping[str, Any]) -> int | float | None:
+    output_conditions = coerce_mapping(query.get("output_conditions"))
+    business_conditions = coerce_mapping(output_conditions.get("business_conditions"))
+    threshold = _parse_number(business_conditions.get("min_sold_count"))
+    if threshold is None or threshold <= 0:
+        return None
+    return threshold
+
+
 def _fastmoss_query_uses_day7_desc(query: Mapping[str, Any]) -> bool:
     return coerce_str(query.get("source_order")) == "2,2"
+
+
+def _fastmoss_query_uses_sold_count_desc(query: Mapping[str, Any]) -> bool:
+    return coerce_str(query.get("source_order")) == "3,2"
 
 
 def _fastmoss_page_below_min_day7_sold_count(
@@ -489,6 +508,20 @@ def _fastmoss_page_below_min_day7_sold_count(
         if value is not None
     ]
     return bool(day7_values) and max(day7_values) < threshold
+
+
+def _fastmoss_page_below_min_sold_count(
+    rows: list[dict[str, Any]],
+    threshold: int | float | None,
+) -> bool:
+    if threshold is None:
+        return False
+    sold_values = [
+        value
+        for value in (_parse_number(row.get("sold_count")) for row in rows)
+        if value is not None
+    ]
+    return bool(sold_values) and max(sold_values) < threshold
 
 
 def _build_fastmoss_product_search_result(
@@ -996,6 +1029,7 @@ def _build_fastmoss_search_pagination(
         "degraded_preview",
         "max_candidates",
         "below_min_day7_sold_count",
+        "below_min_sold_count",
     }:
         has_more = False
     return {
@@ -1064,7 +1098,25 @@ def _source_order_from_sort(sort: dict[str, Any]) -> str:
     direction = coerce_str(sort.get("direction")).lower()
     if field == "day7_sold_count" and direction in {"", "desc", "descending"}:
         return "2,2"
+    if field in {"sold_count", "total_sold_count", "total_sales"} and direction in {"", "desc", "descending"}:
+        return "3,2"
     return ""
+
+
+def _sort_extra_params_for_fastmoss_product_search(sort: dict[str, Any], source_order: str) -> dict[str, str]:
+    field = coerce_str(sort.get("field"))
+    direction = coerce_str(sort.get("direction")).lower()
+    if source_order == "3,2" or (field in {"sold_count", "total_sold_count", "total_sales"} and direction in {"", "desc", "descending"}):
+        return {
+            "columnKey": first_non_empty(sort.get("source_column_key"), sort.get("columnKey"), "3"),
+            "field": first_non_empty(sort.get("source_field"), sort.get("sourceField"), "sold_count_show"),
+        }
+    return compact_dict(
+        {
+            "columnKey": first_non_empty(sort.get("source_column_key"), sort.get("columnKey")),
+            "field": first_non_empty(sort.get("source_field"), sort.get("sourceField")),
+        }
+    )
 
 
 def _strip_html(value: Any) -> str:

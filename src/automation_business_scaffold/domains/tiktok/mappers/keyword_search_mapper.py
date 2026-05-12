@@ -32,6 +32,20 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
     business_conditions = dict(_mapping(output_conditions.get("business_conditions")))
     selection_mode = _first_text(explicit.get("keyword_workflow_mode"), payload.get("keyword_workflow_mode")) == "selection"
 
+    total_sales_threshold = _first_text(
+        explicit.get("total_sales_threshold"),
+        explicit.get("min_sold_count"),
+        explicit.get("sold_count_threshold"),
+        explicit.get("cumulative_sales_threshold"),
+        payload.get("total_sales_threshold"),
+        payload.get("min_sold_count"),
+        payload.get("sold_count_threshold"),
+        payload.get("cumulative_sales_threshold"),
+        business_conditions.get("min_sold_count"),
+    )
+    if total_sales_threshold:
+        business_conditions.setdefault("min_sold_count", total_sales_threshold)
+
     sales_7d_threshold = _first_text(
         explicit.get("sales_7d_threshold"),
         explicit.get("min_day7_sold_count"),
@@ -75,14 +89,7 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
         "limit": max_candidates,
         "condition_context": output_conditions,
         "output_conditions": output_conditions,
-        "sort": dict(
-            _mapping(explicit.get("sort"))
-            or {
-                "field": "day7_sold_count",
-                "direction": "desc",
-                "source_order": _first_text(payload.get("fastmoss_search_order"), "2,2"),
-            }
-        ),
+        "sort": dict(_mapping(explicit.get("sort")) or _default_sort(payload, business_conditions)),
         "pagination": dict(
             _mapping(explicit.get("pagination"))
             or {
@@ -164,6 +171,22 @@ def _bool_param(value: Any, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _default_sort(payload: Mapping[str, Any], business_conditions: Mapping[str, Any]) -> dict[str, str]:
+    if _first_text(business_conditions.get("min_sold_count")):
+        return {
+            "field": "sold_count",
+            "direction": "desc",
+            "source_order": "3,2",
+            "source_column_key": "3",
+            "source_field": "sold_count_show",
+        }
+    return {
+        "field": "day7_sold_count",
+        "direction": "desc",
+        "source_order": _first_text(payload.get("fastmoss_search_order"), "2,2"),
+    }
 
 
 def _search_digest(*, search_query: str, filters: Mapping[str, Any]) -> str:
