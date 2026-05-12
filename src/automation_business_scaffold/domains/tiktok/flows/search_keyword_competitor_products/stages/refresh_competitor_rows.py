@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     any_api_jobs_active as _any_api_jobs_active,
@@ -11,6 +11,10 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 from ..context.decision_models import _waiting
 from .browser_fallback import _browser_fallback_candidates
 from .dispatch_row_refresh_jobs import enqueue_next_competitor_row_refresh
+
+if TYPE_CHECKING:
+    from automation_business_scaffold.contracts.workflow import WorkflowDefinition
+    from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 
 STAGE_CODE = "refresh_competitor_rows"
@@ -24,8 +28,6 @@ def advance(
 ) -> dict[str, Any]:
     stage_code = "refresh_competitor_rows"
     jobs = _api_jobs_for_stage(store=store, request_id=request.request_id, stage_code=stage_code)
-    if not jobs:
-        return {"action": "advance", "next_stage": "ready_for_summary", "details": {"dispatched_row_count": 0}}
     if _any_api_jobs_active(jobs):
         return _waiting(stage_code=stage_code, message="Waiting for competitor row refresh jobs to finish.")
     fallback_candidates = _browser_fallback_candidates(store=store, request_id=request.request_id)

@@ -413,16 +413,9 @@ def test_keyword_executor_integration_happy_path(
     assert seed_worker["api_worker_job"]["job_code"] == "keyword_seed_import"
     assert seed_worker["api_worker_job"]["status"] == "finished"
     assert seed_worker["api_worker_job"]["result_status"] == "success"
-    assert seed_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "keyword_seed_import",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+    assert "parent_updates" not in seed_worker
     released_status = _status(runtime_db_url, request_id)
-    assert released_status["request_status"] == "pending"
+    assert released_status["request_status"] == "waiting"
     assert released_status["current_stage"] == "keyword_seed_import"
 
     refresh_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
@@ -795,14 +788,7 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SEED_RECORD_ID
-    assert browser_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "selection_row_browser_fallback",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+    assert "parent_updates" not in browser_worker
     status_after_browser = _selection_status(runtime_db_url, request_id)
     assert status_after_browser["current_stage"] == "selection_row_browser_fallback"
     stored_execution = _stage_executions(
@@ -1258,14 +1244,7 @@ def test_keyword_search_seed_e2e_writes_competitor_seed_row(
         },
         "备注": f"通过搜索关键字：{SEARCH_QUERY}",
     }
-    assert seed_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "keyword_seed_import",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+    assert "parent_updates" not in seed_worker
     assert FakeClient.created[0]["fields"] == {
         "SKU-ID": PRODUCT_ID,
         "产品链接": {

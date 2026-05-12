@@ -8,7 +8,6 @@ from automation_business_scaffold.control_plane.executor.looping import (
     supervisor_error_payload,
 )
 from automation_business_scaffold.control_plane.executor.request_aggregation import build_runtime_request_payload
-from automation_business_scaffold.control_plane.executor.request_dispatch import release_request_after_child_completion
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     build_idle_payload,
     build_runtime_settings,
@@ -95,11 +94,6 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         retry_delay_seconds=settings.retry_delay_seconds,
     )
 
-    parent_request = store.load_task_request(request_id=str(job["request_id"]))
-    if parent_request.status == "cancelling":
-        parent_updates = [store.reconcile_cancelling_request(request_id=str(job["request_id"]))]
-    else:
-        parent_updates = release_request_after_child_completion(store, request_id=str(job["request_id"]))
     payload = build_runtime_request_payload(
         store=store,
         request_id=str(job["request_id"]),
@@ -115,7 +109,6 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
             "api_worker_job": marked_job,
             "worker_result": outcome.worker_result.to_dict(),
             "supervisor": outcome.to_dict(),
-            "parent_updates": parent_updates,
         }
     )
     if outcome.error is not None:
@@ -198,11 +191,6 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         retry_delay_seconds=settings.retry_delay_seconds,
     )
 
-    parent_request = store.load_task_request(request_id=execution.request_id)
-    if parent_request.status == "cancelling":
-        parent_updates = [store.reconcile_cancelling_request(request_id=execution.request_id)]
-    else:
-        parent_updates = release_request_after_child_completion(store, request_id=execution.request_id)
     payload = build_runtime_request_payload(
         store=store,
         request_id=execution.request_id,
@@ -219,7 +207,6 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
             "execution_status": stored_execution.result_status or stored_execution.status,
             "worker_result": outcome.worker_result.to_dict(),
             "supervisor": outcome.to_dict(),
-            "parent_updates": parent_updates,
         }
     )
     if outcome.error is not None:

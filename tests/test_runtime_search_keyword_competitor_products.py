@@ -1768,6 +1768,102 @@ def test_keyword_runtime_dispatches_competitor_rows_serially(runtime_db_url: str
     assert row_jobs[-1]["payload"]["source_record_id"] == "seed-row-2"
 
 
+def test_keyword_runtime_summary_recovers_pending_success_seed_rows(runtime_db_url: str) -> None:
+    store, request, workflow = _submit_keyword_request(runtime_db_url)
+    seed_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
+    assert seed_waiting["action"] == "waiting"
+    seed_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="keyword_seed_import",
+        job_code="keyword_seed_import",
+    )
+    seeds = []
+    for index in range(1, 3):
+        product_id = f"sku-{index}"
+        product_url = f"https://www.tiktok.com/shop/pdp/{product_id}"
+        seeds.append(
+            {
+                "candidate_key": f"product:{product_id}",
+                "business_entity_key": f"product:{product_id}",
+                "product_identity": {
+                    "product_id": product_id,
+                    "product_url": product_url,
+                    "normalized_product_url": product_url,
+                },
+                "product_id": product_id,
+                "product_url": product_url,
+                "normalized_product_url": product_url,
+                "search_query": SEARCH_QUERY,
+                "search_rank": index,
+                "source_context": {"product_id": product_id, "product_url": product_url},
+                "source_record_id": f"seed-row-{index}",
+                "seed_status": "success",
+                "target_record_ids": [f"seed-row-{index}"],
+                "feishu_row": {"record_id": f"seed-row-{index}"},
+            }
+        )
+    _mark_api_job_success(
+        store,
+        job_id=str(seed_job["job_id"]),
+        summary={"candidate_count": 2, "written_count": 2},
+        result={
+            "normalized_candidates": seeds,
+            "seed_contexts": seeds,
+            "seed_write_results": [{"product_id": item["product_id"], "status": "success"} for item in seeds],
+            "written_count": 2,
+            "skipped_count": 0,
+            "failed_count": 0,
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    assert advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")["next_stage"] == "dispatch_row_refresh_jobs"
+    request = store.load_task_request(request_id=request.request_id)
+    assert advance_stage(store=store, request=request, workflow=workflow, stage_code="dispatch_row_refresh_jobs")["next_stage"] == "refresh_competitor_rows"
+    row_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="refresh_competitor_rows",
+        job_code="competitor_row_refresh",
+    )
+    assert row_job["payload"]["source_record_id"] == "seed-row-1"
+    _mark_api_job_success(
+        store,
+        job_id=str(row_job["job_id"]),
+        summary={"row_status": "success"},
+        result={"row_status": "success", "step_timeline": [{"step": "tiktok_request", "status": "success"}]},
+    )
+
+    store.update_task_request(
+        request_id=request.request_id,
+        status="pending",
+        current_stage="ready_for_summary",
+        progress_stage="ready_for_summary",
+    )
+    recovered = release_request_after_child_completion(store, request_id=request.request_id)
+    assert recovered == [
+        {
+            "request_id": request.request_id,
+            "stage_code": "refresh_competitor_rows",
+            "released": True,
+            "next_executor_status": "pending",
+        }
+    ]
+
+    request = store.load_task_request(request_id=request.request_id)
+    refresh_wait = advance_stage(store=store, request=request, workflow=workflow, stage_code="refresh_competitor_rows")
+    assert refresh_wait["action"] == "waiting"
+    assert refresh_wait["details"]["created_count"] == 1
+    row_jobs = [
+        job
+        for job in store.list_api_worker_jobs_for_request(request_id=request.request_id)
+        if str((job.get("payload") or {}).get("stage_code") or "") == "refresh_competitor_rows"
+    ]
+    assert len(row_jobs) == 2
+    assert row_jobs[-1]["payload"]["source_record_id"] == "seed-row-2"
+
+
 def test_keyword_runtime_zero_candidates_finalizes_success(runtime_db_url: str) -> None:
     store, request, workflow = _submit_keyword_request(runtime_db_url)
     seed_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
