@@ -130,6 +130,8 @@ def test_refresh_outbox_message_defaults_to_readable_plain_text_detail() -> None
             "总数：2 条",
             "更新：1 条",
             "成功：1 条",
+            "部分成功：0 条",
+            "取消：0 条",
             "失败：1 条",
             "",
             "明细：",

@@ -74,6 +74,7 @@ flowchart TD
 - 如需要父子收敛，优先在通用 Runtime job schema 中补充 `parent_job_id` / `job_group` / `entity_type` / `entity_key` 这类通用字段，而不是新增达人同步专用表。
 - `product_creator_discovery` 是商品粒度业务 job，内部复用 FastMoss 商品达人列表能力，不再拆成商品 base、overview、author list 等多个 Runtime job。
 - `influencer_creator_sync` 是达人粒度业务 job，内部完成达人详情、事实入库、素材同步、`TK达人池` upsert 和商品终态状态回写，不再把 `persist_creator_facts`、`write_influencer_pool` 拆成独立 Runtime job。
+- `influencer_creator_sync.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如 `creator_id`、`product_hits` key、内部步骤状态、写入计数和 record id。完整 fact bundle、FastMoss raw response、media sync 明细和飞书完整写入记录必须落到 Fact DB 或 artifact/object storage，Runtime result 只保留计数和引用。
 - 不新增 `influencer_pool_product`、`influencer_pool_author`、`influencer_pool_finalizer` 这类历史业务专用 worker handler；新业务 job 名称以 `product_creator_discovery` 和 `influencer_creator_sync` 为准。
 - 商品状态回写需要幂等。若多个达人同步 job 同时判断同一个 product group 已终态，只允许一个稳定 dedupe key 产生最终写回，其余重复写回应被跳过或视为幂等成功。
 
@@ -106,7 +107,7 @@ sequenceDiagram
     Exec->>DB: enqueue api_worker_job(influencer_creator_sync)
     API->>DB: claim influencer creator sync jobs
     API->>Fact: upsert creator facts and product relations
-    API->>Obj: sync optional avatar / media assets
+    API->>Obj: sync creator avatar only; product image reuses matched source product image refs
     API->>Feishu: upsert TK influencer pool row
     API->>DB: mark creator sync job terminal
     API->>DB: check whether related product groups are terminal
@@ -380,7 +381,7 @@ payload:
       "endpoints": ["base_info", "author_index", "stat_info", "contact", "cargo_summary", "goods_list"]
     },
     "fact_upsert": {"internal_handler": "fact_bundle_upsert"},
-    "media_asset_sync": {"internal_handler": "media_asset_sync", "optional": true},
+    "media_asset_sync": {"internal_handler": "media_asset_sync", "optional": true, "scope": "creator_avatar_only"},
     "influencer_pool_write": {
       "internal_handler": "feishu_table_write",
       "mapper_code": "influencer_pool_projection_mapper",

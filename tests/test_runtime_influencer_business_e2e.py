@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -398,7 +399,8 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
 
     read_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
     assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
-    assert read_worker["api_worker_job"]["status"] == "success"
+    assert read_worker["api_worker_job"]["status"] == "finished"
+    assert read_worker["api_worker_job"]["result_status"] == "success"
     assert read_worker["api_worker_job"]["result"]["source_rows"][0]["business_fields"]["holiday"] == "毕业季"
 
     product_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
@@ -410,7 +412,8 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
 
     product_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
     assert product_worker["api_worker_job"]["job_code"] == "product_creator_discovery"
-    assert product_worker["api_worker_job"]["status"] == "success"
+    assert product_worker["api_worker_job"]["status"] == "finished"
+    assert product_worker["api_worker_job"]["result_status"] == "success"
     assert product_worker["api_worker_job"]["result"]["related_creators"][0]["creator_id"] == CREATOR_ID
 
     creator_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
@@ -423,9 +426,28 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
 
     creator_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
     assert creator_worker["api_worker_job"]["job_code"] == "influencer_creator_sync"
-    assert creator_worker["api_worker_job"]["status"] == "success"
+    assert creator_worker["api_worker_job"]["status"] == "finished"
+    assert creator_worker["api_worker_job"]["result_status"] == "success"
     assert creator_worker["api_worker_job"]["result"]["creator_fact_bundle"]["creator_id"] == CREATOR_ID
     assert creator_worker["api_worker_job"]["result"]["influencer_pool_write"]["status"] == "success"
+    stored_creator_result = creator_worker["api_worker_job"]["result"]
+    assert len(json.dumps(stored_creator_result, ensure_ascii=False)) < 50_000
+    assert "fact_bundle" not in stored_creator_result["fact_result"]
+    assert "records" not in stored_creator_result["influencer_pool_write"]
+    assert "fact_bundle" not in stored_creator_result["handler_result"]["result"]["fact_result"]
+    step_timings = creator_worker["api_worker_job"]["result"]["step_timings"]
+    assert set(step_timings) >= {
+        "creator_fetch",
+        "media_asset_sync",
+        "fact_upsert",
+        "influencer_pool_write",
+        "product_status_reconcile",
+        "total",
+    }
+    assert step_timings["media_asset_sync"]["asset_count"] == 1
+    assert step_timings["media_asset_sync"]["skipped_asset_count"] >= 2
+    assert step_timings["influencer_pool_write"]["record_count"] == 1
+    assert step_timings["total"]["duration_seconds"] >= 0
 
     fact_store = TKFactStore(db_url=runtime_db_url)
     assert fact_store.get_product(product_id=PRODUCT_ID)["title"] == "Graduation party decoration set"
@@ -459,7 +481,8 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
 
     writeback_worker = runtime_orchestrator.execute_api_worker_once(runtime_params)
     assert writeback_worker["api_worker_job"]["job_code"] == "feishu_table_write"
-    assert writeback_worker["api_worker_job"]["status"] == "success"
+    assert writeback_worker["api_worker_job"]["status"] == "finished"
+    assert writeback_worker["api_worker_job"]["result_status"] == "success"
 
     source_fields = feishu_state["tables"][(SOURCE_APP_TOKEN, SOURCE_TABLE_ID)][0]["fields"]
     assert source_fields["达人查找状态"] == "已完成"

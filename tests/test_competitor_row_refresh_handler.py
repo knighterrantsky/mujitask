@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -175,7 +176,17 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         fact_payloads.append(dict(context.payload))
         return HandlerResult.success(
             context,
-            result={"upserted_entities": ["product:123456789"]},
+            result={
+                "upserted_entities": ["product:123456789"],
+                "upserted_relations": ["product:123456789:media:main"],
+                "observation_refs": ["observation:123456789"],
+                "persisted_counts": {"products": 1, "media_assets": 2},
+                "persistence_mode": "database",
+                "fact_bundle": {
+                    "products": [{"product_id": "123456789", "raw": "x" * 100_000}],
+                    "raw_api_responses": [{"payload": "y" * 100_000}],
+                },
+            },
         )
 
     def fake_write(context: HandlerContext) -> HandlerResult:
@@ -228,6 +239,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     assert result.result["writeback_projection"]["fields"]["SKU-ID"] == "123456789"
     assert result.result["writeback_projection"]["fields"]["标题"] == "Graduation Kit"
     assert result.result["writeback_projection"]["fields"]["图片"]["local_path"] == "/tmp/main.jpg"
+    assert result.result["product_fact_bundle"]["product_id"] == "123456789"
+    assert result.result["fact_upsert"]["persistence_mode"] == "database"
+    assert "fact_bundle" not in result.result["fact_upsert"]
+    assert "raw_api_responses" not in result.result["product_fact_bundle"]
+    assert len(json.dumps(result.result)) < 50_000
     assert result.result["writeback_projection"]["fields"]["近90天销量"] == "600"
     assert result.result["runtime_evidence"]["browser_fallback_used"] is False
     assert media_payloads[0]["sync_referenced_files"] is True

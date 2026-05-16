@@ -78,13 +78,13 @@ def _collect_product_candidates(*, store: RuntimeStore, request: Any) -> list[di
 
 def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list[dict[str, Any]]:
     candidates = _collect_product_candidates(store=store, request=request)
-    product_jobs = _stage_api_jobs(
+    product_jobs = _stage_api_job_summaries(
         store=store,
         request_id=request.request_id,
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
         job_code="product_creator_discovery",
     )
-    sync_jobs = _stage_api_jobs(
+    sync_jobs = _stage_api_job_summaries(
         store=store,
         request_id=request.request_id,
         stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
@@ -99,15 +99,15 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
             job for job in product_jobs if _job_product_key(job) == product_key
         ]
         matched_sync_jobs = [job for job in sync_jobs if _sync_job_has_product_key(job, product_key)]
-        creator_candidates = _collect_creator_candidates_from_product_jobs(matched_product_jobs)
+        creator_candidate_count = _creator_candidate_count_from_product_jobs(matched_product_jobs)
         creator_sync_success_count = sum(
-            1 for job in matched_sync_jobs if extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES
+            1 for job in matched_sync_jobs if _job_handler_status(job) in SUCCESSFUL_HANDLER_STATUSES
         )
         creator_sync_failed_count = sum(
             1
             for job in matched_sync_jobs
             if str(job.get("result_status") or job.get("status") or "") in {"failed", "cancelled"}
-            or extract_handler_result_status(job) in {"failed", "fallback_required"}
+            or _job_handler_status(job) in {"failed", "fallback_required"}
         )
         influencer_write_success_count = sum(_sync_influencer_write_success_count(job) for job in matched_sync_jobs)
         influencer_write_created_count = sum(_sync_influencer_write_op_count(job, ("append", "create", "created")) for job in matched_sync_jobs)
@@ -115,11 +115,11 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         fact_persist_success_count = sum(_sync_step_success_count(job, "fact_upsert") for job in matched_sync_jobs)
         fact_persist_failed_count = sum(_sync_step_failed_count(job, "fact_upsert") for job in matched_sync_jobs)
         product_job_success = any(
-            extract_handler_result_status(job) in SUCCESSFUL_HANDLER_STATUSES for job in matched_product_jobs
+            _job_handler_status(job) in SUCCESSFUL_HANDLER_STATUSES for job in matched_product_jobs
         )
         product_job_failed = any(
             str(job.get("result_status") or job.get("status") or "") in {"failed", "cancelled"}
-            or extract_handler_result_status(job) in {"failed", "fallback_required"}
+            or _job_handler_status(job) in {"failed", "fallback_required"}
             for job in matched_product_jobs
         )
         final_status = "success"
@@ -136,7 +136,7 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
         elif creator_sync_failed_count > 0 or product_job_failed or fact_persist_failed_count > 0:
             final_status = "partial_success"
             warnings.append("partial_creator_projection")
-        elif not creator_candidates:
+        elif creator_candidate_count <= 0:
             final_status = "success"
             warnings.append("no_related_creators")
         groups.append(
@@ -144,7 +144,7 @@ def _build_product_group_summaries(*, store: RuntimeStore, request: Any) -> list
                 "source_record_id": source_record_id,
                 "product_id": product_id,
                 "product_key": product_key,
-                "creator_candidate_count": len(creator_candidates),
+                "creator_candidate_count": creator_candidate_count,
                 "creator_sync_success_count": creator_sync_success_count,
                 "creator_sync_failed_count": creator_sync_failed_count,
                 "creator_detail_success_count": creator_sync_success_count,
@@ -172,6 +172,14 @@ def _sync_job_has_product_key(job: Mapping[str, Any], product_key: str) -> bool:
     return False
 
 def _sync_influencer_write_success_count(job: Mapping[str, Any]) -> int:
+    summary = coerce_mapping(job.get("summary"))
+    summary_status = _first_non_empty(summary.get("influencer_pool_write_status"))
+    if summary_status in SUCCESSFUL_HANDLER_STATUSES:
+        return 1
+    if int(summary.get("influencer_write_written_count") or 0) > 0:
+        return 1
+    if _job_handler_status(job) in SUCCESSFUL_HANDLER_STATUSES:
+        return 1
     result_payload = extract_effective_result_payload(job)
     write_result = dict(result_payload.get("influencer_pool_write") or {})
     status = _first_non_empty(write_result.get("status"), write_result.get("handler_status"))
@@ -182,6 +190,12 @@ def _sync_influencer_write_success_count(job: Mapping[str, Any]) -> int:
     return 0
 
 def _sync_influencer_write_op_count(job: Mapping[str, Any], ops: tuple[str, ...]) -> int:
+    summary = coerce_mapping(job.get("summary"))
+    allowed_ops = {str(op).strip() for op in ops if str(op).strip()}
+    if allowed_ops & {"append", "create", "created"} and summary.get("influencer_write_created_count") not in (None, ""):
+        return int(summary.get("influencer_write_created_count") or 0)
+    if allowed_ops & {"update", "updated"} and summary.get("influencer_write_updated_count") not in (None, ""):
+        return int(summary.get("influencer_write_updated_count") or 0)
     result_payload = extract_effective_result_payload(job)
     write_result = dict(dict(result_payload.get("influencer_pool_write") or {}).get("write_result") or {})
     records = [dict(item) for item in write_result.get("records", []) if isinstance(item, Mapping)]
@@ -195,11 +209,17 @@ def _sync_influencer_write_op_count(job: Mapping[str, Any], ops: tuple[str, ...]
     return count
 
 def _sync_step_success_count(job: Mapping[str, Any], step_code: str) -> int:
+    summary_steps = coerce_mapping(coerce_mapping(job.get("summary")).get("internal_steps"))
+    if summary_steps:
+        return 1 if _first_non_empty(summary_steps.get(step_code)) in SUCCESSFUL_HANDLER_STATUSES else 0
     result_payload = extract_effective_result_payload(job)
     internal_steps = dict(result_payload.get("internal_steps") or {})
     return 1 if _first_non_empty(internal_steps.get(step_code)) in SUCCESSFUL_HANDLER_STATUSES else 0
 
 def _sync_step_failed_count(job: Mapping[str, Any], step_code: str) -> int:
+    summary_steps = coerce_mapping(coerce_mapping(job.get("summary")).get("internal_steps"))
+    if summary_steps:
+        return 1 if _first_non_empty(summary_steps.get(step_code)) in {"failed", "fallback_required"} else 0
     result_payload = extract_effective_result_payload(job)
     internal_steps = dict(result_payload.get("internal_steps") or {})
     return 1 if _first_non_empty(internal_steps.get(step_code)) in {"failed", "fallback_required"} else 0
@@ -217,12 +237,41 @@ def _stage_api_jobs(*, store: RuntimeStore, request_id: str, stage_code: str, jo
     jobs = store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
     return [job for job in jobs if _job_stage_code(job) == stage_code]
 
+def _stage_api_job_summaries(*, store: RuntimeStore, request_id: str, stage_code: str, job_code: str = "") -> list[dict[str, Any]]:
+    list_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    if callable(list_summaries):
+        jobs = list_summaries(request_id=request_id, job_code=job_code)
+    else:
+        jobs = store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
+    return [job for job in jobs if _job_stage_code(job) == stage_code]
+
 def _job_stage_code(job: Mapping[str, Any]) -> str:
     payload = dict(job.get("payload") or {})
     return str(payload.get("stage_code") or job.get("stage") or "").strip()
 
 def _stage_has_children(*, store: RuntimeStore, request_id: str, stage_code: str, job_code: str) -> bool:
     return bool(_stage_api_jobs(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code))
+
+def _creator_candidate_count_from_product_jobs(product_jobs: list[dict[str, Any]]) -> int:
+    count = 0
+    for job in product_jobs:
+        if _job_handler_status(job) not in SUCCESSFUL_HANDLER_STATUSES:
+            continue
+        summary = coerce_mapping(job.get("summary"))
+        if summary.get("matched_creator_count") not in (None, ""):
+            count += int(summary.get("matched_creator_count") or 0)
+            continue
+        if summary.get("candidate_count") not in (None, ""):
+            count += int(summary.get("candidate_count") or 0)
+            continue
+        count += len(_collect_creator_candidates_from_product_jobs([job]))
+    return count
+
+def _job_handler_status(job: Mapping[str, Any]) -> str:
+    summary_status = _first_non_empty(coerce_mapping(job.get("summary")).get("handler_status"))
+    if summary_status:
+        return summary_status
+    return extract_handler_result_status(job)
 
 def _successful_fact_persist_keys(fact_jobs: list[dict[str, Any]]) -> set[str]:
     keys: set[str] = set()

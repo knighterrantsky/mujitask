@@ -450,23 +450,21 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
             writeback_projection={"fields": projection_fields},
         )
 
-    product_fact_bundle = dict(fact_bundle)
-    product_fact_bundle["product_id"] = first_non_empty(
-        product_fact_bundle.get("product_id"),
-        normalized_product_result.get("product_id"),
-        coerce_mapping(normalized_product_result.get("product")).get("product_id"),
-        identity.get("product_id"),
+    product_fact_bundle = _compact_product_fact_bundle(
+        fact_bundle,
+        identity=identity,
+        normalized_product_result=normalized_product_result,
     )
     row_status = "unavailable" if product_unavailable else "partial_success" if optional_step_failed or write_result.status == "skipped" else "success"
     result = {
         "source_record_id": source_record_id,
         "business_entity_key": business_key,
         "row_status": row_status,
-        "normalized_product_result": normalized_product_result,
+        "normalized_product_result": _compact_normalized_product_result(normalized_product_result, identity=identity),
         "product_fact_bundle": product_fact_bundle,
-        "fact_upsert": dict(fact_result.result),
+        "fact_upsert": _compact_fact_upsert_result(coerce_mapping(fact_result.result)),
         "writeback_projection": {"fields": projection_fields},
-        "writeback_result": dict(write_result.result),
+        "writeback_result": _compact_writeback_result(coerce_mapping(write_result.result)),
         "step_timeline": step_timeline,
         "runtime_evidence": runtime_evidence,
     }
@@ -475,6 +473,9 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
         "product_business_key": business_key,
         "row_status": row_status,
         "browser_fallback_used": bool(runtime_evidence.get("browser_fallback_used")),
+        "step_statuses": _step_statuses(step_timeline),
+        "fact_persistence_mode": result["fact_upsert"].get("persistence_mode"),
+        "writeback_written_count": result["writeback_result"].get("written_count", 0),
     }
     if row_status == "partial_success":
         return partial_success_result(context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings)))
@@ -543,6 +544,187 @@ def _skipped_timeline_entry(step: str, *, reason: str) -> dict[str, Any]:
         "status": "skipped",
         "reason": reason,
     }
+
+
+def _step_statuses(step_timeline: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        str(item.get("step") or ""): str(item.get("status") or "")
+        for item in step_timeline
+        if isinstance(item, Mapping) and item.get("step")
+    }
+
+
+def _compact_normalized_product_result(
+    result: Mapping[str, Any],
+    *,
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    product = coerce_mapping(result.get("product"))
+    product_id = first_non_empty(
+        result.get("product_id"),
+        product.get("product_id"),
+        identity.get("product_id"),
+    )
+    product_url = first_non_empty(
+        result.get("product_url"),
+        product.get("product_url"),
+        result.get("normalized_url"),
+        product.get("normalized_url"),
+        identity.get("normalized_product_url"),
+        identity.get("product_url"),
+    )
+    compact_product = compact_dict(
+        {
+            "product_id": product_id,
+            "product_url": product_url,
+            "normalized_url": first_non_empty(
+                product.get("normalized_url"),
+                result.get("normalized_url"),
+                identity.get("normalized_product_url"),
+            ),
+            "status": first_non_empty(product.get("status"), result.get("status")),
+            "title": first_non_empty(product.get("title"), result.get("title")),
+            "shop_name": first_non_empty(product.get("shop_name"), result.get("shop_name")),
+        }
+    )
+    return compact_dict(
+        {
+            "product_id": product_id,
+            "product_url": product_url,
+            "normalized_url": compact_product.get("normalized_url"),
+            "status": compact_product.get("status"),
+            "source": first_non_empty(result.get("source")),
+            "product": compact_product,
+            "fallback_required": result.get("fallback_required"),
+        }
+    )
+
+
+def _compact_product_fact_bundle(
+    fact_bundle: Mapping[str, Any],
+    *,
+    identity: Mapping[str, Any],
+    normalized_product_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    product = coerce_mapping(normalized_product_result.get("product"))
+    products = _mapping_list(fact_bundle.get("products"))
+    first_product = products[0] if products else {}
+    return compact_dict(
+        {
+            "product_id": first_non_empty(
+                fact_bundle.get("product_id"),
+                first_product.get("product_id"),
+                product.get("product_id"),
+                normalized_product_result.get("product_id"),
+                identity.get("product_id"),
+            ),
+            "product_url": first_non_empty(
+                first_product.get("product_url"),
+                product.get("product_url"),
+                normalized_product_result.get("product_url"),
+                identity.get("normalized_product_url"),
+                identity.get("product_url"),
+            ),
+            "status": first_non_empty(first_product.get("status"), product.get("status")),
+            "product_count": len(products),
+            "shop_count": len(_mapping_list(fact_bundle.get("shops"))),
+            "media_asset_count": len(_mapping_list(fact_bundle.get("media_assets"))),
+            "metric_count": len(_mapping_list(fact_bundle.get("metrics"))),
+            "relation_count": len(_mapping_list(fact_bundle.get("relations"))),
+            "observation_count": len(_mapping_list(fact_bundle.get("observations"))),
+        }
+    )
+
+
+def _compact_fact_upsert_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    return compact_dict(
+        {
+            "persisted_counts": dict(coerce_mapping(result.get("persisted_counts"))),
+            "upserted_entity_count": len(list(result.get("upserted_entities") or [])),
+            "upserted_relation_count": len(list(result.get("upserted_relations") or [])),
+            "observation_ref_count": len(list(result.get("observation_refs") or [])),
+            "persistence_mode": first_non_empty(result.get("persistence_mode")),
+        }
+    )
+
+
+def _compact_writeback_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    records = _mapping_list(result.get("records"))
+    compact_records = [
+        compact_dict(
+            {
+                "record_id": first_non_empty(record.get("record_id"), record.get("id")),
+                "status": first_non_empty(record.get("status")),
+                "operation": first_non_empty(record.get("operation")),
+            }
+        )
+        for record in records
+    ]
+    return compact_dict(
+        {
+            "written_count": result.get("written_count"),
+            "created_count": result.get("created_count"),
+            "updated_count": result.get("updated_count"),
+            "failed_count": result.get("failed_count"),
+            "target_record_ids": list(result.get("target_record_ids") or []),
+            "records": [record for record in compact_records if record],
+        }
+    )
+
+
+def _compact_media_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    synced_assets = _mapping_list(result.get("synced_assets"))
+    artifact_refs = _mapping_list(result.get("artifact_refs"))
+    return compact_dict(
+        {
+            "synced_count": len(synced_assets),
+            "artifact_count": len(artifact_refs),
+            "synced_assets": [
+                compact_dict(
+                    {
+                        "entity_type": first_non_empty(asset.get("entity_type")),
+                        "entity_external_id": first_non_empty(asset.get("entity_external_id")),
+                        "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type")),
+                        "object_key": first_non_empty(asset.get("object_key")),
+                        "file_token": first_non_empty(asset.get("file_token")),
+                    }
+                )
+                for asset in synced_assets
+            ],
+        }
+    )
+
+
+def _compact_fallback_payload(
+    payload: Mapping[str, Any],
+    *,
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    compact_payload = dict(payload)
+    for key in (
+        "product_fact_bundle",
+        "fact_bundle",
+        "media_fact_bundle",
+        "raw_api_responses",
+        "metrics_snapshot",
+        "related_creators",
+        "media_assets",
+        "synced_assets",
+        "artifact_refs",
+    ):
+        compact_payload.pop(key, None)
+    if isinstance(compact_payload.get("normalized_product_result"), Mapping):
+        compact_payload["normalized_product_result"] = _compact_normalized_product_result(
+            coerce_mapping(compact_payload.get("normalized_product_result")),
+            identity=identity,
+        )
+    return compact_dict(compact_payload)
+
+
+def _mapping_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
 def _url_invalid_pipeline_result(
@@ -653,9 +835,16 @@ def _failed_pipeline_result(
                 "row_status": "failed",
                 "failed_step": failed_step,
                 "product_identity": dict(identity),
-                "normalized_product_result": dict(normalized_product_result or {}),
-                "product_fact_bundle": dict(product_fact_bundle or {}),
-                "fact_upsert": dict(fact_upsert or {}),
+                "normalized_product_result": _compact_normalized_product_result(
+                    coerce_mapping(normalized_product_result),
+                    identity=identity,
+                ),
+                "product_fact_bundle": _compact_product_fact_bundle(
+                    coerce_mapping(product_fact_bundle),
+                    identity=identity,
+                    normalized_product_result=coerce_mapping(normalized_product_result),
+                ),
+                "fact_upsert": _compact_fact_upsert_result(coerce_mapping(fact_upsert)),
                 "writeback_projection": dict(writeback_projection or {}),
                 "step_timeline": step_timeline,
                 "runtime_evidence": dict(runtime_evidence),
@@ -678,7 +867,7 @@ def _browser_fallback_required_pipeline_result(
     normalized_product_result: Mapping[str, Any] | None = None,
     media_result: Mapping[str, Any] | None = None,
 ) -> HandlerResult:
-    compact_fallback_payload = compact_dict(dict(fallback_payload))
+    compact_fallback_payload = _compact_fallback_payload(fallback_payload, identity=identity)
     result = compact_dict(
         {
             "source_record_id": source_record_id,
@@ -689,8 +878,11 @@ def _browser_fallback_required_pipeline_result(
             "fallback_reason": fallback_reason,
             "browser_fallback_payload": compact_fallback_payload,
             "product_identity": dict(identity),
-            "normalized_product_result": dict(normalized_product_result or {}),
-            "media_result": dict(media_result or {}),
+            "normalized_product_result": _compact_normalized_product_result(
+                coerce_mapping(normalized_product_result),
+                identity=identity,
+            ),
+            "media_result": _compact_media_result(coerce_mapping(media_result)),
             "step_timeline": step_timeline,
             "runtime_evidence": dict(runtime_evidence),
         }

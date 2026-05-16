@@ -798,6 +798,61 @@ class ApiWorkerJobRepository:
             )
         return [self._api_worker_job_from_row(row) for row in rows]
 
+    def list_api_worker_job_summaries_for_request(
+        self,
+        *,
+        request_id: str,
+        job_code: str = "",
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        """
+                        SELECT
+                            job_id, request_id, task_code, job_code, business_key, dedupe_key,
+                            status, result_status, stage, progress_stage, attempt_count, max_attempts,
+                            payload_json, summary_json, error_text, error_type, error_code,
+                            created_at, updated_at, started_at, finished_at
+                        FROM api_worker_job
+                        WHERE request_id = :request_id
+                          AND (:job_code = '' OR job_code = :job_code)
+                        ORDER BY created_at ASC, updated_at ASC
+                        """
+                    ),
+                    {"request_id": request_id, "job_code": job_code},
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {
+                "job_id": str(row["job_id"]),
+                "request_id": str(row["request_id"] or ""),
+                "task_code": str(row["task_code"] or ""),
+                "job_code": str(row["job_code"] or ""),
+                "business_key": str(row["business_key"] or ""),
+                "dedupe_key": str(row["dedupe_key"] or ""),
+                "status": str(row["status"] or ""),
+                "result_status": str(row.get("result_status", "") or ""),
+                "stage": str(row["stage"] or ""),
+                "progress_stage": str(row.get("progress_stage", "") or ""),
+                "attempt_count": int(row["attempt_count"] or 0),
+                "max_attempts": int(row["max_attempts"] or 0),
+                "payload": _load_json_dict(row["payload_json"]),
+                "summary": _load_json_dict(row["summary_json"]),
+                "result": {},
+                "error_text": str(row["error_text"] or ""),
+                "error_type": str(row.get("error_type", "") or ""),
+                "error_code": str(row.get("error_code", "") or ""),
+                "created_at": _coerce_non_negative_float(row.get("created_at")),
+                "updated_at": _coerce_non_negative_float(row.get("updated_at")),
+                "started_at": _coerce_non_negative_float(row.get("started_at")),
+                "finished_at": _coerce_non_negative_float(row.get("finished_at")),
+            }
+            for row in rows
+        ]
+
     def summarize_api_worker_jobs_for_request(
         self,
         *,

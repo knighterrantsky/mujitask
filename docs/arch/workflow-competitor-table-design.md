@@ -477,7 +477,7 @@ result:
 
 ### 7.2 竞品采集: Fact projection 到详情写回 / `competitor_row_refresh`
 
-`competitor_row_refresh` 是单条竞品记录的主 job。它内部串行完成 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert 和飞书写回，只对外产出一个行级执行结果。截图可以作为内部 artifact 保存，但 `前台截图`、`Fastmoss截图` 不属于 12 个自动维护字段，也不参与待更新判断。
+`competitor_row_refresh` 是单条竞品记录的主 job。它内部串行完成 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert 和飞书写回，只对外产出一个行级执行结果。`competitor_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。完整 normalized product payload、fact bundle、TikTok/FastMoss raw response、media sync 明细和飞书完整写入记录必须落到 Fact DB 或 artifact/object storage，Runtime result 只保留计数和引用。截图可以作为内部 artifact 保存，但 `前台截图`、`Fastmoss截图` 不属于 12 个自动维护字段，也不参与待更新判断。
 
 job result:
 
@@ -513,13 +513,13 @@ job result:
     }
   ],
   "fact_upsert": {
-    "persisted_entities": [
-      "tiktok_product:1731194997356205027",
-      "fastmoss_product:1731194997356205027"
-    ],
-    "persisted_observations": [
-      "obs:fastmoss_product:1731194997356205027:day7_sold_count:2026-04-24"
-    ]
+    "persisted_counts": {
+      "products": 1,
+      "observations": 3
+    },
+    "upserted_entity_count": 2,
+    "observation_ref_count": 3,
+    "persistence_mode": "database"
   },
   "writeback_projection": {
     "fields": {

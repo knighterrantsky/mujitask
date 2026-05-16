@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from time import perf_counter
 from typing import Any
 
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
@@ -89,6 +90,8 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
 
 
 def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
+    started_at = perf_counter()
+    step_timings: dict[str, dict[str, Any]] = {}
     payload = dict(context.payload)
     product_hits = coerce_mapping_list(payload.get("product_hits"))
     creator_identity = coerce_mapping(payload.get("creator_identity"))
@@ -108,6 +111,7 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     warnings: list[str] = []
     request_payload = coerce_mapping(payload.get("request_payload"))
 
+    step_started_at = perf_counter()
     creator_result = fastmoss_creator_fetch_handler(
         _child_context(
             context,
@@ -117,6 +121,7 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         )
     )
     internal_steps["creator_fetch"] = creator_result.status
+    step_timings["creator_fetch"] = _step_timing(step_started_at, status=creator_result.status)
     if creator_result.status == "failed":
         return failed_result(
             context,
@@ -127,8 +132,16 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
                 message="FastMoss creator fetch failed.",
                 retryable=True,
             ),
-            summary={"creator_id": creator_id, "internal_steps": internal_steps},
-            result={"creator_fetch_result": creator_result.result, "product_hits": product_hits},
+            summary={
+                "creator_id": creator_id,
+                "internal_steps": internal_steps,
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+            result={
+                "creator_fetch_result": creator_result.result,
+                "product_hits": product_hits,
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
         )
     warnings.extend(creator_result.warnings)
     creator_payload = dict(creator_result.result)
@@ -138,8 +151,10 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     )
 
     media_result_payload: dict[str, Any] = {}
-    media_refs = list(creator_payload.get("media_refs") or [])
+    media_refs = _influencer_media_refs_for_sync(list(creator_payload.get("media_refs") or []))
+    fact_bundle = _filter_influencer_fact_media(fact_bundle)
     if media_refs:
+        step_started_at = perf_counter()
         media_result = media_asset_sync_handler(
             _child_context(
                 context,
@@ -161,8 +176,22 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         internal_steps["media_asset_sync"] = media_result.status
         media_result_payload = dict(media_result.result)
         warnings.extend(media_result.warnings)
+        step_timings["media_asset_sync"] = _step_timing(
+            step_started_at,
+            status=media_result.status,
+            asset_count=len(media_refs),
+            synced_asset_count=len(coerce_mapping_list(media_result_payload.get("synced_assets"))),
+            skipped_asset_count=len(list(creator_payload.get("media_refs") or [])) - len(media_refs),
+        )
     else:
         internal_steps["media_asset_sync"] = "skipped"
+        step_timings["media_asset_sync"] = _step_timing(
+            perf_counter(),
+            status="skipped",
+            asset_count=0,
+            synced_asset_count=0,
+            skipped_asset_count=len(list(creator_payload.get("media_refs") or [])),
+        )
 
     fact_bundle = merge_fact_bundles(
         fact_bundle,
@@ -170,9 +199,10 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     )
     creator_payload["fact_bundle"] = fact_bundle
     creator_payload["media_refs"] = _merge_media_refs(
-        list(creator_payload.get("media_refs") or []),
+        media_refs,
         coerce_mapping_list(media_result_payload.get("synced_assets")),
     )
+    step_started_at = perf_counter()
     fact_result = fact_bundle_upsert_handler(
         _child_context(
             context,
@@ -195,6 +225,7 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         )
     )
     internal_steps["fact_upsert"] = fact_result.status
+    step_timings["fact_upsert"] = _step_timing(step_started_at, status=fact_result.status)
     if fact_result.status == "failed":
         return failed_result(
             context,
@@ -205,12 +236,22 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
                 message="Creator fact persistence failed.",
                 retryable=True,
             ),
-            summary={"creator_id": creator_id, "internal_steps": internal_steps},
-            result={"creator_fetch_result": creator_payload, "fact_result": fact_result.result, "product_hits": product_hits},
+            summary={
+                "creator_id": creator_id,
+                "internal_steps": internal_steps,
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+            result={
+                "creator_fetch_result": {"creator_id": creator_id},
+                "fact_result": _compact_fact_result(fact_result.result),
+                "product_hits": _compact_product_hits(product_hits),
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
         )
     warnings.extend(fact_result.warnings)
 
     write_payload = _influencer_pool_write_payload(payload, creator_payload=creator_payload, product_hits=product_hits)
+    step_started_at = perf_counter()
     influencer_write = feishu_table_write_handler(
         _child_context(
             context,
@@ -221,11 +262,20 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     )
     internal_steps["influencer_pool_write"] = influencer_write.status
     warnings.extend(influencer_write.warnings)
+    influencer_write_result = _compact_write_result(influencer_write.result)
+    step_timings["influencer_pool_write"] = _step_timing(
+        step_started_at,
+        status=influencer_write.status,
+        record_count=len(list(write_payload.get("records") or [])),
+    )
 
     status_writebacks: list[dict[str, Any]] = []
+    status_writeback_started_at = perf_counter()
+    status_writeback_count = 0
     for hit in product_hits:
         if not _hit_group_terminal(hit):
             continue
+        status_writeback_count += 1
         status_payload = _status_writeback_payload(payload, hit=hit, influencer_write=influencer_write)
         status_result = feishu_table_write_handler(
             _child_context(
@@ -246,27 +296,32 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
                 "synced_creator_count": 1 if influencer_write.status in {"success", "partial_success", "skipped"} else 0,
                 "failed_creator_count": 1 if influencer_write.status == "failed" else 0,
                 "status_writeback": status_result.status,
-                "write_result": dict(status_result.result),
+                "write_result": _compact_write_result(status_result.result),
             }
         )
     internal_steps["product_status_reconcile"] = "success" if status_writebacks else "skipped"
+    step_timings["product_status_reconcile"] = _step_timing(
+        status_writeback_started_at,
+        status=internal_steps["product_status_reconcile"],
+        writeback_count=status_writeback_count,
+    )
+    final_step_timings = _final_step_timings(step_timings, started_at)
 
     result = {
         "creator_id": creator_id,
         "status": "success" if influencer_write.status in {"success", "partial_success", "skipped"} else "failed",
         "internal_steps": internal_steps,
-        "creator_fact_bundle": coerce_mapping(creator_payload.get("creator_fact_bundle")),
-        "fact_result": dict(fact_result.result),
-        "media_asset_sync": media_result_payload,
+        "step_timings": final_step_timings,
+        "creator_fact_bundle": _compact_creator_fact_bundle(coerce_mapping(creator_payload.get("creator_fact_bundle"))),
+        "fact_result": _compact_fact_result(fact_result.result),
+        "media_asset_sync": _compact_media_result(media_result_payload),
         "influencer_pool_write": {
             "status": influencer_write.status,
             "target_table_ref": write_payload.get("target_table_ref"),
             "mapper_code": write_payload.get("mapper_code"),
-            "records": list(write_payload.get("records") or []),
-            "write_result": dict(influencer_write.result),
+            "write_result": influencer_write_result,
         },
-        "creator_records": list(dict(influencer_write.result).get("records") or []),
-        "product_hits": product_hits,
+        "product_hits": _compact_product_hits(product_hits),
         "product_status_writebacks": status_writebacks,
         "raw_response_refs": list(creator_payload.get("raw_response_refs") or []),
     }
@@ -274,8 +329,13 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         "creator_id": creator_id,
         "product_hit_count": len(product_hits),
         "influencer_pool_write_status": influencer_write.status,
+        "influencer_write_written_count": influencer_write_result["written_count"],
+        "influencer_write_failed_count": influencer_write_result["failed_count"],
+        "influencer_write_created_count": _write_result_op_count(influencer_write_result, ("append", "create", "created")),
+        "influencer_write_updated_count": _write_result_op_count(influencer_write_result, ("update", "updated")),
         "product_status_writeback_count": len(status_writebacks),
         "internal_steps": internal_steps,
+        "step_timings": final_step_timings,
     }
     if influencer_write.status == "failed":
         return failed_result(
@@ -294,6 +354,191 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     if influencer_write.status == "partial_success":
         return partial_success_result(context, summary=summary, result=result, warnings=warnings)
     return success_result(context, summary=summary, result=result, warnings=warnings)
+
+
+def _step_timing(started_at: float, *, status: str, **metadata: Any) -> dict[str, Any]:
+    timing = {
+        "status": status,
+        "duration_seconds": round(max(perf_counter() - started_at, 0.0), 3),
+    }
+    for key, value in metadata.items():
+        if value in (None, ""):
+            continue
+        timing[key] = value
+    return timing
+
+
+def _final_step_timings(step_timings: Mapping[str, dict[str, Any]], started_at: float) -> dict[str, Any]:
+    return {
+        **{key: dict(value) for key, value in step_timings.items()},
+        "total": {
+            "status": "observed",
+            "duration_seconds": round(max(perf_counter() - started_at, 0.0), 3),
+        },
+    }
+
+
+def _compact_creator_fact_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = coerce_mapping(bundle.get("metrics"))
+    contact = coerce_mapping(bundle.get("contact"))
+    return {
+        "creator_id": first_non_empty(bundle.get("creator_id")),
+        "uid": first_non_empty(bundle.get("uid")),
+        "unique_id": first_non_empty(bundle.get("unique_id")),
+        "display_name": first_non_empty(bundle.get("display_name"), bundle.get("nickname")),
+        "nickname": first_non_empty(bundle.get("nickname")),
+        "profile_url": first_non_empty(bundle.get("profile_url")),
+        "avatar_url": first_non_empty(bundle.get("avatar_url")),
+        "metrics": {
+            key: metrics.get(key)
+            for key in (
+                "follower_count",
+                "fans_count",
+                "aweme_28d_count",
+                "aweme_28_count",
+                "video_count",
+                "video_sale_amount",
+                "video_gmv",
+                "live_sale_amount",
+                "live_gmv",
+            )
+            if metrics.get(key) not in (None, "")
+        },
+        "contact": {
+            key: contact.get(key)
+            for key in ("normalized_text",)
+            if contact.get(key) not in (None, "")
+        },
+    }
+
+
+def _compact_fact_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    persisted_counts = coerce_mapping(result.get("persisted_counts"))
+    return {
+        "persisted_counts": dict(persisted_counts),
+        "upserted_entity_count": len(list(result.get("upserted_entities") or [])),
+        "upserted_relation_count": len(list(result.get("upserted_relations") or [])),
+        "observation_ref_count": len(list(result.get("observation_refs") or [])),
+        "persistence_mode": first_non_empty(result.get("persistence_mode")),
+    }
+
+
+def _compact_media_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    synced_assets = coerce_mapping_list(result.get("synced_assets"))
+    artifact_refs = coerce_mapping_list(result.get("artifact_refs"))
+    return {
+        "synced_count": len(synced_assets),
+        "artifact_count": len(artifact_refs),
+        "synced_assets": [
+            {
+                "entity_type": first_non_empty(asset.get("entity_type")),
+                "entity_external_id": first_non_empty(asset.get("entity_external_id")),
+                "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type")),
+                "sync_state": first_non_empty(asset.get("sync_state")),
+                "object_key": first_non_empty(asset.get("object_key")),
+                "remote_uri": first_non_empty(asset.get("remote_uri")),
+                "file_token": first_non_empty(asset.get("file_token")),
+            }
+            for asset in synced_assets
+        ],
+        "artifact_refs": [
+            {
+                "artifact_id": first_non_empty(ref.get("artifact_id")),
+                "object_key": first_non_empty(ref.get("object_key")),
+                "remote_uri": first_non_empty(ref.get("remote_uri")),
+            }
+            for ref in artifact_refs
+        ],
+    }
+
+
+def _compact_write_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    records = [
+        {
+            "business_entity_key": first_non_empty(record.get("business_entity_key")),
+            "record_id": first_non_empty(record.get("record_id")),
+            "op": first_non_empty(record.get("op")),
+            "status": first_non_empty(record.get("status")),
+            "error_code": first_non_empty(record.get("error_code")),
+        }
+        for record in coerce_mapping_list(result.get("records"))
+    ]
+    return {
+        "written_count": int(result.get("written_count") or 0),
+        "skipped_count": int(result.get("skipped_count") or 0),
+        "failed_count": int(result.get("failed_count") or 0),
+        "target_record_ids": list(result.get("target_record_ids") or []),
+        "records": records,
+    }
+
+
+def _write_result_op_count(result: Mapping[str, Any], ops: tuple[str, ...]) -> int:
+    allowed = {first_non_empty(op) for op in ops if first_non_empty(op)}
+    count = 0
+    for record in coerce_mapping_list(result.get("records")):
+        if first_non_empty(record.get("status")) != "success":
+            continue
+        if first_non_empty(record.get("op")) in allowed:
+            count += 1
+    return count
+
+
+def _compact_product_hits(product_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for hit in product_hits:
+        compacted.append(
+            {
+                "source_record_id": first_non_empty(hit.get("source_record_id")),
+                "product_id": first_non_empty(hit.get("product_id")),
+                "product_key": first_non_empty(hit.get("product_key")),
+                "holiday": first_non_empty(hit.get("holiday")),
+                "matched_product_sold_count": hit.get("matched_product_sold_count"),
+                "product_group_creator_count": hit.get("product_group_creator_count"),
+                "product_group_terminal": bool(hit.get("product_group_terminal")) if "product_group_terminal" in hit else None,
+                "source_product_images": _compact_attachment_refs(list(hit.get("source_product_images") or [])),
+            }
+        )
+    return compacted
+
+
+def _compact_attachment_refs(items: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        refs.append(
+            {
+                "file_token": first_non_empty(item.get("file_token")),
+                "name": first_non_empty(item.get("name")),
+                "url": first_non_empty(item.get("url")),
+                "tmp_url": first_non_empty(item.get("tmp_url")),
+            }
+        )
+    return refs
+
+
+def _influencer_media_refs_for_sync(media_refs: list[Any]) -> list[dict[str, Any]]:
+    return [
+        dict(ref)
+        for ref in media_refs
+        if isinstance(ref, Mapping) and _is_creator_avatar_media(ref)
+    ]
+
+
+def _filter_influencer_fact_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]:
+    filtered = dict(fact_bundle)
+    filtered["media_assets"] = [
+        dict(asset)
+        for asset in coerce_mapping_list(filtered.get("media_assets"))
+        if _is_creator_avatar_media(asset)
+    ]
+    return filtered
+
+
+def _is_creator_avatar_media(media: Mapping[str, Any]) -> bool:
+    entity_type = first_non_empty(media.get("entity_type")).lower()
+    role = first_non_empty(media.get("media_role"), media.get("media_type")).lower()
+    return entity_type == "creator" and role in {"creator_avatar", "avatar"}
 
 
 def _product_fetch_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
