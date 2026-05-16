@@ -390,6 +390,50 @@ def test_fastmoss_security_browser_resolve_preserves_audit_on_security_failure(
     assert "browser-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
 
 
+def test_fastmoss_security_browser_resolve_preserves_auth_failure_diagnostics(
+    runtime_db_url: str,
+) -> None:
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "verification_request": {
+                    "method": "GET",
+                    "path": "/api/goods/v3/base",
+                    "params": {"product_id": "1732183420263764252"},
+                    "region": "US",
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "mock_fastmoss_security_browser_resolve": {
+                    "response_code": "MAG_AUTH_3002",
+                    "ext_is_login": "1",
+                    "cookies": [
+                        {
+                            "name": "fd_tk",
+                            "value": "browser-token",
+                            "domain": ".fastmoss.com",
+                            "path": "/",
+                            "secure": True,
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_type == "auth_failure"
+    assert result.error.error_code == "fastmoss_auth_session_recovery_required"
+    assert result.result["verification"]["response_code"] == "MAG_AUTH_3002"
+    assert result.result["browser_cookie_export"]["cookie_count"] == 1
+    assert "browser-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+
 def test_fastmoss_login_cookie_bootstrap_refreshes_cache_without_leaking_status(
     monkeypatch,
     runtime_db_url: str,

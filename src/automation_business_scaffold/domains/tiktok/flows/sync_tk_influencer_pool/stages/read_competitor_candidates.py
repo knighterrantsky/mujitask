@@ -44,6 +44,7 @@ def _advance_stage_read_competitor_candidates(*, store: RuntimeStore, request: A
                         "adapter_code": "influencer_pool_source_adapter",
                         "cursor_context": dict(request.stage_cursor or {}),
                         "reply_target": str(request.reply_target or ""),
+                        "max_source_rows": _non_negative_int(request_payload.get("max_source_rows")),
                         "source_record_ids": list(request_payload.get("source_record_ids") or []),
                         **_feishu_common_payload(request_payload),
                     },
@@ -69,3 +70,11 @@ def _advance_stage_read_competitor_candidates(*, store: RuntimeStore, request: A
 def advance(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:
     del workflow
     return _advance_stage_read_competitor_candidates(store=store, request=request)
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)

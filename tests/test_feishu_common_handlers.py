@@ -93,6 +93,34 @@ def test_influencer_source_adapter_honors_explicit_source_record_ids() -> None:
     assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-target"]
 
 
+def test_influencer_source_adapter_honors_max_source_rows() -> None:
+    rows = [
+        {
+            "record_id": f"rec-{index}",
+            "fields": {
+                "SKU-ID": str(1732183562851553564 + index),
+                "产品链接": f"https://www.tiktok.com/shop/pdp/{1732183562851553564 + index}",
+                "达人查找状态": "待查找",
+            },
+        }
+        for index in range(3)
+    ]
+
+    result = influencer_pool_source_adapter(
+        rows,
+        {
+            "source_table_ref": "feishu://source",
+            "request_payload": {"max_source_rows": 1},
+            "filter_spec": {"candidate_status": ["待查找"]},
+        },
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-0"]
+    assert result["adapter_summary"]["source_row_count"] == 1
+    assert result["adapter_summary"]["limited_count"] == 2
+    assert result["adapter_summary"]["max_source_rows"] == 1
+
+
 def test_selection_source_adapter_skips_complete_required_fields_even_when_optional_missing() -> None:
     rows = [
         {

@@ -17,6 +17,7 @@ _STAGE_MODULES = {
     "read_competitor_candidates": "read_competitor_candidates",
     "dispatch_product_jobs": "dispatch_product_jobs",
     "discover_related_creators": "discover_related_creators",
+    "fastmoss_security_browser_fallback": "fastmoss_security_browser_fallback",
     "sync_influencer_pool": "sync_influencer_pool",
     "writeback_competitor_status": "writeback_competitor_status",
     "collect_creator_detail": "collect_creator_detail",
@@ -49,23 +50,26 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
 
     return _finalize_request(store=store, request=request, workflow=workflow, force_result=force_result)
 
-def release_request_after_child_completion(
-    store: RuntimeStore,
-    *,
-    request_id: str,
-) -> list[dict[str, Any]]:
+def release_request_after_child_completion(store: RuntimeStore, *, request_id: str) -> list[dict[str, Any]]:
     request = store.load_task_request(request_id=request_id)
     if request.task_code != TASK_CODE:
+        return []
+    if str(request.status or "") == "cancelling":
+        return [store.reconcile_cancelling_request(request_id=request_id)]
+    if str(request.status or "") in {"finished", "cancelled"}:
         return []
     current_stage = _current_stage(request)
     if current_stage not in WAITING_STAGES:
         return []
-    stage_job_code = STAGE_TO_JOB_CODE.get(current_stage, "")
-    stage_jobs = _stage_api_jobs(store=store, request_id=request_id, stage_code=current_stage, job_code=stage_job_code)
-    if not stage_jobs:
-        return []
-    if any(str(job.get("status") or "") in ACTIVE_STATUSES for job in stage_jobs):
-        return []
+    fallback_release = current_stage in FASTMOSS_FALLBACK_SOURCE_STAGES and _fastmoss_browser_fallback_candidates(
+        store=store, request_id=request_id, source_stage_code=current_stage
+    )
+    if fallback_release:
+        current_stage = FASTMOSS_SECURITY_FALLBACK_STAGE_CODE
+    else:
+        stage_records = _stage_child_records(store=store, request_id=request_id, stage_code=current_stage)
+        if not stage_records or _has_active_children(stage_records):
+            return []
     _refresh_request_counts(store=store, request_id=request_id)
     store.update_task_request(
         request_id=request_id,
@@ -133,9 +137,7 @@ def _refresh_request_counts(*, store: RuntimeStore, request_id: str) -> None:
     request = store.load_task_request(request_id=request_id)
     api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
     executions = store.list_task_executions(request_id=request_id)
-    child_summary = summarize_child_status_counts(
-        build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions)
-    )
+    child_summary = summarize_child_status_counts(build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions))
     store.update_task_request(
         request_id=request_id,
         child_total_count=child_summary.total_count,

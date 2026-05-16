@@ -276,6 +276,11 @@ class ApiWorkerJobRepository:
                           AND request.status = 'waiting'
                           AND job.status = 'pending'
                           AND job.available_at <= :available_at
+                          AND (
+                              COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
+                              OR COALESCE(NULLIF(job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
+                              OR job.payload_json::jsonb ->> 'stage_code' = request.current_stage
+                          )
                           AND NOT EXISTS (
                               SELECT 1
                               FROM task_request older_request
@@ -352,6 +357,11 @@ class ApiWorkerJobRepository:
                           FROM task_request request
                           WHERE request.request_id = api_worker_job.request_id
                             AND request.status = 'waiting'
+                            AND (
+                                COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
+                                OR COALESCE(NULLIF(api_worker_job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
+                                OR api_worker_job.payload_json::jsonb ->> 'stage_code' = request.current_stage
+                            )
                             AND NOT EXISTS (
                                 SELECT 1
                                 FROM task_request older_request
@@ -661,6 +671,69 @@ class ApiWorkerJobRepository:
                     "updated_at": now,
                     "last_progress_at": now,
                     "progress_message": "API worker job requeued after waiting work completed.",
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
+    def mark_waiting_api_worker_job_failed(
+        self,
+        *,
+        job_id: str,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'finished',
+                        result_status = 'failed',
+                        stage = 'failed',
+                        progress_stage = 'failed',
+                        summary_json = :summary_json,
+                        result_json = :result_json,
+                        error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        run_id = '',
+                        updated_at = :updated_at,
+                        finished_at = :updated_at,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message
+                    WHERE job_id = :job_id
+                      AND status = 'waiting'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM task_request request
+                          WHERE request.request_id = api_worker_job.request_id
+                            AND request.status = 'cancelling'
+                      )
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "summary_json": _json_dumps(summary or {}),
+                    "result_json": _json_dumps(result or {}),
+                    "error_text": str(error_text or ""),
+                    "error_type": str(error_type or ""),
+                    "error_code": str(error_code or ""),
+                    "dead_letter_reason": str(dead_letter_reason or "browser_fallback_failed"),
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": str(error_text or "API worker job failed after waiting work failed."),
                 },
             )
         return self.load_api_worker_job(job_id=job_id)

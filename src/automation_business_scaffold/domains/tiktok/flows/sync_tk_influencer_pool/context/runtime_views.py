@@ -252,6 +252,81 @@ def _job_stage_code(job: Mapping[str, Any]) -> str:
 def _stage_has_children(*, store: RuntimeStore, request_id: str, stage_code: str, job_code: str) -> bool:
     return bool(_stage_api_jobs(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code))
 
+def _fastmoss_browser_fallback_candidates(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    source_stage_code: str = "",
+) -> list[dict[str, Any]]:
+    stage_specs = (
+        (DISCOVER_CREATORS_STAGE_CODE, "product_creator_discovery"),
+        (SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync"),
+    )
+    candidates: list[dict[str, Any]] = []
+    for stage_code, job_code in stage_specs:
+        if source_stage_code and source_stage_code != stage_code:
+            continue
+        summaries = _stage_api_job_summaries(
+            store=store,
+            request_id=request_id,
+            stage_code=stage_code,
+            job_code=job_code,
+        )
+        for summary in summaries:
+            if str(summary.get("status") or "") != "waiting":
+                continue
+            if _job_handler_status(summary) != "fallback_required":
+                continue
+            if int(coerce_mapping(summary.get("payload")).get("fastmoss_security_browser_fallback_attempt") or 0) > 0:
+                continue
+            load_job = getattr(store, "load_api_worker_job", None)
+            full_job = load_job(job_id=str(summary.get("job_id") or "")) if callable(load_job) else summary
+            if _is_fastmoss_browser_fallback_job(full_job or summary):
+                candidates.append(dict(full_job or summary))
+    return sorted(candidates, key=_job_sort_key)
+
+
+def _is_fastmoss_browser_fallback_job(job: Mapping[str, Any]) -> bool:
+    result_payload = extract_effective_result_payload(job)
+    if coerce_mapping(result_payload.get("verification_request")).get("path"):
+        return True
+    handler_result = coerce_mapping(coerce_mapping(job.get("result")).get("handler_result"))
+    handler_error = coerce_mapping(handler_result.get("error"))
+    fallback_reason = _first_non_empty(
+        result_payload.get("fallback_reason"),
+        coerce_mapping(job.get("summary")).get("fallback_reason"),
+        handler_error.get("fallback_reason"),
+    )
+    error_code = _first_non_empty(
+        job.get("error_code"),
+        coerce_mapping(job.get("summary")).get("error_code"),
+        handler_error.get("error_code"),
+    )
+    return fallback_reason in {
+        "fastmoss_api_security_verification",
+        "fastmoss_auth_session_recovery",
+    } or error_code in {
+        "fastmoss_security_verification_required",
+        "fastmoss_auth_session_recovery_required",
+        "fastmoss_auth_required",
+        "fastmoss_session_conflict_or_external_login",
+    }
+
+
+def _job_sort_key(job: Mapping[str, Any]) -> tuple[float, float, int]:
+    return (
+        _float_sort_value(job.get("updated_at")),
+        _float_sort_value(job.get("created_at")),
+        int(job.get("queue_seq") or 0),
+    )
+
+
+def _float_sort_value(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
 def _creator_candidate_count_from_product_jobs(product_jobs: list[dict[str, Any]]) -> int:
     count = 0
     for job in product_jobs:

@@ -32,6 +32,7 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security.slider_
     _try_resolve_fastmoss_slider_security_check,
 )
 from automation_business_scaffold.capabilities.browser.fastmoss_security.request_verification import (
+    FASTMOSS_AUTH_VERIFICATION_CODES,
     FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
     FASTMOSS_SECURITY_VERIFICATION_CODES,
     is_fastmoss_security_error as _is_fastmoss_security_error,
@@ -84,10 +85,36 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
             )
 
         cookies = coerce_mapping_list(browser_result.get("cookies"))
+        verification = coerce_mapping(browser_result.get("verification"))
+        if _is_fastmoss_auth_response_code(verification.get("response_code")):
+            error = build_error(
+                error_type="auth_failure",
+                error_code="fastmoss_auth_session_recovery_required",
+                message="FastMoss auth recovery is still required after browser fallback.",
+                retryable=False,
+                details={
+                    "verified_path": first_non_empty(verification.get("verified_path"), verified_path),
+                    "response_code": first_non_empty(verification.get("response_code")),
+                    "ext_is_login": first_non_empty(verification.get("ext_is_login")),
+                },
+            )
+            return failed_result(
+                context,
+                error=error,
+                summary=_browser_resolve_failure_summary(
+                    browser_result,
+                    error_code="fastmoss_auth_session_recovery_required",
+                ),
+                result=_browser_resolve_result_payload(
+                    payload,
+                    browser_result,
+                    resolved=False,
+                    error_details=error.details,
+                ),
+            )
         if not cookies:
             raise ValueError("FastMoss browser security resolve did not export cookies.")
 
-        verification = coerce_mapping(browser_result.get("verification"))
         if verification.get("response_code") in FASTMOSS_SECURITY_VERIFICATION_CODES:
             exc = FastMossHTTPError(
                 "FastMoss search security verification is still required after browser fallback.",
@@ -705,6 +732,11 @@ def _optional_int(value: Any) -> int | None:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _is_fastmoss_auth_response_code(value: Any) -> bool:
+    code = first_non_empty(value)
+    return code in FASTMOSS_AUTH_VERIFICATION_CODES or code.startswith("MAG_AUTH_")
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "fastmoss_security_browser_resolve_handler"]

@@ -119,6 +119,7 @@ def influencer_timeout_rules() -> tuple[TimeoutRule, ...]:
         TimeoutRule("feishu_table_read", 180, "Competitor candidate reads should finish quickly."),
         TimeoutRule("product_creator_discovery", 420, "One-product creator discovery business job timeout."),
         TimeoutRule("influencer_creator_sync", 720, "One-creator detail, fact, media, and Feishu sync business job timeout."),
+        TimeoutRule("fastmoss_security_browser_resolve", 900, "FastMoss auth/security browser fallback timeout."),
         TimeoutRule("fastmoss_product_fetch", 300, "Related creator discovery timeout."),
         TimeoutRule("fastmoss_creator_fetch", 300, "Creator detail fetch timeout."),
         TimeoutRule("fact_bundle_upsert", 180, "Influencer fact persistence timeout."),

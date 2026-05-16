@@ -17,6 +17,16 @@ def _advance_stage_discover_related_creators(*, store: RuntimeStore, request: An
         stage_code=DISCOVER_CREATORS_STAGE_CODE,
         job_code="product_creator_discovery",
     )
+    fallback_candidates = _fastmoss_browser_fallback_candidates(
+        store=store,
+        request_id=request.request_id,
+        source_stage_code=DISCOVER_CREATORS_STAGE_CODE,
+    )
+    if fallback_candidates:
+        return _advance_stage_result(
+            next_stage=FASTMOSS_SECURITY_FALLBACK_STAGE_CODE,
+            details={"fallback_candidate_count": len(fallback_candidates)},
+        )
     if any(str(job.get("status") or "") in ACTIVE_STATUSES for job in product_jobs):
         return _waiting_stage_result(
             current_stage=DISCOVER_CREATORS_STAGE_CODE,

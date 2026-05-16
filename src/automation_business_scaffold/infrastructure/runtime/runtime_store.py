@@ -943,6 +943,27 @@ class RuntimeStore:
             stage=stage,
         )
 
+    def mark_waiting_api_worker_job_failed(
+        self,
+        *,
+        job_id: str,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
+    ) -> dict[str, Any]:
+        return self._api_worker_job_repo.mark_waiting_api_worker_job_failed(
+            job_id=job_id,
+            summary=summary,
+            result=result,
+            error_text=error_text,
+            error_type=error_type,
+            error_code=error_code,
+            dead_letter_reason=dead_letter_reason,
+        )
+
     def mark_api_worker_job_retry_or_failed(
         self,
         *,

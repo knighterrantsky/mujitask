@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from time import perf_counter
 from typing import Any
 
-from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerNextAction, HandlerResult
 from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
@@ -12,6 +12,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     coerce_mapping,
     coerce_mapping_list,
     failed_result,
+    fallback_required_result,
     first_non_empty,
     merge_fact_bundles,
     partial_success_result,
@@ -34,6 +35,15 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
         step_code="fastmoss_product_fetch",
     )
     product_result = fastmoss_product_fetch_handler(product_context)
+    if _requires_fastmoss_browser_recovery(product_result):
+        return _fastmoss_recovery_required_or_failed(
+            context,
+            payload=payload,
+            child_result=product_result,
+            step_code="fastmoss_product_fetch",
+            summary={"product_fetch_status": product_result.status},
+            result={"product_fetch_result": product_result.result},
+        )
     if product_result.status == "failed":
         return failed_result(
             context,
@@ -122,6 +132,23 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     )
     internal_steps["creator_fetch"] = creator_result.status
     step_timings["creator_fetch"] = _step_timing(step_started_at, status=creator_result.status)
+    if _requires_fastmoss_browser_recovery(creator_result):
+        return _fastmoss_recovery_required_or_failed(
+            context,
+            payload=payload,
+            child_result=creator_result,
+            step_code="fastmoss_creator_fetch",
+            summary={
+                "creator_id": creator_id,
+                "internal_steps": internal_steps,
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+            result={
+                "creator_fetch_result": creator_result.result,
+                "product_hits": _compact_product_hits(product_hits),
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+        )
     if creator_result.status == "failed":
         return failed_result(
             context,
@@ -376,6 +403,138 @@ def _final_step_timings(step_timings: Mapping[str, dict[str, Any]], started_at: 
             "duration_seconds": round(max(perf_counter() - started_at, 0.0), 3),
         },
     }
+
+
+def _requires_fastmoss_browser_recovery(result: HandlerResult) -> bool:
+    if result.status == "fallback_required":
+        return True
+    if result.status != "failed" or result.error is None:
+        return False
+    return result.error.error_code in {
+        "fastmoss_auth_required",
+        "fastmoss_auth_session_recovery_required",
+        "fastmoss_session_conflict_or_external_login",
+        "fastmoss_security_verification_required",
+    }
+
+
+def _fastmoss_recovery_required_or_failed(
+    context: HandlerContext,
+    *,
+    payload: Mapping[str, Any],
+    child_result: HandlerResult,
+    step_code: str,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> HandlerResult:
+    if int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) > 0:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="auth_failure",
+                error_code="fastmoss_browser_fallback_retry_exhausted",
+                message="FastMoss still requires auth or security recovery after browser fallback.",
+                retryable=False,
+                details={"step_code": step_code, "child_error_code": _child_error_code(child_result)},
+            ),
+            summary={**summary, "fallback_source_step": step_code},
+            result=result,
+        )
+    fallback_payload = _fastmoss_browser_recovery_payload(
+        context,
+        parent_payload=payload,
+        child_result=child_result,
+        step_code=step_code,
+    )
+    error = child_result.error or build_error(
+        error_type="auth_failure",
+        error_code="fastmoss_auth_session_recovery_required",
+        message="FastMoss auth or security recovery is required.",
+        retryable=False,
+        fallback_allowed=True,
+        fallback_reason=str(fallback_payload.get("fallback_reason") or "fastmoss_auth_session_recovery"),
+    )
+    next_action = child_result.next_action
+    if next_action.type == "none":
+        next_action = HandlerNextAction(type="browser_fallback", payload=fallback_payload)
+    return fallback_required_result(
+        context,
+        error=error,
+        summary={
+            **summary,
+            "fallback_required": True,
+            "fallback_source_step": step_code,
+            "fallback_reason": str(fallback_payload.get("fallback_reason") or ""),
+        },
+        result={**result, **fallback_payload},
+        next_action=next_action,
+    )
+
+
+def _fastmoss_browser_recovery_payload(
+    context: HandlerContext,
+    *,
+    parent_payload: Mapping[str, Any],
+    child_result: HandlerResult,
+    step_code: str,
+) -> dict[str, Any]:
+    payload = dict(coerce_mapping(child_result.result))
+    payload.setdefault("fallback_required", True)
+    payload.setdefault("fallback_reason", _fastmoss_fallback_reason(child_result))
+    payload.setdefault("source_handler_code", child_result.handler_code)
+    payload["retry_handler_code"] = context.handler_code
+    payload["source_step_code"] = step_code
+    payload.setdefault("operation", child_result.handler_code)
+    if not coerce_mapping(payload.get("verification_request")):
+        verification_request = _fallback_verification_request_from_payload(parent_payload, child_result.handler_code)
+        if verification_request:
+            payload["verification_request"] = verification_request
+    return payload
+
+
+def _fastmoss_fallback_reason(result: HandlerResult) -> str:
+    if result.error and result.error.fallback_reason:
+        return result.error.fallback_reason
+    if result.error and result.error.error_code in {
+        "fastmoss_auth_required",
+        "fastmoss_auth_session_recovery_required",
+        "fastmoss_session_conflict_or_external_login",
+    }:
+        return "fastmoss_auth_session_recovery"
+    return "fastmoss_api_security_verification"
+
+
+def _child_error_code(result: HandlerResult) -> str:
+    return result.error.error_code if result.error is not None else ""
+
+
+def _fallback_verification_request_from_payload(parent_payload: Mapping[str, Any], handler_code: str) -> dict[str, Any]:
+    if handler_code == "fastmoss_product_fetch":
+        product_identity = coerce_mapping(parent_payload.get("product_identity"))
+        source_context = coerce_mapping(parent_payload.get("source_context"))
+        product_id = first_non_empty(product_identity.get("product_id"), source_context.get("product_id"))
+        return {
+            "method": "GET",
+            "path": "/api/goods/v3/base",
+            "params": {"product_id": product_id} if product_id else {},
+            "region": first_non_empty(parent_payload.get("region"), "US"),
+            "stage": "product.auth_recovery",
+        }
+    if handler_code == "fastmoss_creator_fetch":
+        creator_identity = coerce_mapping(parent_payload.get("creator_identity"))
+        uid = first_non_empty(
+            creator_identity.get("uid"),
+            creator_identity.get("creator_id"),
+            creator_identity.get("unique_id"),
+        )
+        return {
+            "method": "GET",
+            "path": "/api/author/v3/detail/baseInfo",
+            "params": {"uid": uid} if uid else {},
+            "region": first_non_empty(parent_payload.get("region"), "US"),
+            "stage": "creator.auth_recovery",
+        }
+    return {}
 
 
 def _compact_creator_fact_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:

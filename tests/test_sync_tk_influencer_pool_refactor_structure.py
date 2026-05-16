@@ -18,6 +18,7 @@ STAGE_CODES = {
     "read_competitor_candidates",
     "dispatch_product_jobs",
     "discover_related_creators",
+    "fastmoss_security_browser_fallback",
     "sync_influencer_pool",
     "collect_creator_detail",
     "persist_creator_facts",

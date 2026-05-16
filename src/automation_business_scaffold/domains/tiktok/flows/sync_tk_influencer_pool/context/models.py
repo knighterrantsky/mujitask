@@ -36,6 +36,7 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     summarize_child_outcomes,
     summarize_stage_children,
     timeout_seconds_for_workflow as _timeout_seconds,
+    update_request_stage_cursor as _update_request_cursor,
 )
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import (
     keyword_search_parameter_mapper,
@@ -63,6 +64,8 @@ DISCOVER_CREATORS_STAGE_CODE = "discover_related_creators"
 
 SYNC_INFLUENCER_POOL_STAGE_CODE = "sync_influencer_pool"
 
+FASTMOSS_SECURITY_FALLBACK_STAGE_CODE = "fastmoss_security_browser_fallback"
+
 COLLECT_CREATOR_STAGE_CODE = "collect_creator_detail"
 
 PERSIST_FACTS_STAGE_CODE = "persist_creator_facts"
@@ -77,6 +80,7 @@ STAGE_TO_JOB_CODE = {
     READ_STAGE_CODE: "feishu_table_read",
     DISCOVER_CREATORS_STAGE_CODE: "product_creator_discovery",
     SYNC_INFLUENCER_POOL_STAGE_CODE: "influencer_creator_sync",
+    FASTMOSS_SECURITY_FALLBACK_STAGE_CODE: "fastmoss_security_browser_resolve",
     COLLECT_CREATOR_STAGE_CODE: "fastmoss_creator_fetch",
     PERSIST_FACTS_STAGE_CODE: "fact_bundle_upsert",
     WRITE_POOL_STAGE_CODE: "feishu_table_write",
@@ -87,10 +91,30 @@ WAITING_STAGES = {
     READ_STAGE_CODE,
     DISCOVER_CREATORS_STAGE_CODE,
     SYNC_INFLUENCER_POOL_STAGE_CODE,
+    FASTMOSS_SECURITY_FALLBACK_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
 }
 
-ACTIVE_STATUSES = {"pending", "running"}
+FASTMOSS_FALLBACK_SOURCE_STAGES = (
+    DISCOVER_CREATORS_STAGE_CODE,
+    SYNC_INFLUENCER_POOL_STAGE_CODE,
+)
+
+RUNTIME_DB_PASSTHROUGH_KEYS: tuple[str, ...] = ()
+
+FASTMOSS_BROWSER_PASSTHROUGH_KEYS = (
+    "browser_headless",
+    "browser_force_open",
+    "browser_timeout_ms",
+    "fastmoss_browser_timeout_ms",
+    "fastmoss_slider_max_attempts",
+    "fastmoss_slider_appear_timeout_ms",
+    "fastmoss_slider_settle_ms",
+    "fastmoss_slider_confirm_ms",
+    "mock_fastmoss_security_browser_resolve",
+)
+
+ACTIVE_STATUSES = {"pending", "running", "waiting"}
 
 SUCCESSFUL_HANDLER_STATUSES = {"success", "partial_success"}
 
