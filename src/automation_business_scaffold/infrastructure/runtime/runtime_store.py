@@ -476,6 +476,12 @@ class RuntimeStore:
     def list_task_executions(self, *, request_id: str) -> list[RuntimeTaskExecutionRecord]:
         return self._request_status_query.list_task_executions(request_id=request_id)
 
+    def list_task_execution_summaries_for_request(self, *, request_id: str) -> list[dict[str, Any]]:
+        return self._request_status_query.list_task_execution_summaries_for_request(request_id=request_id)
+
+    def summarize_task_executions_for_request(self, *, request_id: str) -> dict[str, Any]:
+        return self._request_status_query.summarize_task_executions_for_request(request_id=request_id)
+
     def list_request_outbox(self, *, request_id: str) -> list[NotificationOutboxRecord]:
         return self._request_status_query.list_request_outbox(request_id=request_id)
 

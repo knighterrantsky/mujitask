@@ -451,7 +451,7 @@ def test_reconcile_waiting_children_keeps_fallback_required_parent_waiting(runti
     job_id = jobs["created_records"][0]["job_id"]
     claimed_job = store.claim_next_api_worker_job(worker_id="api-worker-a", lease_seconds=30.0)
     assert claimed_job is not None and claimed_job["job_id"] == job_id
-    store.mark_api_worker_job_success(
+    store.mark_api_worker_job_waiting(
         job_id=job_id,
         run_id=claimed_job["run_id"],
         summary={"handler_status": "fallback_required"},
@@ -471,19 +471,19 @@ def test_reconcile_waiting_children_keeps_fallback_required_parent_waiting(runti
         )
 
     assert counts["total_count"] == 1
-    assert counts["terminal_count"] == 1
-    assert counts["fallback_required_count"] == 1
+    assert counts["terminal_count"] == 0
+    assert counts["fallback_required_count"] == 0
     assert counts["success_count"] == 0
     assert counts["failed_count"] == 0
     assert counts["skipped_count"] == 0
-    assert counts["active_count"] == 0
+    assert counts["active_count"] == 1
 
     reconciled = store.reconcile_request_waiting_children(request_id=request.request_id)
 
     assert reconciled["transitioned"] is False
-    assert reconciled["fallback_required_count"] == 1
+    assert reconciled["fallback_required_count"] == 0
     assert reconciled["child_total_count"] == 1
-    assert reconciled["child_terminal_count"] == 1
+    assert reconciled["child_terminal_count"] == 0
     assert reconciled["child_success_count"] == 0
     assert reconciled["child_failed_count"] == 0
     assert reconciled["child_skipped_count"] == 0

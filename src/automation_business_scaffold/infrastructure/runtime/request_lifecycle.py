@@ -28,11 +28,7 @@ class RuntimeRequestLifecycle:
                     FROM (
                         SELECT
                             status,
-                            COALESCE(
-                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
-                                NULLIF(result_status, ''),
-                                status
-                            ) AS effective_status
+                            COALESCE(NULLIF(result_status, ''), status) AS effective_status
                         FROM task_execution
                         WHERE request_id = :request_id
                     ) child
@@ -62,11 +58,7 @@ class RuntimeRequestLifecycle:
                     FROM (
                         SELECT
                             status,
-                            COALESCE(
-                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
-                                NULLIF(result_status, ''),
-                                status
-                            ) AS effective_status
+                            COALESCE(NULLIF(result_status, ''), status) AS effective_status
                         FROM api_worker_job
                         WHERE request_id = :request_id
                     ) child
@@ -406,11 +398,7 @@ class RuntimeRequestLifecycle:
                     FROM (
                         SELECT
                             status,
-                            COALESCE(
-                                NULLIF(result_json, '')::jsonb #>> '{handler_result,status}',
-                                NULLIF(result_status, ''),
-                                status
-                            ) AS effective_status
+                            COALESCE(NULLIF(result_status, ''), status) AS effective_status
                         FROM task_execution
                         WHERE request_id = :request_id
                     ) child

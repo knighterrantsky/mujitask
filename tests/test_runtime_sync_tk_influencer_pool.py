@@ -19,6 +19,9 @@ from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.s
 )
 from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import build_tiktok_outbox_message_text
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+from automation_business_scaffold.control_plane.executor.request_aggregation import (
+    build_runtime_request_payload,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 
@@ -192,6 +195,65 @@ def test_api_worker_job_summary_query_does_not_load_large_result(runtime_db_url:
     assert len(summaries) == 1
     assert summaries[0]["result"] == {}
     assert summaries[0]["summary"]["influencer_pool_write_status"] == "success"
+
+
+def test_runtime_request_payload_does_not_load_large_child_results(runtime_db_url: str, monkeypatch) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = _create_request(store)
+    store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code=TASK_CODE,
+        job_code="influencer_creator_sync",
+        jobs=[
+            {
+                "business_key": "creator-heavy",
+                "dedupe_key": f"{request.request_id}:creator-heavy",
+                "payload": {"stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE},
+            }
+        ],
+    )
+    store.update_task_request(
+        request_id=request.request_id,
+        status="waiting",
+        current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        progress_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request.request_id,
+        job_code="influencer_creator_sync",
+    )
+    assert claimed is not None
+    store.mark_api_worker_job_success(
+        job_id=str(claimed["job_id"]),
+        run_id=str(claimed["run_id"]),
+        summary={"handler_status": "success"},
+        result={"handler_result": {"status": "success", "result": {"raw": "x" * 1_000_000}}},
+    )
+
+    monkeypatch.setattr(
+        store,
+        "list_api_worker_jobs_for_request",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("full api job result_json loaded")),
+    )
+    monkeypatch.setattr(
+        store,
+        "list_task_executions",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("full task execution result_json loaded")),
+    )
+
+    payload = build_runtime_request_payload(
+        store=store,
+        request_id=request.request_id,
+        control_action="api_worker_once",
+        message="pytest",
+    )
+
+    assert payload["child_total_count"] == 1
+    assert payload["child_success_count"] == 1
+    assert payload["api_worker_jobs"][0]["result"] == {}
+    assert payload["api_worker_job_summary"]["success_count"] == 1
 
 
 def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url: str) -> None:

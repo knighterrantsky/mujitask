@@ -11,7 +11,7 @@ from automation_business_scaffold.infrastructure.runtime.persistence_primitives 
     resolve_runtime_seconds as _resolve_runtime_seconds,
 )
 
-ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running"}
+ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "waiting"}
 TERMINAL_API_WORKER_JOB_STATUSES = {"finished", "cancelled", "success", "failed", "skipped"}
 FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
 DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
@@ -865,12 +865,13 @@ class ApiWorkerJobRepository:
                     self._text(
                         """
                         SELECT
-                            COALESCE(NULLIF(result_status, ''), status) AS status,
+                            status,
+                            COALESCE(NULLIF(result_status, ''), status) AS effective_status,
                             COUNT(*) AS count
                         FROM api_worker_job
                         WHERE request_id = :request_id
                           AND (:job_code = '' OR job_code = :job_code)
-                        GROUP BY COALESCE(NULLIF(result_status, ''), status)
+                        GROUP BY status, COALESCE(NULLIF(result_status, ''), status)
                         """
                     ),
                     {"request_id": request_id, "job_code": job_code},
@@ -878,10 +879,17 @@ class ApiWorkerJobRepository:
                 .mappings()
                 .all()
             )
-        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
+        counts: dict[str, int] = {}
+        active_count = 0
+        for row in rows:
+            row_count = int(row["count"] or 0)
+            status = str(row["status"] or "")
+            effective_status = str(row["effective_status"] or status or "unknown")
+            counts[effective_status] = counts.get(effective_status, 0) + row_count
+            if status in ACTIVE_API_WORKER_JOB_STATUSES:
+                active_count += row_count
         total = sum(counts.values())
-        active_count = sum(counts.get(status, 0) for status in ACTIVE_API_WORKER_JOB_STATUSES)
-        success_count = counts.get("success", 0) + counts.get("skipped", 0)
+        success_count = counts.get("success", 0) + counts.get("partial_success", 0)
         failed_count = counts.get("failed", 0) + counts.get("cancelled", 0)
         return {
             "total": total,
@@ -890,4 +898,6 @@ class ApiWorkerJobRepository:
             "terminal_count": max(total - active_count, 0),
             "success_count": success_count,
             "failed_count": failed_count,
+            "skipped_count": counts.get("skipped", 0),
+            "fallback_required_count": counts.get("fallback_required", 0),
         }
