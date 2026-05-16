@@ -11,7 +11,7 @@ from ..context.summary_inputs import *  # noqa: F403
 STAGE_CODE = "sync_influencer_pool"
 
 def _advance_stage_sync_influencer_pool(*, store: RuntimeStore, request: Any) -> dict[str, Any]:
-    sync_jobs = _stage_api_jobs(
+    sync_jobs = _stage_api_job_summaries(
         store=store,
         request_id=request.request_id,
         stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,

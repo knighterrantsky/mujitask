@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from automation_business_scaffold.contracts.handler.contract import (
@@ -72,7 +74,20 @@ def test_selection_row_refresh_writeback_disabled_skips_feishu_write(
         )
 
     def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
-        return HandlerResult.success(context, result={"persistence_mode": "dry_run"})
+        return HandlerResult.success(
+            context,
+            result={
+                "upserted_entities": [f"product:{PRODUCT_ID}"],
+                "upserted_relations": [f"product:{PRODUCT_ID}:metrics"],
+                "observation_refs": [f"observation:{PRODUCT_ID}"],
+                "persisted_counts": {"products": 1, "observations": 1},
+                "persistence_mode": "dry_run",
+                "fact_bundle": {
+                    "products": [{"product_id": PRODUCT_ID, "raw": "x" * 100_000}],
+                    "raw_api_responses": [{"payload": "y" * 100_000}],
+                },
+            },
+        )
 
     def fail_feishu_write(context: HandlerContext) -> HandlerResult:
         called["feishu_write"] += 1
@@ -268,6 +283,11 @@ def test_selection_row_refresh_reuses_source_fields_when_tiktok_request_needs_br
     assert fields["总销量"] == 1163.0
     assert fields["上架日期"] == "2025-08-19"
     assert fields["180天销量"] == 1134.0
+    assert result.result["product_fact_bundle"]["product_id"] == PRODUCT_ID
+    assert result.result["fact_upsert"]["persistence_mode"] == "dry_run"
+    assert "fact_bundle" not in result.result["fact_upsert"]
+    assert "raw_api_responses" not in result.result["product_fact_bundle"]
+    assert len(json.dumps(result.result)) < 50_000
     assert len(write_payloads) == 1
 
 

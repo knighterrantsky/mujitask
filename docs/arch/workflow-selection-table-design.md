@@ -176,15 +176,17 @@ flowchart TD
 
 ### 4.2 `selection_row_refresh` Result
 
+`selection_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。完整 normalized product payload、fact bundle、TikTok/FastMoss raw response、media sync 明细和飞书完整写入记录必须落到 Fact DB 或 artifact/object storage，Runtime result 只保留计数和引用。
+
 ```json
 {
   "source_record_id": "rec_xxx",
   "row_status": "success | partial_success | unavailable | url_invalid | failed",
-  "normalized_product_result": {},
-  "product_fact_bundle": {},
-  "fact_upsert": {},
+  "normalized_product_result": {"product_id": "1732355931137544633", "status": "available"},
+  "product_fact_bundle": {"product_id": "1732355931137544633", "product_count": 1, "media_asset_count": 3},
+  "fact_upsert": {"persisted_counts": {"products": 1}, "persistence_mode": "database"},
   "writeback_projection": {"fields": {}},
-  "writeback_result": {},
+  "writeback_result": {"written_count": 1, "target_record_ids": ["rec_xxx"]},
   "step_timeline": [],
   "runtime_evidence": {}
 }

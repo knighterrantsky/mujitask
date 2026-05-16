@@ -141,6 +141,59 @@ def _mark_stage_job_success(store: RuntimeStore, *, request_id: str, stage_code:
     )
 
 
+def test_api_worker_job_summary_query_does_not_load_large_result(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = _create_request(store)
+    store.enqueue_api_worker_jobs(
+        request_id=request.request_id,
+        task_code=TASK_CODE,
+        job_code="influencer_creator_sync",
+        jobs=[
+            {
+                "business_key": "creator-heavy",
+                "dedupe_key": f"{request.request_id}:creator-heavy",
+                "payload": {
+                    "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+                    "creator_identity": {"creator_id": "creator-heavy"},
+                    "product_hits": [{"source_record_id": "row-1", "product_id": "product-1", "product_key": "row-1:product-1"}],
+                },
+            }
+        ],
+    )
+    store.update_task_request(
+        request_id=request.request_id,
+        status="waiting",
+        current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+        progress_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request.request_id,
+        job_code="influencer_creator_sync",
+    )
+    assert claimed is not None
+    store.mark_api_worker_job_success(
+        job_id=str(claimed["job_id"]),
+        run_id=str(claimed["run_id"]),
+        summary={
+            "handler_status": "success",
+            "internal_steps": {"fact_upsert": "success", "influencer_pool_write": "success"},
+            "influencer_pool_write_status": "success",
+        },
+        result={"fact_result": {"fact_bundle": {"raw": "x" * 1_000_000}}},
+    )
+
+    summaries = store.list_api_worker_job_summaries_for_request(
+        request_id=request.request_id,
+        job_code="influencer_creator_sync",
+    )
+
+    assert len(summaries) == 1
+    assert summaries[0]["result"] == {}
+    assert summaries[0]["summary"]["influencer_pool_write_status"] == "success"
+
+
 def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url: str) -> None:
     store = RuntimeStore(db_url=runtime_db_url)
     workflow = get_workflow_definition(TASK_CODE)

@@ -984,6 +984,14 @@ class RuntimeStore:
     ) -> list[dict[str, Any]]:
         return self._api_worker_job_repo.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
 
+    def list_api_worker_job_summaries_for_request(
+        self,
+        *,
+        request_id: str,
+        job_code: str = "",
+    ) -> list[dict[str, Any]]:
+        return self._api_worker_job_repo.list_api_worker_job_summaries_for_request(request_id=request_id, job_code=job_code)
+
     def summarize_api_worker_jobs_for_request(
         self,
         *,
