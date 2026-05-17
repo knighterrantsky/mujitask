@@ -180,11 +180,8 @@ def _resolve_candidate_rows(
     if not read_job:
         return []
 
-    handler_result = _job_handler_result(read_job)
-    nested_result = (
-        handler_result.get("result") if isinstance(handler_result.get("result"), Mapping) else {}
-    )
-    source_rows = (nested_result or handler_result).get("source_rows") or []
+    read_result = extract_effective_result_payload(read_job)
+    source_rows = read_result.get("source_rows") or []
     if not isinstance(source_rows, list):
         return []
 
@@ -205,6 +202,14 @@ def _resolve_candidate_rows(
     return rows
 
 def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict[str, Any]:
+    summarize_api = getattr(store, "summarize_api_worker_jobs_for_request", None)
+    summarize_executions = getattr(store, "summarize_task_executions_for_request", None)
+    if callable(summarize_api) and callable(summarize_executions):
+        return _merge_child_summary_dicts(
+            summarize_api(request_id=request_id),
+            summarize_executions(request_id=request_id),
+        )
+
     api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
     executions = store.list_task_executions(request_id=request_id)
     counts: dict[str, int] = {}
@@ -249,6 +254,85 @@ def _aggregate_request_children(store: RuntimeStore, *, request_id: str) -> dict
         "total": total,
         "counts": counts,
         "terminal_count": terminal_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "skipped_count": skipped_count,
+        "active_count": active_count,
+    }
+
+def _stage_child_summaries(*, store: RuntimeStore, request_id: str, stage_code: str) -> list[Any]:
+    list_api_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    api_jobs = (
+        list_api_summaries(request_id=request_id)
+        if callable(list_api_summaries)
+        else store.list_api_worker_jobs_for_request(request_id=request_id)
+    )
+    list_execution_summaries = getattr(store, "list_task_execution_summaries_for_request", None)
+    executions = (
+        list_execution_summaries(request_id=request_id)
+        if callable(list_execution_summaries)
+        else store.list_task_executions(request_id=request_id)
+    )
+    return [
+        *[
+            job
+            for job in api_jobs
+            if str((job.get("payload") or {}).get("stage_code") or job.get("stage") or "") == stage_code
+        ],
+        *[
+            execution
+            for execution in executions
+            if _execution_stage_code(execution) == stage_code
+        ],
+    ]
+
+def _execution_stage_code(execution: Any) -> str:
+    if isinstance(execution, Mapping):
+        payload = _mapping(execution.get("payload"))
+        return str(payload.get("stage_code") or execution.get("stage") or "").strip()
+    payload = _mapping(getattr(execution, "payload", {}))
+    return str(payload.get("stage_code") or "").strip()
+
+def _has_active_child_summaries(records: list[Any]) -> bool:
+    for record in records:
+        status = str(record.get("status") if isinstance(record, Mapping) else getattr(record, "status", "") or "")
+        if status in ACTIVE_API_JOB_STATUSES:
+            return True
+    return False
+
+def _merge_child_summary_dicts(*summaries: Mapping[str, Any]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    total = 0
+    active_count = 0
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    for summary in summaries:
+        total += int(summary.get("total") or summary.get("total_count") or 0)
+        active_count += int(summary.get("active_count") or 0)
+        summary_counts = dict(summary.get("counts") or {})
+        success_count += int(
+            summary.get("success_count")
+            if summary.get("success_count") is not None
+            else int(summary_counts.get("success") or 0) + int(summary_counts.get("partial_success") or 0)
+        )
+        failed_count += int(
+            summary.get("failed_count")
+            if summary.get("failed_count") is not None
+            else int(summary_counts.get("failed") or 0) + int(summary_counts.get("cancelled") or 0)
+        )
+        skipped_count += int(
+            summary.get("skipped_count")
+            if summary.get("skipped_count") is not None
+            else int(summary_counts.get("skipped") or 0)
+        )
+        for status, count in summary_counts.items():
+            status_key = str(status or "unknown")
+            counts[status_key] = counts.get(status_key, 0) + int(count or 0)
+    return {
+        "total": total,
+        "counts": counts,
+        "terminal_count": max(total - active_count, 0),
         "success_count": success_count,
         "failed_count": failed_count,
         "skipped_count": skipped_count,

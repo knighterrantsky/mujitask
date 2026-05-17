@@ -462,7 +462,7 @@ result:
         "target_table_ref": "feishu://mujitask/TK竞品收集",
         "record_id": "recRefresh001"
       },
-      "source_snapshot_ref": "artifact://feishu/competitor/read/req-refresh-001/recRefresh001.json"
+      "source_snapshot_ref": "s3://runtime-artifacts/feishu/competitor/read/req-refresh-001/page-1.json"
     }
   ],
   "candidate_keys": ["product:1731194997356205027"],

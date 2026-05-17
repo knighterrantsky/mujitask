@@ -13,6 +13,9 @@ from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_sourc
 from automation_business_scaffold.domains.tiktok.mappers.feishu_selection_row_mapper import (
     selection_table_source_adapter,
 )
+from automation_business_scaffold.domains.tiktok.mappers.feishu_competitor_row_mapper import (
+    competitor_table_source_adapter,
+)
 from automation_business_scaffold.infrastructure.feishu.api import FeishuAPIError
 
 
@@ -180,7 +183,39 @@ def test_selection_source_adapter_queues_rows_missing_required_fields() -> None:
     assert result["source_rows"][0]["source_record_id"] == "rec-missing-trend"
 
 
-def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
+def test_table_source_adapters_compact_source_fields() -> None:
+    result = competitor_table_source_adapter(
+        [
+            {
+                "record_id": "rec-large",
+                "fields": {
+                    "产品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "SKU-ID": "123456789",
+                    "图片": [
+                        {
+                            "file_token": "tok-main",
+                            "url": "https://cdn.example.com/image.jpg",
+                            "raw": "x" * 20_000,
+                        }
+                    ],
+                    "标题": "x" * 2_000,
+                },
+            }
+        ],
+        {
+            "source_table_ref": "feishu://competitor",
+            "filter_spec": {"candidate_policy": "missing_auto_maintained_fields"},
+        },
+    )
+
+    fields = result["source_rows"][0]["source_context"]["source_fields"]
+
+    assert fields["图片"] == [{"file_token": "tok-main", "url": "https://cdn.example.com/image.jpg"}]
+    assert "raw" not in fields["图片"][0]
+    assert len(fields["标题"]) == 512
+
+
+def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) -> None:
     class FakeClient:
         def __init__(self, access_token: str) -> None:
             self.access_token = access_token
@@ -260,12 +295,14 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
         filter_spec={"candidate_policy": "missing_auto_maintained_fields", "skip_product_status": ["已下架/区域不可售"]},
         adapter_code="competitor_table_source_adapter",
         snapshot_policy={"store_raw_rows": True, "raw_snapshot_namespace": "feishu/competitor/read"},
+        artifact_store={"provider": "local", "artifact_root": str(tmp_path)},
     )
 
     result = build_bound_api_handler_registry().dispatch("feishu_table_read", _context("feishu_table_read", payload))
 
     assert result.status == "success"
-    assert result.result["raw_rows"][0]["record_id"] == "rec-1"
+    assert "raw_rows" not in result.result
+    assert "raw_rows_all" not in result.result
     assert result.result["source_rows"][0]["source_record_id"] == "rec-1"
     assert result.result["source_rows"][0]["product_identity"]["product_id"] == "123456789"
     assert result.result["source_rows"][0]["missing_auto_fields"] == [
@@ -278,7 +315,9 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch) -> None:
     ]
     assert result.result["candidate_keys"] == ["product:123456789"]
     assert result.result["adapter_summary"]["skipped_complete_count"] == 1
-    assert result.result["raw_snapshot_ref"].startswith("artifact://feishu/competitor/read/req-read/")
+    assert result.result["raw_snapshot_ref"].startswith("file://")
+    assert result.result["source_rows"][0]["source_snapshot_ref"] == result.result["raw_snapshot_ref"]
+    assert result.result["raw_snapshot_artifacts"][0]["size"] > 0
 
 
 def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric() -> None:

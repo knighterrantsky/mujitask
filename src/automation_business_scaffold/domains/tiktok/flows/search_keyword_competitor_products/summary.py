@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING, Any, Mapping
 
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
-    all_child_records as _all_child_records,
+    all_child_summaries as _all_child_records,
     api_jobs_for_stage as _api_jobs_for_stage,
     browser_executions_for_stage as _browser_executions_for_stage,
     compute_final_status,

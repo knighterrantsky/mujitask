@@ -268,4 +268,64 @@ def _record_effective_status(record: Any) -> str:
         return str(record.get("result_status") or record.get("status") or "")
     return ""
 
+def _all_child_summaries(*, store: RuntimeStore, request_id: str) -> list[Any]:
+    list_api_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    api_jobs = (
+        list_api_summaries(request_id=request_id)
+        if callable(list_api_summaries)
+        else store.list_api_worker_jobs_for_request(request_id=request_id)
+    )
+    list_execution_summaries = getattr(store, "list_task_execution_summaries_for_request", None)
+    executions = (
+        list_execution_summaries(request_id=request_id)
+        if callable(list_execution_summaries)
+        else store.list_task_executions(request_id=request_id)
+    )
+    return [*api_jobs, *executions]
+
+def _stage_child_summaries(*, store: RuntimeStore, request_id: str, stage_code: str) -> list[Any]:
+    return [
+        record
+        for record in _all_child_summaries(store=store, request_id=request_id)
+        if _child_stage_code(record) == stage_code
+    ]
+
+def _child_stage_code(record: Any) -> str:
+    if isinstance(record, Mapping):
+        payload = coerce_mapping(record.get("payload"))
+        return str(payload.get("stage_code") or record.get("stage") or record.get("progress_stage") or "").strip()
+    payload = coerce_mapping(getattr(record, "payload", {}))
+    return str(payload.get("stage_code") or getattr(record, "progress_stage", "") or "").strip()
+
+def _has_active_child_summaries(records: list[Any]) -> bool:
+    return any(_record_runtime_status(record) in {"pending", "running"} for record in records)
+
+def _record_runtime_status(record: Any) -> str:
+    if isinstance(record, Mapping):
+        return str(record.get("status") or "").strip()
+    return str(getattr(record, "status", "") or "").strip()
+
+def _summarize_stage_children_from_summaries(
+    *,
+    store: RuntimeStore,
+    request_id: str,
+    stage_code: str,
+    optional_codes: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    outcome = summarize_child_outcomes(
+        _stage_child_summaries(store=store, request_id=request_id, stage_code=stage_code),
+        optional_codes=optional_codes,
+    )
+    return {
+        "total_count": int(outcome["total_count"]),
+        "success_count": int(outcome["success_count"]),
+        "failed_count": int(outcome["failed_count"]),
+        "skipped_count": int(outcome["skipped_count"]),
+        "partial_success_count": int(outcome["partial_success_count"]),
+        "fallback_required_count": int(outcome["fallback_required_count"]),
+        "terminal_count": int(outcome["terminal_count"]),
+        "active_count": int(outcome["active_count"]),
+        "statuses": dict(outcome["statuses"]),
+    }
+
 __all__ = [name for name in globals() if not name.startswith('__')]

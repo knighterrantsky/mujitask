@@ -215,12 +215,10 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
         payload = dict(job.get("payload") or {})
         result = extract_effective_result_payload(job)
         handler_result = coerce_mapping(coerce_mapping(job.get("result")).get("handler_result"))
-        handler_result_payload = coerce_mapping(handler_result.get("result"))
         next_action = coerce_mapping(handler_result.get("next_action"))
         next_action_payload = coerce_mapping(next_action.get("payload"))
         fallback_handler = _first_text(
             result.get("fallback_handler"),
-            handler_result_payload.get("fallback_handler"),
             "tiktok_product_browser_fetch" if str(next_action.get("type") or "") == "browser_fallback" else "",
         )
         if fallback_handler not in {"tiktok_product_browser_fetch", "fastmoss_security_browser_resolve"}:

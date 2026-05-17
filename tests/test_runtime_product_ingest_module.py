@@ -293,6 +293,52 @@ def test_dispatch_stage_passes_strict_object_storage_summary_without_secrets() -
     assert "minio_secret_key" not in payload
 
 
+def test_product_ingest_release_uses_child_summaries_without_full_results() -> None:
+    request = _build_request(current_stage="collect_selection_rows")
+
+    class SummaryOnlyStore(FakeRuntimeStore):
+        def list_api_worker_job_summaries_for_request(self, *, request_id: str, job_code: str = "") -> list[dict]:
+            assert request_id == request.request_id
+            assert job_code == ""
+            return [
+                {
+                    "job_id": "job-summary",
+                    "request_id": request_id,
+                    "job_code": "selection_row_refresh",
+                    "status": "success",
+                    "result_status": "success",
+                    "payload": {"stage_code": "collect_selection_rows"},
+                    "summary": {},
+                    "result": {},
+                }
+            ]
+
+        def list_task_execution_summaries_for_request(self, *, request_id: str) -> list[dict]:
+            assert request_id == request.request_id
+            return []
+
+        def summarize_api_worker_jobs_for_request(self, *, request_id: str) -> dict:
+            assert request_id == request.request_id
+            return {"total": 1, "counts": {"success": 1}, "active_count": 0}
+
+        def summarize_task_executions_for_request(self, *, request_id: str) -> dict:
+            assert request_id == request.request_id
+            return {"total": 0, "counts": {}, "active_count": 0}
+
+        def list_api_worker_jobs_for_request(self, *, request_id: str) -> list[dict]:
+            raise AssertionError("full api_worker_job result_json should not be loaded for release")
+
+        def list_task_executions(self, *, request_id: str) -> list[RuntimeTaskExecutionRecord]:
+            raise AssertionError("full task_execution result_json should not be loaded for release")
+
+    store = SummaryOnlyStore(request=request)
+
+    releases = release_request_after_child_completion(store, request_id=request.request_id)
+
+    assert releases[0]["stage_code"] == "collect_selection_rows"
+    assert store.load_task_request(request_id=request.request_id).status == "pending"
+
+
 def test_finalize_request_updates_request_and_creates_outbox() -> None:
     workflow = get_workflow_definition(PRODUCT_INGEST_TASK_CODE)
     request = _build_request(

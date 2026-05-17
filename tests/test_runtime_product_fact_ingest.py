@@ -21,6 +21,9 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerNextAction,
     HandlerResult,
 )
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    extract_effective_result_payload,
+)
 from automation_business_scaffold.domains.tiktok.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
@@ -366,7 +369,7 @@ def test_product_fact_api_worker_once_dispatches_registry_and_persists_results(
 
     assert jobs_by_code["selection_row_refresh"]["status"] == "finished"
     assert jobs_by_code["selection_row_refresh"]["result_status"] == "success"
-    assert jobs_by_code["selection_row_refresh"]["result"]["handler_result"]["result"]["row_status"] == "success"
+    assert extract_effective_result_payload(jobs_by_code["selection_row_refresh"])["row_status"] == "success"
     assert jobs_by_code["selection_row_refresh"]["summary"]["progress_stage"] == "selection_row_refresh"
     assert jobs_by_code["selection_row_refresh"]["result"]["supervisor"]["progress_stage"] == "selection_row_refresh"
 

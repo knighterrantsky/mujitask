@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
 from automation_business_scaffold.domains.tiktok.flows.refresh_current_competitor_table.orchestrator import (
@@ -14,6 +15,7 @@ from automation_business_scaffold.domains.tiktok.projections.outbox_message_proj
     build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+from automation_business_scaffold.infrastructure.runtime.runtime_records import RuntimeTaskRequestRecord
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
@@ -168,6 +170,65 @@ def test_refresh_outbox_message_supports_summary_and_template_formats() -> None:
 
 def _store(runtime_db_url: str) -> RuntimeStore:
     return RuntimeStore(db_url=runtime_db_url)
+
+
+def test_refresh_release_uses_child_summaries_without_full_results() -> None:
+    request = RuntimeTaskRequestRecord(
+        request_id="req-summary-release",
+        project_code="automation-business-scaffold",
+        task_code=REFRESH_TASK_CODE,
+        status="running",
+        current_stage="collect_product_data",
+        payload={"source_table_ref": SOURCE_TABLE_REF},
+        source_channel_code="console",
+        reply_target="reply://pytest",
+    )
+
+    class SummaryOnlyStore:
+        def __init__(self) -> None:
+            self.request = request
+
+        def load_task_request(self, *, request_id: str) -> RuntimeTaskRequestRecord:
+            assert request_id == request.request_id
+            return self.request
+
+        def update_task_request(self, *, request_id: str, **updates: object) -> RuntimeTaskRequestRecord:
+            assert request_id == request.request_id
+            self.request = replace(self.request, **updates)
+            return self.request
+
+        def list_api_worker_job_summaries_for_request(self, *, request_id: str, job_code: str = "") -> list[dict]:
+            assert request_id == request.request_id
+            assert job_code == ""
+            return [
+                {
+                    "job_id": "job-summary",
+                    "request_id": request_id,
+                    "job_code": "competitor_row_refresh",
+                    "status": "success",
+                    "result_status": "success",
+                    "payload": {"stage_code": "collect_product_data"},
+                    "summary": {},
+                    "result": {},
+                }
+            ]
+
+        def list_task_execution_summaries_for_request(self, *, request_id: str) -> list[dict]:
+            assert request_id == request.request_id
+            return []
+
+        def list_api_worker_jobs_for_request(self, *, request_id: str) -> list[dict]:
+            raise AssertionError("full api_worker_job result_json should not be loaded for release")
+
+        def list_task_executions(self, *, request_id: str) -> list[object]:
+            raise AssertionError("full task_execution result_json should not be loaded for release")
+
+    store = SummaryOnlyStore()
+
+    releases = release_request_after_child_completion(store, request_id=request.request_id)
+
+    assert releases[0]["stage_code"] == "collect_product_data"
+    assert store.request.status == "pending"
 
 
 def _submit_refresh_request(runtime_db_url: str) -> tuple[RuntimeStore, object, object]:

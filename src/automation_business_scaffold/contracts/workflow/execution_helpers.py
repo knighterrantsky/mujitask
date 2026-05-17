@@ -235,6 +235,11 @@ def extract_effective_result_payload(record_or_payload: RecordLike) -> dict[str,
             inner = handler_result.get("result")
             if isinstance(inner, Mapping):
                 return {str(key): _clone_value(value) for key, value in inner.items()}
+            return {
+                str(key): _clone_value(value)
+                for key, value in nested_result.items()
+                if key not in {"handler_result", "supervisor", "child_runner"}
+            }
         return {str(key): _clone_value(value) for key, value in nested_result.items()}
 
     handler_result = extract_handler_result(payload)
@@ -426,10 +431,45 @@ def browser_executions_for_stage(store: Any, *, request_id: str, stage_code: str
     ]
 
 
+def api_job_summaries_for_stage(store: Any, *, request_id: str, stage_code: str) -> list[dict[str, Any]]:
+    list_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    jobs = (
+        list_summaries(request_id=request_id)
+        if callable(list_summaries)
+        else store.list_api_worker_jobs_for_request(request_id=request_id)
+    )
+    return [
+        job
+        for job in jobs
+        if str((job.get("payload") or {}).get("stage_code") or job.get("stage") or "") == stage_code
+    ]
+
+
+def browser_execution_summaries_for_stage(store: Any, *, request_id: str, stage_code: str) -> list[Any]:
+    list_summaries = getattr(store, "list_task_execution_summaries_for_request", None)
+    executions = (
+        list_summaries(request_id=request_id)
+        if callable(list_summaries)
+        else store.list_task_executions(request_id=request_id)
+    )
+    return [
+        execution
+        for execution in executions
+        if _record_stage_code(execution) == stage_code
+    ]
+
+
 def stage_child_records(store: Any, *, request_id: str, stage_code: str) -> list[Any]:
     return [
         *api_jobs_for_stage(store, request_id=request_id, stage_code=stage_code),
         *browser_executions_for_stage(store, request_id=request_id, stage_code=stage_code),
+    ]
+
+
+def stage_child_summaries(store: Any, *, request_id: str, stage_code: str) -> list[Any]:
+    return [
+        *api_job_summaries_for_stage(store, request_id=request_id, stage_code=stage_code),
+        *browser_execution_summaries_for_stage(store, request_id=request_id, stage_code=stage_code),
     ]
 
 
@@ -440,6 +480,22 @@ def all_child_records(store: Any, *, request_id: str) -> list[Any]:
     ]
 
 
+def all_child_summaries(store: Any, *, request_id: str) -> list[Any]:
+    list_api_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    api_jobs = (
+        list_api_summaries(request_id=request_id)
+        if callable(list_api_summaries)
+        else store.list_api_worker_jobs_for_request(request_id=request_id)
+    )
+    list_execution_summaries = getattr(store, "list_task_execution_summaries_for_request", None)
+    executions = (
+        list_execution_summaries(request_id=request_id)
+        if callable(list_execution_summaries)
+        else store.list_task_executions(request_id=request_id)
+    )
+    return [*api_jobs, *executions]
+
+
 def summarize_stage_children(
     store: Any,
     *,
@@ -448,7 +504,7 @@ def summarize_stage_children(
     optional_codes: Iterable[str] = (),
 ) -> dict[str, Any]:
     outcome = summarize_child_outcomes(
-        stage_child_records(store, request_id=request_id, stage_code=stage_code),
+        stage_child_summaries(store, request_id=request_id, stage_code=stage_code),
         optional_codes=optional_codes,
     )
     return {
@@ -469,6 +525,17 @@ def any_browser_executions_active(executions: Iterable[RecordLike]) -> bool:
 
 def has_active_records(records: Iterable[RecordLike]) -> bool:
     return any(record_effective_status(record) in _ACTIVE_RECORD_STATUSES for record in records)
+
+
+def _record_stage_code(record_or_payload: RecordLike) -> str:
+    record = _as_dict(record_or_payload)
+    payload = record.get("payload")
+    if isinstance(payload, Mapping):
+        return str(payload.get("stage_code") or record.get("stage") or record.get("progress_stage") or "").strip()
+    payload = getattr(record_or_payload, "payload", None)
+    if isinstance(payload, Mapping):
+        return str(payload.get("stage_code") or getattr(record_or_payload, "progress_stage", "") or "").strip()
+    return str(record.get("stage") or record.get("progress_stage") or "").strip()
 
 
 def record_effective_status(record_or_payload: RecordLike) -> str:
@@ -750,9 +817,12 @@ class _DefaultTemplateValues(dict[str, str]):
 __all__ = [
     "allowed_final_statuses",
     "all_child_records",
+    "all_child_summaries",
     "any_api_jobs_active",
     "any_browser_executions_active",
+    "api_job_summaries_for_stage",
     "api_jobs_for_stage",
+    "browser_execution_summaries_for_stage",
     "browser_executions_for_stage",
     "build_projection_record",
     "build_projection_write_payload",
@@ -775,6 +845,7 @@ __all__ = [
     "select_latest_successful_browser_execution_result",
     "select_latest_successful_record",
     "stage_child_records",
+    "stage_child_summaries",
     "summarize_stage_children",
     "summarize_child_outcomes",
     "timeout_seconds_for_workflow",

@@ -535,7 +535,7 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
     assert len(json.dumps(stored_creator_result, ensure_ascii=False)) < 50_000
     assert "fact_bundle" not in stored_creator_result["fact_result"]
     assert "records" not in stored_creator_result["influencer_pool_write"]
-    assert "fact_bundle" not in stored_creator_result["handler_result"]["result"]["fact_result"]
+    assert "result" not in stored_creator_result["handler_result"]
     step_timings = creator_worker["api_worker_job"]["result"]["step_timings"]
     assert set(step_timings) >= {
         "creator_fetch",

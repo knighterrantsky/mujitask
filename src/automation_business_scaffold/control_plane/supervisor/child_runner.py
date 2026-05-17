@@ -103,6 +103,12 @@ class ChildRunnerEnvelope:
             payload["error"] = dict(self.error_payload)
         return payload
 
+    def storage_dict(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        if self.worker_result_payload is not None:
+            payload["worker_result"] = _compact_worker_result_payload(self.worker_result_payload)
+        return payload
+
     def to_handler_result(self, context: HandlerContext) -> HandlerResult:
         if self.worker_result_payload is not None:
             return handler_result_from_payload(self.worker_result_payload, default_context=context)
@@ -147,6 +153,12 @@ class ChildRunnerEnvelope:
             ),
             details=dict(payload.get("details") or {}),
         )
+
+
+def _compact_worker_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    result.pop("result", None)
+    return result
 
 
 def handler_error_from_payload(

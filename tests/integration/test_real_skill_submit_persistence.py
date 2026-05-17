@@ -13,6 +13,7 @@ from automation_business_scaffold.capabilities.persistence.database.fact_bundle_
 )
 from automation_business_scaffold.contracts.handler.api import build_api_handler_registry, register_api_handler
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.contracts.workflow.execution_helpers import extract_effective_result_payload
 from automation_business_scaffold.domains.tiktok.tasks.tiktok_fastmoss_product_ingest import (
     TikTokFastMossProductIngestTask,
 )
@@ -216,7 +217,7 @@ def test_real_skill_submit_requires_and_uses_database_and_object_storage(
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", registry, raising=False)
 
     worker_payload = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url, artifact_config))
-    handler_result = worker_payload["api_worker_job"]["result"]["handler_result"]["result"]
+    handler_result = extract_effective_result_payload(worker_payload["api_worker_job"])
     fact_upsert = handler_result["fact_upsert"]
     media_result = handler_result["media_result"]
     uploaded_asset = media_result["synced_assets"][0]

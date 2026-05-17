@@ -17,6 +17,7 @@ principles:
   - browser-runloop must execute browser handlers through child_process supervision, not inline supervision, so Sync Playwright never runs inside a host asyncio loop
   - browser artifacts created during fallback must be persisted to object storage and indexed by artifact_object before the row job treats them as available
   - FastMoss security fallback persists cookie values only to fastmoss_session_cookie_cache; parent job payload/result may carry only redacted cookie cache metadata
+  - Feishu table-read raw rows, raw field snapshots, attachment envelopes, and source field evidence are artifact/object-storage evidence; Runtime DB may carry only raw_snapshot_ref, raw_snapshot_artifacts metadata, empty_row_records, counts, candidate keys, and compact source_rows/source_fields
 
 required_pipeline_roles:
   - fact_source_handler
@@ -38,11 +39,13 @@ business_job_usage:
     - media_asset_sync must resolve non-local object storage configuration from project runtime config or an explicit test-only submit override before product media is considered persisted; missing configuration or provider=local is a failed configuration state, not linked_local success.
     - unavailable/off-shelf/region-unavailable products are terminal product facts; selection_row_refresh must still persist the terminal fact bundle, but must skip media_asset_sync, FastMoss fetch, and chart-render writeback gates before Feishu terminal status projection.
     - writeback_enabled only controls Feishu projection writes and must not disable product fact collection or Fact DB persistence.
+    - feishu_table_read for selection rows must persist full raw_rows/raw_rows_all to artifact/object storage when snapshot_policy.store_raw_rows=true; Runtime DB result_json must not inline full Feishu raw rows, raw source_fields, attachment envelopes, or blob-like fields, and may only pass compact source_rows plus raw_snapshot_ref/raw_snapshot_artifacts.
     - selection_row_refresh Runtime DB result_json must remain a small structured handoff for downstream stages and summary; full normalized product payloads, fact bundles, raw FastMoss/TikTok responses, full media sync payloads, and full Feishu write records belong in Fact DB or artifact/object storage and must not be embedded in runtime result_json.
   refresh_current_competitor_table:
     - competitor_row_refresh is the row-level product fact collection boundary for TK competitor table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
     - when competitor_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a business browser request with browser_fallback_payload; executor/runtime owns task_execution scheduling, waits for browser-runloop completion, writes browser output refs, cookie-cache metadata, or failure evidence back to the original row job, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.
     - TikTok browser fetch may substitute the current TikTok collection stage output; FastMoss security browser resolve may only persist fastmoss_session_cookie_cache and unblock one retry of the original FastMoss API stage.
+    - feishu_table_read for competitor rows must persist full raw_rows/raw_rows_all to artifact/object storage when snapshot_policy.store_raw_rows=true; Runtime DB result_json must not inline full Feishu raw rows, raw source_fields, attachment envelopes, or blob-like fields, and may only pass compact source_rows plus raw_snapshot_ref/raw_snapshot_artifacts.
     - competitor_row_refresh Runtime DB result_json must remain a small structured handoff for downstream stages and summary; full normalized product payloads, fact bundles, raw FastMoss/TikTok responses, full media sync payloads, and full Feishu write records belong in Fact DB or artifact/object storage and must not be embedded in runtime result_json.
   sync_tk_influencer_pool:
     - product_creator_discovery may emit product fact bundles from one competitor product discovery job, but it must not persist product media directly.
@@ -146,6 +149,8 @@ forbidden_patterns:
   - raw_cdn_url_persisted_as_fact_media_without_object_key_or_remote_uri
   - formal_fact_bundle_upsert_dry_run_success
   - formal_media_asset_sync_linked_local_success
+  - feishu_raw_rows_embedded_in_runtime_result_json
+  - full_feishu_source_fields_embedded_in_runtime_source_rows
 
 allowed_implementation_owners:
   - src/automation_business_scaffold/capabilities/fact_sources/**

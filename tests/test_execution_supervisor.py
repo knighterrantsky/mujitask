@@ -13,6 +13,7 @@ from automation_business_scaffold.control_plane.supervisor.execution_supervisor 
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerError, HandlerResult
 from automation_business_scaffold.contracts.handler.registry import HandlerInvocationContractError
+from automation_business_scaffold.contracts.workflow.execution_helpers import extract_effective_result_payload
 
 
 def _build_context() -> HandlerContext:
@@ -61,6 +62,26 @@ def test_execution_supervisor_records_progress_and_heartbeats() -> None:
     assert len(heartbeats) >= 1
     assert outcome.storage_summary()["progress_stage"] == "result_normalized"
     assert outcome.to_dict()["failure_disposition"] == "none"
+
+
+def test_execution_supervisor_storage_result_does_not_duplicate_handler_result_payload() -> None:
+    large_payload = {"raw": "x" * 50_000}
+
+    outcome = run_supervised_handler(
+        context=_build_context(),
+        dispatch=lambda context: HandlerResult.success(
+            context,
+            summary={"transport": "request"},
+            result={"raw_api_response": large_payload, "candidate_count": 1},
+        ),
+        heartbeat_interval_seconds=0.01,
+    )
+
+    stored = outcome.storage_result()
+
+    assert "result" not in stored["handler_result"]
+    assert stored["raw_api_response"] == large_payload
+    assert extract_effective_result_payload({"result": stored})["candidate_count"] == 1
 
 
 def test_execution_supervisor_classifies_contract_errors_as_terminal() -> None:

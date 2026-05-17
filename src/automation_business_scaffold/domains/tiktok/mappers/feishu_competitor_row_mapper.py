@@ -147,7 +147,7 @@ def _source_row(
             "source_record_id": record_id,
             "source_table_ref": source_table_ref,
             "product_identity": dict(identity),
-            "source_fields": _mapping(row.get("fields")),
+            "source_fields": _compact_source_fields(_mapping(row.get("fields"))),
         },
     }
     if snapshot_enabled:
@@ -229,6 +229,9 @@ def _identity_matches(identity: Mapping[str, Any], target: Mapping[str, Any]) ->
 
 
 def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
+    raw_snapshot_ref = _text(payload.get("raw_snapshot_ref"))
+    if raw_snapshot_ref:
+        return raw_snapshot_ref
     namespace = _first_non_empty(
         _mapping(payload.get("snapshot_policy")).get("raw_snapshot_namespace"),
         "feishu/common",
@@ -304,6 +307,44 @@ def _field_has_value(value: Any) -> bool:
     if isinstance(value, Mapping):
         return any(_field_has_value(item) for item in value.values())
     return bool(_text(value))
+
+
+def _compact_source_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for key, value in fields.items():
+        compact_value = _compact_field_value(value)
+        if compact_value not in ("", None, {}, []):
+            compacted[str(key)] = compact_value
+    return compacted
+
+
+def _compact_field_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _truncate_text(value)
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, list):
+        items = [_compact_field_value(item) for item in value[:8]]
+        return [item for item in items if item not in ("", None, {}, [])]
+    if isinstance(value, Mapping):
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = _text(key)
+            if key_text in {"text", "link", "value", "name", "id", "file_token", "url", "mime_type", "type"}:
+                kept[key_text] = _compact_field_value(item)
+        if kept:
+            return _compact(kept)
+        return _truncate_text(_text_value(value))
+    return _truncate_text(_text(value))
+
+
+def _truncate_text(value: Any, *, limit: int = 512) -> str:
+    text = _text(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit]
 
 
 def _text_value(value: Any) -> str:

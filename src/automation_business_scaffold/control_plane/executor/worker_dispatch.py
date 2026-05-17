@@ -38,6 +38,7 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
             message="No api_worker_job is ready for processing.",
         )
 
+    run_id = str(job.get("run_id") or "")
     context = HandlerContext(
         request_id=str(job["request_id"]),
         job_id=str(job["job_id"]),
@@ -53,9 +54,11 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_id=settings.worker_id,
         attempt_count=int(job.get("attempt_count") or 0),
         max_attempts=int(job.get("max_attempts") or 0),
-        metadata={"request_payload": dict((job.get("payload") or {}).get("request_payload") or {})},
+        metadata={
+            "request_payload": dict((job.get("payload") or {}).get("request_payload") or {}),
+            "run_id": run_id,
+        },
     )
-    run_id = str(job.get("run_id") or "")
     store.update_api_worker_job_progress(
         job_id=str(job["job_id"]),
         run_id=run_id,
@@ -140,6 +143,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         )
 
     payload_data = dict(execution.payload or {})
+    run_id = str(execution.run_id or "")
     context = HandlerContext(
         request_id=execution.request_id,
         job_id=execution.execution_id,
@@ -156,9 +160,11 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_id=settings.worker_id,
         attempt_count=execution.attempt_count,
         max_attempts=execution.max_attempts,
-        metadata={"request_payload": dict(payload_data.get("request_payload") or {})},
+        metadata={
+            "request_payload": dict(payload_data.get("request_payload") or {}),
+            "run_id": run_id,
+        },
     )
-    run_id = str(execution.run_id or "")
     store.update_task_execution_progress(
         execution_id=execution.execution_id,
         run_id=run_id,

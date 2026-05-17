@@ -20,7 +20,7 @@ def finalize_request(
     force_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     row_contexts = _row_contexts(store, request_id=request.request_id)
-    all_child_records = _all_child_records(store, request_id=request.request_id)
+    all_child_records = _all_child_summaries(store=store, request_id=request.request_id)
     outcome = summarize_child_outcomes(all_child_records, optional_codes=OPTIONAL_FINAL_STATUS_CODES)
     explicit_status = str((force_result or {}).get("final_status") or "")
     row_results = [_build_row_result(store=store, request_id=request.request_id, row_context=row) for row in row_contexts]
@@ -47,8 +47,8 @@ def finalize_request(
         "row_partial_count": sum(1 for item in row_results if item["row_status"] == "partial_success"),
         "row_results": row_results,
         "stage_summary": {
-            stage.stage_code: summarize_stage_children(
-                store,
+            stage.stage_code: _summarize_stage_children_from_summaries(
+                store=store,
                 request_id=request.request_id,
                 stage_code=stage.stage_code,
                 optional_codes=OPTIONAL_FINAL_STATUS_CODES,

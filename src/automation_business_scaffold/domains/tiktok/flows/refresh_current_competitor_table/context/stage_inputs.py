@@ -45,6 +45,24 @@ from .models import *
 
 
 def _empty_row_delete_records(read_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    compact_records = read_payload.get("empty_row_records")
+    if isinstance(compact_records, list):
+        records: list[dict[str, Any]] = []
+        for row in compact_records:
+            if not isinstance(row, Mapping):
+                continue
+            record_id = str(row.get("record_id") or "").strip()
+            if record_id:
+                records.append(
+                    {
+                        "op": "delete",
+                        "record_id": record_id,
+                        "business_entity_key": f"empty-row:{record_id}",
+                        "source_context": {"cleanup_reason": "empty_row"},
+                    }
+                )
+        if records:
+            return records
     raw_rows = read_payload.get("raw_rows_all") or read_payload.get("raw_rows") or []
     records: list[dict[str, Any]] = []
     for row in raw_rows:

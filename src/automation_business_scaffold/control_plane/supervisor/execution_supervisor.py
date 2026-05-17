@@ -125,13 +125,16 @@ class ExecutionSupervisorOutcome:
         return summary
 
     def storage_result(self) -> dict[str, Any]:
+        supervisor_payload = self.to_dict()
+        if self.child_runner is not None:
+            supervisor_payload["child_runner"] = self.child_runner.storage_dict()
         payload = {
-            "handler_result": self.worker_result.to_dict(),
-            "supervisor": self.to_dict(),
+            "handler_result": _compact_handler_result_envelope(self.worker_result),
+            "supervisor": supervisor_payload,
             **dict(self.worker_result.result),
         }
         if self.child_runner is not None:
-            payload["child_runner"] = self.child_runner.to_dict()
+            payload["child_runner"] = self.child_runner.storage_dict()
         return payload
 
     def to_dict(self) -> dict[str, Any]:
@@ -156,6 +159,22 @@ class ExecutionSupervisorOutcome:
         if self.child_runner is not None:
             payload["child_runner"] = self.child_runner.to_dict()
         return payload
+
+
+def _compact_handler_result_envelope(worker_result: HandlerResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": worker_result.status,
+        "handler_code": worker_result.handler_code,
+        "request_id": worker_result.request_id,
+        "job_id": worker_result.job_id,
+        "summary": dict(worker_result.summary),
+        "warnings": list(worker_result.warnings),
+        "next_action": worker_result.next_action.to_dict(),
+        "contract_revision": worker_result.contract_revision,
+    }
+    if worker_result.error is not None:
+        payload["error"] = worker_result.error.to_dict()
+    return payload
 
 
 class ExecutionSupervisor:

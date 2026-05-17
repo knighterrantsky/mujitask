@@ -85,10 +85,10 @@ def release_request_after_child_completion(
     if stage.execution_mode != "worker_jobs":
         return []
 
-    child_records = _stage_child_records(store=store, request_id=request_id, stage_code=current_stage)
+    child_records = _stage_child_summaries(store=store, request_id=request_id, stage_code=current_stage)
     if not child_records:
         return []
-    if _has_active_children(child_records):
+    if _has_active_child_summaries(child_records):
         return []
 
     store.update_task_request(

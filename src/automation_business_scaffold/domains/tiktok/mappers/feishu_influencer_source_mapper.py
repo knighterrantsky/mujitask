@@ -164,6 +164,9 @@ def influencer_pool_source_adapter(
 
 
 def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
+    raw_snapshot_ref = _text(payload.get("raw_snapshot_ref"))
+    if raw_snapshot_ref:
+        return raw_snapshot_ref
     namespace = _first_non_empty(
         _mapping(payload.get("snapshot_policy")).get("raw_snapshot_namespace"),
         "feishu/common",
