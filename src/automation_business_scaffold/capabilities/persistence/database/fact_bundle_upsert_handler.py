@@ -89,6 +89,8 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     result = {
         "upserted_entities": persisted["upserted_entities"],
         "upserted_relations": persisted["upserted_relations"],
+        "created_relations": persisted.get("created_relations", []),
+        "created_creator_product_relations": persisted.get("created_creator_product_relations", []),
         "observation_refs": persisted["observation_refs"],
         "persisted_counts": persisted["persisted_counts"],
         "fact_bundle": merged_bundle,
@@ -141,6 +143,8 @@ def _plan_fact_bundle_upsert(fact_bundle: dict[str, Any]) -> dict[str, Any]:
     return {
         "upserted_entities": upserted_entities,
         "upserted_relations": upserted_relations,
+        "created_relations": list(upserted_relations),
+        "created_creator_product_relations": [],
         "observation_refs": observation_refs,
         "persisted_counts": {
             "products": len(coerce_mapping_list(fact_bundle.get("products"))),
@@ -159,6 +163,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
     store = TKFactStore(db_url=fact_db_url)
     upserted_entities: list[str] = []
     upserted_relations: list[str] = []
+    created_relations: list[str] = []
+    created_creator_product_relations: list[dict[str, Any]] = []
     observation_refs: list[str] = []
     asset_id_by_key: dict[str, str] = {}
 
@@ -272,7 +278,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             metadata=coerce_mapping(relation.get("metadata")),
         )
         if row:
-            upserted_relations.append(f"product_shop:{row.get('relation_key')}")
+            relation_ref = f"product_shop:{row.get('relation_key')}"
+            upserted_relations.append(relation_ref)
 
     for relation in coerce_mapping_list(relations.get("creator_products")):
         row = store.upsert_creator_product_relation(
@@ -292,9 +299,22 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             sold_count=relation.get("sold_count"),
             source_platform=coerce_str(relation.get("source_platform")),
             metadata=coerce_mapping(relation.get("metadata")),
+            include_mutation_status=True,
         )
         if row:
-            upserted_relations.append(f"creator_product:{row.get('relation_key')}")
+            relation_ref = f"creator_product:{row.get('relation_key')}"
+            upserted_relations.append(relation_ref)
+            if row.get("_mutation_status") == "created":
+                created_relations.append(relation_ref)
+                created_creator_product_relations.append(
+                    {
+                        "relation_key": coerce_str(row.get("relation_key")),
+                        "creator_key": coerce_str(row.get("creator_key")),
+                        "creator_id": coerce_str(row.get("creator_id")),
+                        "product_id": coerce_str(row.get("product_id")),
+                        "sold_count": row.get("sold_count"),
+                    }
+                )
 
     for relation in coerce_mapping_list(relations.get("creator_videos")):
         row = store.upsert_creator_video_relation(
@@ -311,7 +331,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             metadata=coerce_mapping(relation.get("metadata")),
         )
         if row:
-            upserted_relations.append(f"creator_video:{row.get('relation_key')}")
+            relation_ref = f"creator_video:{row.get('relation_key')}"
+            upserted_relations.append(relation_ref)
 
     for relation in coerce_mapping_list(relations.get("video_products")):
         row = store.upsert_video_product_relation(
@@ -321,7 +342,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             metadata=coerce_mapping(relation.get("metadata")),
         )
         if row:
-            upserted_relations.append(f"video_product:{row.get('relation_key')}")
+            relation_ref = f"video_product:{row.get('relation_key')}"
+            upserted_relations.append(relation_ref)
 
     for relation in coerce_mapping_list(relations.get("shop_creators")):
         row = store.upsert_shop_creator_relation(
@@ -343,7 +365,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             metadata=coerce_mapping(relation.get("metadata")),
         )
         if row:
-            upserted_relations.append(f"shop_creator:{row.get('relation_key')}")
+            relation_ref = f"shop_creator:{row.get('relation_key')}"
+            upserted_relations.append(relation_ref)
 
     raw_id_by_key: dict[str, str] = {}
     for raw_response in coerce_mapping_list(fact_bundle.get("raw_api_responses")):
@@ -471,6 +494,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
     return {
         "upserted_entities": upserted_entities,
         "upserted_relations": upserted_relations,
+        "created_relations": created_relations,
+        "created_creator_product_relations": created_creator_product_relations,
         "observation_refs": observation_refs,
         "persisted_counts": persisted_counts,
     }

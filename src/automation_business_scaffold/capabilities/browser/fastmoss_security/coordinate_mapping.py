@@ -7,12 +7,20 @@ from PIL import Image
 
 from automation_business_scaffold.contracts.handler.shared import coerce_mapping, compact_dict, first_non_empty
 
+FASTMOSS_SLIDER_CANONICAL_TARGET_WIDTH = 120.0
+FASTMOSS_SLIDER_CANONICAL_BODY_RIGHT_X = 100.0
+FASTMOSS_SLIDER_BODY_RIGHT_RATIO = (
+    FASTMOSS_SLIDER_CANONICAL_BODY_RIGHT_X / FASTMOSS_SLIDER_CANONICAL_TARGET_WIDTH
+)
+
+
 def _build_fastmoss_mixed_slider_mapping(
     page: Any,
     *,
     slider_result: Any,
     background_box: Mapping[str, float],
     background_image_size: tuple[int, int],
+    piece_image_size: tuple[int, int] = (0, 0),
     piece_box: Mapping[str, float],
     handle_box: Mapping[str, float],
     drag_scale: float,
@@ -24,21 +32,24 @@ def _build_fastmoss_mixed_slider_mapping(
     raw_target_y = float(getattr(slider_result, "target_y", 0.0) or 0.0)
     raw_payload = coerce_mapping(getattr(slider_result, "raw", None))
     shape_anchor = coerce_mapping(raw_payload.get("fastmoss_shape_anchor"))
-    piece_anchor_ratio_x = _optional_float(shape_anchor.get("piece_anchor_ratio_x"))
-    css_target_x = (raw_target_x / max(image_width, 1.0)) * rendered_width
+    shape_piece_anchor_ratio_x = _optional_float(shape_anchor.get("piece_anchor_ratio_x"))
+    target_width_raw = float(piece_image_size[0] or 0.0)
+    if target_width_raw <= 0:
+        target_width_raw = FASTMOSS_SLIDER_CANONICAL_TARGET_WIDTH
+    matched_left_raw = raw_target_x - (target_width_raw / 2.0)
+    body_right_offset_raw = target_width_raw * FASTMOSS_SLIDER_BODY_RIGHT_RATIO
+    target_anchor_x_raw = matched_left_raw + body_right_offset_raw
+    target_anchor_x_display = (target_anchor_x_raw / max(image_width, 1.0)) * rendered_width
     current_piece_center_x = (
         float(piece_box.get("x") or 0.0)
         + (float(piece_box.get("width") or 0.0) / 2)
         - float(background_box.get("x") or 0.0)
     )
-    current_piece_anchor_x = current_piece_center_x
-    if piece_anchor_ratio_x is not None:
-        current_piece_anchor_x = (
-            float(piece_box.get("x") or 0.0)
-            + (float(piece_box.get("width") or 0.0) * min(max(piece_anchor_ratio_x, 0.0), 1.0))
-            - float(background_box.get("x") or 0.0)
-        )
-    unscaled_drag_distance = css_target_x - current_piece_anchor_x
+    foreground_left_display = float(piece_box.get("x") or 0.0) - float(background_box.get("x") or 0.0)
+    current_piece_anchor_x = foreground_left_display + (
+        float(piece_box.get("width") or 0.0) * FASTMOSS_SLIDER_BODY_RIGHT_RATIO
+    )
+    unscaled_drag_distance = target_anchor_x_display - current_piece_anchor_x
     drag_distance = (unscaled_drag_distance * drag_scale) + drag_offset_x
     handle_start_x = float(handle_box.get("x") or 0.0) + (float(handle_box.get("width") or 0.0) / 2)
     handle_start_y = float(handle_box.get("y") or 0.0) + (float(handle_box.get("height") or 0.0) / 2)
@@ -46,19 +57,31 @@ def _build_fastmoss_mixed_slider_mapping(
         "raw_target_x": raw_target_x,
         "raw_target_y": raw_target_y,
         "raw_target_box": _raw_target_box(first_non_empty(raw_payload.get("target_box"), raw_payload.get("target"))),
-        "target_interpretation": first_non_empty(
+        "source_target_interpretation": first_non_empty(
             shape_anchor.get("target_interpretation"),
-            "target_center_minus_piece_center",
+            "ddddocr_target_center",
         ),
+        "target_interpretation": "target_body_right_anchor_minus_piece_body_right_anchor",
         "background_image_width": background_image_size[0],
         "background_image_height": background_image_size[1],
+        "target_image_width": int(piece_image_size[0] or 0),
+        "target_image_height": int(piece_image_size[1] or 0),
+        "target_width_raw": target_width_raw,
+        "matched_left_raw": matched_left_raw,
+        "body_right_offset_raw": body_right_offset_raw,
+        "body_right_ratio": FASTMOSS_SLIDER_BODY_RIGHT_RATIO,
+        "target_anchor_x_raw": target_anchor_x_raw,
+        "target_anchor_x_display": target_anchor_x_display,
         "background_box": dict(background_box),
         "piece_box": dict(piece_box),
         "handle_box": dict(handle_box),
-        "css_target_x": css_target_x,
+        "css_target_x": target_anchor_x_display,
         "current_piece_center_x": current_piece_center_x,
+        "foreground_left_display": foreground_left_display,
+        "start_anchor_x_display": current_piece_anchor_x,
         "current_piece_anchor_x": current_piece_anchor_x,
-        "piece_anchor_ratio_x": piece_anchor_ratio_x,
+        "piece_anchor_ratio_x": FASTMOSS_SLIDER_BODY_RIGHT_RATIO,
+        "shape_piece_anchor_ratio_x": shape_piece_anchor_ratio_x,
         "fastmoss_shape_anchor": shape_anchor,
         "unscaled_drag_distance": unscaled_drag_distance,
         "drag_scale": drag_scale,
@@ -435,20 +458,30 @@ def _calculate_slider_drag_distance(
     slider_match: Any,
     background_box: Mapping[str, float],
     background_image_size: tuple[int, int],
+    target_image_size: tuple[int, int] = (0, 0),
     target_box: Mapping[str, float],
     handle_box: Mapping[str, float],
 ) -> float:
-    target_left = float(getattr(slider_match, "target_x", 0))
+    raw_target_x = float(getattr(slider_match, "target_x", 0))
+    target_width_raw = float(target_image_size[0] or 0.0)
+    if target_width_raw <= 0:
+        target_width_raw = FASTMOSS_SLIDER_CANONICAL_TARGET_WIDTH
+    target_anchor = raw_target_x - (target_width_raw / 2.0) + (
+        target_width_raw * FASTMOSS_SLIDER_BODY_RIGHT_RATIO
+    )
     image_width = int(background_image_size[0] or 0)
     rendered_width = float(background_box.get("width") or 0)
     if image_width > 0 and rendered_width > 0:
-        target_left = target_left * rendered_width / float(image_width)
+        target_anchor = target_anchor * rendered_width / float(image_width)
     if target_box:
         current_left = float(target_box.get("x") or 0) - float(background_box.get("x") or 0)
+        current_anchor = current_left + (
+            float(target_box.get("width") or 0.0) * FASTMOSS_SLIDER_BODY_RIGHT_RATIO
+        )
     else:
-        current_left = float(handle_box.get("x") or 0) - float(background_box.get("x") or 0)
-    drag_distance = target_left - current_left
-    return target_left if abs(drag_distance) < 1 else drag_distance
+        current_anchor = float(handle_box.get("x") or 0) - float(background_box.get("x") or 0)
+    drag_distance = target_anchor - current_anchor
+    return target_anchor if abs(drag_distance) < 1 else drag_distance
 
 
 def _image_size(image_bytes: bytes) -> tuple[int, int]:

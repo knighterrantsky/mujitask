@@ -249,3 +249,111 @@ def test_fact_bundle_upsert_persists_unavailable_product_status(monkeypatch) -> 
 
     assert result.status == "success"
     assert captured["status"] == "off_shelf_or_region_unavailable"
+
+
+def test_fact_bundle_upsert_reports_created_creator_product_relations(monkeypatch) -> None:
+    class FakeFactStore:
+        def __init__(self, *, db_url: str):
+            assert db_url == "postgresql+psycopg://facts"
+
+        def upsert_product(self, **kwargs):
+            return {}
+
+        def upsert_product_sku(self, **kwargs):
+            return {}
+
+        def upsert_shop(self, **kwargs):
+            return {}
+
+        def upsert_creator(self, **kwargs):
+            return {"creator_key": "creator_id:creator-1"}
+
+        def upsert_video(self, **kwargs):
+            return {}
+
+        def upsert_media_asset(self, **kwargs):
+            return {}
+
+        def link_media_asset(self, **kwargs):
+            return {}
+
+        def upsert_product_shop_relation(self, **kwargs):
+            return {}
+
+        def upsert_creator_product_relation(self, **kwargs):
+            assert kwargs["include_mutation_status"] is True
+            return {
+                "relation_key": "creator_id:creator-1:product-1",
+                "creator_key": "creator_id:creator-1",
+                "creator_id": "creator-1",
+                "product_id": "product-1",
+                "sold_count": 63,
+                "_mutation_status": "created",
+            }
+
+        def upsert_creator_video_relation(self, **kwargs):
+            return {}
+
+        def upsert_video_product_relation(self, **kwargs):
+            return {}
+
+        def upsert_shop_creator_relation(self, **kwargs):
+            return {}
+
+        def record_raw_api_response(self, **kwargs):
+            return {}
+
+        def upsert_product_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_window_observation(self, **kwargs):
+            return {}
+
+        def upsert_product_daily_metric(self, **kwargs):
+            return {}
+
+        def upsert_product_distribution_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_distribution_window_observation(self, **kwargs):
+            return {}
+
+        def upsert_product_sku_window_latest(self, **kwargs):
+            return {}
+
+        def record_product_sku_window_observation(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(fact_bundle_module, "TKFactStore", FakeFactStore)
+
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "fact_db_url": "postgresql+psycopg://facts",
+                "fact_bundle": {
+                    "creators": [{"creator_id": "creator-1"}],
+                    "relations": {
+                        "creator_products": [
+                            {
+                                "creator_id": "creator-1",
+                                "product_id": "product-1",
+                                "sold_count": 63,
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["created_relations"] == ["creator_product:creator_id:creator-1:product-1"]
+    assert result.result["created_creator_product_relations"] == [
+        {
+            "relation_key": "creator_id:creator-1:product-1",
+            "creator_key": "creator_id:creator-1",
+            "creator_id": "creator-1",
+            "product_id": "product-1",
+            "sold_count": 63,
+        }
+    ]

@@ -388,6 +388,7 @@ def _resolve_one_fastmoss_mixed_slider_attempt(
             slider_result=slider_result,
             background_box=background_box,
             background_image_size=(background_width, background_height),
+            piece_image_size=(piece_width, piece_height),
             piece_box=piece_box,
             handle_box=handle_box,
             drag_scale=_float_value(config.get("drag_scale"), 1.0),
@@ -678,6 +679,7 @@ def _legacy_resolve_fastmoss_slider_security_check(
                 slider_match=slider_match,
                 background_box=background_box,
                 background_image_size=background_image_size,
+                target_image_size=_image_size(target_image),
                 target_box=target_box,
                 handle_box=handle_box,
             )

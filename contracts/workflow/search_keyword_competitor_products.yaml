@@ -110,6 +110,7 @@ protected_invariants:
   - image_timeout_ms 是元素出现的最大等待，不是固定 sleep；滑动后最多轮询 5 秒验证结果，弹窗消失后延迟 2 秒二次确认
   - TikTok 商品页默认 simple_target=false；FastMoss/TikTok 可以共用 framework SliderCaptchaResolver，但不得共用业务 handler、成功判据或 cookie/token 持久化策略
   - slider 审计必须记录 ddddocr 原始坐标、坐标换算、拖动距离、前后截图、失败态文本、滑动后轮询结果和二次确认结果
+  - FastMoss/Tencent 滑块拖动距离必须按主体右边缘 anchor 计算；ddddocr target_x 视为拼图匹配中心，目标 anchor 为 target_x - target_width / 2 + target_width * (100 / 120)，初始 anchor 为 foreground_left + foreground_width * (100 / 120)
   - FastMoss browser fallback 失败或 API 原接口重试后仍为 MSG_SAFE_0001 时，终态错误为 fastmoss_security_verification_required
   - FastMoss session/cookie 恢复属于 infrastructure/fastmoss；last_auth_failed_at 已标记的 cookie 不得复用，刷新后仍 auth 失败时终态错误为 fastmoss_session_conflict_or_external_login
   - 新商品详情抓取判定不可访问时，保留种子字段并写 商品状态=已下架/区域不可售

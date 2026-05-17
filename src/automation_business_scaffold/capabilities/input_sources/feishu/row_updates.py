@@ -99,6 +99,11 @@ def fields_for_update(
 ) -> dict[str, Any]:
     excluded = {text(value) for value in list(record.get("update_excluded_fields") or []) if text(value)}
     selected = {key: value for key, value in dict(fields).items() if text(key) not in excluded}
+    for field_name, value in mapping(record.get("update_accumulate_fields")).items():
+        if text(field_name) in excluded:
+            continue
+        if text(field_name) in selected:
+            selected[field_name] = value
     return merge_update_fields(
         selected,
         existing_fields=mapping(existing_fields),
@@ -130,6 +135,9 @@ def merge_update_fields(
             continue
         if is_multi_select_field(schema):
             merged[field_name] = _merge_text_lists(existing_fields.get(field_name), value)
+            continue
+        if text(field_name) == "关联商品销量":
+            merged[field_name] = _merge_numeric_sum(existing_fields.get(field_name), value)
             continue
         merged[field_name] = value
     return merged
@@ -188,6 +196,41 @@ def _merge_text_lists(*values: Any) -> list[str]:
             if item and item not in merged:
                 merged.append(item)
     return merged
+
+
+def _merge_numeric_sum(existing: Any, incoming: Any) -> str:
+    incoming_number = _numeric_value(incoming)
+    if incoming_number is None:
+        return text_value(existing)
+    existing_number = _numeric_value(existing) or 0.0
+    return _format_trimmed_decimal(existing_number + incoming_number)
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    item = text_value(value).replace(",", "").replace("$", "").replace(" ", "")
+    if not item:
+        return None
+    multiplier = 1.0
+    lower = item.lower()
+    for suffix, suffix_multiplier in (("亿", 100_000_000.0), ("万", 10_000.0), ("w", 10_000.0), ("m", 1_000_000.0), ("k", 1_000.0)):
+        if lower.endswith(suffix):
+            multiplier = suffix_multiplier
+            item = item[: -len(suffix)]
+            break
+    try:
+        return float(item) * multiplier
+    except ValueError:
+        return None
+
+
+def _format_trimmed_decimal(value: float) -> str:
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _response_record_id(response: Mapping[str, Any]) -> str:

@@ -1197,6 +1197,117 @@ def test_feishu_table_write_replaces_configured_attachment_field_on_update(monke
     assert FakeClient.updated[0]["fields"]["达人头像"] == [{"file_token": "new-image-token"}]
 
 
+def test_feishu_table_write_appends_product_images_on_update(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "达人ID", "type": 1}, {"field_name": "带货商品图", "type": 17}]
+
+        def list_all_records(self, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            del app_token, table_id, page_size, filter_expr, view_id
+            return [
+                {
+                    "record_id": "rec-creator",
+                    "fields": {
+                        "达人ID": "creator-1",
+                        "带货商品图": [{"file_token": "old-product-token"}],
+                    },
+                }
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "fields": {
+                    "达人ID": "creator-1",
+                    "带货商品图": [
+                        {"file_token": "old-product-token"},
+                        {"file_token": "new-product-token"},
+                    ],
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert [item["file_token"] for item in FakeClient.updated[0]["fields"]["带货商品图"]] == [
+        "old-product-token",
+        "new-product-token",
+    ]
+
+
+def test_feishu_table_write_accumulates_related_product_sales_on_update(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "达人ID", "type": 1}, {"field_name": "关联商品销量", "type": 1}]
+
+        def list_all_records(self, app_token, table_id, page_size=100, filter_expr=None, view_id=None):
+            del app_token, table_id, page_size, filter_expr, view_id
+            return [
+                {
+                    "record_id": "rec-creator",
+                    "fields": {
+                        "达人ID": "creator-1",
+                        "关联商品销量": "72",
+                    },
+                }
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "fields": {
+                    "达人ID": "creator-1",
+                    "关联商品销量": "135",
+                },
+                "update_accumulate_fields": {"关联商品销量": "63"},
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.updated[0]["fields"]["关联商品销量"] == "135"
+
+
 def test_competitor_influencer_status_writeback_does_not_touch_remark() -> None:
     records = map_write_records(
         {

@@ -295,7 +295,7 @@ FastMoss 与 TikTok 商品页的验证码逻辑保持独立。TikTok browser fal
 - 滑动后最多轮询 5 秒验证结果；轮询中如果 popup 消失或成功 selector 出现，立即进入稳定性确认，不继续固定等待。
 - 弹窗消失后延迟 2 秒二次确认；二次确认时 popup 仍消失才允许把当前滑块 attempt 标记为成功。
 - 如果 TikTok 页面出现 `Unable to verify. Please try again.` 等失败态文本，或二次确认时弹层重新出现，本次 attempt 视为失败，应按 max attempts 和 refresh 策略进入下一次尝试。
-- TikTok 商品页默认 `simple_target=false`，沿用已通过 Roxy/TikTok 实测的 framework `SliderCaptchaResolver` match 行为；FastMoss 由 FastMoss/Tencent selector profile 和对应 provider config 单独决定。FastMoss/Tencent 默认背景取 CSS `background-image` 原图、拼图取元素截图、`simple_target=false`，距离按目标中心点减当前拼图中心点计算。
+- TikTok 商品页默认 `simple_target=false`，沿用已通过 Roxy/TikTok 实测的 framework `SliderCaptchaResolver` match 行为；FastMoss 由 FastMoss/Tencent selector profile 和对应 provider config 单独决定。FastMoss/Tencent 默认背景取 CSS `background-image` 原图、拼图取元素截图、`simple_target=false`；`ddddocr` 匹配坐标按 120x120 拼图中心点解释，拖动距离按目标主体右边缘显示坐标减初始滑块主体右边缘显示坐标计算，主体右边缘比例为 `100 / 120`。
 - FastMoss/Tencent 失败重试前必须等待上一轮 loading/verifying 结束，刷新后必须等背景图、拼图块、手柄和起点 reset 都 ready 后再截图识别；不得在 spinner 画面或上一轮残留位置上进行 ddddocr 识别。默认拖动节奏为 36 steps、每步 0.012s，可通过 resolver config 覆盖。
 - 审计必须记录 ddddocr 原始坐标、坐标换算、拖动距离、前后截图、目标位置截图、失败态文本、滑动后轮询结果和二次确认结果，便于区分识别错误、距离计算错误和鼠标执行异常。目标位置截图 artifact 名称为 `target_position_screenshot`，必须在鼠标移动到计算终点且释放之前捕获。
 

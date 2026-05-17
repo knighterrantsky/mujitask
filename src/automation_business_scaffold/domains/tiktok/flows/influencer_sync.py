@@ -277,7 +277,12 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         )
     warnings.extend(fact_result.warnings)
 
-    write_payload = _influencer_pool_write_payload(payload, creator_payload=creator_payload, product_hits=product_hits)
+    write_payload = _influencer_pool_write_payload(
+        payload,
+        creator_payload=creator_payload,
+        product_hits=product_hits,
+        fact_result=fact_result.result,
+    )
     step_started_at = perf_counter()
     influencer_write = feishu_table_write_handler(
         _child_context(
@@ -792,6 +797,7 @@ def _influencer_pool_write_payload(
     *,
     creator_payload: Mapping[str, Any],
     product_hits: list[dict[str, Any]],
+    fact_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request_payload = coerce_mapping(payload.get("request_payload"))
     target_table_ref = first_non_empty(
@@ -802,7 +808,12 @@ def _influencer_pool_write_payload(
         request_payload.get("source_table_ref"),
         payload.get("source_table_ref"),
     )
-    records = [_projection_record(payload, creator_payload=creator_payload, product_hit=hit) for hit in product_hits]
+    merged_hit = _merged_product_hit_for_influencer_write(product_hits, fact_result=fact_result or {})
+    records = (
+        [_projection_record(payload, creator_payload=creator_payload, product_hit=merged_hit)]
+        if merged_hit
+        else []
+    )
     return {
         **request_payload,
         "request_id": payload.get("request_id"),
@@ -824,14 +835,22 @@ def _projection_record(
 ) -> dict[str, Any]:
     creator_fact_bundle = coerce_mapping(creator_payload.get("creator_fact_bundle"))
     creator_identity = coerce_mapping(payload.get("creator_identity"))
-    creator_id = first_non_empty(creator_fact_bundle.get("creator_id"), creator_identity.get("creator_id"), creator_identity.get("uid"))
+    creator_id = first_non_empty(
+        creator_fact_bundle.get("creator_id"),
+        creator_identity.get("creator_id"),
+        creator_identity.get("uid"),
+    )
     source_record_id = first_non_empty(product_hit.get("source_record_id"))
     product_id = first_non_empty(product_hit.get("product_id"))
+    holiday_value = product_hit.get("holiday")
     return {
         "source_record_id": source_record_id,
         "product_id": product_id,
         "creator_id": creator_id,
-        "creator_name": first_non_empty(creator_fact_bundle.get("display_name"), creator_fact_bundle.get("nickname")),
+        "creator_name": first_non_empty(
+            creator_fact_bundle.get("display_name"),
+            creator_fact_bundle.get("nickname"),
+        ),
         "creator_fact_bundle": creator_fact_bundle,
         "fact_bundle": coerce_mapping(creator_payload.get("fact_bundle")),
         "entities": coerce_mapping(creator_payload.get("entities")),
@@ -844,12 +863,141 @@ def _projection_record(
             "source_record_id": source_record_id,
             "product_id": product_id,
             "matched_product_sold_count": product_hit.get("matched_product_sold_count"),
+            "matched_product_sold_delta": product_hit.get("matched_product_sold_delta"),
         },
         "matched_product_sold_count": product_hit.get("matched_product_sold_count"),
+        "matched_product_sold_delta": product_hit.get("matched_product_sold_delta"),
         "source_product_images": list(product_hit.get("source_product_images") or []),
-        "holiday": first_non_empty(product_hit.get("holiday")),
+        "holiday": holiday_value if isinstance(holiday_value, list) else first_non_empty(holiday_value),
         "product_key": first_non_empty(product_hit.get("product_key"), f"{source_record_id}:{product_id}"),
     }
+
+
+def _merged_product_hit_for_influencer_write(
+    product_hits: list[dict[str, Any]],
+    *,
+    fact_result: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    unique_hits = _unique_product_hits(product_hits)
+    if not unique_hits:
+        return {}
+    merged = dict(unique_hits[0])
+    source_product_images = _source_product_images_for_unique_hits(unique_hits)
+    holidays = _unique_text_values(hit.get("holiday") for hit in unique_hits)
+    product_ids = _unique_text_values(hit.get("product_id") for hit in unique_hits)
+    source_record_ids = _unique_text_values(hit.get("source_record_id") for hit in unique_hits)
+    sales_hits = _sales_delta_product_hits(unique_hits, fact_result=fact_result or {})
+    sales_total = sum(_numeric_value(hit.get("matched_product_sold_count")) or 0.0 for hit in unique_hits)
+    sales_delta = sum(_numeric_value(hit.get("matched_product_sold_count")) or 0.0 for hit in sales_hits)
+    if source_product_images:
+        merged["source_product_images"] = source_product_images
+    if holidays:
+        merged["holiday"] = holidays
+    merged["matched_product_sold_count"] = sales_total
+    merged["matched_product_sold_delta"] = sales_delta
+    if product_ids:
+        merged["product_ids"] = product_ids
+    if source_record_ids:
+        merged["source_record_ids"] = source_record_ids
+    merged["product_hits"] = unique_hits
+    return merged
+
+
+def _sales_delta_product_hits(
+    product_hits: list[dict[str, Any]],
+    *,
+    fact_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    created_product_ids = {
+        first_non_empty(relation.get("product_id"))
+        for relation in coerce_mapping_list(fact_result.get("created_creator_product_relations"))
+    }
+    if not fact_result or not created_product_ids:
+        return product_hits if not fact_result else []
+    return [
+        hit
+        for hit in product_hits
+        if first_non_empty(hit.get("product_id")) in created_product_ids
+    ]
+
+
+def _unique_product_hits(product_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique_hits: list[dict[str, Any]] = []
+    hits_by_key: dict[str, dict[str, Any]] = {}
+    for index, hit in enumerate(product_hits):
+        product_key = _product_hit_dedupe_key(hit, fallback=f"index:{index}")
+        if product_key in hits_by_key:
+            existing_hit = hits_by_key[product_key]
+            if not list(existing_hit.get("source_product_images") or []) and list(
+                hit.get("source_product_images") or []
+            ):
+                existing_hit["source_product_images"] = list(hit.get("source_product_images") or [])
+            continue
+        item = dict(hit)
+        hits_by_key[product_key] = item
+        unique_hits.append(item)
+    return unique_hits
+
+
+def _product_hit_dedupe_key(hit: Mapping[str, Any], *, fallback: str) -> str:
+    return first_non_empty(
+        hit.get("product_id"),
+        hit.get("product_key"),
+        hit.get("source_record_id"),
+        fallback,
+    )
+
+
+def _source_product_images_for_unique_hits(product_hits: list[dict[str, Any]]) -> list[Any]:
+    refs: list[Any] = []
+    seen: set[str] = set()
+    for hit in product_hits:
+        for image in list(hit.get("source_product_images") or []):
+            key = _source_product_image_key(image)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            refs.append(dict(image) if isinstance(image, Mapping) else image)
+    return refs
+
+
+def _source_product_image_key(image: Any) -> str:
+    if isinstance(image, Mapping):
+        return first_non_empty(
+            image.get("file_token"),
+            image.get("url"),
+            image.get("source_url"),
+            image.get("tmp_url"),
+            image.get("download_url"),
+            image.get("local_path"),
+            image.get("source_path"),
+            image.get("path"),
+            image.get("object_key"),
+        )
+    return first_non_empty(image)
+
+
+def _unique_text_values(values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            text = first_non_empty(item)
+            if text and text not in result:
+                result.append(text)
+    return result
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = first_non_empty(value).replace(",", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _status_writeback_payload(payload: Mapping[str, Any], *, hit: Mapping[str, Any], influencer_write: HandlerResult) -> dict[str, Any]:

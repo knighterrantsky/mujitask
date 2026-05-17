@@ -9,7 +9,9 @@ import pytest
 import automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler as creator_fetch_impl
 import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler as product_fetch_impl
 import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
+from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
+from automation_business_scaffold.domains.tiktok.flows.influencer_sync import _influencer_pool_write_payload
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     READ_STAGE_CODE,
@@ -108,6 +110,105 @@ def _jobs_for_stage(payload: dict[str, object], stage_code: str, job_code: str =
             continue
         jobs.append(job)
     return jobs
+
+
+def test_influencer_pool_write_payload_merges_product_images_by_product_id() -> None:
+    write_payload = _influencer_pool_write_payload(
+        {
+            "request_id": "req-merge-images",
+            "task_code": TASK_CODE,
+            "workflow_code": TASK_CODE,
+            "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+            "target_table_ref": "feishu://mujitask/tk_influencer_pool",
+            "creator_identity": {"creator_id": CREATOR_ID},
+        },
+        creator_payload={
+            "creator_fact_bundle": {
+                "creator_id": CREATOR_ID,
+                "display_name": "Roxy",
+                "avatar_url": "https://example.com/avatar.png",
+            },
+            "fact_bundle": {},
+        },
+        product_hits=[
+            {
+                "source_record_id": "rec-product-a",
+                "product_id": "product-a",
+                "holiday": "毕业季",
+                "matched_product_sold_count": 72,
+                "source_product_images": [{"file_token": "tok-product-a"}],
+            },
+            {
+                "source_record_id": "rec-product-b",
+                "product_id": "product-b",
+                "holiday": "夏季",
+                "matched_product_sold_count": 63,
+                "source_product_images": [{"file_token": "tok-product-b"}],
+            },
+            {
+                "source_record_id": "rec-product-a-dup",
+                "product_id": "product-a",
+                "holiday": "毕业季",
+                "matched_product_sold_count": 72,
+                "source_product_images": [{"file_token": "tok-product-a"}],
+            },
+        ],
+    )
+
+    assert len(write_payload["records"]) == 1
+    assert write_payload["records"][0]["source_context"]["product_ids"] == ["product-a", "product-b"]
+    mapped_records = map_write_records(write_payload)
+
+    assert mapped_records[0]["upsert_key"] == {"field": "达人ID", "value": CREATOR_ID}
+    assert mapped_records[0]["fields"]["带货商品图"] == [
+        {"file_token": "tok-product-a"},
+        {"file_token": "tok-product-b"},
+    ]
+    assert mapped_records[0]["fields"]["关联节日"] == ["毕业季", "夏季"]
+    assert mapped_records[0]["fields"]["关联商品销量"] == "135"
+    assert mapped_records[0]["update_accumulate_fields"] == {"关联商品销量": "135"}
+
+
+def test_influencer_pool_write_payload_uses_created_creator_product_relations_as_sales_delta() -> None:
+    write_payload = _influencer_pool_write_payload(
+        {
+            "request_id": "req-sales-delta",
+            "task_code": TASK_CODE,
+            "workflow_code": TASK_CODE,
+            "stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE,
+            "target_table_ref": "feishu://mujitask/tk_influencer_pool",
+            "creator_identity": {"creator_id": CREATOR_ID},
+        },
+        creator_payload={
+            "creator_fact_bundle": {
+                "creator_id": CREATOR_ID,
+                "display_name": "Roxy",
+            },
+            "fact_bundle": {},
+        },
+        product_hits=[
+            {
+                "source_record_id": "rec-product-a",
+                "product_id": "product-a",
+                "matched_product_sold_count": 72,
+            },
+            {
+                "source_record_id": "rec-product-b",
+                "product_id": "product-b",
+                "matched_product_sold_count": 63,
+            },
+        ],
+        fact_result={
+            "created_creator_product_relations": [
+                {"creator_id": CREATOR_ID, "product_id": "product-b", "sold_count": 63}
+            ]
+        },
+    )
+
+    mapped_records = map_write_records(write_payload)
+
+    assert mapped_records[0]["fields"]["关联商品销量"] == "135"
+    assert mapped_records[0]["update_accumulate_fields"] == {"关联商品销量": "63"}
 
 
 def _bind_fake_business_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

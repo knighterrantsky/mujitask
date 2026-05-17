@@ -62,6 +62,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [数据采集策略与频率设计](./data-collection-strategy-design.md) | 采集频率、窗口数据和事实沉淀策略 |
+| [Interactive Staged Workflow Runtime 设计草案](./interactive-staged-workflow-runtime-design.md) | 节点化、标准输入输出、Agent Catalog 编排和交互式 Runtime 的目标设计 |
 | [TK 综合数据表设计](./future-tk-comprehensive-table-design.md) | 未来飞书业务数据模型草案，不替代当前飞书表事实或 Fact DB schema |
 
 ## 统一概念

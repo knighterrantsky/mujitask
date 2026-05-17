@@ -49,6 +49,7 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
         "upsert_key": mapping(record.get("upsert_key")),
         "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
         "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
+        "update_accumulate_fields": mapping(record.get("update_accumulate_fields") or payload.get("update_accumulate_fields")),
         "fields": mapping(record.get("fields")),
         "source_context": mapping(record.get("source_context")) or source_context_from_record(record, payload),
     }
