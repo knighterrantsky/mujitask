@@ -37,6 +37,10 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
     summarize_stage_children,
     timeout_seconds_for_workflow as _timeout_seconds,
 )
+from automation_business_scaffold.control_plane.reconciler.views import (
+    build_request_child_views,
+    summarize_child_status_counts,
+)
 from automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper import (
     keyword_search_parameter_mapper,
 )
@@ -250,7 +254,93 @@ def _job_stage_code(job: Mapping[str, Any]) -> str:
     return str(payload.get("stage_code") or job.get("stage") or "").strip()
 
 def _stage_has_children(*, store: RuntimeStore, request_id: str, stage_code: str, job_code: str) -> bool:
-    return bool(_stage_api_jobs(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code))
+    return bool(_stage_api_job_summaries(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code))
+
+
+def _stage_child_summaries(*, store: RuntimeStore, request_id: str, stage_code: str) -> list[Any]:
+    api_jobs = _stage_api_job_summaries(store=store, request_id=request_id, stage_code=stage_code)
+    list_execution_summaries = getattr(store, "list_task_execution_summaries_for_request", None)
+    if callable(list_execution_summaries):
+        executions = list_execution_summaries(request_id=request_id)
+    else:
+        executions = store.list_task_executions(request_id=request_id)
+    return [
+        *api_jobs,
+        *[
+            execution
+            for execution in executions
+            if _execution_stage_code(execution) == stage_code
+        ],
+    ]
+
+
+def _execution_stage_code(execution: Any) -> str:
+    if isinstance(execution, Mapping):
+        payload = coerce_mapping(execution.get("payload"))
+        return str(payload.get("stage_code") or execution.get("stage") or "").strip()
+    payload = coerce_mapping(getattr(execution, "payload", {}))
+    return str(payload.get("stage_code") or "").strip()
+
+
+def _has_active_child_summaries(records: list[Any]) -> bool:
+    for record in records:
+        if isinstance(record, Mapping):
+            status = str(record.get("status") or "").strip()
+        else:
+            status = str(getattr(record, "status", "") or "").strip()
+        if status in ACTIVE_STATUSES:
+            return True
+    return False
+
+
+def _summarize_request_children_from_store(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
+    summarize_api = getattr(store, "summarize_api_worker_jobs_for_request", None)
+    summarize_executions = getattr(store, "summarize_task_executions_for_request", None)
+    if callable(summarize_api) and callable(summarize_executions):
+        return _merge_child_summary_dicts(
+            summarize_api(request_id=request_id),
+            summarize_executions(request_id=request_id),
+        )
+
+    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
+    executions = store.list_task_executions(request_id=request_id)
+    summary = summarize_child_status_counts(
+        build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions)
+    )
+    return {
+        "total_count": summary.total_count,
+        "terminal_count": summary.terminal_count,
+        "success_count": summary.success_count,
+        "failed_count": summary.failed_count,
+        "skipped_count": summary.skipped_count,
+        "counts": dict(summary.counts),
+    }
+
+
+def _merge_child_summary_dicts(*summaries: Mapping[str, Any]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    total_count = 0
+    active_count = 0
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    for summary in summaries:
+        total_count += int(summary.get("total") or summary.get("total_count") or 0)
+        active_count += int(summary.get("active_count") or 0)
+        success_count += int(summary.get("success_count") or 0)
+        failed_count += int(summary.get("failed_count") or 0)
+        skipped_count += int(summary.get("skipped_count") or 0)
+        for status, count in dict(summary.get("counts") or {}).items():
+            status_key = str(status or "unknown")
+            counts[status_key] = counts.get(status_key, 0) + int(count or 0)
+    return {
+        "total_count": total_count,
+        "terminal_count": max(total_count - active_count, 0),
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "skipped_count": skipped_count,
+        "counts": counts,
+    }
 
 def _fastmoss_browser_fallback_candidates(
     *,

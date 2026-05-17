@@ -17,18 +17,14 @@ from .context.summary_inputs import *  # noqa: F403
 
 def _refresh_request_counts(*, store: RuntimeStore, request_id: str) -> None:
     request = store.load_task_request(request_id=request_id)
-    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
-    executions = store.list_task_executions(request_id=request_id)
-    child_summary = summarize_child_status_counts(
-        build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions)
-    )
+    child_summary = _summarize_request_children_from_store(store=store, request_id=request_id)
     store.update_task_request(
         request_id=request_id,
-        child_total_count=child_summary.total_count,
-        child_terminal_count=child_summary.terminal_count,
-        child_success_count=child_summary.success_count,
-        child_failed_count=child_summary.failed_count,
-        child_skipped_count=child_summary.skipped_count,
+        child_total_count=int(child_summary["total_count"]),
+        child_terminal_count=int(child_summary["terminal_count"]),
+        child_success_count=int(child_summary["success_count"]),
+        child_failed_count=int(child_summary["failed_count"]),
+        child_skipped_count=int(child_summary["skipped_count"]),
         progress_stage=_current_stage(request),
     )
 

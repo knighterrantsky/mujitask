@@ -1341,7 +1341,7 @@ Business handler 负责有独立运行价值的业务动作。它可以调用 ca
 | Handler | 作用 | 当前准入建议 |
 | --- | --- | --- |
 | `influencer_pool_candidate_select` | 从竞品表源行筛选达人同步候选，并 fan-out product jobs | 当前不准入；优先由 `feishu_table_read` + `influencer_pool_source_adapter` + workflow dispatcher 表达 |
-| `product_creator_discovery` | 每个竞品商品 1 个商品达人发现 job，内部复用 FastMoss 商品达人列表能力，输出 normalized creator candidates + product hit context | 准入；用于 `sync_tk_influencer_pool.discover_related_creators` |
+| `product_creator_discovery` | 每个竞品商品 1 个商品达人发现 job，内部复用 FastMoss 商品达人列表能力，输出 compact normalized creator candidates + product hit context；Runtime result 不承载完整 product fact bundle、raw response、SKU 明细或媒体正文 | 准入；用于 `sync_tk_influencer_pool.discover_related_creators` |
 | `influencer_creator_sync` | 每个 unique 达人 1 个达人同步 job，内部完成达人详情、事实入库、素材同步、达人池飞书 upsert，并在商品 group 终态时写回该商品达人查找状态 | 准入；用于 `sync_tk_influencer_pool.sync_influencer_pool` |
 | `fastmoss_echarts_render` | 生成 ECharts option / HTML / 图片 artifact | 候选；需要 artifact contract 后才能准入 |
 | `product_candidate_filter` | 过滤 `fastmoss_product_search` 结果，生成 seed rows | 候选；优先复用 `fastmoss_product_search.output_conditions` |

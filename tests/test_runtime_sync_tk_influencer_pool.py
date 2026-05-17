@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.domains.tiktok.flows import influencer_sync
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     DISPATCH_PRODUCT_STAGE_CODE,
@@ -10,6 +14,10 @@ from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.c
     TASK_CODE,
     WORKFLOW_CODE,
     WRITEBACK_STAGE_CODE,
+)
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.runtime_views import (
+    _stage_child_summaries,
+    _summarize_request_children_from_store,
 )
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.orchestrator import (
     advance_stage,
@@ -24,6 +32,151 @@ from automation_business_scaffold.control_plane.executor.request_aggregation imp
     build_runtime_request_payload,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+
+
+def test_product_creator_discovery_runtime_result_is_compact(monkeypatch) -> None:
+    raw_payload = {"html": "<div>" + ("x" * 200_000) + "</div>"}
+    product_fact_bundle = {
+        "products": [{"product_id": "product-compact", "product_key": "fastmoss_product:product-compact"}],
+        "media_assets": [{"entity_type": "product", "source_url": "https://example.test/image.jpg"}],
+        "raw_api_responses": [{"source_endpoint": "goods.overview", "response_payload": raw_payload}],
+        "product_sku_metric_snapshots": [{"sku_id": f"sku-{index}", "raw": raw_payload} for index in range(3)],
+    }
+
+    def fake_product_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "product_fact_bundle": product_fact_bundle,
+                "related_creators": [
+                    {
+                        "creator_id": "creator-compact",
+                        "creator_identity": {
+                            "creator_id": "creator-compact",
+                            "uid": "123",
+                            "unique_id": "compact.creator",
+                            "profile_url": "https://example.test/creator",
+                        },
+                        "display_name": "Compact Creator",
+                        "metrics": {"sold_count": 88, "follower_count": 12000},
+                        "source_context": {"candidate_row": {"raw": raw_payload}},
+                    }
+                ],
+                "metrics_snapshot": {"raw": raw_payload},
+            },
+        )
+
+    monkeypatch.setattr(influencer_sync, "fastmoss_product_fetch_handler", fake_product_fetch)
+
+    result = influencer_sync.run_product_creator_discovery_flow(
+        HandlerContext(
+            request_id="req-compact",
+            job_id="job-compact",
+            handler_code="product_creator_discovery",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "source_context": {"source_record_id": "rec-compact", "product_id": "product-compact"},
+                "product_identity": {"product_id": "product-compact"},
+                "relation_policy": {"creator_sold_count_min": 10, "creator_follower_count_min": 1000},
+            },
+            workflow_code=WORKFLOW_CODE,
+            stage_code=DISCOVER_CREATORS_STAGE_CODE,
+            job_code="product_creator_discovery",
+        )
+    )
+
+    assert result.status == "success"
+    assert "product_fetch_result" not in result.result
+    assert "raw_api_responses" not in result.result["product_fact_bundle"]
+    assert "product_sku_metric_snapshots" not in result.result["product_fact_bundle"]
+    assert "candidate_row" not in result.result["normalized_creator_candidates"][0]["source_context"]
+    assert len(json.dumps(result.result, ensure_ascii=False)) < 10_000
+
+
+def test_request_child_summary_uses_db_aggregate_queries() -> None:
+    class Store:
+        def summarize_api_worker_jobs_for_request(self, *, request_id: str) -> dict[str, object]:
+            assert request_id == "req-summary"
+            return {
+                "total": 2,
+                "active_count": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "skipped_count": 0,
+                "counts": {"success": 1, "pending": 1},
+            }
+
+        def summarize_task_executions_for_request(self, *, request_id: str) -> dict[str, object]:
+            assert request_id == "req-summary"
+            return {
+                "total": 1,
+                "active_count": 0,
+                "success_count": 0,
+                "failed_count": 1,
+                "skipped_count": 0,
+                "counts": {"failed": 1},
+            }
+
+        def list_api_worker_jobs_for_request(self, **_: object) -> list[dict[str, object]]:
+            raise AssertionError("full api_worker_job result_json should not be loaded for count refresh")
+
+        def list_task_executions(self, **_: object) -> list[object]:
+            raise AssertionError("full task_execution result_json should not be loaded for count refresh")
+
+    summary = _summarize_request_children_from_store(store=Store(), request_id="req-summary")
+
+    assert summary["total_count"] == 3
+    assert summary["terminal_count"] == 2
+    assert summary["success_count"] == 1
+    assert summary["failed_count"] == 1
+    assert summary["counts"] == {"success": 1, "pending": 1, "failed": 1}
+
+
+def test_stage_child_summaries_do_not_load_full_results() -> None:
+    class Store:
+        def list_api_worker_job_summaries_for_request(self, *, request_id: str, job_code: str = "") -> list[dict[str, object]]:
+            assert request_id == "req-stage"
+            assert job_code == ""
+            return [
+                {
+                    "job_id": "job-1",
+                    "status": "finished",
+                    "payload": {"stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE},
+                    "result": {},
+                },
+                {
+                    "job_id": "job-2",
+                    "status": "pending",
+                    "payload": {"stage_code": WRITEBACK_STAGE_CODE},
+                    "result": {},
+                },
+            ]
+
+        def list_task_execution_summaries_for_request(self, *, request_id: str) -> list[dict[str, object]]:
+            assert request_id == "req-stage"
+            return [
+                {
+                    "execution_id": "exec-1",
+                    "status": "finished",
+                    "payload": {"stage_code": SYNC_INFLUENCER_POOL_STAGE_CODE},
+                    "result": {},
+                }
+            ]
+
+        def list_api_worker_jobs_for_request(self, **_: object) -> list[dict[str, object]]:
+            raise AssertionError("full api_worker_job result_json should not be loaded for stage checks")
+
+        def list_task_executions(self, **_: object) -> list[object]:
+            raise AssertionError("full task_execution result_json should not be loaded for stage checks")
+
+    records = _stage_child_summaries(
+        store=Store(),
+        request_id="req-stage",
+        stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+    )
+
+    assert [record.get("job_id") or record.get("execution_id") for record in records] == ["job-1", "exec-1"]
 
 
 def _create_request(store: RuntimeStore, **payload: object):

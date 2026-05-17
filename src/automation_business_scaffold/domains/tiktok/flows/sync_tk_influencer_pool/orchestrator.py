@@ -3,10 +3,6 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from automation_business_scaffold.control_plane.reconciler.views import (
-    build_request_child_views,
-    summarize_child_status_counts,
-)
 from .context.models import *  # noqa: F403
 from .context.runtime_views import *  # noqa: F403
 from .context.stage_inputs import *  # noqa: F403
@@ -67,8 +63,8 @@ def release_request_after_child_completion(store: RuntimeStore, *, request_id: s
     if fallback_release:
         current_stage = FASTMOSS_SECURITY_FALLBACK_STAGE_CODE
     else:
-        stage_records = _stage_child_records(store=store, request_id=request_id, stage_code=current_stage)
-        if not stage_records or _has_active_children(stage_records):
+        stage_records = _stage_child_summaries(store=store, request_id=request_id, stage_code=current_stage)
+        if not stage_records or _has_active_child_summaries(stage_records):
             return []
     _refresh_request_counts(store=store, request_id=request_id)
     store.update_task_request(
@@ -135,15 +131,13 @@ def release_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: 
 
 def _refresh_request_counts(*, store: RuntimeStore, request_id: str) -> None:
     request = store.load_task_request(request_id=request_id)
-    api_jobs = store.list_api_worker_jobs_for_request(request_id=request_id)
-    executions = store.list_task_executions(request_id=request_id)
-    child_summary = summarize_child_status_counts(build_request_child_views(api_worker_jobs=api_jobs, task_executions=executions))
+    child_summary = _summarize_request_children_from_store(store=store, request_id=request_id)
     store.update_task_request(
         request_id=request_id,
-        child_total_count=child_summary.total_count,
-        child_terminal_count=child_summary.terminal_count,
-        child_success_count=child_summary.success_count,
-        child_failed_count=child_summary.failed_count,
-        child_skipped_count=child_summary.skipped_count,
+        child_total_count=int(child_summary["total_count"]),
+        child_terminal_count=int(child_summary["terminal_count"]),
+        child_success_count=int(child_summary["success_count"]),
+        child_failed_count=int(child_summary["failed_count"]),
+        child_skipped_count=int(child_summary["skipped_count"]),
         progress_stage=_current_stage(request),
     )

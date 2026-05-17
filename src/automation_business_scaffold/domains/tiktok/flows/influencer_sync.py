@@ -42,7 +42,7 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
             child_result=product_result,
             step_code="fastmoss_product_fetch",
             summary={"product_fetch_status": product_result.status},
-            result={"product_fetch_result": product_result.result},
+            result={"product_fetch_summary": _compact_product_fetch_summary(product_result.result)},
         )
     if product_result.status == "failed":
         return failed_result(
@@ -55,7 +55,7 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
                 retryable=True,
             ),
             summary={"product_fetch_status": product_result.status},
-            result={"product_fetch_result": product_result.result},
+            result={"product_fetch_summary": _compact_product_fetch_summary(product_result.result)},
         )
 
     product_payload = dict(product_result.result)
@@ -73,10 +73,11 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
         coerce_mapping(product_payload.get("product_fact_bundle")).get("product_id"),
     )
     source_record_id = first_non_empty(source_context.get("source_record_id"))
+    compact_candidates = [_compact_discovery_creator_candidate(candidate) for candidate in candidates]
     result = {
-        "product_fact_bundle": coerce_mapping(product_payload.get("product_fact_bundle")),
-        "normalized_creator_candidates": candidates,
-        "related_creators": candidates,
+        "product_fact_bundle": _compact_product_fact_bundle(coerce_mapping(product_payload.get("product_fact_bundle")), product_id=product_id),
+        "normalized_creator_candidates": compact_candidates,
+        "related_creators": compact_candidates,
         "product_hit_context": {
             "source_record_id": source_record_id,
             "product_id": product_id,
@@ -84,7 +85,6 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
             "matched_creator_count": len(candidates),
         },
         "raw_response_refs": list(product_payload.get("raw_response_refs") or []),
-        "product_fetch_result": product_payload,
     }
     return success_result(
         context,
@@ -584,6 +584,67 @@ def _compact_fact_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "upserted_relation_count": len(list(result.get("upserted_relations") or [])),
         "observation_ref_count": len(list(result.get("observation_refs") or [])),
         "persistence_mode": first_non_empty(result.get("persistence_mode")),
+    }
+
+
+def _compact_product_fact_bundle(bundle: Mapping[str, Any], *, product_id: str) -> dict[str, Any]:
+    products = coerce_mapping_list(bundle.get("products"))
+    first_product = products[0] if products else {}
+    return {
+        "product_id": first_non_empty(bundle.get("product_id"), first_product.get("product_id"), product_id),
+        "product_key": first_non_empty(bundle.get("product_key"), first_product.get("product_key")),
+        "entity_count": len(bundle_entity_keys(bundle)),
+        "raw_response_count": len(coerce_mapping_list(bundle.get("raw_api_responses"))),
+        "media_asset_count": len(coerce_mapping_list(bundle.get("media_assets"))),
+    }
+
+
+def _compact_product_fetch_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    product_fact_bundle = coerce_mapping(result.get("product_fact_bundle"))
+    related_creators = _related_creators(result)
+    return {
+        "product_fact_bundle": _compact_product_fact_bundle(product_fact_bundle, product_id=""),
+        "related_creator_count": len(related_creators),
+        "raw_response_refs": list(result.get("raw_response_refs") or []),
+    }
+
+
+def _compact_discovery_creator_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    creator_identity = coerce_mapping(candidate.get("creator_identity"))
+    metrics = coerce_mapping(candidate.get("metrics"))
+    source_context = coerce_mapping(candidate.get("source_context"))
+    creator_id = first_non_empty(
+        creator_identity.get("creator_id"),
+        candidate.get("creator_id"),
+        candidate.get("influencer_id"),
+        creator_identity.get("unique_id"),
+        creator_identity.get("uid"),
+    )
+    return {
+        "creator_id": creator_id,
+        "uid": first_non_empty(creator_identity.get("uid"), candidate.get("uid"), creator_id),
+        "unique_id": first_non_empty(creator_identity.get("unique_id"), candidate.get("unique_id")),
+        "nickname": first_non_empty(candidate.get("nickname"), candidate.get("display_name"), creator_identity.get("nickname")),
+        "display_name": first_non_empty(candidate.get("display_name"), candidate.get("nickname"), creator_identity.get("nickname")),
+        "profile_url": first_non_empty(creator_identity.get("profile_url"), candidate.get("profile_url")),
+        "creator_identity": {
+            "creator_id": creator_id,
+            "uid": first_non_empty(creator_identity.get("uid"), candidate.get("uid"), creator_id),
+            "unique_id": first_non_empty(creator_identity.get("unique_id"), candidate.get("unique_id")),
+            "nickname": first_non_empty(candidate.get("nickname"), candidate.get("display_name"), creator_identity.get("nickname")),
+            "profile_url": first_non_empty(creator_identity.get("profile_url"), candidate.get("profile_url")),
+        },
+        "metrics": {
+            key: metrics.get(key)
+            for key in ("sold_count", "sales_count", "follower_count", "fans_count")
+            if metrics.get(key) not in (None, "")
+        },
+        "matched_conditions": dict(coerce_mapping(candidate.get("matched_conditions"))),
+        "source_context": {
+            "source_record_id": first_non_empty(source_context.get("source_record_id")),
+            "product_id": first_non_empty(source_context.get("product_id")),
+            "product_key": first_non_empty(source_context.get("product_key")),
+        },
     }
 
 
