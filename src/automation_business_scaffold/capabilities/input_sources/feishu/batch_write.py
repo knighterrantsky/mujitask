@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes import (
-    prepare_fields_for_write,
-)
 from automation_business_scaffold.capabilities.input_sources.feishu.row_updates import (
+    EmptyPreparedFields,
     execute_one_write,
     find_existing_record_id,
 )
@@ -63,13 +61,6 @@ def execute_write_records(
             progress_callback,
             "feishu_table_write.record.prepare",
             _write_progress_message("Preparing Feishu write record", command, index=index, total=total_records),
-        )
-        command["fields"] = prepare_fields_for_write(
-            mapping(command.get("fields")),
-            field_schema,
-            client=client,
-            target=target,
-            payload=payload,
         )
         record_key = write_record_key(command)
         if record_key and record_key in seen_keys:
@@ -185,7 +176,22 @@ def execute_write_records(
                 "feishu_table_write.record.write",
                 _write_progress_message("Writing Feishu record", command, index=index, total=total_records),
             )
-            raw_result, target_record_id, effective_op = execute_one_write(client, target, command, field_schema=field_schema)
+            raw_result, target_record_id, effective_op = execute_one_write(
+                client,
+                target,
+                command,
+                payload=payload,
+                field_schema=field_schema,
+            )
+        except EmptyPreparedFields:
+            skipped_count += 1
+            result_records.append(write_result_record(command, status="skipped", message="empty_fields"))
+            _emit_write_progress(
+                progress_callback,
+                "feishu_table_write.record.skipped",
+                _write_progress_message("Skipped empty Feishu write fields", command, index=index, total=total_records),
+            )
+            continue
         except Exception as exc:
             failed_count += 1
             classified = classify_feishu_exception(exc)

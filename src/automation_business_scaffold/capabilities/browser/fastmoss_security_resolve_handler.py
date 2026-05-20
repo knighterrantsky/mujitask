@@ -8,6 +8,7 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security.cookie_
     cookie_snapshot_from_browser_cookies as _cookie_snapshot_from_browser_cookies,
     export_fastmoss_browser_cookies as _export_fastmoss_browser_cookies,
     import_fastmoss_browser_cookies as _import_fastmoss_browser_cookies,
+    reset_fastmoss_browser_session as _reset_fastmoss_browser_session,
 )
 from automation_business_scaffold.capabilities.browser.fastmoss_security.cookie_cache_persistence import (
     save_browser_cookies_to_cache as _save_browser_cookies_to_cache,
@@ -357,12 +358,30 @@ def _resolve_fastmoss_security_with_browser(
         db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
         fastmoss_settings=fastmoss_settings,
     )
+    login_cookies = coerce_mapping_list(login_cookie_bootstrap.get("cookies"))
+    require_config_login = coerce_bool(
+        first_non_empty(
+            payload.get("fastmoss_browser_require_config_login"),
+            payload.get("fastmoss_require_config_login"),
+        ),
+        default=False,
+    )
+    clear_browser_session = require_config_login or coerce_bool(
+        first_non_empty(
+            payload.get("fastmoss_clear_browser_session_before_login"),
+            payload.get("fastmoss_browser_clear_session_before_login"),
+        ),
+        default=False,
+    )
+    if require_config_login and not login_cookies:
+        raise ValueError("FastMoss browser fallback requires configured FastMoss login cookies.")
     audit_dir = first_non_empty(
         payload.get("fastmoss_slider_captcha_audit_dir"),
         payload.get("slider_captcha_audit_dir"),
         DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
     )
     diagnostic_artifact_refs: list[dict[str, Any]] = []
+    browser_session_reset: dict[str, Any] = {}
     with open_automation_page(
         profile_ref=profile_ref,
         workspace_id=_optional_int(
@@ -378,9 +397,14 @@ def _resolve_fastmoss_security_with_browser(
         headless=coerce_bool(payload.get("browser_headless"), default=False),
         force_open=coerce_bool(payload.get("browser_force_open"), default=False),
     ) as browser_session:
+        if clear_browser_session:
+            browser_session_reset = _reset_fastmoss_browser_session(
+                browser_session.raw_page,
+                base_url=str(fastmoss_settings["base_url"]),
+            )
         imported_cookie_status = _import_fastmoss_browser_cookies(
             browser_session.raw_page,
-            cookies=coerce_mapping_list(login_cookie_bootstrap.get("cookies")),
+            cookies=login_cookies,
             base_url=str(fastmoss_settings["base_url"]),
         )
         _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
@@ -456,6 +480,10 @@ def _resolve_fastmoss_security_with_browser(
             key: value
             for key, value in {
                 **coerce_mapping(login_cookie_bootstrap.get("status")),
+                "browser_session_reset_status": browser_session_reset.get("status"),
+                "browser_session_cleared_cookie_count": browser_session_reset.get("cleared_cookie_count"),
+                "browser_cookie_clear_status": browser_session_reset.get("cookie_clear_status"),
+                "browser_storage_reset_status": browser_session_reset.get("storage_reset_status"),
                 "browser_imported_cookie_count": imported_cookie_status.get("imported_count"),
                 "browser_cookie_import_status": imported_cookie_status.get("status"),
                 "browser_cookie_import_reason": imported_cookie_status.get("reason"),

@@ -16,6 +16,7 @@ import automation_business_scaffold.capabilities.browser.fastmoss_security.eleme
 import automation_business_scaffold.capabilities.browser.fastmoss_security.request_verification as fastmoss_request_verification
 import automation_business_scaffold.capabilities.browser.fastmoss_security.session_bootstrap as fastmoss_session_bootstrap
 import automation_business_scaffold.capabilities.browser.fastmoss_security.slider_challenge as fastmoss_slider_challenge
+import automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler as fastmoss_security_handler
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
 )
@@ -492,6 +493,150 @@ def test_fastmoss_login_cookie_bootstrap_refreshes_cache_without_leaking_status(
     assert result["cookies"][0]["value"] == "fresh-token"
     assert "fresh-token" not in json.dumps(result["status"], ensure_ascii=False)
     assert "secret-password" not in json.dumps(result["status"], ensure_ascii=False)
+
+
+def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_cookie_import(
+    monkeypatch,
+    runtime_db_url: str,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeBrowserContext:
+        def __init__(self) -> None:
+            self.cookies_ = [
+                {
+                    "name": "fd_tk",
+                    "value": "browser-b-token",
+                    "domain": ".fastmoss.com",
+                    "path": "/",
+                    "secure": True,
+                }
+            ]
+
+        def cookies(self, *_args: object) -> list[dict[str, object]]:
+            calls.append(("cookies", {}))
+            return [dict(cookie) for cookie in self.cookies_]
+
+        def clear_cookies(self, **kwargs: object) -> None:
+            calls.append(("clear_cookies", dict(kwargs)))
+            self.cookies_ = []
+
+        def add_init_script(self, script: str) -> None:
+            calls.append(("add_init_script", {"script": script}))
+
+        def add_cookies(self, cookies: list[dict[str, object]]) -> None:
+            calls.append(("add_cookies", {"cookies": [dict(cookie) for cookie in cookies]}))
+            self.cookies_ = [dict(cookie) for cookie in cookies]
+
+    class _FakeRawPage:
+        def __init__(self) -> None:
+            self.context = _FakeBrowserContext()
+
+        def evaluate(self, script: str) -> None:
+            calls.append(("evaluate", {"script": script}))
+
+    class _FakeOpenPage:
+        def __init__(self, raw_page: _FakeRawPage) -> None:
+            self.raw_page = raw_page
+
+        def __enter__(self) -> SimpleNamespace:
+            return SimpleNamespace(page=self.raw_page, raw_page=self.raw_page)
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    raw_page = _FakeRawPage()
+
+    def fake_open_page(**kwargs: object) -> _FakeOpenPage:
+        calls.append(("open_page", dict(kwargs)))
+        return _FakeOpenPage(raw_page)
+
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_bootstrap_fastmoss_login_cookies",
+        lambda **_kwargs: {
+            "cookies": [
+                {
+                    "name": "fd_tk",
+                    "value": "configured-a-token",
+                    "domain": ".fastmoss.com",
+                    "path": "/",
+                    "secure": True,
+                }
+            ],
+            "status": {"status": "login_refreshed", "cookie_count": 1, "has_fd_tk": True},
+        },
+    )
+    monkeypatch.setattr(fastmoss_security_handler, "open_automation_page", fake_open_page)
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_page_goto",
+        lambda _page, url, **_kwargs: calls.append(("goto", {"url": url})),
+    )
+    monkeypatch.setattr(fastmoss_security_handler, "_safe_wait_for_timeout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fastmoss_security_handler, "_read_fastmoss_slider_state", lambda *_args: {"visible": False})
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_try_resolve_fastmoss_slider_security_check",
+        lambda *_args, **_kwargs: {"attempted": False, "resolved": True, "reason": "not_present", "attempts": []},
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_capture_fastmoss_browser_diagnostic_artifacts",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_verify_original_request_with_cookies_result",
+        lambda *_args, **_kwargs: {
+            "verified": True,
+            "verified_path": "/api/goods/v3/base",
+            "response_code": "200",
+            "ext_is_login": "1",
+        },
+    )
+
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "search_request": {"keyword": SEARCH_QUERY, "search_query": SEARCH_QUERY, "region": "US"},
+                "verification_request": {
+                    "method": "GET",
+                    "path": "/api/goods/v3/base",
+                    "params": {"product_id": PRODUCT_ID},
+                    "region": "US",
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "password": "secret-password",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "fastmoss_browser_require_config_login": True,
+                "fastmoss_clear_browser_session_before_login": True,
+            }
+        )
+    )
+
+    names = [name for name, _payload in calls]
+    assert result.status == "success"
+    assert names.index("clear_cookies") < names.index("add_cookies") < names.index("goto")
+    assert result.result["login_cookie_bootstrap"]["browser_session_reset_status"] == "reset"
+    assert result.result["login_cookie_bootstrap"]["browser_session_cleared_cookie_count"] == 1
+    assert result.result["login_cookie_bootstrap"]["browser_cookie_import_status"] == "imported"
+    assert "browser-b-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+    cache_context = build_fastmoss_cookie_cache_context(
+        base_url="https://www.fastmoss.com",
+        account_key="18000000000",
+        region="US",
+    )
+    loaded = RuntimeStore(db_url=runtime_db_url).load_fastmoss_cookie_cache(
+        cache_key=str(cache_context["cache_key"])
+    )
+    assert loaded is not None
+    assert loaded["cookies"][0]["value"] == "configured-a-token"
 
 
 def test_fastmoss_original_request_verification_result_preserves_security_failure(
@@ -1155,19 +1300,25 @@ def _store(runtime_db_url: str) -> RuntimeStore:
     return RuntimeStore(db_url=runtime_db_url)
 
 
-def _submit_keyword_request(runtime_db_url: str) -> tuple[RuntimeStore, object, object]:
+def _submit_keyword_request(
+    runtime_db_url: str,
+    *,
+    payload_overrides: dict[str, object] | None = None,
+) -> tuple[RuntimeStore, object, object]:
     store = _store(runtime_db_url)
+    payload = {
+        "search_query": SEARCH_QUERY,
+        "filters": {"country_code": "US"},
+        "output_conditions": {"require_product_url": True},
+        "max_candidates": 5,
+        "seed_table_ref": SEED_TABLE_REF,
+        "reply_target": "reply://pytest",
+    }
+    payload.update(payload_overrides or {})
     request = store.submit_task_request(
         project_code="automation-business-scaffold",
         task_code=TASK_CODE,
-        payload={
-            "search_query": SEARCH_QUERY,
-            "filters": {"country_code": "US"},
-            "output_conditions": {"require_product_url": True},
-            "max_candidates": 5,
-            "seed_table_ref": SEED_TABLE_REF,
-            "reply_target": "reply://pytest",
-        },
+        payload=payload,
         requested_by="pytest",
         source_channel_code="console",
         reply_target="reply://pytest",
@@ -1409,6 +1560,89 @@ def _mark_competitor_row_refresh_fallback_required(
         error_text="browser fallback required",
         error_type="browser_fallback_required",
         error_code="tiktok_product_browser_fetch_required",
+    )
+
+
+def _mark_competitor_row_refresh_fastmoss_fallback_required(
+    store: RuntimeStore,
+    *,
+    job_id: str,
+) -> None:
+    job = store.load_api_worker_job(job_id=job_id)
+    stage_code = str((job.get("payload") or {}).get("stage_code") or "")
+    payload = dict(job.get("payload") or {})
+    store.update_task_request(
+        request_id=str(job["request_id"]),
+        status="waiting",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=str(job["request_id"]),
+        job_code=str(job["job_code"]),
+    )
+    assert claimed is not None and claimed["job_id"] == job_id
+    browser_payload = {
+        **payload,
+        "source_record_id": payload.get("source_record_id") or "seed-row-1",
+        "business_entity_key": payload.get("business_key") or f"product:{PRODUCT_ID}",
+        "verification_request": {
+            "method": "GET",
+            "path": "/api/goods/v3/base",
+            "params": {"product_id": PRODUCT_ID},
+            "region": "US",
+            "stage": "product.base",
+        },
+    }
+    handler_result = {
+        "status": "fallback_required",
+        "handler_code": "competitor_row_refresh",
+        "request_id": str(job["request_id"]),
+        "job_id": job_id,
+        "summary": {
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": "fastmoss_security_browser_resolve",
+        },
+        "result": {
+            "source_record_id": payload.get("source_record_id") or "seed-row-1",
+            "business_entity_key": payload.get("business_key") or f"product:{PRODUCT_ID}",
+            "row_status": "fallback_required",
+            "fallback_required": True,
+            "fallback_handler": "fastmoss_security_browser_resolve",
+            "fallback_reason": "fastmoss_api_security_verification",
+            "browser_fallback_payload": browser_payload,
+            "normalized_product_result": dict(payload.get("normalized_product_result") or {}),
+            "step_timeline": [
+                {"step": "tiktok_request", "status": "success"},
+                {"step": "browser_fallback", "status": "success"},
+                {"step": "fastmoss_fetch", "status": "fallback_required"},
+            ],
+            "runtime_evidence": {"browser_fallback_used": True},
+        },
+        "warnings": [],
+        "next_action": {"type": "browser_fallback", "payload": browser_payload},
+        "contract_revision": "product_fact_contract",
+        "error": {
+            "error_type": "browser_fallback_required",
+            "error_code": "fastmoss_security_browser_resolve_required",
+            "message": "FastMoss security browser fallback required",
+            "retryable": False,
+            "fallback_allowed": True,
+            "fallback_reason": "fastmoss_api_security_verification",
+        },
+    }
+    store.mark_api_worker_job_waiting(
+        job_id=job_id,
+        run_id=str(claimed["run_id"]),
+        summary=handler_result["summary"],
+        result={"handler_result": handler_result, **handler_result["result"]},
+        stage="browser_fallback_required",
+        error_text="FastMoss security browser fallback required",
+        error_type="browser_fallback_required",
+        error_code="fastmoss_security_browser_resolve_required",
     )
 
 
@@ -1891,7 +2125,14 @@ def test_keyword_runtime_zero_candidates_finalizes_success(runtime_db_url: str) 
 def test_keyword_runtime_fastmoss_security_browser_fallback_retries_original_search(
     runtime_db_url: str,
 ) -> None:
-    store, request, workflow = _submit_keyword_request(runtime_db_url)
+    store, request, workflow = _submit_keyword_request(
+        runtime_db_url,
+        payload_overrides={
+            "fastmoss_phone_env": "FASTMOSS_ACCOUNT_A_PHONE",
+            "fastmoss_password_env": "FASTMOSS_ACCOUNT_A_PASSWORD",
+            "fastmoss_browser_profile_ref": "fastmoss-profile-a",
+        },
+    )
     seed_waiting = advance_stage(store=store, request=request, workflow=workflow, stage_code="keyword_seed_import")
     assert seed_waiting["action"] == "waiting"
     seed_job = _latest_stage_job(
@@ -1922,6 +2163,11 @@ def test_keyword_runtime_fastmoss_security_browser_fallback_retries_original_sea
     )
     assert execution.payload["search_request"]["search_query"] == SEARCH_QUERY
     assert execution.payload["security_context"]["response_code"] == "MSG_SAFE_0001"
+    assert execution.payload["fastmoss"]["phone_env"] == "FASTMOSS_ACCOUNT_A_PHONE"
+    assert execution.payload["fastmoss"]["password_env"] == "FASTMOSS_ACCOUNT_A_PASSWORD"
+    assert execution.payload["fastmoss_browser_profile_ref"] == "fastmoss-profile-a"
+    assert execution.payload["fastmoss_browser_require_config_login"] is True
+    assert execution.payload["fastmoss_clear_browser_session_before_login"] is True
     _mark_browser_execution_success(
         store,
         execution_id=execution.execution_id,
@@ -2107,6 +2353,99 @@ def test_keyword_runtime_row_browser_fallback_resumes_before_summary(runtime_db_
     assert finalized["result"]["row_results"][0]["row_status"] == "success"
     assert finalized["result"]["row_results"][0]["browser_status"] == "success"
     assert "fallback_required" not in finalized["result"]["stage_summary"]["refresh_competitor_rows"]["statuses"]
+
+
+def test_keyword_runtime_fastmoss_row_fallback_after_tiktok_browser_fallback(
+    runtime_db_url: str,
+) -> None:
+    store, request, workflow = _submit_keyword_request(
+        runtime_db_url,
+        payload_overrides={
+            "fastmoss_phone_env": "FASTMOSS_ACCOUNT_A_PHONE",
+            "fastmoss_password_env": "FASTMOSS_ACCOUNT_A_PASSWORD",
+            "fastmoss_browser_profile_ref": "fastmoss-profile-a",
+        },
+    )
+    request, row_job = _advance_to_refresh_stage(store, request, workflow)
+
+    _mark_competitor_row_refresh_fallback_required(store, job_id=str(row_job["job_id"]))
+
+    request = store.load_task_request(request_id=request.request_id)
+    refresh_advance = advance_stage(store=store, request=request, workflow=workflow, stage_code="refresh_competitor_rows")
+    assert refresh_advance["next_stage"] == "browser_fallback"
+
+    request = store.load_task_request(request_id=request.request_id)
+    browser_wait = advance_stage(store=store, request=request, workflow=workflow, stage_code="browser_fallback")
+    assert browser_wait["action"] == "waiting"
+    tiktok_execution = _latest_stage_execution(
+        store,
+        request_id=request.request_id,
+        stage_code="browser_fallback",
+        item_code="tiktok_product_browser_fetch",
+    )
+    _mark_browser_execution_success(
+        store,
+        execution_id=tiktok_execution.execution_id,
+        summary={"transport": "browser"},
+        result={
+            "normalized_product_result": {
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+                "source": "browser",
+            }
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    after_tiktok_wait = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="browser_fallback",
+    )
+    assert after_tiktok_wait["action"] == "waiting"
+    after_tiktok_job = _latest_stage_job(
+        store,
+        request_id=request.request_id,
+        stage_code="refresh_competitor_rows",
+        job_code="competitor_row_refresh",
+    )
+    assert after_tiktok_job["payload"]["browser_fallback_resolved"] is True
+    assert after_tiktok_job["payload"]["browser_fallback_handler"] == "tiktok_product_browser_fetch"
+
+    _mark_competitor_row_refresh_fastmoss_fallback_required(store, job_id=str(after_tiktok_job["job_id"]))
+
+    request = store.load_task_request(request_id=request.request_id)
+    fastmoss_refresh_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="refresh_competitor_rows",
+    )
+    assert fastmoss_refresh_advance["next_stage"] == "browser_fallback"
+
+    request = store.load_task_request(request_id=request.request_id)
+    fastmoss_browser_wait = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="browser_fallback",
+    )
+    assert fastmoss_browser_wait["action"] == "waiting"
+    fastmoss_execution = _latest_stage_execution(
+        store,
+        request_id=request.request_id,
+        stage_code="browser_fallback",
+        item_code="fastmoss_security_browser_resolve",
+    )
+    assert fastmoss_execution.payload["source_record_id"] == "seed-row-1"
+    assert fastmoss_execution.payload["business_entity_key"] == f"product:{PRODUCT_ID}"
+    assert fastmoss_execution.payload["verification_request"]["path"] == "/api/goods/v3/base"
+    assert fastmoss_execution.payload["fastmoss"]["phone_env"] == "FASTMOSS_ACCOUNT_A_PHONE"
+    assert fastmoss_execution.payload["fastmoss"]["password_env"] == "FASTMOSS_ACCOUNT_A_PASSWORD"
+    assert fastmoss_execution.payload["fastmoss_browser_profile_ref"] == "fastmoss-profile-a"
+    assert fastmoss_execution.payload["fastmoss_browser_require_config_login"] is True
+    assert fastmoss_execution.payload["fastmoss_clear_browser_session_before_login"] is True
 
 
 def test_keyword_runtime_browser_fallback_path_finalizes(runtime_db_url: str) -> None:

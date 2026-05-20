@@ -59,6 +59,8 @@ def advance(
             "search_request": dict(fallback_payload.get("search_request") or {}),
             "security_context": dict(fallback_payload.get("security_context") or {}),
             "request_payload": dict(request.payload or {}),
+            "fastmoss_browser_require_config_login": True,
+            "fastmoss_clear_browser_session_before_login": True,
         }
         fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
         if fastmoss_settings:

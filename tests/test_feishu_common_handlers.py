@@ -462,6 +462,98 @@ def test_feishu_table_write_upsert_is_idempotent_on_upsert_key(monkeypatch) -> N
     assert second.result["target_record_ids"] == ["rec-1"]
 
 
+def test_feishu_table_write_upsert_uses_filtered_lookup(monkeypatch) -> None:
+    class FakeClient:
+        created: list[dict[str, Any]] = []
+        list_record_calls: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_records(self, app_token, table_id, **kwargs):
+            self.list_record_calls.append({"app_token": app_token, "table_id": table_id, **kwargs})
+            return {"data": {"items": [], "has_more": False}}
+
+        def list_all_records(self, *args, **kwargs):
+            raise AssertionError("upsert lookup must not scan the whole table")
+
+        def create_record(self, app_token, table_id, fields):
+            self.created.append({"fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": "rec-created"}}}
+
+    FakeClient.created = []
+    FakeClient.list_record_calls = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "fields": {"达人ID": "creator-1"},
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.list_record_calls == [
+        {
+            "app_token": "app-token",
+            "table_id": "tbl-token",
+            "page_size": 1,
+            "filter_expr": 'CurrentValue.[达人ID] = "creator-1"',
+            "page_token": None,
+            "view_id": "vew-token",
+        }
+    ]
+    assert FakeClient.created == [{"fields": {"达人ID": "creator-1"}}]
+
+
+def test_feishu_table_write_caches_field_schema_per_process(monkeypatch) -> None:
+    class FakeClient:
+        field_call_count = 0
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            self.__class__.field_call_count += 1
+            return [{"field_name": "记录日期", "type": 5}]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.field_call_count = 0
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK竞品收集",
+        records=[
+            {"op": "update", "record_id": "rec-1", "fields": {"记录日期": "2026-04-24"}},
+        ],
+    )
+    registry = build_bound_api_handler_registry()
+
+    first = registry.dispatch("feishu_table_write", _context("feishu_table_write", payload))
+    second = registry.dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert first.status == "success"
+    assert second.status == "success"
+    assert FakeClient.field_call_count == 1
+    assert [call["fields"]["记录日期"] for call in FakeClient.updated] == [1776960000000, 1776960000000]
+
+
 def test_feishu_table_write_maps_competitor_projection_without_overwriting_manual_fields(monkeypatch) -> None:
     class FakeClient:
         updated: list[dict[str, Any]] = []
@@ -1234,6 +1326,76 @@ def test_feishu_table_write_replaces_configured_attachment_field_on_update(monke
 
     assert result.status == "success"
     assert FakeClient.updated[0]["fields"]["达人头像"] == [{"file_token": "new-image-token"}]
+
+
+def test_feishu_table_write_skips_remote_attachment_replace_when_existing_attachment_present(monkeypatch) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+        uploads: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            return [{"field_name": "达人ID", "type": 1}, {"field_name": "达人头像", "type": 17}, {"field_name": "粉丝数", "type": 1}]
+
+        def list_records(self, app_token, table_id, **kwargs):
+            return {
+                "data": {
+                    "items": [
+                        {
+                            "record_id": "rec-creator",
+                            "fields": {
+                                "达人ID": "creator-1",
+                                "达人头像": [{"file_token": "old-avatar-token"}],
+                                "粉丝数": "1W",
+                            },
+                        }
+                    ],
+                    "has_more": False,
+                }
+            }
+
+        def upload_media(self, *args, **kwargs):
+            self.uploads.append({"args": args, "kwargs": kwargs})
+            raise AssertionError("existing avatar should not be re-uploaded from remote URL")
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    FakeClient.uploads = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes.requests.get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("remote avatar should not be downloaded")),
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/TK达人池",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "update_replace_fields": ["达人头像"],
+                "fields": {
+                    "达人ID": "creator-1",
+                    "达人头像": {"url": "https://s.500fd.com/tt_author/avatar~c5_300x300.jpeg"},
+                    "粉丝数": "2W",
+                },
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch("feishu_table_write", _context("feishu_table_write", payload))
+
+    assert result.status == "success"
+    assert FakeClient.uploads == []
+    assert FakeClient.updated[0]["fields"] == {"达人ID": "creator-1", "粉丝数": "2W"}
 
 
 def test_feishu_table_write_appends_product_images_on_update(monkeypatch) -> None:
