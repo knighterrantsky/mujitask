@@ -34,16 +34,12 @@ def finalize_request(
 ) -> dict[str, Any]:
     del workflow
     row_jobs = _row_refresh_jobs_for_summary(store=store, request_id=request.request_id)
-    read_job = _latest_api_job_by_code(
-        _api_jobs_for_stage(store, request_id=request.request_id, stage_code="read_selection_rows"),
-        "feishu_table_read",
-    )
 
     row_results_by_key: dict[str, dict[str, Any]] = {}
     for job in row_jobs:
         handler_result = _job_handler_result(job)
         handler_summary = _mapping(handler_result.get("summary"))
-        row_result = _mapping(handler_result.get("result"))
+        row_result = extract_effective_result_payload(job)
         source_record_id = (
             row_result.get("source_record_id")
             or handler_result.get("source_record_id")
@@ -88,7 +84,10 @@ def finalize_request(
     final_result = {
         "row_count": len(row_results),
         "rows": row_results,
-        "selection_table_read": _job_effective_result(read_job),
+        "selection_table_read_summary": _selection_table_read_summary(
+            store=store,
+            request_id=request.request_id,
+        ),
     }
     if force_result and isinstance(force_result.get("result"), Mapping):
         final_result.update(dict(force_result.get("result") or {}))
@@ -143,3 +142,29 @@ def _ensure_request_outbox(*, store: RuntimeStore, request_id: str) -> None:
         },
         dedupe_key=f"task_request.completed:{request.request_id}",
     )
+
+
+def _selection_table_read_summary(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
+    list_summaries = getattr(store, "list_api_worker_job_summaries_for_request", None)
+    jobs = (
+        [
+            job
+            for job in list_summaries(request_id=request_id, job_code="feishu_table_read")
+            if str((job.get("payload") or {}).get("stage_code") or "") == "read_selection_rows"
+        ]
+        if callable(list_summaries)
+        else _api_jobs_for_stage(store, request_id=request_id, stage_code="read_selection_rows")
+    )
+    read_job = _latest_api_job_by_code(jobs, "feishu_table_read")
+    summary = _mapping(read_job.get("summary")) if isinstance(read_job, Mapping) else {}
+    return {
+        key: value
+        for key, value in {
+            "status": read_job.get("result_status") or read_job.get("status") if isinstance(read_job, Mapping) else "",
+            "raw_row_count": summary.get("raw_row_count"),
+            "source_row_count": summary.get("source_row_count"),
+            "empty_row_count": summary.get("empty_row_count"),
+            "raw_snapshot_ref": summary.get("raw_snapshot_ref"),
+        }.items()
+        if value not in ("", None, [], {})
+    }

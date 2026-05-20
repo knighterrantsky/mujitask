@@ -179,6 +179,7 @@ def _row_has_after_browser_terminal(
     *,
     request_id: str,
     source_record_id: str,
+    fallback_handler: str,
 ) -> bool:
     row_job = _latest_row_job(
         [
@@ -189,6 +190,7 @@ def _row_has_after_browser_terminal(
                 stage_code="refresh_competitor_rows",
             )
             if coerce_mapping(job.get("payload")).get("browser_fallback_resolved")
+            and str(coerce_mapping(job.get("payload")).get("browser_fallback_handler") or "") == fallback_handler
         ],
         source_record_id=source_record_id,
         job_code="competitor_row_refresh",
@@ -215,12 +217,10 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
         payload = dict(job.get("payload") or {})
         result = extract_effective_result_payload(job)
         handler_result = coerce_mapping(coerce_mapping(job.get("result")).get("handler_result"))
-        handler_result_payload = coerce_mapping(handler_result.get("result"))
         next_action = coerce_mapping(handler_result.get("next_action"))
         next_action_payload = coerce_mapping(next_action.get("payload"))
         fallback_handler = _first_text(
             result.get("fallback_handler"),
-            handler_result_payload.get("fallback_handler"),
             "tiktok_product_browser_fetch" if str(next_action.get("type") or "") == "browser_fallback" else "",
         )
         if fallback_handler not in {"tiktok_product_browser_fetch", "fastmoss_security_browser_resolve"}:
@@ -235,6 +235,7 @@ def _browser_fallback_candidates(store: RuntimeStore, *, request_id: str) -> lis
             store=store,
             request_id=request_id,
             source_record_id=source_record_id,
+            fallback_handler=fallback_handler,
         ):
             continue
         candidate_key = _first_text(
@@ -332,6 +333,8 @@ def _browser_execution_payload(
         fastmoss_settings = _fastmoss_search_settings_from_request_payload(request.payload)
         if fastmoss_settings:
             payload["fastmoss"] = fastmoss_settings
+        payload["fastmoss_browser_require_config_login"] = True
+        payload["fastmoss_clear_browser_session_before_login"] = True
     return _compact_mapping(payload)
 
 def _after_browser_row_payload(*, stage_code: str, candidate: Mapping[str, Any]) -> dict[str, Any]:

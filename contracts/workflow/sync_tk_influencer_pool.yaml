@@ -43,6 +43,9 @@ stages:
   - stage_code: discover_related_creators
     handler_code: product_creator_discovery
     purpose: 每个竞品商品 1 个商品达人发现 job，内部调用 FastMoss 商品达人列表并按销量、粉丝阈值筛选
+  - stage_code: fastmoss_security_browser_fallback
+    handler_code: fastmoss_security_browser_resolve
+    purpose: 当商品达人发现或达人详情同步遇到 FastMoss auth/session/security 恢复需求时，使用 browser worker 恢复共享 cookie，并只 requeue 原 job 一次
   - stage_code: sync_influencer_pool
     handler_code: influencer_creator_sync
     projection_mapper: influencer_pool_projection_mapper
@@ -62,6 +65,7 @@ protected_invariants:
   - 商品状态=已下架/区域不可售 的竞品记录不进入达人查找
   - 达人同步不新增业务专用 Runtime job 表，目标执行单元统一进入 api_worker_job
   - 达人同步按 商品发现 job + 达人同步 job 两层 fan-out，不按每个 API 拆 Runtime job，也不把整条商品下所有达人塞进一个大 job
+  - product_creator_discovery / influencer_creator_sync 遇到 FastMoss auth/session/security 错误时必须进入 fastmoss_security_browser_fallback；browser 成功后只允许重试原 api_worker_job 一次，重试后仍失败则按该商品或达人失败收敛
   - influencer_creator_sync 必须在同一个业务 job 内完成达人详情、事实入库、达人池飞书 upsert；当某个商品下所有达人同步 job 都已终态时，同一个 job 同步回写该商品的达人查找状态
   - writeback_competitor_status 只作为无匹配达人、发现失败、重试耗尽或异常残留 source rows 的批量兜底和对账路径
   - 合作商品数 不作为本期更新字段

@@ -11,7 +11,7 @@ from automation_business_scaffold.infrastructure.runtime.persistence_primitives 
     resolve_runtime_seconds as _resolve_runtime_seconds,
 )
 
-ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running"}
+ACTIVE_API_WORKER_JOB_STATUSES = {"pending", "running", "waiting"}
 TERMINAL_API_WORKER_JOB_STATUSES = {"finished", "cancelled", "success", "failed", "skipped"}
 FINAL_RESULT_STATUSES = {"success", "partial_success", "failed", "skipped"}
 DEFAULT_WATCHDOG_STALE_AFTER_SECONDS = 300.0
@@ -276,6 +276,11 @@ class ApiWorkerJobRepository:
                           AND request.status = 'waiting'
                           AND job.status = 'pending'
                           AND job.available_at <= :available_at
+                          AND (
+                              COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
+                              OR COALESCE(NULLIF(job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
+                              OR job.payload_json::jsonb ->> 'stage_code' = request.current_stage
+                          )
                           AND NOT EXISTS (
                               SELECT 1
                               FROM task_request older_request
@@ -352,6 +357,11 @@ class ApiWorkerJobRepository:
                           FROM task_request request
                           WHERE request.request_id = api_worker_job.request_id
                             AND request.status = 'waiting'
+                            AND (
+                                COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
+                                OR COALESCE(NULLIF(api_worker_job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
+                                OR api_worker_job.payload_json::jsonb ->> 'stage_code' = request.current_stage
+                            )
                             AND NOT EXISTS (
                                 SELECT 1
                                 FROM task_request older_request
@@ -665,6 +675,69 @@ class ApiWorkerJobRepository:
             )
         return self.load_api_worker_job(job_id=job_id)
 
+    def mark_waiting_api_worker_job_failed(
+        self,
+        *,
+        job_id: str,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            now = time.time()
+            connection.execute(
+                self._text(
+                    """
+                    UPDATE api_worker_job
+                    SET status = 'finished',
+                        result_status = 'failed',
+                        stage = 'failed',
+                        progress_stage = 'failed',
+                        summary_json = :summary_json,
+                        result_json = :result_json,
+                        error_text = :error_text,
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
+                        worker_id = '',
+                        worker_pid = 0,
+                        lease_until = NULL,
+                        run_id = '',
+                        updated_at = :updated_at,
+                        finished_at = :updated_at,
+                        heartbeat_at = :heartbeat_at,
+                        last_progress_at = :last_progress_at,
+                        progress_seq = COALESCE(progress_seq, 0) + 1,
+                        progress_message = :progress_message
+                    WHERE job_id = :job_id
+                      AND status = 'waiting'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM task_request request
+                          WHERE request.request_id = api_worker_job.request_id
+                            AND request.status = 'cancelling'
+                      )
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "summary_json": _json_dumps(summary or {}),
+                    "result_json": _json_dumps(result or {}),
+                    "error_text": str(error_text or ""),
+                    "error_type": str(error_type or ""),
+                    "error_code": str(error_code or ""),
+                    "dead_letter_reason": str(dead_letter_reason or "browser_fallback_failed"),
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                    "last_progress_at": now,
+                    "progress_message": str(error_text or "API worker job failed after waiting work failed."),
+                },
+            )
+        return self.load_api_worker_job(job_id=job_id)
+
     def mark_api_worker_job_retry_or_failed(
         self,
         *,
@@ -865,12 +938,13 @@ class ApiWorkerJobRepository:
                     self._text(
                         """
                         SELECT
-                            COALESCE(NULLIF(result_status, ''), status) AS status,
+                            status,
+                            COALESCE(NULLIF(result_status, ''), status) AS effective_status,
                             COUNT(*) AS count
                         FROM api_worker_job
                         WHERE request_id = :request_id
                           AND (:job_code = '' OR job_code = :job_code)
-                        GROUP BY COALESCE(NULLIF(result_status, ''), status)
+                        GROUP BY status, COALESCE(NULLIF(result_status, ''), status)
                         """
                     ),
                     {"request_id": request_id, "job_code": job_code},
@@ -878,10 +952,17 @@ class ApiWorkerJobRepository:
                 .mappings()
                 .all()
             )
-        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
+        counts: dict[str, int] = {}
+        active_count = 0
+        for row in rows:
+            row_count = int(row["count"] or 0)
+            status = str(row["status"] or "")
+            effective_status = str(row["effective_status"] or status or "unknown")
+            counts[effective_status] = counts.get(effective_status, 0) + row_count
+            if status in ACTIVE_API_WORKER_JOB_STATUSES:
+                active_count += row_count
         total = sum(counts.values())
-        active_count = sum(counts.get(status, 0) for status in ACTIVE_API_WORKER_JOB_STATUSES)
-        success_count = counts.get("success", 0) + counts.get("skipped", 0)
+        success_count = counts.get("success", 0) + counts.get("partial_success", 0)
         failed_count = counts.get("failed", 0) + counts.get("cancelled", 0)
         return {
             "total": total,
@@ -890,4 +971,6 @@ class ApiWorkerJobRepository:
             "terminal_count": max(total - active_count, 0),
             "success_count": success_count,
             "failed_count": failed_count,
+            "skipped_count": counts.get("skipped", 0),
+            "fallback_required_count": counts.get("fallback_required", 0),
         }

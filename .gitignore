@@ -6,6 +6,7 @@ node_modules/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+.claude/
 /runtime/
 dist/
 build/

@@ -21,6 +21,9 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerNextAction,
     HandlerResult,
 )
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    extract_effective_result_payload,
+)
 from automation_business_scaffold.domains.tiktok.tasks.search_keyword_competitor_products import (
     SearchKeywordCompetitorProductsTask,
 )
@@ -796,7 +799,8 @@ def test_selection_keyword_executor_dispatches_row_browser_fallback_task_executi
         stage_code="selection_row_browser_fallback",
         item_code="tiktok_product_browser_fetch",
     )[0]
-    assert stored_execution["result"]["handler_result"]["result"]["normalized_product_result"]["source"] == "browser"
+    stored_execution_result = extract_effective_result_payload(stored_execution)
+    assert stored_execution_result["normalized_product_result"]["source"] == "browser"
     selection_fallback_stage = importlib.import_module(
         "automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.stages.selection_row_browser_fallback"
     )

@@ -39,7 +39,6 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
     build_fastmoss_session,
     fastmoss_security_fallback_required_result,
-    fastmoss_session_conflict_failed_result,
     fastmoss_settings_from_payload,
     is_fastmoss_security_verification_error,
     is_fastmoss_session_conflict_error,
@@ -96,25 +95,30 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
             )
             metrics_snapshot = _build_fastmoss_metrics_snapshot(raw_bundle, product_id=product_id)
     except FastMossAuthError as exc:
-        error = build_error(
-            error_type="auth_failure",
-            error_code="fastmoss_auth_required",
-            message=str(exc),
-            retryable=True,
-            details=exc.to_dict(),
-        )
-        return failed_result(
+        fastmoss_settings = _resolve_fastmoss_product_settings(payload)
+        return fastmoss_security_fallback_required_result(
             context,
-            error=error,
-            summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
+            exc=_product_auth_recovery_error(exc, product_id=product_id, fastmoss_settings=fastmoss_settings),
+            handler_payload=payload,
+            fastmoss_settings=fastmoss_settings,
+            operation="fastmoss_product_fetch",
+            entity_identity={"product_identity": identity},
+            fallback_reason="fastmoss_auth_session_recovery",
+            error_type="auth_failure",
+            error_code="fastmoss_auth_session_recovery_required",
         )
     except FastMossHTTPError as exc:
         if is_fastmoss_session_conflict_error(exc):
-            return fastmoss_session_conflict_failed_result(
+            return fastmoss_security_fallback_required_result(
                 context,
                 exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=_resolve_fastmoss_product_settings(payload),
                 operation="fastmoss_product_fetch",
-                summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
+                entity_identity={"product_identity": identity},
+                fallback_reason="fastmoss_auth_session_recovery",
+                error_type="auth_failure",
+                error_code="fastmoss_auth_session_recovery_required",
             )
         if is_fastmoss_security_verification_error(exc):
             return fastmoss_security_fallback_required_result(
@@ -241,6 +245,28 @@ def _resolve_fastmoss_bundle(payload: dict[str, Any], *, product_id: str, detail
                 ecommerce_type=first_non_empty(author_plan.get("ecommerce_type"), "all"),
             )
         return bundle
+
+
+def _product_auth_recovery_error(
+    exc: FastMossAuthError,
+    *,
+    product_id: str,
+    fastmoss_settings: Mapping[str, Any],
+) -> FastMossAuthError:
+    if exc.path:
+        return exc
+    return FastMossAuthError(
+        str(exc),
+        status_code=exc.status_code,
+        response_code=exc.response_code,
+        payload=exc.payload or {},
+        stage=first_non_empty(exc.stage, "product.auth_recovery"),
+        method=first_non_empty(exc.method, "GET"),
+        path="/api/goods/v3/base",
+        params={"product_id": product_id} if product_id else {},
+        referer=exc.referer,
+        region=first_non_empty(exc.region, fastmoss_settings.get("region"), "US"),
+    )
 
 
 def _resolve_fastmoss_product_settings(payload: dict[str, Any]) -> dict[str, Any]:

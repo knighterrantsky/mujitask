@@ -17,6 +17,7 @@ from automation_business_scaffold.infrastructure.rate_limit import resolve_api_r
 
 FASTMOSS_PRODUCT_SEARCH_ENDPOINT = "/api/goods/V2/search"
 FASTMOSS_SECURITY_VERIFICATION_CODES = {"MSG_SAFE_0001"}
+FASTMOSS_AUTH_VERIFICATION_CODES = {"MAG_AUTH_3001", "MAG_AUTH_3002", "MAG_AUTH_3017", "MSG_30001"}
 
 
 def verify_original_request_with_cookies(
@@ -77,9 +78,10 @@ def verify_original_request_with_cookies_result(
             default_referer=default_referer,
         )
     except FastMossHTTPError as exc:
-        if not is_fastmoss_security_error(exc):
+        if not (is_fastmoss_security_error(exc) or is_fastmoss_auth_error(exc)):
             raise
         details = redact_fastmoss_http_error(exc)
+        auth_error = is_fastmoss_auth_error(exc)
         return compact_dict(
             {
                 "verified": False,
@@ -89,8 +91,12 @@ def verify_original_request_with_cookies_result(
                     FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
                 ),
                 "response_code": first_non_empty(details.get("response_code"), exc.response_code),
-                "error_code": "fastmoss_security_verification_required",
-                "error_type": "security_verification",
+                "error_code": (
+                    "fastmoss_auth_session_recovery_required"
+                    if auth_error
+                    else "fastmoss_security_verification_required"
+                ),
+                "error_type": "auth_failure" if auth_error else "security_verification",
                 "data_id": first_non_empty(details.get("data_id")),
                 "ext_is_login": first_non_empty(details.get("ext_is_login")),
             }
@@ -120,6 +126,15 @@ def redact_fastmoss_http_error(exc: FastMossHTTPError) -> dict[str, Any]:
 
 def is_fastmoss_security_error(exc: FastMossHTTPError) -> bool:
     return coerce_str(exc.response_code) in FASTMOSS_SECURITY_VERIFICATION_CODES
+
+
+def is_fastmoss_auth_error(exc: FastMossHTTPError) -> bool:
+    code = coerce_str(exc.response_code)
+    if code in FASTMOSS_AUTH_VERIFICATION_CODES or code.startswith("MAG_AUTH_"):
+        return True
+    payload = coerce_mapping(exc.payload)
+    ext = coerce_mapping(payload.get("ext"))
+    return ext.get("is_login") in {0, "0", False}
 
 
 def redact_replay_params(params: Mapping[str, Any]) -> dict[str, Any]:

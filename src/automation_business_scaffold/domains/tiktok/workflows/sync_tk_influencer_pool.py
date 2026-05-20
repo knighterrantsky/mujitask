@@ -4,6 +4,7 @@ from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import build_formal_task_workflow
 from automation_business_scaffold.domains.tiktok.jobs import (
+    FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
     FEISHU_TABLE_READ_JOB,
     FEISHU_TABLE_WRITE_JOB,
     INFLUENCER_CREATOR_SYNC_JOB,
@@ -97,6 +98,20 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
+                stage_code="fastmoss_security_browser_fallback",
+                description="Resolve FastMoss auth or security recovery in browser and refresh shared cookies.",
+                execution_mode="worker_jobs",
+                enter_condition="product discovery or creator sync returned fallback_required for FastMoss auth/security",
+                exit_condition="FastMoss browser recovery is terminal and waiting API jobs are requeued once",
+                job_bindings=(
+                    StageJobBinding(
+                        job_code="fastmoss_security_browser_resolve",
+                        flow_code="fastmoss_security_browser_resolve",
+                        result_consumer="cookie cache metadata and original FastMoss request verification evidence",
+                    ),
+                ),
+            ),
+            StageDefinition(
                 stage_code="sync_influencer_pool",
                 description="Sync one unique creator with all current product hit contexts.",
                 execution_mode="worker_jobs",
@@ -147,6 +162,7 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
         job_defs=(
             FEISHU_TABLE_READ_JOB,
             PRODUCT_CREATOR_DISCOVERY_JOB,
+            FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
             INFLUENCER_CREATOR_SYNC_JOB,
             FEISHU_TABLE_WRITE_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
@@ -164,8 +180,28 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="discover_related_creators",
+                to_stage_code="fastmoss_security_browser_fallback",
+                condition="one or more product creator discovery jobs returned fallback_required for FastMoss auth/security",
+            ),
+            TransitionDefinition(
+                from_stage_code="fastmoss_security_browser_fallback",
+                to_stage_code="discover_related_creators",
+                condition="browser recovery resolved FastMoss auth/security for product discovery and requeued original jobs once",
+            ),
+            TransitionDefinition(
+                from_stage_code="discover_related_creators",
                 to_stage_code="sync_influencer_pool",
                 condition="unique creator sync jobs have been created or product discovery groups reached terminal state",
+            ),
+            TransitionDefinition(
+                from_stage_code="sync_influencer_pool",
+                to_stage_code="fastmoss_security_browser_fallback",
+                condition="one or more influencer creator sync jobs returned fallback_required for FastMoss auth/security",
+            ),
+            TransitionDefinition(
+                from_stage_code="fastmoss_security_browser_fallback",
+                to_stage_code="sync_influencer_pool",
+                condition="browser recovery resolved FastMoss auth/security for creator sync and requeued original jobs once",
             ),
             TransitionDefinition(
                 from_stage_code="sync_influencer_pool",
@@ -197,7 +233,7 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
         ),
         idempotency_policy=influencer_idempotency_rules(),
         timeout_policy=influencer_timeout_rules(),
-        watchdog_policy=standard_watchdog_rules(include_browser=False),
+        watchdog_policy=standard_watchdog_rules(include_browser=True),
         summary_contract=STANDARD_SUMMARY_CONTRACT,
         error_contract=STANDARD_ERROR_CONTRACT,
         notes=(

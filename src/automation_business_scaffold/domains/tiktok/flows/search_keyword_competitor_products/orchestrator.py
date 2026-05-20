@@ -11,7 +11,7 @@ from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     api_jobs_for_stage as _api_jobs_for_stage,
     has_active_records as _has_active_children,
-    stage_child_records as _stage_child_records,
+    stage_child_summaries as _stage_child_records,
 )
 
 from .stages.browser_fallback import (

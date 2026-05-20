@@ -24,6 +24,7 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
         "upsert_key": _mapping(record.get("upsert_key")),
         "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
         "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
+        "update_accumulate_fields": _mapping(record.get("update_accumulate_fields") or payload.get("update_accumulate_fields")),
         "fields": _mapping(record.get("fields")),
         "source_context": _mapping(record.get("source_context")) or _source_context_from_record(record, payload),
     }
@@ -34,12 +35,14 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
     creator_id = _first_non_empty(record.get("creator_id"), _mapping(record.get("creator_fact_bundle")).get("creator_id"))
     creator_name = _first_non_empty(record.get("creator_name"), _mapping(record.get("creator_fact_bundle")).get("display_name"), _mapping(record.get("creator_fact_bundle")).get("nickname"))
     product_id = _text(record.get("product_id"))
+    related_product_sales = _stringify_scalar(_first_non_empty(record.get("matched_product_sold_count"), _relation_metric(record, "sold_count")))
+    related_product_sales_delta = _stringify_scalar(_first_non_empty(record.get("matched_product_sold_delta"), related_product_sales))
     fields = _compact(
         {
             "达人ID": creator_id,
             "带货商品图": _influencer_product_image_refs(record, product_id=product_id),
-            "关联节日": _list_text(_first_non_empty(record.get("holiday"))),
-            "关联商品销量": _stringify_scalar(_first_non_empty(record.get("matched_product_sold_count"), _relation_metric(record, "sold_count"))),
+            "关联节日": _list_text(record.get("holiday")),
+            "关联商品销量": related_product_sales,
             "达人头像": _influencer_avatar_refs(record),
             "粉丝数": _format_w_unit_display(_creator_metric(record, "follower_count", "fans_count")),
             "28天视频数": _stringify_scalar(_creator_metric(record, "aweme_28d_count", "aweme_28_count", "video_count")),
@@ -59,6 +62,7 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "fields": fields,
             "update_excluded_fields": ["记录日期"],
             "update_replace_fields": ["达人头像"],
+            "update_accumulate_fields": {"关联商品销量": related_product_sales_delta} if related_product_sales_delta else {},
             "source_context": _source_context_from_record(record, payload),
         },
         payload,

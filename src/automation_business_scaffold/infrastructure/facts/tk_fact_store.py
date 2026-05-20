@@ -380,6 +380,7 @@ class TKFactStore(TKFactQueryAccess):
         sold_count: Any = 0,
         source_platform: str = "",
         metadata: Mapping[str, Any] | None = None,
+        include_mutation_status: bool = False,
     ) -> dict[str, Any]:
         creator_key = _clean_text(creator_key)
         product_id = _clean_text(product_id)
@@ -400,6 +401,7 @@ class TKFactStore(TKFactQueryAccess):
                 "source_platform": _clean_text(source_platform),
                 "metadata_json": _json_dumps(metadata),
             },
+            include_mutation_status=include_mutation_status,
         )
 
     def upsert_creator_video_relation(
@@ -1075,6 +1077,7 @@ class TKFactStore(TKFactQueryAccess):
         table_name: str,
         relation_key: str,
         values: Mapping[str, Any],
+        include_mutation_status: bool = False,
     ) -> dict[str, Any]:
         data = {
             "relation_id": uuid.uuid4().hex,
@@ -1087,6 +1090,7 @@ class TKFactStore(TKFactQueryAccess):
             unique_value=relation_key,
             values=data,
             skip_update_if_unchanged=True,
+            include_mutation_status=include_mutation_status,
         )
 
     def _upsert_by_unique(
@@ -1097,8 +1101,10 @@ class TKFactStore(TKFactQueryAccess):
         unique_value: str,
         values: Mapping[str, Any],
         skip_update_if_unchanged: bool = False,
+        include_mutation_status: bool = False,
     ) -> dict[str, Any]:
         now = time.time()
+        mutation_status = "updated"
         with self._engine.begin() as connection:
             existing = (
                 connection.execute(
@@ -1117,6 +1123,7 @@ class TKFactStore(TKFactQueryAccess):
             )
             data = dict(values)
             if existing is None:
+                mutation_status = "created"
                 data.setdefault("created_at", now)
                 data.setdefault("updated_at", now)
                 data.setdefault("first_seen_at", now)
@@ -1150,7 +1157,10 @@ class TKFactStore(TKFactQueryAccess):
                 .mappings()
                 .first()
             )
-        return self._row_to_dict(row) if row is not None else {}
+        result = self._row_to_dict(row) if row is not None else {}
+        if include_mutation_status and result:
+            result["_mutation_status"] = mutation_status
+        return result
 
     def _insert_row(self, connection: Any, *, table_name: str, data: Mapping[str, Any]) -> None:
         columns = list(data.keys())

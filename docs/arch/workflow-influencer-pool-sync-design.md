@@ -33,8 +33,12 @@
 flowchart TD
     A["Task: sync_tk_influencer_pool"] --> B["read_competitor_candidates<br/>feishu_table_read"]
     B --> C["discover_related_creators<br/>product_creator_discovery"]
+    C -->|FastMoss auth/security| R["fastmoss_security_browser_fallback<br/>fastmoss_security_browser_resolve"]
+    R -->|requeue original job once| C
     C --> D["group unique creators<br/>merge product_hits"]
     D --> E["sync_influencer_pool<br/>influencer_creator_sync"]
+    E -->|FastMoss auth/security| R
+    R -->|requeue original creator job once| E
     E --> F{"product group terminal?"}
     F -->|yes| G["write source row status<br/>feishu_table_write inside sync job"]
     F -->|no| H["wait other creator sync jobs"]
@@ -51,6 +55,7 @@ flowchart TD
 | --- | --- | --- |
 | `read_competitor_candidates` | 从 `TK竞品收集` 中筛选待查找/失败重试/处理中记录 | 1 个 `api_worker_job` / `feishu_table_read` |
 | `discover_related_creators` | 每个竞品商品 1 个 `product_creator_discovery` job，内部调用 FastMoss 商品达人列表，按销量和粉丝阈值过滤，输出 normalized creator candidates + product hit context | `api_worker_job` / `product_creator_discovery` |
+| `fastmoss_security_browser_fallback` | `product_creator_discovery` 或 `influencer_creator_sync` 遇到 FastMoss auth/session/security 恢复需求时，用 browser worker 恢复共享 cookie，并 requeue 原 API job 一次 | `task_execution` / `fastmoss_security_browser_resolve` |
 | `sync_influencer_pool` | 每个 unique 达人 1 个 `influencer_creator_sync` job，payload 携带该达人本次命中的所有 `product_hits`；job 内部完成达人详情、事实入库、达人池 upsert，并在商品 group 终态时写回对应竞品商品状态 | `api_worker_job` / `influencer_creator_sync` |
 | `writeback_competitor_status` | 批量兜底回写竞品表达人查找状态，处理无匹配达人、商品发现失败、重试耗尽或未被最后一个达人同步 job 成功写回的 source rows；单个 job 最多 50 条 source rows | `api_worker_job` / `feishu_table_write` |
 | `ready_for_summary` | 汇总 product / creator / Feishu writeback 结果并写通知 | `task_request` / `notification_outbox` |
@@ -63,6 +68,7 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | 竞品候选读取 | `api_worker_job` | `api_worker` | `feishu_table_read` | `influencer_pool_source_adapter` |
 | 商品达人发现 | `api_worker_job` / `stage=discover_related_creators` / 每个商品 1 个 | `api_worker` | `product_creator_discovery` | 内部复用 `fastmoss_product_fetch`，输出 normalized creator candidates + product hit context |
+| FastMoss 登录态恢复 | `task_execution` / `stage=fastmoss_security_browser_fallback` / 每批 fallback 候选共享 1 个 | `browser_worker` | `fastmoss_security_browser_resolve` | 恢复 FastMoss cookie cache，并由 Runtime requeue 原等待 job 一次 |
 | 达人同步 | `api_worker_job` / `stage=sync_influencer_pool` / 每个 unique 达人 1 个 | `api_worker` | `influencer_creator_sync` | 内部复用 `fastmoss_creator_fetch`、`fact_bundle_upsert`、`media_asset_sync`、`feishu_table_write`；写 `TK达人池` 并按 product group 终态回写 `达人查找状态` |
 | 竞品状态兜底回写 | `api_worker_job` / 最多 50 条 source rows | `api_worker` | `feishu_table_write` | `competitor_influencer_status_projection_mapper` |
 | 父任务汇总 | `task_request` finalize | `executor_daemon` | workflow finalizer | product / creator / Feishu writeback summary policy |
@@ -71,6 +77,7 @@ flowchart TD
 
 - 达人同步不新增业务专用 Runtime job 表；所有 API/IO 执行单元统一进入 `api_worker_job`。
 - 商品发现和达人同步只是逻辑 job 粒度，通过 `stage`、`job_code`、`business_key`、`dedupe_key`、payload 中的 `source_record_id/product_id/creator_id/product_hits` 表达。
+- FastMoss auth/session/security 恢复是 provider 级 browser fallback，不是普通 retry；browser 成功后只允许原 `product_creator_discovery` 或 `influencer_creator_sync` job 重试一次，重试后仍失败则该商品或达人按失败收敛。
 - 如需要父子收敛，优先在通用 Runtime job schema 中补充 `parent_job_id` / `job_group` / `entity_type` / `entity_key` 这类通用字段，而不是新增达人同步专用表。
 - `product_creator_discovery` 是商品粒度业务 job，内部复用 FastMoss 商品达人列表能力，不再拆成商品 base、overview、author list 等多个 Runtime job。
 - `influencer_creator_sync` 是达人粒度业务 job，内部完成达人详情、事实入库、素材同步、`TK达人池` upsert 和商品终态状态回写，不再把 `persist_creator_facts`、`write_influencer_pool` 拆成独立 Runtime job。
@@ -128,6 +135,8 @@ stateDiagram-v2
     pending --> running: api_worker claim
     retry_wait --> running: 到达 available_at 后重试
     running --> success: 已生成 normalized creator candidates
+    running --> fallback_required: FastMoss auth/session/security recovery required
+    fallback_required --> pending: browser fallback 成功后 requeue 一次
     running --> success: 无匹配达人，商品可直接进入状态回写
     running --> retry_wait: 可重试失败
     running --> failed: 达到最大重试次数
@@ -152,6 +161,8 @@ stateDiagram-v2
     pending --> running: api_worker claim
     retry_wait --> running: 到达 available_at 后重试
     running --> success: 达人详情、事实入库、达人池 upsert 成功
+    running --> fallback_required: FastMoss auth/session/security recovery required
+    fallback_required --> pending: browser fallback 成功后 requeue 一次
     running --> skipped: checkpoint 或业务判定跳过
     running --> retry_wait: 可重试失败
     running --> failed: 达到最大重试次数

@@ -7,6 +7,8 @@ from automation_business_scaffold.capabilities.input_sources.feishu.targets impo
     FeishuTableTarget,
 )
 
+_FIELD_SCHEMA_CACHE: dict[tuple[type[Any], str, str], dict[str, dict[str, Any]]] = {}
+
 
 def normalize_raw_rows(
     records: list[Mapping[str, Any]],
@@ -81,6 +83,10 @@ def load_field_names(client: Any, target: FeishuTableTarget) -> set[str]:
 
 
 def load_field_schema(client: Any, target: FeishuTableTarget) -> dict[str, dict[str, Any]]:
+    cache_key = (type(client), target.app_token, target.table_id)
+    cached = _FIELD_SCHEMA_CACHE.get(cache_key)
+    if cached is not None:
+        return {name: dict(schema) for name, schema in cached.items()}
     try:
         fields = client.list_all_fields(target.app_token, target.table_id)
     except AttributeError:
@@ -91,7 +97,8 @@ def load_field_schema(client: Any, target: FeishuTableTarget) -> dict[str, dict[
             name = _text(field.get("field_name") or field.get("name"))
             if name:
                 schema[name] = dict(field)
-    return schema
+    _FIELD_SCHEMA_CACHE[cache_key] = {name: dict(field_schema) for name, field_schema in schema.items()}
+    return {name: dict(field_schema) for name, field_schema in schema.items()}
 
 
 def _mapping(value: Any) -> dict[str, Any]:

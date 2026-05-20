@@ -476,6 +476,12 @@ class RuntimeStore:
     def list_task_executions(self, *, request_id: str) -> list[RuntimeTaskExecutionRecord]:
         return self._request_status_query.list_task_executions(request_id=request_id)
 
+    def list_task_execution_summaries_for_request(self, *, request_id: str) -> list[dict[str, Any]]:
+        return self._request_status_query.list_task_execution_summaries_for_request(request_id=request_id)
+
+    def summarize_task_executions_for_request(self, *, request_id: str) -> dict[str, Any]:
+        return self._request_status_query.summarize_task_executions_for_request(request_id=request_id)
+
     def list_request_outbox(self, *, request_id: str) -> list[NotificationOutboxRecord]:
         return self._request_status_query.list_request_outbox(request_id=request_id)
 
@@ -956,6 +962,27 @@ class RuntimeStore:
             job_id=job_id,
             payload=payload,
             stage=stage,
+        )
+
+    def mark_waiting_api_worker_job_failed(
+        self,
+        *,
+        job_id: str,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_text: str = "",
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
+    ) -> dict[str, Any]:
+        return self._api_worker_job_repo.mark_waiting_api_worker_job_failed(
+            job_id=job_id,
+            summary=summary,
+            result=result,
+            error_text=error_text,
+            error_type=error_type,
+            error_code=error_code,
+            dead_letter_reason=dead_letter_reason,
         )
 
     def mark_api_worker_job_retry_or_failed(

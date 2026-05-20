@@ -17,6 +17,16 @@ def _advance_stage_sync_influencer_pool(*, store: RuntimeStore, request: Any) ->
         stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
         job_code="influencer_creator_sync",
     )
+    fallback_candidates = _fastmoss_browser_fallback_candidates(
+        store=store,
+        request_id=request.request_id,
+        source_stage_code=SYNC_INFLUENCER_POOL_STAGE_CODE,
+    )
+    if fallback_candidates:
+        return _advance_stage_result(
+            next_stage=FASTMOSS_SECURITY_FALLBACK_STAGE_CODE,
+            details={"fallback_candidate_count": len(fallback_candidates)},
+        )
     if any(str(job.get("status") or "") in ACTIVE_STATUSES for job in sync_jobs):
         return _waiting_stage_result(
             current_stage=SYNC_INFLUENCER_POOL_STAGE_CODE,

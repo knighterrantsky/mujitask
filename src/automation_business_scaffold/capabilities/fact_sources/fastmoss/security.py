@@ -76,6 +76,9 @@ def fastmoss_security_fallback_required_result(
     fastmoss_settings: Mapping[str, Any],
     operation: str,
     entity_identity: Mapping[str, Any] | None = None,
+    fallback_reason: str = "fastmoss_api_security_verification",
+    error_type: str = "security_verification",
+    error_code: str = "fastmoss_security_verification_required",
 ) -> HandlerResult:
     details = redact_fastmoss_http_error(exc)
     fallback_payload = fastmoss_security_fallback_payload(
@@ -85,14 +88,15 @@ def fastmoss_security_fallback_required_result(
         fastmoss_settings=fastmoss_settings,
         operation=operation,
         entity_identity=entity_identity or {},
+        fallback_reason=fallback_reason,
     )
     error = build_error(
-        error_type="security_verification",
-        error_code="fastmoss_security_verification_required",
+        error_type=error_type,
+        error_code=error_code,
         message=str(exc) or "FastMoss security verification is required.",
         retryable=False,
         fallback_allowed=True,
-        fallback_reason="fastmoss_api_security_verification",
+        fallback_reason=fallback_reason,
         details=details,
     )
     return fallback_required_result(
@@ -100,7 +104,7 @@ def fastmoss_security_fallback_required_result(
         error=error,
         summary={
             "fallback_required": True,
-            "fallback_reason": "fastmoss_api_security_verification",
+            "fallback_reason": fallback_reason,
             "operation": operation,
             "response_code": details.get("response_code"),
             "path": details.get("path"),
@@ -119,13 +123,14 @@ def fastmoss_security_fallback_payload(
     fastmoss_settings: Mapping[str, Any],
     operation: str,
     entity_identity: Mapping[str, Any],
+    fallback_reason: str = "fastmoss_api_security_verification",
 ) -> dict[str, Any]:
     details = redact_fastmoss_http_error(exc)
     verification_request = _verification_request_from_error(exc, fastmoss_settings=fastmoss_settings)
     return compact_dict(
         {
             "fallback_required": True,
-            "fallback_reason": "fastmoss_api_security_verification",
+            "fallback_reason": fallback_reason,
             "source_handler_code": context.handler_code,
             "retry_handler_code": context.handler_code,
             "operation": operation,

@@ -121,11 +121,28 @@ def test_tk_fact_store_skips_unchanged_relation_writes(runtime_db_url):
         sold_count=90,
         metadata={"source_endpoint": "goods.author"},
     )
+    fresh_with_status = fact_store.upsert_creator_product_relation(
+        creator_key="creator_id:creator-1",
+        creator_id="creator-1",
+        product_id="1729440407432826888",
+        sold_count=12,
+        include_mutation_status=True,
+    )
+    changed_with_status = fact_store.upsert_creator_product_relation(
+        creator_key="creator_id:creator-1",
+        creator_id="creator-1",
+        product_id="1729440407432826888",
+        sold_count=13,
+        include_mutation_status=True,
+    )
 
     assert first["relation_key"] == "creator_id:creator-1:1729440407432826887"
     assert unchanged == {}
     assert changed["relation_id"] == first["relation_id"]
     assert changed["sold_count"] == 90
+    assert "_mutation_status" not in first
+    assert fresh_with_status["_mutation_status"] == "created"
+    assert changed_with_status["_mutation_status"] == "updated"
 
 
 def test_tk_fact_store_prefers_reusable_media_asset_by_source_url(runtime_db_url):

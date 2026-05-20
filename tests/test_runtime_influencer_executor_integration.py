@@ -6,6 +6,7 @@ import pytest
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
+    FASTMOSS_SECURITY_FALLBACK_STAGE_CODE,
     READ_STAGE_CODE,
     SYNC_INFLUENCER_POOL_STAGE_CODE,
     WRITEBACK_STAGE_CODE,
@@ -22,6 +23,10 @@ from automation_business_scaffold.contracts.handler.contract import (
 from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.orchestrator import (
+    release_request_after_child_completion,
+)
+from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 TASK_CODE = "sync_tk_influencer_pool"
 SOURCE_TABLE_REF = "feishu://competitor-table"
@@ -182,6 +187,18 @@ def _bind_influencer_api_handlers(
                 ),
                 summary={"creator_id": creator_id, "source": "fastmoss_creator"},
                 result={
+                    "fallback_required": True,
+                    "fallback_reason": "fastmoss_auth_session_recovery",
+                    "verification_request": {
+                        "method": "GET",
+                        "path": "/api/author/v3/detail/baseInfo",
+                        "params": {"uid": creator_id},
+                        "region": "US",
+                    },
+                    "security_context": {
+                        "response_code": "MAG_AUTH_3001",
+                        "path": "/api/author/v3/detail/baseInfo",
+                    },
                     "creator_id": creator_id,
                     "status": "failed",
                     "product_hits": list(context.payload.get("product_hits") or []),
@@ -337,6 +354,36 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
     assert creator_statuses["creator-success"] == "success"
     assert creator_statuses["creator-fail"] == "fallback_required"
 
+    fallback_executor = runtime_orchestrator.execute_executor_once(runtime_params)
+    assert fallback_executor["current_stage"] == FASTMOSS_SECURITY_FALLBACK_STAGE_CODE
+
+    store = RuntimeStore(db_url=runtime_db_url)
+    claimed_browser = store.claim_next_browser_execution(
+        worker_id="pytest-browser",
+        lease_seconds=30.0,
+        request_id=request_id,
+        item_codes=("fastmoss_security_browser_resolve",),
+    )
+    assert claimed_browser is not None
+    store.mark_browser_execution_success(
+        execution_id=claimed_browser.execution_id,
+        run_id=claimed_browser.run_id,
+        summary={"handler_status": "failed", "error_code": "fastmoss_auth_session_recovery_required"},
+        result={
+            "handler_result": {
+                "status": "failed",
+                "handler_code": "fastmoss_security_browser_resolve",
+                "error": {
+                    "error_type": "auth_failure",
+                    "error_code": "fastmoss_auth_session_recovery_required",
+                    "message": "FastMoss auth recovery is still required after browser fallback.",
+                },
+                "result": {"verified_path": "/api/author/v3/detail/baseInfo", "resolved": False},
+            }
+        },
+    )
+    release_request_after_child_completion(store, request_id=request_id)
+
     writeback_executor = runtime_orchestrator.execute_executor_once(runtime_params)
     assert writeback_executor["current_stage"] == WRITEBACK_STAGE_CODE
     writeback_jobs = _jobs_for_stage(writeback_executor, WRITEBACK_STAGE_CODE, "feishu_table_write")
@@ -354,17 +401,17 @@ def test_sync_tk_influencer_pool_executor_aggregates_partial_success_after_child
 
     status_payload = _status(runtime_db_url, request_id)
     creator_detail_jobs = _jobs_for_stage(status_payload, SYNC_INFLUENCER_POOL_STAGE_CODE, "influencer_creator_sync")
-    assert {job["status"] for job in creator_detail_jobs} == {"finished", "waiting"}
-    assert {job["result_status"] for job in creator_detail_jobs} == {"success", ""}
+    assert {job["status"] for job in creator_detail_jobs} == {"finished"}
+    assert {job["result_status"] for job in creator_detail_jobs} == {"success", "failed"}
     assert status_payload["request_status"] == "partial_success"
     assert status_payload["summary"]["warnings"] == ["partial_creator_projection"]
     assert status_payload["summary"]["product_groups"][0]["creator_detail_success_count"] == 1
     assert status_payload["summary"]["product_groups"][0]["creator_detail_failed_count"] == 1
     assert status_payload["summary"]["product_groups"][0]["influencer_write_success_count"] == 1
-    assert _api_job_by_creator_id(status_payload, "creator-fail")["result"]["handler_result"]["status"] == (
-        "fallback_required"
+    assert _api_job_by_creator_id(status_payload, "creator-fail")["error_code"] == (
+        "fastmoss_security_browser_fallback_failed"
     )
     assert _api_job_by_creator_id(status_payload, "creator-success")["result_status"] == "success"
-    assert _api_job_by_creator_id(status_payload, "creator-fail")["result_status"] == ""
+    assert _api_job_by_creator_id(status_payload, "creator-fail")["result_status"] == "failed"
     assert len(status_payload["outbox"]) == 1
     assert status_payload["outbox"][0]["event_type"] == "task_request.completed"

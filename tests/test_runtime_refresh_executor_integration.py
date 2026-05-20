@@ -20,6 +20,9 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerNextAction,
     HandlerResult,
 )
+from automation_business_scaffold.contracts.workflow.execution_helpers import (
+    extract_effective_result_payload,
+)
 from automation_business_scaffold.domains.tiktok.tasks.refresh_current_competitor_table import (
     RefreshCurrentCompetitorTableTask,
 )
@@ -619,7 +622,8 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
     assert read_worker["api_worker_job"]["status"] == "finished"
     assert read_worker["api_worker_job"]["result_status"] == "success"
-    assert read_worker["api_worker_job"]["result"]["handler_result"]["result"]["source_rows"][0]["source_record_id"] == SOURCE_RECORD_ID
+    read_result = extract_effective_result_payload(read_worker["api_worker_job"])
+    assert read_result["source_rows"][0]["source_record_id"] == SOURCE_RECORD_ID
 
     collect_wait = runtime_orchestrator.execute_executor_once(
         _runtime_params(runtime_db_url, execution_child_runner_mode="inline")

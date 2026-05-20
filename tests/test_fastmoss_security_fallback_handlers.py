@@ -164,7 +164,7 @@ def test_fastmoss_handlers_return_browser_fallback_for_security_verification(
     assert result.next_action.type == "browser_fallback"
 
 
-def test_fastmoss_handler_reports_session_conflict_without_browser_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fastmoss_handler_returns_browser_fallback_for_session_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(product_module, "FastMossHTTPSession", _SessionConflictSession)
 
     result = product_module.fastmoss_product_fetch_handler(
@@ -177,8 +177,10 @@ def test_fastmoss_handler_reports_session_conflict_without_browser_fallback(monk
         )
     )
 
-    assert result.status == "failed"
+    assert result.status == "fallback_required"
     assert result.error is not None
-    assert result.error.error_code == "fastmoss_session_conflict_or_external_login"
+    assert result.error.error_code == "fastmoss_auth_session_recovery_required"
     assert result.error.retryable is False
-    assert result.next_action.type == "none"
+    assert result.result["fallback_reason"] == "fastmoss_auth_session_recovery"
+    assert result.result["verification_request"]["path"] == "/api/goods/v3/base"
+    assert result.next_action.type == "browser_fallback"

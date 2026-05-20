@@ -8,6 +8,7 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security.cookie_
     cookie_snapshot_from_browser_cookies as _cookie_snapshot_from_browser_cookies,
     export_fastmoss_browser_cookies as _export_fastmoss_browser_cookies,
     import_fastmoss_browser_cookies as _import_fastmoss_browser_cookies,
+    reset_fastmoss_browser_session as _reset_fastmoss_browser_session,
 )
 from automation_business_scaffold.capabilities.browser.fastmoss_security.cookie_cache_persistence import (
     save_browser_cookies_to_cache as _save_browser_cookies_to_cache,
@@ -32,6 +33,7 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security.slider_
     _try_resolve_fastmoss_slider_security_check,
 )
 from automation_business_scaffold.capabilities.browser.fastmoss_security.request_verification import (
+    FASTMOSS_AUTH_VERIFICATION_CODES,
     FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
     FASTMOSS_SECURITY_VERIFICATION_CODES,
     is_fastmoss_security_error as _is_fastmoss_security_error,
@@ -84,10 +86,36 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
             )
 
         cookies = coerce_mapping_list(browser_result.get("cookies"))
+        verification = coerce_mapping(browser_result.get("verification"))
+        if _is_fastmoss_auth_response_code(verification.get("response_code")):
+            error = build_error(
+                error_type="auth_failure",
+                error_code="fastmoss_auth_session_recovery_required",
+                message="FastMoss auth recovery is still required after browser fallback.",
+                retryable=False,
+                details={
+                    "verified_path": first_non_empty(verification.get("verified_path"), verified_path),
+                    "response_code": first_non_empty(verification.get("response_code")),
+                    "ext_is_login": first_non_empty(verification.get("ext_is_login")),
+                },
+            )
+            return failed_result(
+                context,
+                error=error,
+                summary=_browser_resolve_failure_summary(
+                    browser_result,
+                    error_code="fastmoss_auth_session_recovery_required",
+                ),
+                result=_browser_resolve_result_payload(
+                    payload,
+                    browser_result,
+                    resolved=False,
+                    error_details=error.details,
+                ),
+            )
         if not cookies:
             raise ValueError("FastMoss browser security resolve did not export cookies.")
 
-        verification = coerce_mapping(browser_result.get("verification"))
         if verification.get("response_code") in FASTMOSS_SECURITY_VERIFICATION_CODES:
             exc = FastMossHTTPError(
                 "FastMoss search security verification is still required after browser fallback.",
@@ -330,12 +358,30 @@ def _resolve_fastmoss_security_with_browser(
         db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
         fastmoss_settings=fastmoss_settings,
     )
+    login_cookies = coerce_mapping_list(login_cookie_bootstrap.get("cookies"))
+    require_config_login = coerce_bool(
+        first_non_empty(
+            payload.get("fastmoss_browser_require_config_login"),
+            payload.get("fastmoss_require_config_login"),
+        ),
+        default=False,
+    )
+    clear_browser_session = require_config_login or coerce_bool(
+        first_non_empty(
+            payload.get("fastmoss_clear_browser_session_before_login"),
+            payload.get("fastmoss_browser_clear_session_before_login"),
+        ),
+        default=False,
+    )
+    if require_config_login and not login_cookies:
+        raise ValueError("FastMoss browser fallback requires configured FastMoss login cookies.")
     audit_dir = first_non_empty(
         payload.get("fastmoss_slider_captcha_audit_dir"),
         payload.get("slider_captcha_audit_dir"),
         DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
     )
     diagnostic_artifact_refs: list[dict[str, Any]] = []
+    browser_session_reset: dict[str, Any] = {}
     with open_automation_page(
         profile_ref=profile_ref,
         workspace_id=_optional_int(
@@ -351,9 +397,14 @@ def _resolve_fastmoss_security_with_browser(
         headless=coerce_bool(payload.get("browser_headless"), default=False),
         force_open=coerce_bool(payload.get("browser_force_open"), default=False),
     ) as browser_session:
+        if clear_browser_session:
+            browser_session_reset = _reset_fastmoss_browser_session(
+                browser_session.raw_page,
+                base_url=str(fastmoss_settings["base_url"]),
+            )
         imported_cookie_status = _import_fastmoss_browser_cookies(
             browser_session.raw_page,
-            cookies=coerce_mapping_list(login_cookie_bootstrap.get("cookies")),
+            cookies=login_cookies,
             base_url=str(fastmoss_settings["base_url"]),
         )
         _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
@@ -429,6 +480,10 @@ def _resolve_fastmoss_security_with_browser(
             key: value
             for key, value in {
                 **coerce_mapping(login_cookie_bootstrap.get("status")),
+                "browser_session_reset_status": browser_session_reset.get("status"),
+                "browser_session_cleared_cookie_count": browser_session_reset.get("cleared_cookie_count"),
+                "browser_cookie_clear_status": browser_session_reset.get("cookie_clear_status"),
+                "browser_storage_reset_status": browser_session_reset.get("storage_reset_status"),
                 "browser_imported_cookie_count": imported_cookie_status.get("imported_count"),
                 "browser_cookie_import_status": imported_cookie_status.get("status"),
                 "browser_cookie_import_reason": imported_cookie_status.get("reason"),
@@ -705,6 +760,11 @@ def _optional_int(value: Any) -> int | None:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _is_fastmoss_auth_response_code(value: Any) -> bool:
+    code = first_non_empty(value)
+    return code in FASTMOSS_AUTH_VERIFICATION_CODES or code.startswith("MAG_AUTH_")
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "fastmoss_security_browser_resolve_handler"]

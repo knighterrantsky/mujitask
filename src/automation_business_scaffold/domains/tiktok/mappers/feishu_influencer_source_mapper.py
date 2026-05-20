@@ -13,6 +13,14 @@ _PRODUCT_ID_PATTERNS = (
 
 def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
     spec = _mapping(payload.get("filter_spec"))
+    request_payload = _mapping(payload.get("request_payload"))
+    max_source_rows = _non_negative_int(
+        _first_non_empty(
+            payload.get("max_source_rows"),
+            spec.get("max_source_rows"),
+            request_payload.get("max_source_rows"),
+        )
+    )
     skip_statuses = set(_list_text(spec.get("skip_product_status")))
     candidate_status = _list_text(spec.get("candidate_status"))
     source_record_ids = {
@@ -61,6 +69,7 @@ def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Ma
         source_rows,
         input_count=len(raw_rows),
         adapter_code="influencer_pool_source_adapter",
+        max_source_rows=max_source_rows,
         extra_summary={
             "skipped_status_count": skipped_status,
             "skipped_unavailable_count": skipped_unavailable,
@@ -114,6 +123,7 @@ def _adapter_result(
     *,
     input_count: int,
     adapter_code: str,
+    max_source_rows: int = 0,
     extra_summary: Mapping[str, Any],
 ) -> dict[str, Any]:
     deduped_rows: list[dict[str, Any]] = []
@@ -127,6 +137,10 @@ def _adapter_result(
         if key:
             seen.add(key)
         deduped_rows.append(row)
+    limited_count = 0
+    if max_source_rows > 0 and len(deduped_rows) > max_source_rows:
+        limited_count = len(deduped_rows) - max_source_rows
+        deduped_rows = deduped_rows[:max_source_rows]
     return {
         "source_rows": deduped_rows,
         "candidate_keys": [_candidate_key(row.get("product_identity")) for row in deduped_rows],
@@ -135,6 +149,8 @@ def _adapter_result(
             "input_row_count": input_count,
             "source_row_count": len(deduped_rows),
             "deduped_count": deduped_count,
+            "limited_count": limited_count,
+            "max_source_rows": max_source_rows,
             **dict(extra_summary),
         },
     }
@@ -148,6 +164,9 @@ def influencer_pool_source_adapter(
 
 
 def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
+    raw_snapshot_ref = _text(payload.get("raw_snapshot_ref"))
+    if raw_snapshot_ref:
+        return raw_snapshot_ref
     namespace = _first_non_empty(
         _mapping(payload.get("snapshot_policy")).get("raw_snapshot_namespace"),
         "feishu/common",
@@ -229,6 +248,14 @@ def _mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return {str(key): item for key, item in value.items()}
     return {}
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
 
 
 def _list_text(value: Any) -> list[str]:

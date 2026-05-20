@@ -34,7 +34,6 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
     build_fastmoss_session,
     fastmoss_security_fallback_required_result,
-    fastmoss_session_conflict_failed_result,
     fastmoss_settings_from_payload,
     is_fastmoss_security_verification_error,
     is_fastmoss_session_conflict_error,
@@ -104,25 +103,34 @@ def fastmoss_creator_fetch_handler(context: HandlerContext) -> HandlerResult:
             payload=payload,
         )
     except FastMossAuthError as exc:
-        error = build_error(
-            error_type="auth_failure",
-            error_code="fastmoss_auth_required",
-            message=str(exc),
-            retryable=True,
-            details=exc.to_dict(),
-        )
-        return failed_result(
+        fastmoss_settings = fastmoss_settings_from_payload(payload)
+        return fastmoss_security_fallback_required_result(
             context,
-            error=error,
-            summary={"detail_level": detail_level, "creator_key": _creator_business_key(creator_identity)},
+            exc=_creator_auth_recovery_error(
+                exc,
+                creator_identity=creator_identity,
+                fastmoss_settings=fastmoss_settings,
+            ),
+            handler_payload=payload,
+            fastmoss_settings=fastmoss_settings,
+            operation="fastmoss_creator_fetch",
+            entity_identity={"creator_identity": creator_identity},
+            fallback_reason="fastmoss_auth_session_recovery",
+            error_type="auth_failure",
+            error_code="fastmoss_auth_session_recovery_required",
         )
     except FastMossHTTPError as exc:
         if is_fastmoss_session_conflict_error(exc):
-            return fastmoss_session_conflict_failed_result(
+            return fastmoss_security_fallback_required_result(
                 context,
                 exc=exc,
+                handler_payload=payload,
+                fastmoss_settings=fastmoss_settings_from_payload(payload),
                 operation="fastmoss_creator_fetch",
-                summary={"detail_level": detail_level, "creator_key": _creator_business_key(creator_identity)},
+                entity_identity={"creator_identity": creator_identity},
+                fallback_reason="fastmoss_auth_session_recovery",
+                error_type="auth_failure",
+                error_code="fastmoss_auth_session_recovery_required",
             )
         if is_fastmoss_security_verification_error(exc):
             return fastmoss_security_fallback_required_result(
@@ -243,6 +251,33 @@ def _creator_business_key(identity: Mapping[str, Any]) -> str:
         creator_id=first_non_empty(identity.get("creator_id")),
         uid=first_non_empty(identity.get("uid")),
         unique_id=first_non_empty(identity.get("unique_id")),
+    )
+
+
+def _creator_auth_recovery_error(
+    exc: FastMossAuthError,
+    *,
+    creator_identity: Mapping[str, Any],
+    fastmoss_settings: Mapping[str, Any],
+) -> FastMossAuthError:
+    if exc.path:
+        return exc
+    uid = first_non_empty(
+        creator_identity.get("uid"),
+        creator_identity.get("creator_id"),
+        creator_identity.get("unique_id"),
+    )
+    return FastMossAuthError(
+        str(exc),
+        status_code=exc.status_code,
+        response_code=exc.response_code,
+        payload=exc.payload or {},
+        stage=first_non_empty(exc.stage, "creator.auth_recovery"),
+        method=first_non_empty(exc.method, "GET"),
+        path="/api/author/v3/detail/baseInfo",
+        params={"uid": uid} if uid else {},
+        referer=exc.referer,
+        region=first_non_empty(exc.region, fastmoss_settings.get("region"), "US"),
     )
 
 

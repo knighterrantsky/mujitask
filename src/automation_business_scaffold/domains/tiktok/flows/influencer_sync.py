@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from time import perf_counter
 from typing import Any
 
-from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
+from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerNextAction, HandlerResult
 from automation_business_scaffold.contracts.handler.dispatch import api_handler_callable
 from automation_business_scaffold.contracts.handler.shared import (
     build_error,
@@ -12,6 +12,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     coerce_mapping,
     coerce_mapping_list,
     failed_result,
+    fallback_required_result,
     first_non_empty,
     merge_fact_bundles,
     partial_success_result,
@@ -34,6 +35,15 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
         step_code="fastmoss_product_fetch",
     )
     product_result = fastmoss_product_fetch_handler(product_context)
+    if _requires_fastmoss_browser_recovery(product_result):
+        return _fastmoss_recovery_required_or_failed(
+            context,
+            payload=payload,
+            child_result=product_result,
+            step_code="fastmoss_product_fetch",
+            summary={"product_fetch_status": product_result.status},
+            result={"product_fetch_summary": _compact_product_fetch_summary(product_result.result)},
+        )
     if product_result.status == "failed":
         return failed_result(
             context,
@@ -45,7 +55,7 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
                 retryable=True,
             ),
             summary={"product_fetch_status": product_result.status},
-            result={"product_fetch_result": product_result.result},
+            result={"product_fetch_summary": _compact_product_fetch_summary(product_result.result)},
         )
 
     product_payload = dict(product_result.result)
@@ -63,10 +73,11 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
         coerce_mapping(product_payload.get("product_fact_bundle")).get("product_id"),
     )
     source_record_id = first_non_empty(source_context.get("source_record_id"))
+    compact_candidates = [_compact_discovery_creator_candidate(candidate) for candidate in candidates]
     result = {
-        "product_fact_bundle": coerce_mapping(product_payload.get("product_fact_bundle")),
-        "normalized_creator_candidates": candidates,
-        "related_creators": candidates,
+        "product_fact_bundle": _compact_product_fact_bundle(coerce_mapping(product_payload.get("product_fact_bundle")), product_id=product_id),
+        "normalized_creator_candidates": compact_candidates,
+        "related_creators": compact_candidates,
         "product_hit_context": {
             "source_record_id": source_record_id,
             "product_id": product_id,
@@ -74,7 +85,6 @@ def run_product_creator_discovery_flow(context: HandlerContext) -> HandlerResult
             "matched_creator_count": len(candidates),
         },
         "raw_response_refs": list(product_payload.get("raw_response_refs") or []),
-        "product_fetch_result": product_payload,
     }
     return success_result(
         context,
@@ -122,6 +132,23 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
     )
     internal_steps["creator_fetch"] = creator_result.status
     step_timings["creator_fetch"] = _step_timing(step_started_at, status=creator_result.status)
+    if _requires_fastmoss_browser_recovery(creator_result):
+        return _fastmoss_recovery_required_or_failed(
+            context,
+            payload=payload,
+            child_result=creator_result,
+            step_code="fastmoss_creator_fetch",
+            summary={
+                "creator_id": creator_id,
+                "internal_steps": internal_steps,
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+            result={
+                "creator_fetch_result": creator_result.result,
+                "product_hits": _compact_product_hits(product_hits),
+                "step_timings": _final_step_timings(step_timings, started_at),
+            },
+        )
     if creator_result.status == "failed":
         return failed_result(
             context,
@@ -250,7 +277,12 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
         )
     warnings.extend(fact_result.warnings)
 
-    write_payload = _influencer_pool_write_payload(payload, creator_payload=creator_payload, product_hits=product_hits)
+    write_payload = _influencer_pool_write_payload(
+        payload,
+        creator_payload=creator_payload,
+        product_hits=product_hits,
+        fact_result=fact_result.result,
+    )
     step_started_at = perf_counter()
     influencer_write = feishu_table_write_handler(
         _child_context(
@@ -378,6 +410,138 @@ def _final_step_timings(step_timings: Mapping[str, dict[str, Any]], started_at: 
     }
 
 
+def _requires_fastmoss_browser_recovery(result: HandlerResult) -> bool:
+    if result.status == "fallback_required":
+        return True
+    if result.status != "failed" or result.error is None:
+        return False
+    return result.error.error_code in {
+        "fastmoss_auth_required",
+        "fastmoss_auth_session_recovery_required",
+        "fastmoss_session_conflict_or_external_login",
+        "fastmoss_security_verification_required",
+    }
+
+
+def _fastmoss_recovery_required_or_failed(
+    context: HandlerContext,
+    *,
+    payload: Mapping[str, Any],
+    child_result: HandlerResult,
+    step_code: str,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> HandlerResult:
+    if int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) > 0:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="auth_failure",
+                error_code="fastmoss_browser_fallback_retry_exhausted",
+                message="FastMoss still requires auth or security recovery after browser fallback.",
+                retryable=False,
+                details={"step_code": step_code, "child_error_code": _child_error_code(child_result)},
+            ),
+            summary={**summary, "fallback_source_step": step_code},
+            result=result,
+        )
+    fallback_payload = _fastmoss_browser_recovery_payload(
+        context,
+        parent_payload=payload,
+        child_result=child_result,
+        step_code=step_code,
+    )
+    error = child_result.error or build_error(
+        error_type="auth_failure",
+        error_code="fastmoss_auth_session_recovery_required",
+        message="FastMoss auth or security recovery is required.",
+        retryable=False,
+        fallback_allowed=True,
+        fallback_reason=str(fallback_payload.get("fallback_reason") or "fastmoss_auth_session_recovery"),
+    )
+    next_action = child_result.next_action
+    if next_action.type == "none":
+        next_action = HandlerNextAction(type="browser_fallback", payload=fallback_payload)
+    return fallback_required_result(
+        context,
+        error=error,
+        summary={
+            **summary,
+            "fallback_required": True,
+            "fallback_source_step": step_code,
+            "fallback_reason": str(fallback_payload.get("fallback_reason") or ""),
+        },
+        result={**result, **fallback_payload},
+        next_action=next_action,
+    )
+
+
+def _fastmoss_browser_recovery_payload(
+    context: HandlerContext,
+    *,
+    parent_payload: Mapping[str, Any],
+    child_result: HandlerResult,
+    step_code: str,
+) -> dict[str, Any]:
+    payload = dict(coerce_mapping(child_result.result))
+    payload.setdefault("fallback_required", True)
+    payload.setdefault("fallback_reason", _fastmoss_fallback_reason(child_result))
+    payload.setdefault("source_handler_code", child_result.handler_code)
+    payload["retry_handler_code"] = context.handler_code
+    payload["source_step_code"] = step_code
+    payload.setdefault("operation", child_result.handler_code)
+    if not coerce_mapping(payload.get("verification_request")):
+        verification_request = _fallback_verification_request_from_payload(parent_payload, child_result.handler_code)
+        if verification_request:
+            payload["verification_request"] = verification_request
+    return payload
+
+
+def _fastmoss_fallback_reason(result: HandlerResult) -> str:
+    if result.error and result.error.fallback_reason:
+        return result.error.fallback_reason
+    if result.error and result.error.error_code in {
+        "fastmoss_auth_required",
+        "fastmoss_auth_session_recovery_required",
+        "fastmoss_session_conflict_or_external_login",
+    }:
+        return "fastmoss_auth_session_recovery"
+    return "fastmoss_api_security_verification"
+
+
+def _child_error_code(result: HandlerResult) -> str:
+    return result.error.error_code if result.error is not None else ""
+
+
+def _fallback_verification_request_from_payload(parent_payload: Mapping[str, Any], handler_code: str) -> dict[str, Any]:
+    if handler_code == "fastmoss_product_fetch":
+        product_identity = coerce_mapping(parent_payload.get("product_identity"))
+        source_context = coerce_mapping(parent_payload.get("source_context"))
+        product_id = first_non_empty(product_identity.get("product_id"), source_context.get("product_id"))
+        return {
+            "method": "GET",
+            "path": "/api/goods/v3/base",
+            "params": {"product_id": product_id} if product_id else {},
+            "region": first_non_empty(parent_payload.get("region"), "US"),
+            "stage": "product.auth_recovery",
+        }
+    if handler_code == "fastmoss_creator_fetch":
+        creator_identity = coerce_mapping(parent_payload.get("creator_identity"))
+        uid = first_non_empty(
+            creator_identity.get("uid"),
+            creator_identity.get("creator_id"),
+            creator_identity.get("unique_id"),
+        )
+        return {
+            "method": "GET",
+            "path": "/api/author/v3/detail/baseInfo",
+            "params": {"uid": uid} if uid else {},
+            "region": first_non_empty(parent_payload.get("region"), "US"),
+            "stage": "creator.auth_recovery",
+        }
+    return {}
+
+
 def _compact_creator_fact_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     metrics = coerce_mapping(bundle.get("metrics"))
     contact = coerce_mapping(bundle.get("contact"))
@@ -420,6 +584,67 @@ def _compact_fact_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "upserted_relation_count": len(list(result.get("upserted_relations") or [])),
         "observation_ref_count": len(list(result.get("observation_refs") or [])),
         "persistence_mode": first_non_empty(result.get("persistence_mode")),
+    }
+
+
+def _compact_product_fact_bundle(bundle: Mapping[str, Any], *, product_id: str) -> dict[str, Any]:
+    products = coerce_mapping_list(bundle.get("products"))
+    first_product = products[0] if products else {}
+    return {
+        "product_id": first_non_empty(bundle.get("product_id"), first_product.get("product_id"), product_id),
+        "product_key": first_non_empty(bundle.get("product_key"), first_product.get("product_key")),
+        "entity_count": len(bundle_entity_keys(bundle)),
+        "raw_response_count": len(coerce_mapping_list(bundle.get("raw_api_responses"))),
+        "media_asset_count": len(coerce_mapping_list(bundle.get("media_assets"))),
+    }
+
+
+def _compact_product_fetch_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    product_fact_bundle = coerce_mapping(result.get("product_fact_bundle"))
+    related_creators = _related_creators(result)
+    return {
+        "product_fact_bundle": _compact_product_fact_bundle(product_fact_bundle, product_id=""),
+        "related_creator_count": len(related_creators),
+        "raw_response_refs": list(result.get("raw_response_refs") or []),
+    }
+
+
+def _compact_discovery_creator_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    creator_identity = coerce_mapping(candidate.get("creator_identity"))
+    metrics = coerce_mapping(candidate.get("metrics"))
+    source_context = coerce_mapping(candidate.get("source_context"))
+    creator_id = first_non_empty(
+        creator_identity.get("creator_id"),
+        candidate.get("creator_id"),
+        candidate.get("influencer_id"),
+        creator_identity.get("unique_id"),
+        creator_identity.get("uid"),
+    )
+    return {
+        "creator_id": creator_id,
+        "uid": first_non_empty(creator_identity.get("uid"), candidate.get("uid"), creator_id),
+        "unique_id": first_non_empty(creator_identity.get("unique_id"), candidate.get("unique_id")),
+        "nickname": first_non_empty(candidate.get("nickname"), candidate.get("display_name"), creator_identity.get("nickname")),
+        "display_name": first_non_empty(candidate.get("display_name"), candidate.get("nickname"), creator_identity.get("nickname")),
+        "profile_url": first_non_empty(creator_identity.get("profile_url"), candidate.get("profile_url")),
+        "creator_identity": {
+            "creator_id": creator_id,
+            "uid": first_non_empty(creator_identity.get("uid"), candidate.get("uid"), creator_id),
+            "unique_id": first_non_empty(creator_identity.get("unique_id"), candidate.get("unique_id")),
+            "nickname": first_non_empty(candidate.get("nickname"), candidate.get("display_name"), creator_identity.get("nickname")),
+            "profile_url": first_non_empty(creator_identity.get("profile_url"), candidate.get("profile_url")),
+        },
+        "metrics": {
+            key: metrics.get(key)
+            for key in ("sold_count", "sales_count", "follower_count", "fans_count")
+            if metrics.get(key) not in (None, "")
+        },
+        "matched_conditions": dict(coerce_mapping(candidate.get("matched_conditions"))),
+        "source_context": {
+            "source_record_id": first_non_empty(source_context.get("source_record_id")),
+            "product_id": first_non_empty(source_context.get("product_id")),
+            "product_key": first_non_empty(source_context.get("product_key")),
+        },
     }
 
 
@@ -633,6 +858,7 @@ def _influencer_pool_write_payload(
     *,
     creator_payload: Mapping[str, Any],
     product_hits: list[dict[str, Any]],
+    fact_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request_payload = coerce_mapping(payload.get("request_payload"))
     target_table_ref = first_non_empty(
@@ -643,7 +869,12 @@ def _influencer_pool_write_payload(
         request_payload.get("source_table_ref"),
         payload.get("source_table_ref"),
     )
-    records = [_projection_record(payload, creator_payload=creator_payload, product_hit=hit) for hit in product_hits]
+    merged_hit = _merged_product_hit_for_influencer_write(product_hits, fact_result=fact_result or {})
+    records = (
+        [_projection_record(payload, creator_payload=creator_payload, product_hit=merged_hit)]
+        if merged_hit
+        else []
+    )
     return {
         **request_payload,
         "request_id": payload.get("request_id"),
@@ -665,14 +896,22 @@ def _projection_record(
 ) -> dict[str, Any]:
     creator_fact_bundle = coerce_mapping(creator_payload.get("creator_fact_bundle"))
     creator_identity = coerce_mapping(payload.get("creator_identity"))
-    creator_id = first_non_empty(creator_fact_bundle.get("creator_id"), creator_identity.get("creator_id"), creator_identity.get("uid"))
+    creator_id = first_non_empty(
+        creator_fact_bundle.get("creator_id"),
+        creator_identity.get("creator_id"),
+        creator_identity.get("uid"),
+    )
     source_record_id = first_non_empty(product_hit.get("source_record_id"))
     product_id = first_non_empty(product_hit.get("product_id"))
+    holiday_value = product_hit.get("holiday")
     return {
         "source_record_id": source_record_id,
         "product_id": product_id,
         "creator_id": creator_id,
-        "creator_name": first_non_empty(creator_fact_bundle.get("display_name"), creator_fact_bundle.get("nickname")),
+        "creator_name": first_non_empty(
+            creator_fact_bundle.get("display_name"),
+            creator_fact_bundle.get("nickname"),
+        ),
         "creator_fact_bundle": creator_fact_bundle,
         "fact_bundle": coerce_mapping(creator_payload.get("fact_bundle")),
         "entities": coerce_mapping(creator_payload.get("entities")),
@@ -685,12 +924,141 @@ def _projection_record(
             "source_record_id": source_record_id,
             "product_id": product_id,
             "matched_product_sold_count": product_hit.get("matched_product_sold_count"),
+            "matched_product_sold_delta": product_hit.get("matched_product_sold_delta"),
         },
         "matched_product_sold_count": product_hit.get("matched_product_sold_count"),
+        "matched_product_sold_delta": product_hit.get("matched_product_sold_delta"),
         "source_product_images": list(product_hit.get("source_product_images") or []),
-        "holiday": first_non_empty(product_hit.get("holiday")),
+        "holiday": holiday_value if isinstance(holiday_value, list) else first_non_empty(holiday_value),
         "product_key": first_non_empty(product_hit.get("product_key"), f"{source_record_id}:{product_id}"),
     }
+
+
+def _merged_product_hit_for_influencer_write(
+    product_hits: list[dict[str, Any]],
+    *,
+    fact_result: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    unique_hits = _unique_product_hits(product_hits)
+    if not unique_hits:
+        return {}
+    merged = dict(unique_hits[0])
+    source_product_images = _source_product_images_for_unique_hits(unique_hits)
+    holidays = _unique_text_values(hit.get("holiday") for hit in unique_hits)
+    product_ids = _unique_text_values(hit.get("product_id") for hit in unique_hits)
+    source_record_ids = _unique_text_values(hit.get("source_record_id") for hit in unique_hits)
+    sales_hits = _sales_delta_product_hits(unique_hits, fact_result=fact_result or {})
+    sales_total = sum(_numeric_value(hit.get("matched_product_sold_count")) or 0.0 for hit in unique_hits)
+    sales_delta = sum(_numeric_value(hit.get("matched_product_sold_count")) or 0.0 for hit in sales_hits)
+    if source_product_images:
+        merged["source_product_images"] = source_product_images
+    if holidays:
+        merged["holiday"] = holidays
+    merged["matched_product_sold_count"] = sales_total
+    merged["matched_product_sold_delta"] = sales_delta
+    if product_ids:
+        merged["product_ids"] = product_ids
+    if source_record_ids:
+        merged["source_record_ids"] = source_record_ids
+    merged["product_hits"] = unique_hits
+    return merged
+
+
+def _sales_delta_product_hits(
+    product_hits: list[dict[str, Any]],
+    *,
+    fact_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    created_product_ids = {
+        first_non_empty(relation.get("product_id"))
+        for relation in coerce_mapping_list(fact_result.get("created_creator_product_relations"))
+    }
+    if not fact_result or not created_product_ids:
+        return product_hits if not fact_result else []
+    return [
+        hit
+        for hit in product_hits
+        if first_non_empty(hit.get("product_id")) in created_product_ids
+    ]
+
+
+def _unique_product_hits(product_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique_hits: list[dict[str, Any]] = []
+    hits_by_key: dict[str, dict[str, Any]] = {}
+    for index, hit in enumerate(product_hits):
+        product_key = _product_hit_dedupe_key(hit, fallback=f"index:{index}")
+        if product_key in hits_by_key:
+            existing_hit = hits_by_key[product_key]
+            if not list(existing_hit.get("source_product_images") or []) and list(
+                hit.get("source_product_images") or []
+            ):
+                existing_hit["source_product_images"] = list(hit.get("source_product_images") or [])
+            continue
+        item = dict(hit)
+        hits_by_key[product_key] = item
+        unique_hits.append(item)
+    return unique_hits
+
+
+def _product_hit_dedupe_key(hit: Mapping[str, Any], *, fallback: str) -> str:
+    return first_non_empty(
+        hit.get("product_id"),
+        hit.get("product_key"),
+        hit.get("source_record_id"),
+        fallback,
+    )
+
+
+def _source_product_images_for_unique_hits(product_hits: list[dict[str, Any]]) -> list[Any]:
+    refs: list[Any] = []
+    seen: set[str] = set()
+    for hit in product_hits:
+        for image in list(hit.get("source_product_images") or []):
+            key = _source_product_image_key(image)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            refs.append(dict(image) if isinstance(image, Mapping) else image)
+    return refs
+
+
+def _source_product_image_key(image: Any) -> str:
+    if isinstance(image, Mapping):
+        return first_non_empty(
+            image.get("file_token"),
+            image.get("url"),
+            image.get("source_url"),
+            image.get("tmp_url"),
+            image.get("download_url"),
+            image.get("local_path"),
+            image.get("source_path"),
+            image.get("path"),
+            image.get("object_key"),
+        )
+    return first_non_empty(image)
+
+
+def _unique_text_values(values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            text = first_non_empty(item)
+            if text and text not in result:
+                result.append(text)
+    return result
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = first_non_empty(value).replace(",", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _status_writeback_payload(payload: Mapping[str, Any], *, hit: Mapping[str, Any], influencer_write: HandlerResult) -> dict[str, Any]:

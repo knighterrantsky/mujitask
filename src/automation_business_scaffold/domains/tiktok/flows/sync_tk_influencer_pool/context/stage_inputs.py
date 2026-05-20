@@ -589,6 +589,77 @@ def _feishu_common_payload(request_payload: Mapping[str, Any]) -> dict[str, Any]
             payload[key] = value
     return payload
 
+def _payload_subset(payload: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: payload.get(key) for key in keys if payload.get(key) not in (None, "", [], {})}
+
+
+def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
+    return _first_non_empty(
+        payload.get("fastmoss_browser_profile_ref"),
+        payload.get("browser_profile_ref"),
+        payload.get("profile_ref"),
+        "fastmoss:browser",
+    )
+
+
+def _fastmoss_search_settings_from_request_payload(request_payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = dict(_fastmoss_common_payload(request_payload).get("fastmoss") or {})
+    for source_key, target_key in (
+        ("fastmoss_cookie_cache_namespace", "cookie_cache_namespace"),
+        ("fastmoss_cookie_cache_enabled", "cookie_cache_enabled"),
+        ("fastmoss_cookie_cache_ttl_seconds", "cookie_cache_ttl_seconds"),
+        ("fastmoss_trust_env", "trust_env"),
+        ("fastmoss_use_system_proxy", "use_system_proxy"),
+    ):
+        value = request_payload.get(source_key)
+        if value not in (None, "", {}, []):
+            settings.setdefault(target_key, value)
+    if settings:
+        settings.setdefault("live_fetch", True)
+        settings.setdefault("ensure_logged_in", True)
+    return {key: value for key, value in settings.items() if value not in (None, "", [], {})}
+
+
+def _fastmoss_security_fallback_payload_from_job(job: Mapping[str, Any]) -> dict[str, Any]:
+    job_payload = coerce_mapping(job.get("payload"))
+    result_payload = extract_effective_result_payload(job)
+    security_context = coerce_mapping(result_payload.get("security_context"))
+    verification_request = coerce_mapping(result_payload.get("verification_request"))
+    if not verification_request and security_context.get("path"):
+        verification_request = {
+            "method": _first_non_empty(security_context.get("method"), "GET"),
+            "path": _first_non_empty(security_context.get("path")),
+            "params": coerce_mapping(security_context.get("params")),
+            "referer": _first_non_empty(security_context.get("referer")),
+            "region": _first_non_empty(security_context.get("region"), "US"),
+            "stage": _first_non_empty(security_context.get("stage")),
+        }
+    entity_identity = coerce_mapping(result_payload.get("entity_identity"))
+    search_request = coerce_mapping(result_payload.get("search_request"))
+    source_context = coerce_mapping(job_payload.get("source_context"))
+    product_identity = coerce_mapping(job_payload.get("product_identity"))
+    creator_identity = coerce_mapping(job_payload.get("creator_identity"))
+    return compact_dict(
+        {
+            "source_job_id": str(job.get("job_id") or ""),
+            "source_stage_code": str(job_payload.get("stage_code") or job.get("stage") or ""),
+            "source_job_code": str(job.get("job_code") or ""),
+            "search_query": _first_non_empty(
+                result_payload.get("search_query"),
+                source_context.get("product_id"),
+                product_identity.get("product_id"),
+                job_payload.get("creator_id"),
+                creator_identity.get("uid"),
+                creator_identity.get("creator_id"),
+            ),
+            "search_request": search_request,
+            "security_context": security_context,
+            "verification_request": verification_request,
+            "entity_identity": entity_identity,
+            "fallback_reason": _first_non_empty(result_payload.get("fallback_reason")),
+        }
+    )
+
 def _fastmoss_common_payload(request_payload: Mapping[str, Any]) -> dict[str, Any]:
     settings = dict(request_payload.get("fastmoss") or {})
     phone_env = _first_non_empty(request_payload.get("fastmoss_phone_env"), settings.get("phone_env"))

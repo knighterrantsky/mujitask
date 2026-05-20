@@ -65,6 +65,14 @@ jobs:
       system: tiktok
       module: automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery
       export: product_creator_discovery_handler
+  - code: fastmoss_security_browser_resolve
+    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_security_browser_resolve
+    handler_code: fastmoss_security_browser_resolve
+    capability:
+      role: browser_recovery
+      system: fastmoss
+      module: automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler
+      export: fastmoss_security_browser_resolve_handler
   - code: influencer_creator_sync
     module: automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync
     handler_code: influencer_creator_sync
