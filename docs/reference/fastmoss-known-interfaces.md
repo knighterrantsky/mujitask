@@ -2,7 +2,7 @@
 
 > 状态: Reference 文档。本文是外部接口研究资料，不作为客户需求或系统架构事实来源。
 
-更新时间：`2026-04-17`
+更新时间：`2026-05-21`
 
 ## 1. 说明
 
@@ -82,7 +82,7 @@
 | `order` | 排序规则，格式通常是 `字段,方向` | `sold_count,2` |
 | `d_type` | 商品详情页时间范围 | `7`、`14`、`28`、`90` |
 | `date_type` | 达人相关列表时间范围 | `28` |
-| `start_date` / `end_date` | 商品概览自定义日期范围 | `2026-04-13` |
+| `start_date` / `end_date` | 商品概览或商品视频列表自定义日期范围 | `2026-04-13` |
 | `shop_window` | 达人搜索页筛选参数 | `1` |
 | `ecommerce_type` | 商品关联达人列表筛选 | `all` |
 | `live_type` | 商品关联直播列表筛选 | `all` |
@@ -380,10 +380,21 @@ https://www.fastmoss.com/api/goods/v3/authorChart?product_id=1729679758111249333
 - 来源：`页面实抓`
 - 方法：`GET`
 - 登录依赖：必须依赖有效的 `fd_tk` Cookie；未携带 `fd_tk` 时会退回游客态或受限预览。
-- 真实页面请求示例：
+- 适用场景：商品详情页「商品关联视频」列表，可用于按商品 `product_id` 查询关联带货视频，并按 FastMoss/TikTok `unique_id` 判断达人是否已为指定商品发布视频。
+- 真实页面默认请求示例：
 
 ```text
 https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=1729679758111249333&order=1,2&d_type=0&pagesize=5&is_promoted=-1&date_type=28&_time=<unix_ts>&cnonce=<nonce>
+```
+
+- 本轮在商品 `1732266893752242590` 上补充实抓到的关键请求：
+
+```text
+# 近 90 天，按发布时间倒序
+https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=1732266893752242590&order=6,2&d_type=90&pagesize=5&is_promoted=-1&date_type=28&_time=<unix_ts>&cnonce=<nonce>
+
+# 自定义日期区间，按发布时间倒序；此类请求中页面未携带 d_type
+https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=1732266893752242590&order=6,2&pagesize=5&is_promoted=-1&date_type=28&start_date=2026-05-19&end_date=2026-05-20&_time=<unix_ts>&cnonce=<nonce>
 ```
 
 - 最小可用调用参数：
@@ -394,11 +405,28 @@ https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=172967975811124933
   - `is_promoted`
   - `date_type`
 
+- 已实抓确认的参数含义：
+  - `page`: 页码，从 `1` 开始。
+  - `pagesize`: 每页数量，页面当前使用 `5`。
+  - `order=1,2`: 页面默认排序。
+  - `order=6,2`: 按视频发布时间倒序，适合达人建联检查。
+  - `d_type=7`: 近 7 天。
+  - `d_type=28`: 近 28 天。
+  - `d_type=90`: 近 90 天，适合首次全量回溯。
+  - `d_type=0`: 页面默认/全部式范围，具体口径需按页面上下文判断。
+  - `start_date` / `end_date`: 自定义日期区间，格式 `YYYY-MM-DD`；用于增量检查时，页面请求不带 `d_type`。
+  - `is_promoted=-1`: 不按投流/广告筛选。
+  - `date_type=28`: 页面固定携带，当前在本接口里未观察到它决定商品视频列表窗口，实际窗口由 `d_type` 或 `start_date/end_date` 决定。
+
+- 视频链接字段：
+  - 本轮抓包返回的 `data.list[]` 中未发现直接可写入的 `video_url`、`link`、`href` 或 TikTok URL 字段。
+  - 当前稳定字段是 `video_id`、`unique_id`、`author.unique_id`，以及 `video.cover`、`video.video_desc` 等视频元数据。
+
 - 返回结构：
 
 ```json
 {
-  "code": "MAG_AUTH_3017 | 200",
+  "code": "MAG_AUTH_3017 | 200 | 0",
   "msg": "...",
   "data": {
     "list": [],
@@ -410,8 +438,54 @@ https://www.fastmoss.com/api/goods/v3/video?page=1&product_id=172967975811124933
 }
 ```
 
+- 分页行为：
+  - 返回体 `data.total` 是当前筛选条件下的总条数。
+  - 返回体 `data.page` 是当前页码。
+  - 当前商品样例在近 90 天、发布时间倒序条件下返回 `total=253`。
+  - `pagesize=5` 时实抓到第 `51` 页返回 `3` 条，和 `253` 条总数一致。
+  - 建议停止条件：`data.list` 为空，或 `page * pagesize >= data.total`。
+
 - 已观察到的关键字段：
-  - `data.list[]`: `video_id`, `video`, `author`, `uid`, `product_id`, `play_count`, `digg_count`, `comment_count`, `share_count`, `sold_count`, `sale_amount`, `engagement_rate`, `create_date`, `is_ad`
+  - `data.list[]`: `product_id`, `video_id`, `uid`, `unique_id`, `author`, `video`, `region`, `create_date`, `play_count`, `digg_count`, `comment_count`, `share_count`, `sold_count`, `sale_amount`, `engagement_rate`, `is_ad`, `seller_id`
+  - `data.list[].author`: `uid`, `unique_id`, `author_nickname`, `author_avatar`, `author_region`, `author_region_name`, `follower_count`, `follower_count_show`, `currency`
+  - `data.list[].video`: `video_desc`, `cover`, `duration`, `duration_show`
+
+- 代表性返回行：
+
+```json
+{
+  "product_id": "1732266893752242590",
+  "video_id": "7641370220849859854",
+  "uid": "6582334729479290885",
+  "unique_id": "heidiann__",
+  "create_date": "2026-05-19",
+  "sold_count": 5,
+  "sale_amount": 239.95,
+  "play_count": 6648,
+  "digg_count": 89,
+  "comment_count": 3,
+  "share_count": 11,
+  "is_ad": 0,
+  "video": {
+    "video_desc": "Photo op station CONGRATS class of 2026! #2026 #graduate #school #family #party ",
+    "cover": "https://s.500fd.com/tt_video/oIAACfEQIDgqHrCfOMFSXuAoq4n8UEArDC5RAu~tplv-photomode-zoomcover:480:480.avif",
+    "duration": "33",
+    "duration_show": "00:00:33"
+  },
+  "author": {
+    "uid": "6582334729479290885",
+    "unique_id": "heidiann__",
+    "author_nickname": "heidiann",
+    "author_avatar": "https://s.500fd.com/tt_author/10c8684d96652b2f90b091c8e35aa8d1~tplv-tiktokx-cropcenter:300:300.jpeg",
+    "author_region": "US",
+    "author_region_name": "美国",
+    "follower_count": 43958,
+    "follower_count_show": "4.39万",
+    "currency": "USD"
+  }
+}
+```
+
 
 ### 3.8 商品带货直播列表 `/api/goods/v3/live`
 
