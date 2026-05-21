@@ -1,9 +1,9 @@
 # 达人建联表需求
 
-更新时间：`2026-05-21`
+更新时间：`2026-05-22`
 
-- 入口任务：待定
-- 触发方式：定时任务或手动触发，待实现设计确认
+- 入口任务：`tiktok_influencer_outreach_sync`
+- 触发方式：定时任务或手动触发
 - 来源表：达人建联表
 - 数据来源：FastMoss 商品详情页「商品关联视频」接口
 - 接口事实来源：[../../reference/fastmoss-known-interfaces.md](../../reference/fastmoss-known-interfaces.md)

@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-05-21`
+更新时间：`2026-05-22`
 
 ## 1. 文档目的
 
@@ -346,7 +346,7 @@
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
-| 达人建联检查 | 待定 | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | 待补充 |
+| 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | [workflow-influencer-outreach-design.md](../arch/workflow-influencer-outreach-design.md) |
 
 ### 4.2 变更隔离规则
 
@@ -384,9 +384,9 @@
 ## 7. 版本信息
 
 - 需求版本：`v3.3`
-- 文档版本：`v3.6.0`
-- 版本日期：`2026-05-21`
-- 本次变更：补充达人建联检查正式流程文档；明确 `TK达人建联表` 自动维护字段、匹配字段和回写边界。
+- 文档版本：`v3.6.1`
+- 版本日期：`2026-05-22`
+- 本次变更：补充达人建联检查设计文档入口；确定 task_code 为 `tiktok_influencer_outreach_sync`。
 
 ## 8. 关联文档
 
