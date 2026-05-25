@@ -889,7 +889,7 @@ def test_fastmoss_slider_drag_distance_uses_body_right_anchor() -> None:
         slider_result=slider_result,
         background_box={"x": 1115.0, "y": 390.0, "width": 330.0, "height": 191.52},
         background_image_size=(672, 390),
-        piece_image_size=(120, 120),
+        piece_image_size=(60, 60),
         piece_box={"x": 1139.546875, "y": 450.0, "width": 58.921875, "height": 58.921875},
         handle_box={"x": 1130.0, "y": 640.0, "width": 48.0, "height": 48.0},
         drag_scale=1.0,
@@ -898,11 +898,80 @@ def test_fastmoss_slider_drag_distance_uses_body_right_anchor() -> None:
 
     assert mapping["target_interpretation"] == "target_body_right_anchor_minus_piece_body_right_anchor"
     assert mapping["source_target_interpretation"] == "ddddocr_target_center"
-    assert round(mapping["matched_left_raw"], 2) == 266.0
+    assert mapping["target_width_source"] == "rendered_piece_scaled_to_background_raw"
+    assert round(mapping["raw_equivalent_piece_width"], 2) == 119.99
+    assert round(mapping["target_width_raw"], 2) == 119.99
+    assert round(mapping["matched_left_raw"], 2) == 266.01
     assert round(mapping["target_anchor_x_raw"], 2) == 366.0
     assert round(mapping["target_anchor_x_display"], 2) == 179.73
     assert round(mapping["start_anchor_x_display"], 2) == 73.65
     assert round(mapping["drag_distance"], 2) == 106.08
+
+
+def test_fastmoss_slider_drag_distance_scales_rendered_piece_to_raw_audit_attempt_1() -> None:
+    slider_result = SliderMatchResult(
+        target_x=436,
+        target_y=255,
+        confidence=0.91,
+        raw={"target": [436, 255], "confidence": 0.91},
+    )
+
+    mapping = fastmoss_coordinate_mapping._build_fastmoss_mixed_slider_mapping(
+        SimpleNamespace(),
+        slider_result=slider_result,
+        background_box={"x": 1115.0, "y": 390.0, "width": 330.0, "height": 191.52},
+        background_image_size=(672, 390),
+        piece_image_size=(60, 60),
+        piece_box={"x": 1139.546875, "y": 450.0, "width": 58.921875, "height": 58.921875},
+        handle_box={"x": 1130.0, "y": 640.0, "width": 48.0, "height": 48.0},
+        drag_scale=1.0,
+        drag_offset_x=0.0,
+    )
+
+    assert mapping["target_width_source"] == "rendered_piece_scaled_to_background_raw"
+    assert round(mapping["target_width_raw"], 2) == 119.99
+    assert round(mapping["current_piece_anchor_x"], 7) == 73.6484375
+    assert round(mapping["drag_distance"], 2) == 160.10
+    assert round(mapping["drag_distance"] - 150.28013392857144, 2) == 9.82
+
+
+def test_fastmoss_slider_drag_distance_falls_back_to_canonical_raw_width() -> None:
+    slider_result = SliderMatchResult(
+        target_x=436,
+        target_y=255,
+        confidence=0.91,
+        raw={"target": [436, 255], "confidence": 0.91},
+    )
+
+    missing_background_width = fastmoss_coordinate_mapping._build_fastmoss_mixed_slider_mapping(
+        SimpleNamespace(),
+        slider_result=slider_result,
+        background_box={"x": 1115.0, "y": 390.0, "height": 191.52},
+        background_image_size=(672, 390),
+        piece_image_size=(60, 60),
+        piece_box={"x": 1139.546875, "y": 450.0, "width": 58.921875, "height": 58.921875},
+        handle_box={"x": 1130.0, "y": 640.0, "width": 48.0, "height": 48.0},
+        drag_scale=1.0,
+        drag_offset_x=0.0,
+    )
+    missing_piece_width = fastmoss_coordinate_mapping._build_fastmoss_mixed_slider_mapping(
+        SimpleNamespace(),
+        slider_result=slider_result,
+        background_box={"x": 1115.0, "y": 390.0, "width": 330.0, "height": 191.52},
+        background_image_size=(672, 390),
+        piece_image_size=(60, 60),
+        piece_box={"x": 1139.546875, "y": 450.0, "height": 58.921875},
+        handle_box={"x": 1130.0, "y": 640.0, "width": 48.0, "height": 48.0},
+        drag_scale=1.0,
+        drag_offset_x=0.0,
+    )
+
+    assert missing_background_width["raw_equivalent_piece_width"] is None
+    assert missing_background_width["target_width_source"] == "canonical_fallback"
+    assert missing_background_width["target_width_raw"] == 120.0
+    assert missing_piece_width["raw_equivalent_piece_width"] is None
+    assert missing_piece_width["target_width_source"] == "canonical_fallback"
+    assert missing_piece_width["target_width_raw"] == 120.0
 
 
 def test_fastmoss_slider_corrects_low_confidence_ocr_with_outline_bbox_anchor() -> None:
