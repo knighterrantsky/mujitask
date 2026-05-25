@@ -16,6 +16,7 @@ from automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync im
 from automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import import KEYWORD_SEED_IMPORT_JOB
 from automation_business_scaffold.domains.tiktok.jobs.media_asset_sync import MEDIA_ASSET_SYNC_JOB
 from automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery import PRODUCT_CREATOR_DISCOVERY_JOB
+from automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check import PRODUCT_VIDEO_OUTREACH_CHECK_JOB
 from automation_business_scaffold.domains.tiktok.jobs.task_completed_notification import TASK_COMPLETED_NOTIFICATION_JOB
 from automation_business_scaffold.domains.tiktok.jobs.tiktok_product_browser_fetch import TIKTOK_PRODUCT_BROWSER_FETCH_JOB
 from automation_business_scaffold.domains.tiktok.jobs.tiktok_product_request_fetch import TIKTOK_PRODUCT_REQUEST_FETCH_JOB
@@ -28,6 +29,7 @@ def list_job_definitions() -> tuple[JobDefinition, ...]:
         KEYWORD_SEED_IMPORT_JOB,
         COMPETITOR_ROW_REFRESH_JOB,
         PRODUCT_CREATOR_DISCOVERY_JOB,
+        PRODUCT_VIDEO_OUTREACH_CHECK_JOB,
         INFLUENCER_CREATOR_SYNC_JOB,
         TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
         TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
@@ -55,6 +57,7 @@ __all__ = [
     "KEYWORD_SEED_IMPORT_JOB",
     "MEDIA_ASSET_SYNC_JOB",
     "PRODUCT_CREATOR_DISCOVERY_JOB",
+    "PRODUCT_VIDEO_OUTREACH_CHECK_JOB",
     "SELECTION_ROW_REFRESH_JOB",
     "TASK_COMPLETED_NOTIFICATION_JOB",
     "TIKTOK_PRODUCT_BROWSER_FETCH_JOB",

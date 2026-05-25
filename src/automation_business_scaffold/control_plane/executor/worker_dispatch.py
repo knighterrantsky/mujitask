@@ -29,6 +29,8 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_id=settings.worker_id,
         worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
+        request_id=str(params.get("request_id") or ""),
+        job_code=str(params.get("job_code") or ""),
     )
     if job is None:
         return build_idle_payload(
@@ -126,7 +128,8 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_id=settings.worker_id,
         worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
-        item_codes=("fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"),
+        request_id=str(params.get("request_id") or ""),
+        item_codes=("fastmoss_security_browser_resolve", "product_video_outreach_check", "tiktok_product_browser_fetch"),
     )
     if execution is None:
         return build_idle_payload(

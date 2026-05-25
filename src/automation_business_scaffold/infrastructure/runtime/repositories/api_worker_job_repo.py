@@ -281,17 +281,20 @@ class ApiWorkerJobRepository:
                               OR COALESCE(NULLIF(job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
                               OR job.payload_json::jsonb ->> 'stage_code' = request.current_stage
                           )
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM task_request older_request
-                              WHERE older_request.status NOT IN ('finished', 'cancelled')
-                                AND (
-                                    older_request.created_at < request.created_at
-                                    OR (
-                                        older_request.created_at = request.created_at
-                                        AND older_request.request_id < request.request_id
+                          AND (
+                              :request_id <> ''
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM task_request older_request
+                                  WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                    AND (
+                                        older_request.created_at < request.created_at
+                                        OR (
+                                            older_request.created_at = request.created_at
+                                            AND older_request.request_id < request.request_id
+                                        )
                                     )
-                                )
+                              )
                           )
                         ORDER BY job.available_at ASC, job.created_at ASC
                         LIMIT 1
@@ -362,23 +365,27 @@ class ApiWorkerJobRepository:
                                 OR COALESCE(NULLIF(api_worker_job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
                                 OR api_worker_job.payload_json::jsonb ->> 'stage_code' = request.current_stage
                             )
-                            AND NOT EXISTS (
-                                SELECT 1
-                                FROM task_request older_request
-                                WHERE older_request.status NOT IN ('finished', 'cancelled')
-                                  AND (
-                                      older_request.created_at < request.created_at
-                                      OR (
-                                          older_request.created_at = request.created_at
-                                          AND older_request.request_id < request.request_id
+                            AND (
+                                :request_id <> ''
+                                OR NOT EXISTS (
+                                    SELECT 1
+                                    FROM task_request older_request
+                                    WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                      AND (
+                                          older_request.created_at < request.created_at
+                                          OR (
+                                              older_request.created_at = request.created_at
+                                              AND older_request.request_id < request.request_id
+                                          )
                                       )
-                                  )
+                                )
                             )
                       )
                     """
                 ),
                 {
                     "job_id": row["job_id"],
+                    "request_id": request_id,
                     "worker_id": worker_id,
                     "worker_pid": int(worker_pid or 0),
                     "lease_until": now + max(lease_seconds, 5.0),

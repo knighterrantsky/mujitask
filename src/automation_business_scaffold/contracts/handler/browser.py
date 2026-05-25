@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from automation_business_scaffold.capabilities.browser.fastmoss_product_video_outreach_handler import (
+    fastmoss_product_video_outreach_handler,
+)
 from automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler import (
     fastmoss_security_browser_resolve_handler,
 )
@@ -16,6 +19,7 @@ from .registry import HandlerRegistry, RegisteredHandler
 BOUND_BROWSER_HANDLERS = MappingProxyType(
     {
         "fastmoss_security_browser_resolve": fastmoss_security_browser_resolve_handler,
+        "product_video_outreach_check": fastmoss_product_video_outreach_handler,
         "tiktok_product_browser_fetch": tiktok_product_browser_fetch_handler,
     }
 )

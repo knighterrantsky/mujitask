@@ -33,7 +33,7 @@ ALLOWLIST_BY_WORKER = {
         "media_asset_sync",
         "fact_bundle_upsert",
     },
-    "browser": {"fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"},
+    "browser": {"fastmoss_security_browser_resolve", "product_video_outreach_check", "tiktok_product_browser_fetch"},
     "outbox": {"outbox_dispatch"},
 }
 FORBIDDEN_EXACT_NAMES = {

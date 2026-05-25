@@ -14,6 +14,7 @@ REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE = "refresh_competitor_row_by_url"
 KEYWORD_TASK_CODE = "search_keyword_competitor_products"
 SELECTION_KEYWORD_TASK_CODE = "search_keyword_selection_products"
 INFLUENCER_POOL_TASK_CODE = "sync_tk_influencer_pool"
+INFLUENCER_OUTREACH_TASK_CODE = "tiktok_influencer_outreach_sync"
 PRODUCT_INGEST_TASK_CODE = "tiktok_fastmoss_product_ingest"
 
 FORMAL_TASK_CODES = (
@@ -22,6 +23,7 @@ FORMAL_TASK_CODES = (
     KEYWORD_TASK_CODE,
     SELECTION_KEYWORD_TASK_CODE,
     INFLUENCER_POOL_TASK_CODE,
+    INFLUENCER_OUTREACH_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
 )
 
@@ -243,6 +245,7 @@ __all__ = [
     "ExecutionControlDefaults",
     "FORMAL_TASK_CODES",
     "INFLUENCER_POOL_TASK_CODE",
+    "INFLUENCER_OUTREACH_TASK_CODE",
     "KEYWORD_TASK_CODE",
     "PRODUCT_INGEST_TASK_CODE",
     "REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE",

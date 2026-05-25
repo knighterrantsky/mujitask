@@ -11,6 +11,9 @@ from automation_business_scaffold.domains.tiktok.mappers.feishu_competitor_row_m
 from automation_business_scaffold.domains.tiktok.mappers.feishu_influencer_source_mapper import (
     influencer_pool_source_adapter,
 )
+from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
+    outreach_source_adapter,
+)
 from automation_business_scaffold.domains.tiktok.mappers.feishu_selection_row_mapper import (
     selection_table_source_adapter,
 )
@@ -34,6 +37,7 @@ SOURCE_ADAPTERS = MappingProxyType(
     {
         "competitor_table_source_adapter": competitor_table_source_adapter,
         "influencer_pool_source_adapter": influencer_pool_source_adapter,
+        "outreach_source_adapter": outreach_source_adapter,
         "selection_table_source_adapter": selection_table_source_adapter,
     }
 )

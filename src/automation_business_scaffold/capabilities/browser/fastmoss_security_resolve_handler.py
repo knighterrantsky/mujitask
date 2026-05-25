@@ -420,6 +420,19 @@ def _resolve_fastmoss_security_with_browser(
                 state={"slider_state": initial_slider_state, "security_page_url": security_page_url},
             )
         )
+        slider_resolver_config = (
+            coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
+            or coerce_mapping(payload.get("slider_captcha_resolver_config"))
+        )
+        slider_piece_image_source = first_non_empty(
+            payload.get("fastmoss_slider_piece_image_source"),
+            payload.get("slider_piece_image_source"),
+        )
+        if slider_piece_image_source and "piece_image_source" not in slider_resolver_config:
+            slider_resolver_config = {
+                **slider_resolver_config,
+                "piece_image_source": slider_piece_image_source,
+            }
         slider_resolution = _try_resolve_fastmoss_slider_security_check(
             browser_session.page,
             automation_page=browser_session,
@@ -443,10 +456,7 @@ def _resolve_fastmoss_security_with_browser(
                 coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
                 or coerce_mapping(payload.get("slider_captcha_provider_config"))
             ),
-            resolver_config=(
-                coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
-                or coerce_mapping(payload.get("slider_captcha_resolver_config"))
-            ),
+            resolver_config=slider_resolver_config,
             selectors=(
                 coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
                 or coerce_mapping(payload.get("slider_captcha_selectors"))
@@ -705,6 +715,8 @@ def _redact_slider_resolution(slider_resolution: Mapping[str, Any]) -> dict[str,
                         "coordinate_mapping": record.get("coordinate_mapping"),
                         "drag_distance": record.get("drag_distance"),
                         "confidence": record.get("confidence"),
+                        "piece_source": record.get("piece_source"),
+                        "piece_css_background_crop": record.get("piece_css_background_crop"),
                         "artifact_keys": record.get("artifact_keys"),
                         "post_drag_verify_wait_ms": record.get("post_drag_verify_wait_ms"),
                         "confirmation_wait_ms": record.get("confirmation_wait_ms"),

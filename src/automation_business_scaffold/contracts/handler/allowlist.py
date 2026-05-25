@@ -277,6 +277,14 @@ BROWSER_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/workflow-competitor-table-design.md#73-关键词搜索竞品写入-keyword_seed_import",
             side_effects=("browser.security_resolve", "fastmoss.cookie_cache.write"),
         ),
+        "product_video_outreach_check": _contract(
+            handler_code="product_video_outreach_check",
+            worker_type="browser_worker",
+            runtime_table="task_execution",
+            purpose="Collect FastMoss product-associated videos in browser for outreach creator matches.",
+            contract_reference="docs/arch/workflow-influencer-outreach-design.md#62-product_video_outreach_check-payload",
+            side_effects=("browser.fetch", "artifact.write"),
+        ),
     }
 )
 
