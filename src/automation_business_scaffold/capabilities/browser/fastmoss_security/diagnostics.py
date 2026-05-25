@@ -144,12 +144,33 @@ def _write_fastmoss_slider_json_file(
 
 
 def _write_fastmoss_slider_binary_file(path: Path, value: bytes, *, artifact_key: str) -> dict[str, Any]:
-    suffix = ".png" if value.startswith(b"\x89PNG") else ".jpg" if value.startswith(b"\xff\xd8") else ".bin"
+    suffix = _fastmoss_slider_binary_suffix(value)
     final_path = path.with_suffix(suffix)
     final_path.write_bytes(value)
     return {
         "artifact_key": artifact_key,
         "local_path": str(final_path),
         "file_name": final_path.name,
-        "mime_type": "image/png" if suffix == ".png" else "image/jpeg" if suffix == ".jpg" else "application/octet-stream",
+        "mime_type": _fastmoss_slider_binary_mime_type(suffix),
     }
+
+
+def _fastmoss_slider_binary_suffix(value: bytes) -> str:
+    if value.startswith(b"\x89PNG"):
+        return ".png"
+    if value.startswith(b"\xff\xd8"):
+        return ".jpg"
+    if value.startswith(b"RIFF") and value[8:12] == b"WEBP":
+        return ".webp"
+    if value.startswith(b"GIF87a") or value.startswith(b"GIF89a"):
+        return ".gif"
+    return ".bin"
+
+
+def _fastmoss_slider_binary_mime_type(suffix: str) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix, "application/octet-stream")

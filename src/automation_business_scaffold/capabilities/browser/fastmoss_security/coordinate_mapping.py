@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -26,15 +27,23 @@ def _build_fastmoss_mixed_slider_mapping(
     drag_scale: float,
     drag_offset_x: float,
 ) -> dict[str, Any]:
-    image_width = float(background_image_size[0] or 1)
+    background_image_width = float(background_image_size[0] or 0.0)
+    image_width = background_image_width if background_image_width > 0 else 1.0
     rendered_width = float(background_box.get("width") or 0.0)
+    rendered_piece_width = float(piece_box.get("width") or 0.0)
     raw_target_x = float(getattr(slider_result, "target_x", 0.0) or 0.0)
     raw_target_y = float(getattr(slider_result, "target_y", 0.0) or 0.0)
     raw_payload = coerce_mapping(getattr(slider_result, "raw", None))
     shape_anchor = coerce_mapping(raw_payload.get("fastmoss_shape_anchor"))
     shape_piece_anchor_ratio_x = _optional_float(shape_anchor.get("piece_anchor_ratio_x"))
-    target_width_raw = float(piece_image_size[0] or 0.0)
-    if target_width_raw <= 0:
+    raw_equivalent_piece_width = None
+    target_width_source = "canonical_fallback"
+    if rendered_piece_width > 0 and rendered_width > 0 and background_image_width > 0:
+        raw_equivalent_piece_width = rendered_piece_width / rendered_width * background_image_width
+    if raw_equivalent_piece_width and math.isfinite(raw_equivalent_piece_width):
+        target_width_raw = raw_equivalent_piece_width
+        target_width_source = "rendered_piece_scaled_to_background_raw"
+    else:
         target_width_raw = FASTMOSS_SLIDER_CANONICAL_TARGET_WIDTH
     matched_left_raw = raw_target_x - (target_width_raw / 2.0)
     body_right_offset_raw = target_width_raw * FASTMOSS_SLIDER_BODY_RIGHT_RATIO
@@ -66,6 +75,8 @@ def _build_fastmoss_mixed_slider_mapping(
         "background_image_height": background_image_size[1],
         "target_image_width": int(piece_image_size[0] or 0),
         "target_image_height": int(piece_image_size[1] or 0),
+        "raw_equivalent_piece_width": raw_equivalent_piece_width,
+        "target_width_source": target_width_source,
         "target_width_raw": target_width_raw,
         "matched_left_raw": matched_left_raw,
         "body_right_offset_raw": body_right_offset_raw,
