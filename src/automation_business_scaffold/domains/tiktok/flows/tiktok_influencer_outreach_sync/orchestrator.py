@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import date
 from typing import Any, Mapping
 
@@ -17,6 +18,9 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     OUTREACH_READ_FIELD_NAMES,
     group_outreach_rows_by_product,
+)
+from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
+    build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
@@ -83,11 +87,56 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
     del workflow
     summary = force_result or _build_summary(store=store, request=request)
     final_status = str(summary.get("final_status") or "success")
+    result = {"summary": summary, "title": "达人建联检查完成"}
+    updated = store.update_task_request(
+        request_id=request.request_id,
+        status=final_status,
+        current_stage=SUMMARY_STAGE_CODE,
+        progress_stage=SUMMARY_STAGE_CODE,
+        summary=summary,
+        result=result,
+        worker_id="",
+        lease_until=0.0,
+        heartbeat_at=0.0,
+        error_text="",
+        error_type="",
+        error_code="",
+        dead_letter_reason="",
+        finished_at=time.time(),
+    )
+    outbox = store.create_notification_outbox(
+        channel_code=str(getattr(request, "source_channel_code", "") or "noop"),
+        event_type="task_request.completed",
+        ref_id=request.request_id,
+        reply_target=str(getattr(request, "reply_target", "") or ""),
+        payload={
+            "request_id": request.request_id,
+            "task_code": request.task_code,
+            "workflow_code": WORKFLOW_CODE,
+            "summary_payload": summary,
+            "result": result,
+            "message_text": build_outbox_message_text(
+                request_id=request.request_id,
+                task_code=request.task_code,
+                summary=summary,
+                result=result,
+                message_format=str((getattr(request, "payload", {}) or {}).get("outbox_message_format") or ""),
+                message_template=str((getattr(request, "payload", {}) or {}).get("outbox_message_template") or ""),
+            ),
+        },
+        dedupe_key=f"task_request.completed:{request.request_id}",
+    )
     return {
-        "action": "finalize",
-        "final_status": final_status,
-        "summary": summary,
-        "result": {"summary": summary, "title": "达人建联检查完成"},
+        "action": "finalized",
+        "request_id": request.request_id,
+        "request_status": updated.result_status or updated.status,
+        "status": updated.status,
+        "result_status": updated.result_status,
+        "current_stage": updated.current_stage,
+        "summary": updated.summary,
+        "result": updated.result,
+        "task_request": updated.to_dict(),
+        "outbox": [outbox.to_dict()],
     }
 
 
@@ -134,7 +183,12 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
 
 
 def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
-    existing = _stage_browser_executions(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE, item_code="product_video_outreach_check")
+    existing = _stage_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=CHECK_STAGE_CODE,
+        job_code="product_video_outreach_check",
+    )
     if not existing:
         request_payload = dict(request.payload or {})
         trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
@@ -155,7 +209,6 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
                 {
                     "business_key": keys["business_key"],
                     "dedupe_key": keys["dedupe_key"],
-                    "resource_code": _fastmoss_browser_resource_code(request_payload),
                     "payload": {
                         "request_id": request.request_id,
                         "task_code": TASK_CODE,
@@ -169,17 +222,19 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
             )
         enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0}
         if jobs:
-            enqueue_result = store.enqueue_task_executions(
+            enqueue_result = store.enqueue_api_worker_jobs(
                 request_id=request.request_id,
-                item_code="product_video_outreach_check",
-                workflow_code=WORKFLOW_CODE,
-                items=jobs,
+                task_code=TASK_CODE,
+                job_code="product_video_outreach_check",
+                jobs=jobs,
             )
         if jobs:
-            return _waiting(CHECK_STAGE_CODE, "Executor dispatched browser product video outreach checks.", {"dispatch_payload": enqueue_result})
+            return _waiting(CHECK_STAGE_CODE, "Executor dispatched API product video outreach checks.", {"dispatch_payload": enqueue_result})
         return _advance(WRITEBACK_STAGE_CODE, {"candidate_count": 0})
-    if any_browser_executions_active(existing):
-        return _waiting(CHECK_STAGE_CODE, "Browser product video outreach checks are still running.")
+    if _has_pending_or_running_jobs(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE):
+        return _waiting(CHECK_STAGE_CODE, "API product video outreach checks are still running.")
+    if _fallback_candidates(store=store, request_id=request.request_id):
+        return _advance(FALLBACK_STAGE_CODE, {"stage_transition": "product_video_check_requires_browser_fallback"})
     return _advance(WRITEBACK_STAGE_CODE, {"stage_transition": "product_video_checks_terminal"})
 
 
@@ -429,8 +484,8 @@ def _read_source_rows(*, store: Any, request_id: str) -> list[dict[str, Any]]:
 
 def _build_writeback_groups(*, store: Any, request_id: str) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
-    for execution in _stage_browser_executions(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE, item_code="product_video_outreach_check"):
-        result = extract_effective_result_payload(execution)
+    for job in _stage_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check"):
+        result = extract_effective_result_payload(job)
         if not isinstance(result, dict) or result.get("fetch_status") != "success":
             continue
         records = [row for row in list(result.get("matched_rows") or []) + list(result.get("unmatched_rows") or []) if isinstance(row, dict)]
@@ -446,7 +501,7 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
         if isinstance(result, dict):
             read_result = result
             break
-    check_jobs = _stage_browser_executions(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE, item_code="product_video_outreach_check")
+    check_jobs = _stage_jobs(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check")
     write_jobs = _stage_jobs(store=store, request_id=request.request_id, stage_code=WRITEBACK_STAGE_CODE, job_code="feishu_table_write")
     matched = 0
     unmatched = 0
@@ -458,7 +513,9 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
             product_success += 1
             matched += len(result.get("matched_rows") or [])
             unmatched += len(result.get("unmatched_rows") or [])
-        elif str(job.get("result_status") or job.get("status") or "") == "failed":
+        elif extract_handler_result_status(job) in {"failed", "fallback_required"} or str(
+            job.get("result_status") or job.get("status") or ""
+        ) in {"failed", "waiting"}:
             product_failed += 1
     write_success = sum(int((job.get("summary") or {}).get("written_count") or 0) for job in write_jobs if isinstance(job.get("summary"), dict))
     write_failed = sum(int((job.get("summary") or {}).get("failed_count") or 0) for job in write_jobs if isinstance(job.get("summary"), dict))
@@ -488,13 +545,6 @@ def _stage_jobs(*, store: Any, request_id: str, stage_code: str, job_code: str |
     except TypeError:
         jobs = list_jobs(request_id=request_id)
     return [dict(job) for job in jobs if str((job.get("payload") or {}).get("stage_code") or "") == stage_code]
-
-
-def _stage_browser_executions(*, store: Any, request_id: str, stage_code: str, item_code: str | None = None) -> list[Any]:
-    executions = browser_executions_for_stage(store, request_id=request_id, stage_code=stage_code)
-    if item_code:
-        return [execution for execution in executions if str(getattr(execution, "item_code", "") or _execution_payload(execution).get("item_code") or "") == item_code]
-    return list(executions)
 
 
 def _has_active_jobs(*, store: Any, request_id: str, stage_code: str) -> bool:

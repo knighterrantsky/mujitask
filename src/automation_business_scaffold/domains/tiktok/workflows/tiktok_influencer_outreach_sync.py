@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from automation_framework.runtime import WorkflowSpec
 
+from automation_business_scaffold.control_plane.runtime_config.settings import (
+    INFLUENCER_OUTREACH_TASK_CODE,
+)
 from automation_business_scaffold.contracts.workflow import (
     StageDefinition,
     StageJobBinding,
@@ -31,10 +34,13 @@ from automation_business_scaffold.domains.tiktok.policies import (
 )
 
 
+WORKFLOW_CODE = INFLUENCER_OUTREACH_TASK_CODE
+
+
 def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
     return WorkflowDefinition(
-        task_code="tiktok_influencer_outreach_sync",
-        workflow_code="tiktok_influencer_outreach_sync",
+        task_code=INFLUENCER_OUTREACH_TASK_CODE,
+        workflow_code=WORKFLOW_CODE,
         contract_revision=DEFAULT_CONTRACT_REVISION,
         trigger_modes=("manual", "schedule", "cli"),
         entry_stage_code="read_outreach_rows",
@@ -63,7 +69,7 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
             ),
             StageDefinition(
                 stage_code="check_product_videos",
-                description="Collect FastMoss product video lists in browser and match rows by creator unique_id.",
+                description="Collect FastMoss product video lists through API worker HTTP requests and match rows by creator unique_id.",
                 execution_mode="worker_jobs",
                 enter_condition="candidate rows have been grouped by SKUID",
                 exit_condition="all product video check jobs are terminal",
@@ -167,6 +173,6 @@ def build_tiktok_influencer_outreach_sync_workflow(
 ) -> WorkflowSpec:
     del control_action
     return build_formal_task_workflow(
-        workflow_code="tiktok_influencer_outreach_sync",
+        workflow_code=WORKFLOW_CODE,
         run_mode=run_mode,
     )

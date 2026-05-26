@@ -5,12 +5,18 @@ from automation_framework.runtime import WorkflowSpec
 from automation_business_scaffold.control_plane.executor.runner import (
     run_tiktok_influencer_outreach_sync_request,
 )
+from automation_business_scaffold.control_plane.runtime_config.settings import (
+    INFLUENCER_OUTREACH_TASK_CODE,
+)
 from automation_business_scaffold.contracts.workflow import RuntimeTaskShell
 from automation_business_scaffold.domains.tiktok.workflows import build_tiktok_influencer_outreach_sync_workflow
 
 
+TASK_CODE = INFLUENCER_OUTREACH_TASK_CODE
+
+
 class TikTokInfluencerOutreachSyncTask(RuntimeTaskShell):
-    name = "tiktok_influencer_outreach_sync"
+    name = TASK_CODE
     description = "Submit, inspect, or advance the influencer outreach sync runtime request."
     success_message = "Processed the influencer outreach sync runtime request."
 

@@ -28,12 +28,13 @@ ALLOWLIST_BY_WORKER = {
         "fastmoss_creator_fetch",
         "fastmoss_shop_fetch",
         "fastmoss_video_fetch",
+        "product_video_outreach_check",
         "product_creator_discovery",
         "influencer_creator_sync",
         "media_asset_sync",
         "fact_bundle_upsert",
     },
-    "browser": {"fastmoss_security_browser_resolve", "product_video_outreach_check", "tiktok_product_browser_fetch"},
+    "browser": {"fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"},
     "outbox": {"outbox_dispatch"},
 }
 FORBIDDEN_EXACT_NAMES = {

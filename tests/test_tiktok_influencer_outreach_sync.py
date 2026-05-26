@@ -3,14 +3,15 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from automation_business_scaffold.contracts.handler.browser import BOUND_BROWSER_HANDLERS
+from automation_business_scaffold.contracts.handler.api import BOUND_API_HANDLERS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.control_plane.executor.runner import _sanitize_task_payload
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import _merge_video_rows
-from automation_business_scaffold.capabilities.browser.fastmoss_product_video_outreach_handler import (
-    fastmoss_product_video_outreach_handler,
+from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import _merge_video_rows, finalize_request
+from automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check import (
+    product_video_outreach_check_handler,
 )
 from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos import (
     canonical_tiktok_video_url,
@@ -140,48 +141,43 @@ def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
     assert payload["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
 
 
-def test_product_video_check_uses_browser_rows_without_fastmoss_api_config(monkeypatch, tmp_path) -> None:
+def test_product_video_check_uses_api_worker_mock_rows_without_live_fastmoss_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
-    result = fastmoss_product_video_outreach_handler(
+    result = product_video_outreach_check_handler(
         HandlerContext(
             request_id="req",
             job_id="job",
             handler_code="product_video_outreach_check",
-            worker_type="browser_worker",
-            runtime_table="task_execution",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
             payload={
                 "product_id": "p1",
                 "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
-                "mock_browser_video_pages": [{"rows": [{"product_id": "p1", "unique_id": "creator", "video_id": "1"}]}],
+                "mock_fastmoss_product_videos": [{"product_id": "p1", "unique_id": "creator", "video_id": "1"}],
             },
         )
     )
 
     assert result.status == "success"
-    assert result.result["collection_path"] == "browser"
     assert result.summary["matched_row_count"] == 1
 
 
 def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
-    result = fastmoss_product_video_outreach_handler(
+    result = product_video_outreach_check_handler(
         HandlerContext(
             request_id="req",
             job_id="job",
             handler_code="product_video_outreach_check",
-            worker_type="browser_worker",
-            runtime_table="task_execution",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
             payload={
                 "product_id": "p1",
                 "trigger_date": "2026-05-22",
                 "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
-                "mock_browser_video_pages": [
-                    {
-                        "rows": [
-                            {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-20"},
-                            {"product_id": "p1", "author": {"unique_id": "other"}, "video_id": "2", "create_date": "2026-05-21"},
-                        ]
-                    }
+                "mock_fastmoss_product_videos": [
+                    {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-20"},
+                    {"product_id": "p1", "author": {"unique_id": "other"}, "video_id": "2", "create_date": "2026-05-21"},
                 ],
             },
         )
@@ -299,5 +295,54 @@ def test_outreach_projection_writes_matched_fields_and_never_overwrites_existing
 def test_outreach_workflow_and_handler_are_registered() -> None:
     workflow = get_workflow_definition("tiktok_influencer_outreach_sync")
     assert workflow.entry_stage_code == "read_outreach_rows"
-    assert "product_video_outreach_check" in BOUND_BROWSER_HANDLERS
+    job = workflow.require_job("product_video_outreach_check")
+    assert job.worker_type == "api_worker"
+    assert job.runtime_table == "api_worker_job"
+    assert "product_video_outreach_check" in BOUND_API_HANDLERS
     assert load_workflow_runtime("tiktok_influencer_outreach_sync") is not None
+
+
+def test_outreach_finalize_persists_request_and_outbox() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.update_payload = {}
+            self.outbox_payload = {}
+
+        def update_task_request(self, **kwargs):  # noqa: ANN001
+            self.update_payload = dict(kwargs)
+            return SimpleNamespace(
+                request_id=kwargs["request_id"],
+                status=kwargs["status"],
+                result_status="",
+                current_stage=kwargs["current_stage"],
+                summary=kwargs["summary"],
+                result=kwargs["result"],
+                to_dict=lambda: {"request_id": kwargs["request_id"], "status": kwargs["status"]},
+            )
+
+        def create_notification_outbox(self, **kwargs):  # noqa: ANN001
+            self.outbox_payload = dict(kwargs)
+            return SimpleNamespace(to_dict=lambda: {"outbox_id": "outbox1", "status": "pending"})
+
+    store = Store()
+    request = SimpleNamespace(
+        request_id="req1",
+        task_code="tiktok_influencer_outreach_sync",
+        source_channel_code="feishu_bot_api",
+        reply_target="user:1",
+        payload={},
+    )
+
+    result = finalize_request(
+        store=store,
+        request=request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        force_result={"final_status": "success", "matched_row_count": 0},
+    )
+
+    assert result["request_status"] == "success"
+    assert store.update_payload["status"] == "success"
+    assert store.update_payload["current_stage"] == "ready_for_summary"
+    assert store.update_payload["worker_id"] == ""
+    assert store.outbox_payload["event_type"] == "task_request.completed"
+    assert store.outbox_payload["dedupe_key"] == "task_request.completed:req1"

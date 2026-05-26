@@ -78,6 +78,9 @@ case "$intent" in
   influencer_pool_sync)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-pool-sync-submit
     ;;
+  influencer_outreach_sync)
+    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-outreach-sync-submit
+    ;;
   selection_table_ingest)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" selection-table-complete-submit
     ;;

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from automation_business_scaffold.contracts.handler.allowlist import BROWSER_HANDLER_CONTRACTS
+from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 from automation_business_scaffold.contracts.workflow import JobDefinition, contract, optional_field, required_field
 
 PRODUCT_VIDEO_OUTREACH_CHECK_JOB = JobDefinition(
     job_code="product_video_outreach_check",
     handler_code="product_video_outreach_check",
-    worker_type="browser_worker",
-    runtime_table="task_execution",
-    purpose="Collect FastMoss product videos in browser for outreach creator matches.",
+    worker_type="api_worker",
+    runtime_table="api_worker_job",
+    purpose="Collect FastMoss product videos through HTTP for outreach creator matches.",
     payload_contract=contract(
         "product_video_outreach_check_payload",
         required_field("product_id", "FastMoss product_id / SKUID.", type_hint="str"),
@@ -26,18 +26,18 @@ PRODUCT_VIDEO_OUTREACH_CHECK_JOB = JobDefinition(
     ),
     business_key_template="product:{product_id}",
     dedupe_key_template="{request_id}:{stage_code}:{product_id}:{query_window}",
-    side_effects=("browser", "artifact.write", "runtime_db"),
+    side_effects=("fastmoss.request", "artifact.write", "runtime_db"),
 )
 
 JOB_DEFINITION = PRODUCT_VIDEO_OUTREACH_CHECK_JOB
 JOB_CODE = JOB_DEFINITION.job_code
 HANDLER_CODE = JOB_DEFINITION.handler_code
-CONTRACT = BROWSER_HANDLER_CONTRACTS[HANDLER_CODE]
+CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 
 
 def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResult:
-    from automation_business_scaffold.capabilities.browser.fastmoss_product_video_outreach_handler import (
-        fastmoss_product_video_outreach_handler as _handler,
+    from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos import (
+        product_video_outreach_check_handler as _handler,
     )
 
     result = _handler(context)

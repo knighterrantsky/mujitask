@@ -1,5 +1,5 @@
 schema_version: 1
-workflow_origin: designed_new
+workflow_origin: new_workflow
 workflow_code: tiktok_influencer_outreach_sync
 domain: tiktok
 agent_artifact:
@@ -50,7 +50,7 @@ jobs:
     module: automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check
     handler_code: product_video_outreach_check
     capability:
-      role: fact_source
+      role: business_orchestration
       system: fastmoss
       module: automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check
       export: product_video_outreach_check_handler

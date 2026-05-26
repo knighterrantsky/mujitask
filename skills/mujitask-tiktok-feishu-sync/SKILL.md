@@ -3,11 +3,11 @@ name: "mujitask-tiktok-feishu-sync"
 description: >-
   Submits OpenClaw task requests for the current TikTok/TK Feishu workflows:
   competitor-table refresh, competitor keyword search, batch keyword search,
-  influencer-pool sync, selection-table ingest, and selection keyword search. Use only
-  when the user explicitly asks to run, sync, update, complete, search, collect, or write
-  data to TK竞品收集, TK选品收集, or TK达人池. Do not use for conceptual questions, strategy
-  discussion, skill review, configuration support, or general FastMoss questions without
-  an explicit table/workflow target.
+  influencer-pool sync, influencer outreach sync, selection-table ingest, and selection
+  keyword search. Use only when the user explicitly asks to run, sync, update, complete,
+  search, collect, or write data to TK竞品收集, TK选品收集, TK达人池, or TK达人建联表. Do not use for
+  conceptual questions, strategy discussion, skill review, configuration support, or
+  general FastMoss questions without an explicit table/workflow target.
 metadata:
   short-description: "TK选品、竞品、达人池与FastMoss任务提交"
 ---
@@ -36,6 +36,7 @@ Formal workflow requirements:
 - `refresh_current_competitor_table` -> `docs/business/requirements/refresh-current-competitor-table.md`
 - `search_keyword_competitor_products` -> `docs/business/requirements/search-keyword-competitor-products.md`
 - `sync_tk_influencer_pool` -> `docs/business/requirements/sync-tk-influencer-pool.md`
+- `tiktok_influencer_outreach_sync` -> `docs/business/requirements/tk-influencer-outreach.md`
 - `tiktok_fastmoss_product_ingest` -> `docs/business/requirements/tk-selection-collection.md`
 - `search_keyword_selection_products` -> `docs/business/requirements/search-keyword-selection-products.md`
 
@@ -44,6 +45,7 @@ Design documents:
 - `refresh_current_competitor_table` -> `docs/arch/workflow-competitor-table-design.md`
 - `search_keyword_competitor_products` -> `docs/arch/workflow-competitor-table-design.md`
 - `sync_tk_influencer_pool` -> `docs/arch/workflow-influencer-pool-sync-design.md`
+- `tiktok_influencer_outreach_sync` -> `docs/arch/workflow-influencer-outreach-design.md`
 - `tiktok_fastmoss_product_ingest` -> `docs/arch/workflow-selection-table-design.md`
 - `search_keyword_selection_products` -> `docs/arch/workflow-selection-table-design.md`
 
@@ -58,6 +60,7 @@ Use this skill only when the user explicitly asks to submit one of these workflo
 - Preview any task submission inputs, then submit only after explicit confirmation.
 - Preview a batch of keyword-search rows for `TK竞品收集` or `TK选品收集`, then submit only after explicit confirmation.
 - Sync influencer data from `TK竞品收集` to `TK达人池`.
+- Check and write outreach video/check-time results for `TK达人建联表`.
 - Ingest or complete data for `TK选品收集`.
 - Search keyword products and write new selection seed rows to `TK选品收集`.
 
@@ -86,6 +89,7 @@ Do not use this skill when the user is only:
 - asking to analyze, edit, review, or debug this skill
 - discussing TikTok competitor strategy without asking to update the current Feishu table
 - discussing product-selection strategy without asking to write to `TK选品收集`
+- discussing influencer outreach strategy without asking to update `TK达人建联表`
 - asking about credentials, tokens, environment variables, browser profiles, Runtime DB, deployment, or troubleshooting
 - saying only “FastMoss”, “TK竞品”, “写入飞书”, or “更新当前表” without a clear workflow or target table
 
@@ -238,6 +242,22 @@ Default inputs:
 
 Use when the user explicitly asks to sync influencer-pool data, expand influencers from competitor products, or update `TK达人池`.
 
+### `influencer_outreach_sync`
+
+- Kind: formal_workflow
+- Task code: `tiktok_influencer_outreach_sync`
+- Source table: `TK达人建联表`
+- Target table: `TK达人建联表`
+- Trigger mode from requirements: scheduled or manual trigger
+- Conversation activation: explicit manual submission only
+
+Use when the user explicitly asks to run, sync, update, or check `TK达人建联表` outreach rows.
+
+Business behavior summary:
+
+- This workflow reads outreach rows, checks FastMoss product videos by `SKUID` and `达人ID`, and writes matched video fields or check time.
+- Existing `视频链接` rows are skipped by the Runtime workflow and are not overwritten.
+
 ### `selection_table_ingest`
 
 - Kind: formal_workflow
@@ -340,9 +360,10 @@ Use only when the user explicitly mentions competitor row, competitor URL, or `�
 7. If the user asks to complete, ingest, scan, or update `TK选品收集` without keyword-search semantics, choose `selection_table_ingest`.
 8. If the user asks to manually refresh, sync, or update the current competitor table, choose `competitor_table_refresh`.
 9. If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
-10. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
-11. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
-12. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
+10. If the user asks to run, sync, update, or check `TK达人建联表` or `达人建联表`, choose `influencer_outreach_sync`.
+11. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
+12. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
+13. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
 
 ## Commands
 
@@ -364,6 +385,12 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor
 
 ```bash
 bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync"
+```
+
+### `influencer_outreach_sync`
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_outreach_sync"
 ```
 
 ### `selection_table_ingest`
