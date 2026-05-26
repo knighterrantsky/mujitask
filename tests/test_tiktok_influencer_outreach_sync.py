@@ -17,6 +17,7 @@ from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos i
     match_outreach_rows_to_videos,
     normalize_product_video_rows,
 )
+from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     build_outreach_query_window,
     outreach_source_adapter,
@@ -76,11 +77,59 @@ def test_outreach_source_adapter_normalizes_candidates_and_skip_summary() -> Non
 
 
 def test_outreach_query_window_uses_full_or_incremental_window() -> None:
-    assert build_outreach_query_window([{"last_checked_at": ""}], trigger_date="2026-05-22") == {"mode": "d_type", "d_type": 90}
+    assert build_outreach_query_window([{"last_checked_at": ""}], trigger_date="2026-05-22") == {"mode": "d_type", "d_type": 0}
     assert build_outreach_query_window(
         [{"last_checked_at": "2026-05-21"}, {"last_checked_at": "2026-05-19"}],
         trigger_date="2026-05-22",
     ) == {"mode": "date_range", "start_date": "2026-05-18", "end_date": "2026-05-22"}
+
+
+def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def json(self) -> dict[str, object]:
+            return {"code": 200, "data": {"list": []}}
+
+    def fake_request(method, url, *, params, data, headers, timeout):  # noqa: ANN001
+        captured.update(
+            {
+                "method": method,
+                "url": url,
+                "params": dict(params),
+                "data": data,
+                "headers": dict(headers),
+                "timeout": timeout,
+            }
+        )
+        return Response()
+
+    session = FastMossHTTPSession(
+        request_delay_range=(0.0, 0.0),
+        time_factory=lambda: 1779704271,
+        nonce_factory=lambda: "54361571",
+    )
+    monkeypatch.setattr(session.session, "request", fake_request)
+
+    session.list_product_videos("1732266893752242590", page=2)
+
+    assert captured["method"] == "GET"
+    assert captured["params"] == {
+        "page": 2,
+        "product_id": "1732266893752242590",
+        "order": "6,2",
+        "pagesize": 5,
+        "is_promoted": -1,
+        "date_type": 28,
+        "d_type": 0,
+        "_time": 1779704271,
+        "cnonce": "54361571",
+    }
+    assert "fm-sign" not in captured["params"]
+    assert captured["data"] is None
 
 
 def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:

@@ -470,6 +470,7 @@ class FastMossHTTPSession:
         check_auth: bool = True,
         timeout: float | None = None,
         stage: str = "",
+        sign_request: bool = True,
     ) -> dict[str, Any]:
         """Send a signed FastMoss request and return the parsed JSON payload."""
 
@@ -487,7 +488,8 @@ class FastMossHTTPSession:
             signed_params_with_nonce = dict(signed_params)
             signed_params_with_nonce["_time"] = int(self._time_factory())
             signed_params_with_nonce["cnonce"] = self._nonce_factory()
-            signed_params_with_nonce["fm-sign"] = build_fm_sign(signed_params_with_nonce, body_text)
+            if sign_request:
+                signed_params_with_nonce["fm-sign"] = build_fm_sign(signed_params_with_nonce, body_text)
             self._emit_event(
                 "http_request_start",
                 stage=stage,
@@ -821,8 +823,8 @@ class FastMossHTTPSession:
         product_id: str,
         *,
         page: int = 1,
-        pagesize: int = 10,
-        order: str = "1,2",
+        pagesize: int = 5,
+        order: str = "6,2",
         d_type: int | str = 0,
         date_type: int | str = 28,
         is_promoted: int | str = -1,
@@ -853,6 +855,7 @@ class FastMossHTTPSession:
             referer=self._build_goods_detail_referer(normalized_product_id),
             region=self.default_region,
             stage="product_videos.list",
+            sign_request=False,
         )
         return payload
 

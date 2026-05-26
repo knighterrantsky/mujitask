@@ -123,6 +123,8 @@ def _resolve_product_videos(payload: Mapping[str, Any], *, product_id: str, quer
         raise FastMossAuthError("FastMoss live fetch config is missing for product video outreach check.")
     page_size = _positive_int(first_non_empty(payload.get("fastmoss_video_page_size"), fastmoss_settings.get("video_page_size")), default=5)
     max_pages = _optional_positive_int(first_non_empty(payload.get("fastmoss_video_max_pages"), fastmoss_settings.get("video_max_pages")))
+    fastmoss_settings.setdefault("fastmoss_api_request_delay_min_seconds", 1.0)
+    fastmoss_settings.setdefault("fastmoss_api_request_delay_max_seconds", 3.0)
     with build_fastmoss_session(fastmoss_settings, session_factory=FastMossHTTPSession) as session:
         prepare_fastmoss_session(session, settings=fastmoss_settings)
         kwargs = _query_window_kwargs(query_window)
@@ -323,7 +325,7 @@ def _query_window_kwargs(query_window: Mapping[str, Any]) -> dict[str, Any]:
             "start_date": coerce_str(query_window.get("start_date")),
             "end_date": coerce_str(query_window.get("end_date")),
         }
-    return {"d_type": first_non_empty(query_window.get("d_type"), 90)}
+    return {"d_type": first_non_empty(query_window.get("d_type"), 0)}
 
 
 def _positive_int(value: Any, *, default: int) -> int:

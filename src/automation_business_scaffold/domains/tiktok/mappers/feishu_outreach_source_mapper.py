@@ -105,7 +105,7 @@ def build_outreach_query_window(rows: list[Mapping[str, Any]], *, trigger_date: 
     checked_dates = [_parse_date(row.get("last_checked_at")) for row in rows]
     valid_dates = [item for item in checked_dates if item is not None]
     if not valid_dates:
-        return {"mode": "d_type", "d_type": 90}
+        return {"mode": "d_type", "d_type": 0}
     start_date = min(valid_dates).toordinal() - 1
     return {
         "mode": "date_range",
