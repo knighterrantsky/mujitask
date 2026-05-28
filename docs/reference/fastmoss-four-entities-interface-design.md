@@ -444,10 +444,10 @@ flowchart LR
 | `时长` | 数字 | `duration` |
 | `是否广告` | 复选 | `is_ad` |
 | `站点` | 单选 | `region` |
-| `当前播放量` | 数字 | `play_count` |
-| `当前点赞数` | 数字 | `digg_count` |
-| `当前评论数` | 数字 | `comment_count` |
-| `当前分享数` | 数字 | `share_count` |
+| `当前播放量` | 数字 | 从视频指标快照读取最新 `/api/video/overview.play_count` |
+| `当前点赞数` | 数字 | 从视频指标快照读取最新 `/api/video/overview.digg_count` |
+| `当前评论数` | 数字 | 从视频指标快照读取最新 `/api/video/overview.comment_count` |
+| `当前分享数` | 数字 | 从视频指标快照读取最新 `/api/video/overview.share_count` |
 | `挂载商品数` | 数字 | `product_cnt` / `bind_product_cnt` |
 
 ### 4.2 关系和事实表
@@ -469,10 +469,10 @@ flowchart LR
 | `采集日期` | 日期时间 | 同步时间 |
 | `发布时间` | 日期 | `create_time` / `create_date` |
 | `是否广告` | 复选 | `is_ad` |
-| `播放量` | 数字 | `play_count` |
-| `点赞数` | 数字 | `digg_count` |
-| `评论数` | 数字 | `comment_count` |
-| `分享数` | 数字 | `share_count` |
+| `播放量` | 数字 | 关系维度展示时读取视频指标快照最新值，不以商品视频列表 `play_count` 作为最终口径 |
+| `点赞数` | 数字 | 关系维度展示时读取视频指标快照最新值 |
+| `评论数` | 数字 | 关系维度展示时读取视频指标快照最新值 |
+| `分享数` | 数字 | 关系维度展示时读取视频指标快照最新值 |
 | `互动率` | 数字/文本 | `engagement_rate` / `interaction_rate` |
 | `带货销量` | 数字 | `sold_count` |
 | `带货GMV` | 数字 | `sale_amount` |

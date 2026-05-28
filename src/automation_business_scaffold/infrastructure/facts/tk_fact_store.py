@@ -236,6 +236,8 @@ class TKFactStore(TKFactQueryAccess):
         *,
         video_id: str = "",
         creator_key: str = "",
+        creator_uid: str = "",
+        creator_unique_id: str = "",
         product_id: str = "",
         title: str = "",
         video_url: str = "",
@@ -258,6 +260,8 @@ class TKFactStore(TKFactQueryAccess):
                 "video_key": video_key,
                 "video_id": video_id,
                 "creator_key": _clean_text(creator_key),
+                "creator_uid": _clean_text(creator_uid),
+                "creator_unique_id": _clean_text(creator_unique_id),
                 "product_id": _clean_text(product_id),
                 "title": _clean_text(title),
                 "video_url": _clean_text(video_url),
@@ -960,6 +964,64 @@ class TKFactStore(TKFactQueryAccess):
                         "collected_at": float(collected_at or now),
                         "created_at": now,
                         "updated_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def record_video_metric_snapshot(
+        self,
+        *,
+        video_key: str = "",
+        video_id: str = "",
+        creator_key: str = "",
+        source_platform: str = "",
+        source_endpoint: str = "",
+        play_count: Any = 0,
+        digg_count: Any = 0,
+        comment_count: Any = 0,
+        share_count: Any = 0,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        video_id = _clean_text(video_id)
+        video_key = _clean_text(video_key) or (f"video:{video_id}" if video_id else "")
+        if not video_key:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_video_metric_snapshots (
+                            snapshot_id, video_key, video_id, creator_key,
+                            source_platform, source_endpoint, play_count, digg_count,
+                            comment_count, share_count, payload_json, collected_at, created_at
+                        ) VALUES (
+                            :snapshot_id, :video_key, :video_id, :creator_key,
+                            :source_platform, :source_endpoint, :play_count, :digg_count,
+                            :comment_count, :share_count, :payload_json, :collected_at, :created_at
+                        )
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "snapshot_id": uuid.uuid4().hex,
+                        "video_key": video_key,
+                        "video_id": video_id,
+                        "creator_key": _clean_text(creator_key),
+                        "source_platform": _clean_text(source_platform),
+                        "source_endpoint": _clean_text(source_endpoint),
+                        "play_count": _coerce_float(play_count),
+                        "digg_count": _coerce_float(digg_count),
+                        "comment_count": _coerce_float(comment_count),
+                        "share_count": _coerce_float(share_count),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
                     },
                 )
                 .mappings()

@@ -940,3 +940,55 @@ features:
       - Submit preflight must resolve strict persistence from project runtime config or explicit test-only overrides.
       - Request and row job payloads must not persist DB URLs or object storage secrets.
       - Full e2e may remain blocked by active rewrite, but complete claim requires gate pass.
+
+  - feature_code: video_metric_snapshot_fact_schema
+    status: complete
+    feature_type: schema_contract
+    default_context:
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/infrastructure/schemas/fact_schema.py
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_store.py
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_ingestion_service.py
+      - src/automation_business_scaffold/capabilities/persistence/database/fact_bundle_upsert_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/mappers/fact_bundle_mapper.py
+      - tests/test_tk_fact_store.py
+      - tests/test_fastmoss_fact_mappers.py
+      - tests/test_fact_bundle_upsert_handler.py
+    source_contracts:
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/reference/fastmoss-four-entities-interface-design.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/code-roadmap.yaml
+      - alembic/versions/**
+      - src/automation_business_scaffold/infrastructure/schemas/**
+      - src/automation_business_scaffold/infrastructure/facts/**
+      - src/automation_business_scaffold/contracts/handler/**
+      - src/automation_business_scaffold/capabilities/persistence/database/fact_bundle_upsert_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/mappers/fact_bundle_mapper.py
+      - tests/test_tk_fact_store.py
+      - tests/test_fastmoss_fact_mappers.py
+      - tests/test_fact_bundle_upsert_handler.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+    done_gate:
+      tests:
+        - tests/test_tk_fact_store.py
+        - tests/test_fastmoss_fact_mappers.py
+        - tests/test_fact_bundle_upsert_handler.py
+      commands:
+        - uv run --extra dev pytest tests/test_fastmoss_fact_mappers.py::test_map_fastmoss_goods_author_extracts_creator_product_and_representative_video tests/test_fastmoss_fact_mappers.py::test_video_and_author_video_mappers_extract_video_product_relations tests/test_tk_fact_store.py tests/test_fact_bundle_upsert_handler.py
+    completion_rules:
+      - tk_creators contact fields are not added in this feature.
+      - tk_creator_video_relations remains available for compatibility.
+      - tk_videos keeps creator_key and adds creator_uid plus creator_unique_id for external author matching.
+      - Product-video membership is canonical in tk_video_product_relations.
+      - Video play, digg, comment, and share metrics are append-only snapshots in tk_video_metric_snapshots.

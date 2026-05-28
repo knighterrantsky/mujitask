@@ -1324,6 +1324,7 @@ result 示例:
 - `fact_bundle_upsert` 可以产出 `projections`，但不直接写 Feishu。
 - Projection mapper 可以消费 `projections.*`，也可以直接消费 `entities/relations/observations`；两者字段语义必须保持一致。
 - `raw_refs` 和 `artifact://` 引用只用于审计、排障和 `achieve` 对比，不作为业务主键。
+- 标准 `fact_bundle` 可以携带 `video_metric_snapshots`；`fact_bundle_upsert` 将其追加写入 `tk_video_metric_snapshots`，用于 `/api/video/overview` 播放量、点赞、评论、分享等视频维度指标。
 
 ## 7. Business Handler
 

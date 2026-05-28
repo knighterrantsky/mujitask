@@ -88,6 +88,8 @@ TK_FACT_SCHEMA_STATEMENTS = [
         video_key TEXT NOT NULL UNIQUE,
         video_id TEXT NOT NULL DEFAULT '',
         creator_key TEXT NOT NULL DEFAULT '',
+        creator_uid TEXT NOT NULL DEFAULT '',
+        creator_unique_id TEXT NOT NULL DEFAULT '',
         product_id TEXT NOT NULL DEFAULT '',
         title TEXT NOT NULL DEFAULT '',
         video_url TEXT NOT NULL DEFAULT '',
@@ -103,6 +105,7 @@ TK_FACT_SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tk_videos_creator_key ON tk_videos(creator_key)",
+    "CREATE INDEX IF NOT EXISTS idx_tk_videos_creator_unique_id ON tk_videos(creator_unique_id)",
     "CREATE INDEX IF NOT EXISTS idx_tk_videos_product_id ON tk_videos(product_id)",
     """
     CREATE TABLE IF NOT EXISTS tk_media_assets (
@@ -214,6 +217,18 @@ TK_FACT_SCHEMA_STATEMENTS = [
         created_at DOUBLE PRECISION NOT NULL,
         updated_at DOUBLE PRECISION NOT NULL
     )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tk_video_product_unique
+        ON tk_video_product_relations(video_key, product_id, source_platform)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tk_video_product_product_video
+        ON tk_video_product_relations(product_id, video_key)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tk_video_product_video_product
+        ON tk_video_product_relations(video_key, product_id)
     """,
     """
     CREATE TABLE IF NOT EXISTS tk_shop_creator_relations (
@@ -389,6 +404,31 @@ TK_FACT_SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS tk_video_metric_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        video_key TEXT NOT NULL,
+        video_id TEXT NOT NULL DEFAULT '',
+        creator_key TEXT NOT NULL DEFAULT '',
+        source_platform TEXT NOT NULL DEFAULT '',
+        source_endpoint TEXT NOT NULL DEFAULT '',
+        play_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        digg_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        comment_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        share_count DOUBLE PRECISION NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        collected_at DOUBLE PRECISION NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tk_video_metric_snapshots_video_collected
+        ON tk_video_metric_snapshots(video_key, collected_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tk_video_metric_snapshots_creator_collected
+        ON tk_video_metric_snapshots(creator_key, collected_at)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tk_video_product_window_performance (
         performance_id TEXT PRIMARY KEY,
         video_key TEXT NOT NULL,
@@ -433,5 +473,4 @@ def ensure_tk_fact_schema(connection: Any, *, drop_legacy_entity_tables: bool = 
     if drop_legacy_entity_tables:
         for statement in LEGACY_ENTITY_DROP_STATEMENTS:
             connection.exec_driver_sql(statement)
-
 

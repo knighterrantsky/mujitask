@@ -17,6 +17,7 @@ def test_tk_fact_schema_replaces_legacy_entity_tables(runtime_db_url):
 
     assert "tk_products" in table_names
     assert "tk_creators" in table_names
+    assert "tk_video_metric_snapshots" in table_names
     assert "tk_media_assets" in table_names
     assert "tk_creator_product_relations" in table_names
     assert "tk_raw_api_responses" in table_names
@@ -24,6 +25,8 @@ def test_tk_fact_schema_replaces_legacy_entity_tables(runtime_db_url):
     assert "entity_registry" not in table_names
     assert "external_binding" not in table_names
     assert "entity_snapshot" not in table_names
+    video_columns = _list_postgres_columns(runtime_db_url, "tk_videos")
+    assert {"creator_uid", "creator_unique_id"} <= video_columns
 
 
 def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_entities(
@@ -37,7 +40,10 @@ def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_en
 
     assert "tk_products" in table_names
     assert "tk_raw_api_responses" in table_names
+    assert "tk_video_metric_snapshots" in table_names
     assert "entity_registry" not in table_names
+    assert {"creator_uid", "creator_unique_id"} <= _list_postgres_columns(runtime_db_url, "tk_videos")
+    assert "idx_tk_video_product_unique" in _list_postgres_indexes(runtime_db_url)
 
     command.downgrade(config, "20260412_0001")
     downgraded_table_names = _list_postgres_tables(runtime_db_url)
@@ -94,6 +100,48 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(runtime_db
     assert creator_product["sold_count"] == 88
     assert fact_store.creator_has_product(creator_id="creator-1", product_id="1729440407432826887")
     assert raw_link["raw_response_id"] == raw["raw_response_id"]
+
+
+def test_tk_fact_store_records_video_creator_identity_and_metric_snapshots(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    fact_store = TKFactStore(runtime_store=store)
+
+    video = fact_store.upsert_video(
+        video_id="7623147954093690143",
+        creator_key="unique_id:roxy_creator",
+        creator_uid="7094679250578015274",
+        creator_unique_id="roxy_creator",
+        source_platform="fastmoss",
+    )
+    first = fact_store.record_video_metric_snapshot(
+        video_key=video["video_key"],
+        video_id=video["video_id"],
+        creator_key=video["creator_key"],
+        source_platform="fastmoss",
+        source_endpoint="video.overview",
+        play_count=200000,
+        digg_count=1000,
+        payload={"play_count": 200000},
+        collected_at=1000,
+    )
+    second = fact_store.record_video_metric_snapshot(
+        video_key=video["video_key"],
+        video_id=video["video_id"],
+        creator_key=video["creator_key"],
+        source_platform="fastmoss",
+        source_endpoint="video.overview",
+        play_count=210000,
+        share_count=30,
+        payload={"play_count": 210000},
+        collected_at=2000,
+    )
+
+    assert video["creator_uid"] == "7094679250578015274"
+    assert video["creator_unique_id"] == "roxy_creator"
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert first["play_count"] == 200000
+    assert second["play_count"] == 210000
+    assert second["share_count"] == 30
 
 
 def test_tk_fact_store_skips_unchanged_relation_writes(runtime_db_url):
@@ -422,6 +470,8 @@ def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(run
             {
                 "video_id": "7623147954093690143",
                 "creator_id": "creator-1",
+                "uid": "7094679250578015274",
+                "unique_id": "roxy_creator",
                 "product_id": "1729440407432826887",
                 "title": "Gift video",
             }
@@ -433,6 +483,16 @@ def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(run
                 "media_role": "video_cover",
                 "source_url": "https://example.com/video-cover.png",
                 "source_platform": "fastmoss",
+            }
+        ],
+        video_metric_snapshots=[
+            {
+                "video_id": "7623147954093690143",
+                "creator_key": "creator_id:creator-1",
+                "source_platform": "fastmoss",
+                "source_endpoint": "video.overview",
+                "play_count": 210000,
+                "digg_count": 1200,
             }
         ],
         relations={
@@ -455,7 +515,12 @@ def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(run
 
     assert any(entity.get("product_id") == "1729440407432826887" for entity in payload["fact_entities"])
     assert any(entity.get("creator_key") == "creator_id:creator-1" for entity in payload["fact_entities"])
-    assert any(entity.get("video_key") == "video:7623147954093690143" for entity in payload["fact_entities"])
+    assert any(
+        entity.get("video_key") == "video:7623147954093690143"
+        and entity.get("creator_uid") == "7094679250578015274"
+        and entity.get("creator_unique_id") == "roxy_creator"
+        for entity in payload["fact_entities"]
+    )
     assert any(
         relation.get("product_id") == "1729440407432826887"
         and relation.get("shop_key") == "shop_name:Holiday Shop"
@@ -463,6 +528,11 @@ def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(run
     )
     assert any(relation.get("sold_count") == 99 for relation in payload["fact_relations"])
     assert any(relation.get("video_key") == "video:7623147954093690143" for relation in payload["fact_relations"])
+    assert any(
+        observation.get("video_key") == "video:7623147954093690143"
+        and observation.get("play_count") == 210000
+        for observation in payload["fact_metric_observations"]
+    )
     assert fact_store.creator_has_product(creator_id="creator-1", product_id="1729440407432826887")
     assert payload["fact_media_assets"]
     assert payload["raw_api_responses"]
@@ -514,3 +584,35 @@ def _list_postgres_tables(db_url):
             )
         ).mappings().all()
     return {str(row["table_name"]) for row in rows}
+
+
+def _list_postgres_columns(db_url, table_name):
+    engine = create_engine(db_url, future=True)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        ).mappings().all()
+    return {str(row["column_name"]) for row in rows}
+
+
+def _list_postgres_indexes(db_url):
+    engine = create_engine(db_url, future=True)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                """
+            )
+        ).mappings().all()
+    return {str(row["indexname"]) for row in rows}

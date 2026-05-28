@@ -102,6 +102,7 @@ def map_fastmoss_goods_author(
             video = _video_from_mapping(video_row, creator=creator, product_id=row_product_id)
             _append(result["videos"], video)
             _append(result["relations"]["creator_videos"], _creator_video_relation(creator, video, video_row))
+            _append(result["relations"]["video_products"], _video_product_relation(video, {"product_id": row_product_id}, video_row))
             _append_media(result, _video_media(video, video_row))
     return result
 
@@ -134,6 +135,7 @@ def map_fastmoss_goods_video(
         _append(result["relations"]["product_shops"], _product_shop_relation(product, shop))
         _append(result["relations"]["creator_products"], _creator_product_relation(creator, row_product_id, row))
         _append(result["relations"]["creator_videos"], _creator_video_relation(creator, video, row))
+        _append(result["relations"]["video_products"], _video_product_relation(video, product, row))
         _append(result["relations"]["shop_creators"], _shop_creator_relation(shop, creator, row))
         _append_media(result, _product_media(product, row))
         _append_media(result, _creator_media(creator, row))
@@ -342,6 +344,7 @@ def map_fastmoss_video_overview(
     video = _video_from_mapping(data, creator=creator, fallback_video_id=video_id)
     _append(result["creators"], creator)
     _append(result["videos"], video)
+    _append(result["video_metric_snapshots"], _video_metric_snapshot(data, video))
     _append_media(result, _creator_media(creator, data))
     _append_media(result, _video_media(video, data))
     return result
@@ -586,6 +589,8 @@ def _video_from_mapping(
     return {
         "video_id": video_id,
         "creator_key": _creator_key({"creator_id": creator_id, "uid": uid, "unique_id": unique_id}),
+        "creator_uid": uid,
+        "creator_unique_id": unique_id,
         "creator_id": creator_id,
         "uid": uid,
         "unique_id": unique_id,
@@ -595,6 +600,41 @@ def _video_from_mapping(
         "cover_url": _first_non_empty(payload.get("cover"), payload.get("cover_url")),
         "source_platform": "fastmoss",
         "facts": {"raw": dict(row)},
+    }
+
+
+def _video_metric_snapshot(row: Mapping[str, Any], video: Mapping[str, Any]) -> dict[str, Any]:
+    video_id = _first_non_empty(video.get("video_id"), row.get("video_id"), row.get("aweme_id"), row.get("id"))
+    if not video_id:
+        return {}
+    payload = {
+        key: row.get(key)
+        for key in (
+            "play_count",
+            "digg_count",
+            "comment_count",
+            "share_count",
+            "engagement_rate",
+            "duration",
+            "publish_time",
+            "create_date",
+            "video_url",
+        )
+        if row.get(key) not in (None, "")
+    }
+    if not payload:
+        return {}
+    return {
+        "video_key": f"video:{video_id}",
+        "video_id": video_id,
+        "creator_key": _first_non_empty(video.get("creator_key")),
+        "source_platform": "fastmoss",
+        "source_endpoint": _first_non_empty(row.get("source_endpoint"), "video.overview"),
+        "play_count": payload.get("play_count") or 0,
+        "digg_count": payload.get("digg_count") or 0,
+        "comment_count": payload.get("comment_count") or 0,
+        "share_count": payload.get("share_count") or 0,
+        "payload": payload,
     }
 
 
@@ -869,6 +909,7 @@ def _empty_mapping() -> FactMapping:
         "shops": [],
         "creators": [],
         "videos": [],
+        "video_metric_snapshots": [],
         "media_assets": [],
         "relations": {
             "product_shops": [],
