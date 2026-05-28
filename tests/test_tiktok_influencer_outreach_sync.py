@@ -7,9 +7,19 @@ from types import SimpleNamespace
 
 from automation_business_scaffold.contracts.handler.api import BOUND_API_HANDLERS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.contracts.handler.shared import success_result
 from automation_business_scaffold.control_plane.executor.runner import _sanitize_task_payload
 from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import _merge_video_rows, finalize_request
+from automation_business_scaffold.domains.tiktok.flows import outreach_creator_video_metrics as metric_flow_module
+from automation_business_scaffold.domains.tiktok.flows import outreach_product_videos as product_video_flow_module
+from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import (
+    _build_summary,
+    _merge_video_rows,
+    finalize_request,
+)
+from automation_business_scaffold.domains.tiktok.jobs.outreach_creator_video_metric_refresh import (
+    outreach_creator_video_metric_refresh_handler,
+)
 from automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check import (
     product_video_outreach_check_handler,
 )
@@ -21,21 +31,45 @@ from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos i
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     build_outreach_query_window,
+    group_outreach_rows_by_product,
     outreach_source_adapter,
 )
 from automation_business_scaffold.domains.tiktok.projections.feishu_outreach_projection import (
     outreach_result_projection_mapper,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 
 
-def test_outreach_source_adapter_normalizes_candidates_and_skip_summary() -> None:
+def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> None:
     result = outreach_source_adapter(
         [
-            {"record_id": "rec1", "fields": {"SKUID": " 123 ", "达人ID": " creator ", "检查时间": "2026/05/20"}},
+            {
+                "record_id": "rec1",
+                "fields": {
+                    "SKUID": " 123 ",
+                    "达人ID": " creator ",
+                    "检查时间": "2026/05/20",
+                    "播放量": "1,234",
+                    "视频数量": 2,
+                    "更新时间": "2026-05-21T09:00:00",
+                },
+            },
             {"record_id": "rec2", "fields": {"SKUID": "", "达人ID": "creator2"}},
             {"record_id": "rec3", "fields": {"SKUID": "123", "达人ID": ""}},
-            {"record_id": "rec4", "fields": {"SKUID": "123", "达人ID": "creator", "视频链接": {"link": "https://example.test/v"}}},
+            {
+                "record_id": "rec4",
+                "fields": {
+                    "SKUID": "123",
+                    "达人ID": "creator4",
+                    "视频链接": {"link": "https://example.test/v"},
+                    "视频发布时间": "2026.05.18",
+                    "检查时间": "2026-05-19",
+                    "播放量": "5",
+                    "视频数量": "1",
+                    "更新时间": "2026/05/22",
+                },
+            },
         ],
         {"source_table_ref": "tbl"},
     )
@@ -47,42 +81,198 @@ def test_outreach_source_adapter_normalizes_candidates_and_skip_summary() -> Non
             "product_id": "123",
             "creator_unique_id": "creator",
             "existing_video_url": "",
+            "existing_video_published_date": "",
+            "existing_play_count": 1234,
+            "existing_video_count": 2,
             "last_checked_at": "2026-05-20",
-            "writeback_context": {"table_code": "tk_influencer_outreach", "target_table_ref": "tbl", "record_id": "rec1"},
+            "last_updated_at": "2026-05-21",
+            "source_fields": {
+                "SKUID": " 123 ",
+                "达人ID": " creator ",
+                "检查时间": "2026/05/20",
+                "播放量": "1,234",
+                "视频数量": 2,
+                "更新时间": "2026-05-21T09:00:00",
+            },
+            "writeback_context": {
+                "table_code": "tk_influencer_outreach",
+                "target_table_ref": "tbl",
+                "record_id": "rec1",
+            },
             "source_context": {
                 "source_record_id": "rec1",
                 "source_table_ref": "tbl",
-                "source_fields": {"SKUID": " 123 ", "达人ID": " creator ", "检查时间": "2026/05/20"},
+                "source_fields": {
+                    "SKUID": " 123 ",
+                    "达人ID": " creator ",
+                    "检查时间": "2026/05/20",
+                    "播放量": "1,234",
+                    "视频数量": 2,
+                    "更新时间": "2026-05-21T09:00:00",
+                },
             },
         },
         {
-            "source_record_id": "rec2",
-            "business_key": "outreach:rec2",
+            "source_record_id": "rec4",
+            "business_key": "outreach:rec4",
             "product_id": "123",
-            "creator_unique_id": "creator2",
-            "existing_video_url": "",
-            "last_checked_at": "",
-            "writeback_context": {"table_code": "tk_influencer_outreach", "target_table_ref": "tbl", "record_id": "rec2"},
+            "creator_unique_id": "creator4",
+            "existing_video_url": "https://example.test/v",
+            "existing_video_published_date": "2026-05-18",
+            "existing_play_count": 5,
+            "existing_video_count": 1,
+            "last_checked_at": "2026-05-19",
+            "last_updated_at": "2026-05-22",
+            "source_fields": {
+                "SKUID": "123",
+                "达人ID": "creator4",
+                "视频链接": {"link": "https://example.test/v"},
+                "视频发布时间": "2026.05.18",
+                "检查时间": "2026-05-19",
+                "播放量": "5",
+                "视频数量": "1",
+                "更新时间": "2026/05/22",
+            },
+            "writeback_context": {
+                "table_code": "tk_influencer_outreach",
+                "target_table_ref": "tbl",
+                "record_id": "rec4",
+            },
             "source_context": {
-                "source_record_id": "rec2",
+                "source_record_id": "rec4",
                 "source_table_ref": "tbl",
-                "source_fields": {"SKUID": "", "达人ID": "creator2"},
+                "source_fields": {
+                    "SKUID": "123",
+                    "达人ID": "creator4",
+                    "视频链接": {"link": "https://example.test/v"},
+                    "视频发布时间": "2026.05.18",
+                    "检查时间": "2026-05-19",
+                    "播放量": "5",
+                    "视频数量": "1",
+                    "更新时间": "2026/05/22",
+                },
             },
         },
     ]
     assert result["adapter_summary"]["skip_reasons"] == {
-        "missing_product_id": 0,
+        "missing_product_id": 1,
         "missing_creator_unique_id": 1,
-        "already_has_video_url": 1,
     }
 
 
-def test_outreach_query_window_uses_full_or_incremental_window() -> None:
-    assert build_outreach_query_window([{"last_checked_at": ""}], trigger_date="2026-05-22") == {"mode": "d_type", "d_type": 0}
+def test_outreach_query_window_honors_request_payload_priority() -> None:
+    rows = [{"existing_video_url": "", "last_checked_at": "2026-05-19"}]
+
     assert build_outreach_query_window(
-        [{"last_checked_at": "2026-05-21"}, {"last_checked_at": "2026-05-19"}],
+        rows,
+        trigger_date="2026-05-22",
+        request_payload={"force_full": True, "start_date": "2026-05-01", "end_date": "2026-05-22"},
+    ) == {"mode": "d_type", "d_type": 0}
+    assert build_outreach_query_window(
+        rows,
+        trigger_date="2026-05-22",
+        request_payload={"start_date": "2026/05/10", "end_date": "2026/05/22"},
+    ) == {"mode": "date_range", "start_date": "2026-05-10", "end_date": "2026-05-22"}
+
+
+def test_outreach_query_window_uses_checked_dates_for_rows_without_video() -> None:
+    assert build_outreach_query_window([{"last_checked_at": ""}], trigger_date="2026-05-22") == {
+        "mode": "d_type",
+        "d_type": 0,
+    }
+    assert build_outreach_query_window(
+        [
+            {
+                "existing_video_url": "",
+                "last_checked_at": "2026-05-21",
+                "last_updated_at": "2026-05-27",
+            },
+            {
+                "existing_video_url": "",
+                "last_checked_at": "2026-05-19",
+                "last_updated_at": "2026-05-28",
+            },
+            {
+                "existing_video_url": "https://example.test/v",
+                "last_checked_at": "2026-04-01",
+                "last_updated_at": "2026-05-22",
+            },
+        ],
         trigger_date="2026-05-22",
     ) == {"mode": "date_range", "start_date": "2026-05-18", "end_date": "2026-05-22"}
+
+
+def test_outreach_query_window_uses_latest_update_when_all_rows_have_video() -> None:
+    assert build_outreach_query_window(
+        [
+            {"existing_video_url": "https://example.test/a", "last_updated_at": "2026-05-20"},
+            {"existing_video_url": "https://example.test/b", "last_updated_at": "2026-05-22"},
+        ],
+        trigger_date="2026-05-28",
+    ) == {"mode": "date_range", "start_date": "2026-05-21", "end_date": "2026-05-28"}
+    assert build_outreach_query_window(
+        [{"existing_video_url": "https://example.test/a", "last_updated_at": ""}],
+        trigger_date="2026-05-28",
+    ) == {"mode": "d_type", "d_type": 0}
+
+
+def test_group_outreach_rows_by_product_preserves_window_context() -> None:
+    groups = group_outreach_rows_by_product(
+        [
+            {
+                "source_record_id": "rec1",
+                "product_id": "p1",
+                "creator_unique_id": "creator",
+                "existing_video_url": "",
+                "existing_video_published_date": "",
+                "existing_play_count": 12,
+                "existing_video_count": 2,
+                "last_checked_at": "2026-05-20",
+                "last_updated_at": "2026-05-21",
+                "source_fields": {"SKUID": "p1"},
+                "source_context": {
+                    "source_record_id": "rec1",
+                    "source_table_ref": "tbl",
+                    "source_fields": {"SKUID": "p1"},
+                    "request_payload": {"start_date": "2026-05-01", "end_date": "2026-05-28"},
+                },
+                "writeback_context": {"record_id": "rec1"},
+            }
+        ],
+        trigger_date="2026-05-28",
+    )
+
+    assert groups == [
+        {
+            "product_id": "p1",
+            "trigger_date": "2026-05-28",
+            "query_window": {
+                "mode": "date_range",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-28",
+            },
+            "rows": [
+                {
+                    "source_record_id": "rec1",
+                    "creator_unique_id": "creator",
+                    "existing_video_url": "",
+                    "existing_video_published_date": "",
+                    "existing_play_count": 12,
+                    "existing_video_count": 2,
+                    "last_checked_at": "2026-05-20",
+                    "last_updated_at": "2026-05-21",
+                    "source_fields": {"SKUID": "p1"},
+                    "source_context": {
+                        "source_record_id": "rec1",
+                        "source_table_ref": "tbl",
+                        "source_fields": {"SKUID": "p1"},
+                        "request_payload": {"start_date": "2026-05-01", "end_date": "2026-05-28"},
+                    },
+                    "writeback_context": {"record_id": "rec1"},
+                }
+            ],
+        }
+    ]
 
 
 def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypatch) -> None:
@@ -162,6 +352,44 @@ def test_product_video_check_uses_api_worker_mock_rows_without_live_fastmoss_con
     assert result.summary["matched_row_count"] == 1
 
 
+def test_product_video_check_uses_fixed_page_size_five(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    class FakeSession:
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):  # noqa: ANN001
+            return False
+
+        def list_product_videos(self, product_id, *, page, pagesize, **kwargs):  # noqa: ANN001
+            captured.update({"product_id": product_id, "page": page, "pagesize": pagesize, "kwargs": kwargs})
+            return {"code": 200, "data": {"list": []}}
+
+    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
+
+    result = product_video_outreach_check_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="product_video_outreach_check",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "fastmoss_live_fetch": True,
+                "fastmoss_video_page_size": 30,
+                "rows": [],
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert captured["pagesize"] == 5
+
+
 def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     result = product_video_outreach_check_handler(
@@ -206,6 +434,227 @@ def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, 
     ]
     with Path(audit["csv_path"]).open(encoding="utf-8") as file:
         assert len(list(csv.DictReader(file))) == 2
+
+
+def test_product_video_check_indexes_product_videos_in_fact_db(monkeypatch, tmp_path, runtime_db_url) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = product_video_outreach_check_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="product_video_outreach_check",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "fact_db_url": runtime_db_url,
+                "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
+                "mock_fastmoss_product_videos": [
+                    {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-20"},
+                    {"product_id": "p1", "unique_id": "creator", "video_id": "2", "create_date": "2026-05-21"},
+                ],
+            },
+        )
+    )
+
+    fact_store = TKFactStore(db_url=runtime_db_url)
+    videos = fact_store.list_videos_by_product_and_creator(product_id="p1", creator_unique_id="creator")
+
+    assert result.status == "success"
+    assert result.result["indexed_video_count"] == 2
+    assert result.result["new_video_count"] == 2
+    assert [video["video_id"] for video in videos] == ["1", "2"]
+    assert videos[0]["published_date"] == "2026-05-20"
+
+
+def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(monkeypatch, runtime_db_url) -> None:
+    fact_store = TKFactStore(db_url=runtime_db_url)
+    creator_key = fact_store.build_creator_key(unique_id="creator")
+    for video_id, published_date in (("1", "2026-05-20"), ("2", "2026-05-19")):
+        video = fact_store.upsert_video(
+            video_id=video_id,
+            creator_key=creator_key,
+            creator_unique_id="creator",
+            product_id="p1",
+            video_url=canonical_tiktok_video_url("creator", video_id),
+            source_platform="fastmoss",
+            facts={"published_date": published_date},
+        )
+        fact_store.upsert_video_product_relation(video_key=video["video_key"], product_id="p1", source_platform="fastmoss")
+
+    captured: dict[str, object] = {}
+
+    def fake_write(context: HandlerContext):  # noqa: ANN001
+        captured["payload"] = context.payload
+        return success_result(
+            context,
+            summary={"written_count": 1, "skipped_count": 0, "failed_count": 0},
+            result={"written_count": 1, "records": [{"status": "success"}]},
+        )
+
+    monkeypatch.setattr(metric_flow_module, "feishu_table_write_handler", fake_write)
+
+    result = outreach_creator_video_metric_refresh_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "creator_unique_id": "creator",
+                "source_record_id": "rec1",
+                "trigger_date": "2026-05-28",
+                "target_table_ref": "tbl",
+                "fact_db_url": runtime_db_url,
+                "source_fields": {"视频链接": "", "视频发布时间": "", "检查时间": "", "播放量": 0, "视频数量": 0},
+                "mock_fastmoss_video_overviews": {
+                    "1": {"video_id": "1", "play_count": 10},
+                    "2": {"video_id": "2", "play_count": 30},
+                },
+            },
+        )
+    )
+
+    write_payload = captured["payload"]
+    assert isinstance(write_payload, dict)
+    records = write_payload["records"]
+    assert isinstance(records, list)
+    fields = records[0]["fields"]
+
+    assert result.status == "success"
+    assert result.result["video_count"] == 2
+    assert result.result["total_play_count"] == 40
+    assert result.result["highest_play_video_url"] == "https://www.tiktok.com/@creator/video/2"
+    assert result.result["earliest_published_date"] == "2026-05-19"
+    assert fields == {
+        "视频链接": {"link": "https://www.tiktok.com/@creator/video/2", "text": "https://www.tiktok.com/@creator/video/2"},
+        "播放量": 40,
+        "视频数量": 2,
+        "视频发布时间": "2026-05-19",
+        "检查时间": "2026-05-28",
+        "更新时间": "2026-05-28",
+    }
+
+
+def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(monkeypatch, runtime_db_url) -> None:
+    fact_store = TKFactStore(db_url=runtime_db_url)
+    creator_key = fact_store.build_creator_key(unique_id="creator")
+    video = fact_store.upsert_video(
+        video_id="1",
+        creator_key=creator_key,
+        creator_unique_id="creator",
+        product_id="p1",
+        video_url=canonical_tiktok_video_url("creator", "1"),
+        source_platform="fastmoss",
+        facts={"published_date": "2026-05-20"},
+    )
+    fact_store.upsert_video_product_relation(video_key=video["video_key"], product_id="p1", source_platform="fastmoss")
+    calls: list[dict[str, object]] = []
+
+    def fake_write(context: HandlerContext):  # noqa: ANN001
+        calls.append(context.payload)
+        return success_result(context, summary={"written_count": 1}, result={"written_count": 1})
+
+    monkeypatch.setattr(metric_flow_module, "feishu_table_write_handler", fake_write)
+
+    result = outreach_creator_video_metric_refresh_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "creator_unique_id": "creator",
+                "source_record_id": "rec1",
+                "trigger_date": "2026-05-28",
+                "writeback_enabled": True,
+                "fact_db_url": runtime_db_url,
+                "mock_fastmoss_video_overviews": {},
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert calls == []
+
+
+def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_link(monkeypatch, runtime_db_url) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_write(context: HandlerContext):  # noqa: ANN001
+        captured["payload"] = context.payload
+        return success_result(
+            context,
+            summary={"written_count": 1, "skipped_count": 0, "failed_count": 0},
+            result={"written_count": 1, "records": [{"status": "success"}]},
+        )
+
+    monkeypatch.setattr(metric_flow_module, "feishu_table_write_handler", fake_write)
+
+    result = outreach_creator_video_metric_refresh_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "creator_unique_id": "creator",
+                "source_record_id": "rec1",
+                "trigger_date": "2026-05-28",
+                "target_table_ref": "tbl",
+                "writeback_enabled": True,
+                "fact_db_url": runtime_db_url,
+                "existing_video_url": "",
+                "last_checked_at": "",
+            },
+        )
+    )
+
+    write_payload = captured["payload"]
+    assert isinstance(write_payload, dict)
+    assert write_payload["records"][0]["fields"] == {"检查时间": "2026-05-28", "更新时间": "2026-05-28"}
+    assert result.status == "success"
+    assert result.result["video_count"] == 0
+    assert result.result["written_fields"] == ["检查时间", "更新时间"]
+
+
+def test_creator_video_metric_refresh_skips_existing_link_from_source_fields_when_index_missing(monkeypatch, runtime_db_url) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_write(context: HandlerContext):  # noqa: ANN001
+        calls.append(context.payload)
+        return success_result(context, summary={"written_count": 1}, result={"written_count": 1})
+
+    monkeypatch.setattr(metric_flow_module, "feishu_table_write_handler", fake_write)
+
+    result = outreach_creator_video_metric_refresh_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "creator_unique_id": "creator",
+                "source_record_id": "rec1",
+                "trigger_date": "2026-05-28",
+                "target_table_ref": "tbl",
+                "fact_db_url": runtime_db_url,
+                "source_fields": {"视频链接": {"link": "https://www.tiktok.com/@creator/video/existing"}},
+            },
+        )
+    )
+
+    assert result.status == "skipped"
+    assert result.result["skip_reason"] == "existing_link_missing_from_index"
+    assert calls == []
 
 
 def test_outreach_fallback_merges_carried_video_rows_across_retries() -> None:
@@ -258,17 +707,18 @@ def test_product_video_matching_normalizes_unique_id_and_selects_earliest_video(
     ]
 
 
-def test_outreach_projection_writes_matched_fields_and_never_overwrites_existing_video_url() -> None:
+def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_video_url() -> None:
     matched = outreach_result_projection_mapper(
         {
             "source_record_id": "rec1",
             "creator_unique_id": "creator",
-            "video_url": canonical_tiktok_video_url("creator", "123"),
-            "published_date": "2026-05-20",
+            "highest_play_video_url": canonical_tiktok_video_url("creator", "123"),
+            "earliest_published_date": "2026-05-20",
+            "total_play_count": 42,
+            "video_count": 2,
             "checked_at": "2026-05-22",
-            "match_status": "matched",
         },
-        {"workflow_code": "tiktok_influencer_outreach_sync", "stage_code": "writeback_outreach_rows"},
+        {"workflow_code": "tiktok_influencer_outreach_sync", "stage_code": "refresh_creator_video_metrics_and_writeback"},
     )
     assert matched["op"] == "update"
     assert matched["record_id"] == "rec1"
@@ -276,29 +726,51 @@ def test_outreach_projection_writes_matched_fields_and_never_overwrites_existing
         "视频链接": {"link": "https://www.tiktok.com/@creator/video/123", "text": "https://www.tiktok.com/@creator/video/123"},
         "视频发布时间": "2026-05-20",
         "检查时间": "2026-05-22",
+        "播放量": 42,
+        "视频数量": 2,
+        "更新时间": "2026-05-22",
     }
 
-    stale = outreach_result_projection_mapper(
+    refreshed = outreach_result_projection_mapper(
         {
             "source_record_id": "rec1",
-            "video_url": "https://www.tiktok.com/@creator/video/123",
-            "published_date": "2026-05-20",
+            "highest_play_video_url": "https://www.tiktok.com/@creator/video/123",
+            "earliest_published_date": "2026-05-20",
+            "total_play_count": 42,
+            "video_count": 2,
             "checked_at": "2026-05-22",
             "existing_video_url": "https://www.tiktok.com/@creator/video/existing",
-            "match_status": "matched",
+            "existing_video_published_date": "2026-05-18",
+            "existing_play_count": 40,
+            "existing_video_count": 1,
         },
         {},
     )
-    assert stale["fields"] == {"检查时间": "2026-05-22"}
+    assert refreshed["fields"] == {
+        "视频链接": {"link": "https://www.tiktok.com/@creator/video/123", "text": "https://www.tiktok.com/@creator/video/123"},
+        "播放量": 42,
+        "视频数量": 2,
+        "更新时间": "2026-05-22",
+    }
 
 
 def test_outreach_workflow_and_handler_are_registered() -> None:
     workflow = get_workflow_definition("tiktok_influencer_outreach_sync")
     assert workflow.entry_stage_code == "read_outreach_rows"
+    assert [stage.stage_code for stage in workflow.stages] == [
+        "read_outreach_rows",
+        "index_product_videos",
+        "fastmoss_security_browser_fallback",
+        "refresh_creator_video_metrics_and_writeback",
+        "ready_for_summary",
+    ]
     job = workflow.require_job("product_video_outreach_check")
     assert job.worker_type == "api_worker"
     assert job.runtime_table == "api_worker_job"
+    metric_job = workflow.require_job("outreach_creator_video_metric_refresh")
+    assert metric_job.worker_type == "api_worker"
     assert "product_video_outreach_check" in BOUND_API_HANDLERS
+    assert "outreach_creator_video_metric_refresh" in BOUND_API_HANDLERS
     assert load_workflow_runtime("tiktok_influencer_outreach_sync") is not None
 
 
@@ -346,3 +818,60 @@ def test_outreach_finalize_persists_request_and_outbox() -> None:
     assert store.update_payload["worker_id"] == ""
     assert store.outbox_payload["event_type"] == "task_request.completed"
     assert store.outbox_payload["dedupe_key"] == "task_request.completed:req1"
+
+
+def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
+    class Store:
+        def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
+            del request_id
+            jobs = [
+                {
+                    "status": "success",
+                    "payload": {"stage_code": "read_outreach_rows"},
+                    "result": {
+                        "source_rows": [{"source_record_id": "rec1"}],
+                        "adapter_summary": {"input_row_count": 2, "source_row_count": 1, "skipped_count": 1, "skip_reasons": {"missing_product_id": 1}},
+                    },
+                },
+                {
+                    "status": "success",
+                    "payload": {"stage_code": "index_product_videos"},
+                    "result": {"product_id": "p1", "fetch_status": "success", "indexed_video_count": 2, "new_video_count": 1, "updated_video_count": 1},
+                },
+                {
+                    "status": "success",
+                    "payload": {"stage_code": "refresh_creator_video_metrics_and_writeback"},
+                    "result": {
+                        "refresh_status": "success",
+                        "video_count": 2,
+                        "total_play_count": 40,
+                        "feishu_written": True,
+                        "written_fields": ["视频链接", "播放量", "视频数量"],
+                    },
+                },
+                {
+                    "status": "skipped",
+                    "payload": {"stage_code": "refresh_creator_video_metrics_and_writeback"},
+                    "result": {"refresh_status": "skipped", "skip_reason": "existing_link_missing_from_index"},
+                },
+                {
+                    "status": "failed",
+                    "payload": {"stage_code": "refresh_creator_video_metrics_and_writeback"},
+                    "result": {"refresh_status": "failed", "error_stage": "video_overview"},
+                },
+            ]
+            return [job for job in jobs if not job_code or job_code in {"feishu_table_read", "product_video_outreach_check", "outreach_creator_video_metric_refresh"}]
+
+    summary = _build_summary(
+        store=Store(),
+        request=SimpleNamespace(request_id="req", payload={}),
+    )
+
+    assert summary["final_status"] == "partial_success"
+    assert summary["indexed_video_count"] == 2
+    assert summary["creator_refresh_success_count"] == 1
+    assert summary["index_missing_skipped_count"] == 1
+    assert summary["overview_failed_count"] == 1
+    assert summary["video_count_change_count"] == 1
+    assert summary["play_count_change_count"] == 1
+    assert summary["highest_video_change_count"] == 1

@@ -19,7 +19,7 @@ from automation_business_scaffold.contracts.workflow import (
 from automation_business_scaffold.domains.tiktok.jobs import (
     FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
     FEISHU_TABLE_READ_JOB,
-    FEISHU_TABLE_WRITE_JOB,
+    OUTREACH_CREATOR_VIDEO_METRIC_REFRESH_JOB,
     PRODUCT_VIDEO_OUTREACH_CHECK_JOB,
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
@@ -50,7 +50,7 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
             optional_field("source_record_ids", "Optional subset of outreach rows to process.", type_hint="list[str]"),
             optional_field("trigger_date", "Task trigger date used as 检查时间.", type_hint="str"),
             optional_field("reply_target", "Reply target used by the final outbox.", type_hint="str"),
-            optional_field("writeback_enabled", "Explicit approval gate for Feishu writeback; defaults to false.", type_hint="bool"),
+            optional_field("writeback_enabled", "Optional Feishu writeback switch; defaults to true and explicit false disables row updates.", type_hint="bool"),
         ),
         stages=(
             StageDefinition(
@@ -68,16 +68,16 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
-                stage_code="check_product_videos",
-                description="Collect FastMoss product video lists through API worker HTTP requests and match rows by creator unique_id.",
+                stage_code="index_product_videos",
+                description="Collect FastMoss product video lists and persist product-video indexes.",
                 execution_mode="worker_jobs",
                 enter_condition="candidate rows have been grouped by SKUID",
-                exit_condition="all product video check jobs are terminal",
+                exit_condition="all product video index jobs are terminal",
                 job_bindings=(
                     StageJobBinding(
                         job_code="product_video_outreach_check",
                         flow_code="product_video_outreach_check_flow",
-                        result_consumer="outreach writeback row builder",
+                        result_consumer="creator video metric refresh fan-out",
                     ),
                 ),
             ),
@@ -96,16 +96,16 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
                 ),
             ),
             StageDefinition(
-                stage_code="writeback_outreach_rows",
-                description="Write matched video fields and successful check time back to TK outreach rows.",
+                stage_code="refresh_creator_video_metrics_and_writeback",
+                description="Refresh all known video overview metrics for each SKU creator row and write the Feishu row.",
                 execution_mode="worker_jobs",
-                enter_condition="product video checks are terminal and writeback rows are available",
-                exit_condition="outreach writeback jobs are terminal",
+                enter_condition="product video index jobs are terminal and creator rows are available",
+                exit_condition="all creator video metric refresh jobs are terminal",
                 job_bindings=(
                     StageJobBinding(
-                        job_code="feishu_table_write",
-                        mapper_code="outreach_result_projection_mapper",
-                        result_consumer="row-level outreach writeback result",
+                        job_code="outreach_creator_video_metric_refresh",
+                        flow_code="outreach_creator_video_metric_refresh_flow",
+                        result_consumer="row-level outreach metric and writeback result",
                     ),
                 ),
             ),
@@ -127,30 +127,30 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
         job_defs=(
             FEISHU_TABLE_READ_JOB,
             PRODUCT_VIDEO_OUTREACH_CHECK_JOB,
+            OUTREACH_CREATOR_VIDEO_METRIC_REFRESH_JOB,
             FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
-            FEISHU_TABLE_WRITE_JOB,
             TASK_COMPLETED_NOTIFICATION_JOB,
         ),
         transitions=(
             TransitionDefinition(
                 from_stage_code="read_outreach_rows",
-                to_stage_code="check_product_videos",
-                condition="outreach rows were read and product video check jobs can be created",
+                to_stage_code="index_product_videos",
+                condition="outreach rows were read and product video index jobs can be created",
             ),
             TransitionDefinition(
-                from_stage_code="check_product_videos",
-                to_stage_code="writeback_outreach_rows",
-                condition="product video check jobs are terminal and writeback rows are available",
+                from_stage_code="index_product_videos",
+                to_stage_code="refresh_creator_video_metrics_and_writeback",
+                condition="product video index jobs are terminal and creator metric refresh jobs can be created",
             ),
             TransitionDefinition(
-                from_stage_code="writeback_outreach_rows",
+                from_stage_code="refresh_creator_video_metrics_and_writeback",
                 to_stage_code="ready_for_summary",
-                condition="outreach writeback jobs are terminal",
+                condition="creator video metric refresh jobs are terminal",
             ),
         ),
         summary_policy=notification_summary_policy(
-            SummaryStatusRule(final_status="success", when="all product checks and writebacks succeeded"),
-            SummaryStatusRule(final_status="partial_success", when="some products or writeback batches failed after retries"),
+            SummaryStatusRule(final_status="success", when="all product indexes and creator metric refresh jobs succeeded"),
+            SummaryStatusRule(final_status="partial_success", when="some product indexes or creator metric refresh jobs failed after retries"),
             SummaryStatusRule(final_status="failed", when="outreach rows could not be read or no required side effect completed"),
             notes=("Outbox title defaults to 达人建联检查完成 and must not include FastMoss raw responses or cookies.",),
         ),

@@ -144,6 +144,56 @@ def test_tk_fact_store_records_video_creator_identity_and_metric_snapshots(runti
     assert second["share_count"] == 30
 
 
+def test_tk_fact_store_lists_videos_by_product_and_creator(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    fact_store = TKFactStore(runtime_store=store)
+
+    creator_key = fact_store.build_creator_key(unique_id="roxy_creator")
+    other_creator_key = fact_store.build_creator_key(unique_id="other_creator")
+    video_a = fact_store.upsert_video(
+        video_id="1",
+        creator_key=creator_key,
+        creator_unique_id="roxy_creator",
+        product_id="p1",
+        video_url="https://www.tiktok.com/@roxy_creator/video/1",
+        facts={"published_date": "2026-05-20"},
+    )
+    video_b = fact_store.upsert_video(
+        video_id="2",
+        creator_key=creator_key,
+        creator_unique_id="roxy_creator",
+        product_id="p2",
+        video_url="https://www.tiktok.com/@roxy_creator/video/2",
+        facts={"published_date": "2026-05-21"},
+    )
+    video_c = fact_store.upsert_video(
+        video_id="3",
+        creator_key=other_creator_key,
+        creator_unique_id="other_creator",
+        product_id="p1",
+        video_url="https://www.tiktok.com/@other_creator/video/3",
+    )
+    fact_store.upsert_video_product_relation(video_key=video_a["video_key"], product_id="p1")
+    fact_store.upsert_video_product_relation(video_key=video_b["video_key"], product_id="p2")
+    fact_store.upsert_video_product_relation(video_key=video_c["video_key"], product_id="p1")
+    for index in range(4, 9):
+        extra = fact_store.upsert_video(
+            video_id=str(index),
+            creator_key=creator_key,
+            creator_unique_id="roxy_creator",
+            product_id="p1",
+            video_url=f"https://www.tiktok.com/@roxy_creator/video/{index}",
+        )
+        fact_store.upsert_video_product_relation(video_key=extra["video_key"], product_id="p1")
+
+    videos = fact_store.list_videos_by_product_and_creator(product_id="p1", creator_unique_id="roxy_creator")
+    limited = fact_store.list_videos_by_product_and_creator(product_id="p1", creator_unique_id="roxy_creator", limit=3)
+
+    assert len(videos) == 6
+    assert [video["video_id"] for video in limited] == ["1", "4", "5"]
+    assert videos[0]["published_date"] == "2026-05-20"
+
+
 def test_tk_fact_store_skips_unchanged_relation_writes(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     fact_store = TKFactStore(runtime_store=store)

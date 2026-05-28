@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.capabilities.fact_sources.fastmoss.security import (
     build_fastmoss_session,
     fastmoss_security_fallback_required_result,
@@ -32,6 +33,7 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     _extract_data,
     _extract_list,
 )
+from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 
 
 def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResult:
@@ -93,14 +95,42 @@ def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResu
             result={"product_id": product_id, "fetch_status": "failed", "error": exc.to_dict()},
         )
 
-    result = match_outreach_rows_to_videos(
+    match_result = match_outreach_rows_to_videos(
         product_id=product_id,
         rows=rows,
         videos=videos,
         query_window=query_window,
         trigger_date=trigger_date,
     )
+    try:
+        index_result = index_product_videos(payload=payload, product_id=product_id, videos=videos)
+    except Exception as exc:  # noqa: BLE001 - worker retry boundary keeps persistence failures recoverable.
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="persistence_failure",
+                error_code="product_video_index_failed",
+                message=str(exc),
+                retryable=True,
+                details={"product_id": coerce_str(product_id)},
+            ),
+            summary={"product_id": coerce_str(product_id), "fetch_status": "failed"},
+            result={"product_id": coerce_str(product_id), "fetch_status": "failed", "error": {"message": str(exc)}},
+        )
     audit = persist_product_video_audit(context=context, product_id=product_id, videos=videos)
+    result = {
+        "product_id": coerce_str(product_id),
+        "fetch_status": "success",
+        "query_window": dict(query_window),
+        **index_result,
+        "summary": {
+            "product_id": coerce_str(product_id),
+            "fetch_status": "success",
+            "fetched_video_count": len(videos),
+            **{key: value for key, value in match_result["summary"].items() if key not in {"product_id", "fetch_status", "fetched_video_count"}},
+            **index_result,
+        },
+    }
     result["video_audit"] = audit
     result["summary"].update(
         {
@@ -109,6 +139,82 @@ def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResu
         }
     )
     return success_result(context, summary=result["summary"], result=result)
+
+
+def index_product_videos(*, payload: Mapping[str, Any], product_id: str, videos: list[Mapping[str, Any]]) -> dict[str, Any]:
+    fact_store = _create_fact_store(payload)
+    if fact_store is None:
+        if _requires_fact_db(payload):
+            raise RuntimeError("Product video outreach indexing requires Fact DB persistence, but no fact_db_url was configured.")
+        return {
+            "persistence_mode": "skipped",
+            "indexed_video_count": 0,
+            "new_video_count": 0,
+            "updated_video_count": 0,
+            "failed_video_count": 0,
+        }
+
+    indexed = 0
+    new_count = 0
+    updated_count = 0
+    failed_count = 0
+    for video in videos:
+        normalized = normalize_product_video_rows([video])[0]
+        video_id = coerce_str(normalized.get("video_id"))
+        creator_unique_id = coerce_str(normalized.get("creator_unique_id"))
+        normalized_product_id = first_non_empty(normalized.get("product_id"), product_id)
+        if not video_id or not creator_unique_id or not normalized_product_id:
+            failed_count += 1
+            continue
+        creator_key = fact_store.build_creator_key(unique_id=creator_unique_id)
+        video_url = first_non_empty(normalized.get("video_url"), canonical_tiktok_video_url(creator_unique_id, video_id))
+        published_date = coerce_str(normalized.get("published_date"))
+        fact_store.upsert_creator(
+            unique_id=creator_unique_id,
+            profile_url=f"https://www.tiktok.com/@{creator_unique_id}",
+            source_platform="fastmoss",
+        )
+        video_row = fact_store.upsert_video(
+            video_id=video_id,
+            creator_key=creator_key,
+            creator_unique_id=creator_unique_id,
+            product_id=normalized_product_id,
+            video_url=video_url,
+            source_platform="fastmoss",
+            facts={
+                "published_date": published_date,
+                "create_date": published_date,
+                "source_endpoint": "goods.v3.video",
+            },
+            include_mutation_status=True,
+        )
+        if not video_row:
+            failed_count += 1
+            continue
+        fact_store.upsert_creator_video_relation(
+            creator_key=creator_key,
+            video_key=video_row["video_key"],
+            source_platform="fastmoss",
+            metadata={"source_endpoint": "goods.v3.video"},
+        )
+        fact_store.upsert_video_product_relation(
+            video_key=video_row["video_key"],
+            product_id=normalized_product_id,
+            source_platform="fastmoss",
+            metadata={"source_endpoint": "goods.v3.video"},
+        )
+        indexed += 1
+        if video_row.get("_mutation_status") == "created":
+            new_count += 1
+        else:
+            updated_count += 1
+    return {
+        "persistence_mode": "database",
+        "indexed_video_count": indexed,
+        "new_video_count": new_count,
+        "updated_video_count": updated_count,
+        "failed_video_count": failed_count,
+    }
 
 
 def _resolve_product_videos(payload: Mapping[str, Any], *, product_id: str, query_window: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -121,7 +227,7 @@ def _resolve_product_videos(payload: Mapping[str, Any], *, product_id: str, quer
         return []
     if not live_fetch:
         raise FastMossAuthError("FastMoss live fetch config is missing for product video outreach check.")
-    page_size = _positive_int(first_non_empty(payload.get("fastmoss_video_page_size"), fastmoss_settings.get("video_page_size")), default=5)
+    page_size = 5
     max_pages = _optional_positive_int(first_non_empty(payload.get("fastmoss_video_max_pages"), fastmoss_settings.get("video_max_pages")))
     fastmoss_settings.setdefault("fastmoss_api_request_delay_min_seconds", 1.0)
     fastmoss_settings.setdefault("fastmoss_api_request_delay_max_seconds", 3.0)
@@ -249,15 +355,15 @@ def normalize_product_video_rows(rows: list[Mapping[str, Any]]) -> list[dict[str
     normalized: list[dict[str, Any]] = []
     for row in rows:
         author = coerce_mapping(row.get("author"))
-        creator_unique_id = first_non_empty(row.get("unique_id"), author.get("unique_id"))
+        creator_unique_id = first_non_empty(row.get("creator_unique_id"), row.get("unique_id"), author.get("unique_id"))
         video_id = first_non_empty(row.get("video_id"), row.get("id"))
         normalized.append(
             {
                 "product_id": first_non_empty(row.get("product_id"), row.get("goods_id")),
                 "creator_unique_id": creator_unique_id,
                 "video_id": video_id,
-                "published_date": first_non_empty(row.get("create_date"), row.get("published_date")),
-                "video_url": canonical_tiktok_video_url(creator_unique_id, video_id),
+                "published_date": first_non_empty(row.get("published_date"), row.get("create_date")),
+                "video_url": first_non_empty(row.get("video_url"), canonical_tiktok_video_url(creator_unique_id, video_id)),
             }
         )
     return normalized
@@ -344,8 +450,42 @@ def _optional_positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _create_fact_store(payload: Mapping[str, Any]) -> TKFactStore | None:
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    fact_db_url = first_non_empty(
+        payload.get("fact_db_url"),
+        request_payload.get("fact_db_url"),
+        request_payload.get("execution_control_fact_db_url"),
+        coerce_mapping(payload.get("persistence")).get("fact_db_url"),
+        coerce_mapping(request_payload.get("persistence")).get("fact_db_url"),
+        payload.get("db_url"),
+        request_payload.get("db_url"),
+    )
+    if not fact_db_url and _requires_fact_db(payload):
+        fact_db_url = get_execution_control_defaults().fact_db_url
+    return TKFactStore(db_url=fact_db_url) if fact_db_url else None
+
+
+def _requires_fact_db(payload: Mapping[str, Any]) -> bool:
+    request_payload = coerce_mapping(payload.get("request_payload"))
+    for source in (
+        payload,
+        request_payload,
+        coerce_mapping(payload.get("persistence")),
+        coerce_mapping(request_payload.get("persistence")),
+    ):
+        for key in ("requires_fact_db", "require_database_persistence", "strict_persistence"):
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+            if coerce_str(value).lower() in {"1", "true", "yes", "on"}:
+                return True
+    return False
+
+
 __all__ = [
     "canonical_tiktok_video_url",
+    "index_product_videos",
     "match_outreach_rows_to_videos",
     "normalize_product_video_rows",
     "persist_product_video_audit",

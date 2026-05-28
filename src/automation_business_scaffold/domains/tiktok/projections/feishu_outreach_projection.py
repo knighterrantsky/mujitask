@@ -6,16 +6,32 @@ from typing import Any
 
 def outreach_result_projection_mapper(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     existing_video_url = _first_non_empty(record.get("existing_video_url"), _mapping(record.get("source_fields")).get("视频链接"))
-    matched = _text(record.get("match_status")) == "matched" or bool(record.get("video_url"))
+    existing_published_date = _first_non_empty(
+        record.get("existing_video_published_date"),
+        _mapping(record.get("source_fields")).get("视频发布时间"),
+    )
     fields: dict[str, Any] = {}
-    if matched and not existing_video_url:
-        fields["视频链接"] = _link_value(record.get("video_url"))
-        published_date = _text(record.get("published_date"))
-        if published_date:
-            fields["视频发布时间"] = published_date
+    video_url = _first_non_empty(record.get("highest_play_video_url"), record.get("video_url"))
+    if video_url and video_url != _text_value(existing_video_url):
+        fields["视频链接"] = _link_value(video_url)
+    published_date = _first_non_empty(record.get("earliest_published_date"), record.get("published_date"))
+    if published_date and not _text_value(existing_published_date):
+        fields["视频发布时间"] = published_date
     check_time = _first_non_empty(record.get("checked_at"), payload.get("trigger_date"), payload.get("check_time"))
-    if check_time:
+    if check_time and not existing_video_url:
         fields["检查时间"] = check_time
+    if "total_play_count" in record or "play_count" in record:
+        play_count = _int(_first_non_empty(record.get("total_play_count"), record.get("play_count")))
+        if play_count != _int(_first_non_empty(record.get("existing_play_count"), _mapping(record.get("source_fields")).get("播放量"))):
+            fields["播放量"] = play_count
+    if "video_count" in record:
+        video_count = _int(record.get("video_count"))
+        if video_count != _int(_first_non_empty(record.get("existing_video_count"), _mapping(record.get("source_fields")).get("视频数量"))):
+            fields["视频数量"] = video_count
+    if fields:
+        updated_at = _first_non_empty(record.get("updated_at"), payload.get("trigger_date"), payload.get("check_time"), check_time)
+        if updated_at:
+            fields["更新时间"] = updated_at
     return _normalize_write_record(
         {
             "op": "update",
@@ -44,6 +60,24 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
 def _link_value(value: Any) -> Any:
     url = _text(value)
     return {"link": url, "text": url} if url else ""
+
+
+def _text_value(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _first_non_empty(value.get("link"), value.get("text"), value.get("value"), value.get("name"))
+    if isinstance(value, list):
+        return _first_non_empty(*(_text_value(item) for item in value))
+    return _text(value)
+
+
+def _int(value: Any) -> int:
+    text = _text_value(value).replace(",", "")
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _source_context_from_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

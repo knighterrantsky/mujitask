@@ -246,6 +246,7 @@ class TKFactStore(TKFactQueryAccess):
         source_platform: str = "",
         status: str = "active",
         facts: Mapping[str, Any] | None = None,
+        include_mutation_status: bool = False,
     ) -> dict[str, Any]:
         video_id = _clean_text(video_id)
         video_key = f"video:{video_id}" if video_id else ""
@@ -271,6 +272,7 @@ class TKFactStore(TKFactQueryAccess):
                 "status": _clean_text(status) or "active",
                 "facts_json": _json_dumps(facts),
             },
+            include_mutation_status=include_mutation_status,
         )
 
     def upsert_media_asset(
@@ -438,6 +440,7 @@ class TKFactStore(TKFactQueryAccess):
         product_id: str,
         source_platform: str = "",
         metadata: Mapping[str, Any] | None = None,
+        include_mutation_status: bool = False,
     ) -> dict[str, Any]:
         video_key = _clean_text(video_key)
         product_id = _clean_text(product_id)
@@ -452,6 +455,7 @@ class TKFactStore(TKFactQueryAccess):
                 "source_platform": _clean_text(source_platform),
                 "metadata_json": _json_dumps(metadata),
             },
+            include_mutation_status=include_mutation_status,
         )
 
     def upsert_shop_creator_relation(

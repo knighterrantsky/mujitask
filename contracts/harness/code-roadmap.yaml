@@ -992,3 +992,66 @@ features:
       - tk_videos keeps creator_key and adds creator_uid plus creator_unique_id for external author matching.
       - Product-video membership is canonical in tk_video_product_relations.
       - Video play, digg, comment, and share metrics are append-only snapshots in tk_video_metric_snapshots.
+
+  - feature_code: tk_influencer_outreach_sync
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - docs/business/requirements/tk-influencer-outreach.md
+      - docs/arch/workflow-influencer-outreach-design.md
+      - contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/domains/tiktok/workflows/tiktok_influencer_outreach_sync.py
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_influencer_outreach_sync/orchestrator.py
+      - src/automation_business_scaffold/domains/tiktok/flows/outreach_product_videos.py
+      - src/automation_business_scaffold/domains/tiktok/flows/outreach_creator_video_metrics.py
+      - src/automation_business_scaffold/domains/tiktok/mappers/feishu_outreach_source_mapper.py
+      - src/automation_business_scaffold/infrastructure/facts/fact_queries.py
+      - tests/test_tiktok_influencer_outreach_sync.py
+      - tests/test_tk_fact_store.py
+    source_contracts:
+      - docs/business/requirements/tk-influencer-outreach.md
+      - docs/arch/workflow-influencer-outreach-design.md
+      - contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - docs/business/requirements/tk-influencer-outreach.md
+      - docs/arch/workflow-influencer-outreach-design.md
+      - contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/contracts/handler/**
+      - src/automation_business_scaffold/domains/tiktok/workflows/**
+      - src/automation_business_scaffold/domains/tiktok/flows/**
+      - src/automation_business_scaffold/domains/tiktok/jobs/**
+      - src/automation_business_scaffold/domains/tiktok/mappers/**
+      - src/automation_business_scaffold/domains/tiktok/projections/**
+      - src/automation_business_scaffold/infrastructure/facts/**
+      - tests/test_tiktok_influencer_outreach_sync.py
+      - tests/test_tk_fact_store.py
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+    done_gate:
+      tests:
+        - tests/test_tiktok_influencer_outreach_sync.py
+        - tests/test_tk_fact_store.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_completion_claim_gate.py
+      commands:
+        - uv run --extra dev pytest tests/test_tiktok_influencer_outreach_sync.py tests/test_tk_fact_store.py::test_tk_fact_store_records_video_creator_identity_and_metric_snapshots tests/test_tk_fact_store.py::test_tk_fact_store_lists_videos_by_product_and_creator
+        - uv run --extra dev pytest tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - Source adapter reads SKUID, 达人ID, 视频链接, 视频发布时间, 检查时间, 播放量, 视频数量, and 更新时间 without skipping existing video-link rows.
+      - Product video jobs index tk_videos and tk_video_product_relations; list play_count is not used as final playback.
+      - Creator metric refresh jobs query all known SKU + creator videos, require all overview calls to succeed, append video metric snapshots, aggregate metrics, and write the Feishu row.
+      - Workflow has no standalone writeback_outreach_rows stage; row writeback is inside outreach_creator_video_metric_refresh.
+      - No local cursor table is introduced.

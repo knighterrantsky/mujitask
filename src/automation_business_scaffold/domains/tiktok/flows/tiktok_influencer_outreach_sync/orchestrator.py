@@ -28,9 +28,9 @@ TASK_CODE = "tiktok_influencer_outreach_sync"
 WORKFLOW = get_workflow_definition(TASK_CODE)
 WORKFLOW_CODE = WORKFLOW.workflow_code
 READ_STAGE_CODE = "read_outreach_rows"
-CHECK_STAGE_CODE = "check_product_videos"
+CHECK_STAGE_CODE = "index_product_videos"
 FALLBACK_STAGE_CODE = "fastmoss_security_browser_fallback"
-WRITEBACK_STAGE_CODE = "writeback_outreach_rows"
+REFRESH_STAGE_CODE = "refresh_creator_video_metrics_and_writeback"
 SUMMARY_STAGE_CODE = "ready_for_summary"
 ACTIVE_STATUSES = {"pending", "running", "waiting"}
 TERMINAL_STATUSES = {"success", "skipped", "partial_success", "failed"}
@@ -45,8 +45,8 @@ def advance_stage(*, store: Any, request: Any, workflow: Any, stage_code: str) -
         return _advance_check(store=store, request=request)
     if stage_code == FALLBACK_STAGE_CODE:
         return _advance_fallback(store=store, request=request)
-    if stage_code == WRITEBACK_STAGE_CODE:
-        return _advance_writeback(store=store, request=request)
+    if stage_code == REFRESH_STAGE_CODE:
+        return _advance_refresh(store=store, request=request)
     if stage_code == SUMMARY_STAGE_CODE:
         return finalize_request(store=store, request=request, workflow=WORKFLOW)
     return {
@@ -64,9 +64,9 @@ def release_request_after_child_completion(store: Any, *, request_id: str) -> li
     if str(request.status or "") in {"finished", "cancelled"}:
         return []
     current_stage = _current_stage(request)
-    if current_stage not in {READ_STAGE_CODE, CHECK_STAGE_CODE, FALLBACK_STAGE_CODE, WRITEBACK_STAGE_CODE}:
+    if current_stage not in {READ_STAGE_CODE, CHECK_STAGE_CODE, FALLBACK_STAGE_CODE, REFRESH_STAGE_CODE}:
         return []
-    if current_stage == CHECK_STAGE_CODE:
+    if current_stage in {CHECK_STAGE_CODE, REFRESH_STAGE_CODE}:
         if _has_pending_or_running_jobs(store=store, request_id=request_id, stage_code=current_stage):
             return []
     elif _has_active_jobs(store=store, request_id=request_id, stage_code=current_stage):
@@ -193,7 +193,7 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
         request_payload = dict(request.payload or {})
         trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
         source_rows = _read_source_rows(store=store, request_id=request.request_id)
-        product_groups = group_outreach_rows_by_product(source_rows, trigger_date=trigger_date)
+        product_groups = group_outreach_rows_by_product(source_rows, trigger_date=trigger_date, request_payload=request_payload)
         resolved_job = WORKFLOW.resolve_stage_jobs(CHECK_STAGE_CODE)[0]
         jobs = []
         for group in product_groups:
@@ -230,12 +230,12 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
             )
         if jobs:
             return _waiting(CHECK_STAGE_CODE, "Executor dispatched API product video outreach checks.", {"dispatch_payload": enqueue_result})
-        return _advance(WRITEBACK_STAGE_CODE, {"candidate_count": 0})
+        return _advance(REFRESH_STAGE_CODE, {"candidate_count": 0})
     if _has_pending_or_running_jobs(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE):
         return _waiting(CHECK_STAGE_CODE, "API product video outreach checks are still running.")
     if _fallback_candidates(store=store, request_id=request.request_id):
         return _advance(FALLBACK_STAGE_CODE, {"stage_transition": "product_video_check_requires_browser_fallback"})
-    return _advance(WRITEBACK_STAGE_CODE, {"stage_transition": "product_video_checks_terminal"})
+    return _advance(REFRESH_STAGE_CODE, {"stage_transition": "product_video_indexes_terminal"})
 
 
 def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
@@ -244,7 +244,7 @@ def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
     if not candidates:
         if any_browser_executions_active(executions):
             return _waiting(FALLBACK_STAGE_CODE, "Waiting for FastMoss security browser fallback to finish.")
-        return _advance(CHECK_STAGE_CODE, {"fallback_candidate_count": 0})
+        return _advance(_stage_after_fallback(store=store, request_id=request.request_id), {"fallback_candidate_count": 0})
     candidates = candidates[:1]
     fallback_digest = _fallback_digest(candidates)
     relevant_executions = [execution for execution in executions if _execution_payload(execution).get("fallback_digest") == fallback_digest]
@@ -257,53 +257,66 @@ def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
     if extract_handler_result_status(execution) in {"success", "partial_success"}:
         requeued = []
         for candidate in candidates:
+            source_stage = str((candidate.get("payload") or {}).get("stage_code") or CHECK_STAGE_CODE)
             requeued.append(
                 store.requeue_waiting_api_worker_job(
                     job_id=str(candidate.get("job_id") or ""),
                     payload=_after_browser_payload(candidate=candidate, execution=execution),
-                    stage=CHECK_STAGE_CODE,
+                    stage=source_stage,
                 )
             )
-        return _waiting(CHECK_STAGE_CODE, "Requeued product video checks after FastMoss browser fallback.", {"requeued_count": len(requeued)})
-    return _advance(CHECK_STAGE_CODE, {"fallback_status": "failed", "browser_execution_status": extract_handler_result_status(execution)})
+        return _waiting(_stage_after_fallback(store=store, request_id=request.request_id), "Requeued FastMoss jobs after browser fallback.", {"requeued_count": len(requeued)})
+    return _advance(_stage_after_fallback(store=store, request_id=request.request_id), {"fallback_status": "failed", "browser_execution_status": extract_handler_result_status(execution)})
 
 
-def _advance_writeback(*, store: Any, request: Any) -> dict[str, Any]:
-    existing = _stage_jobs(store=store, request_id=request.request_id, stage_code=WRITEBACK_STAGE_CODE, job_code="feishu_table_write")
+def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
+    existing = _stage_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=REFRESH_STAGE_CODE,
+        job_code="outreach_creator_video_metric_refresh",
+    )
     if not existing:
         request_payload = dict(request.payload or {})
-        writeback_groups = _build_writeback_groups(store=store, request_id=request.request_id)
-        if not _writeback_enabled(request_payload):
-            planned_count = sum(len(group.get("records") or []) for group in writeback_groups)
-            return _advance(
-                SUMMARY_STAGE_CODE,
-                {"writeback_suppressed": True, "planned_writeback_count": planned_count, "reason": "writeback_not_approved"},
-            )
+        trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
+        source_rows = _read_source_rows(store=store, request_id=request.request_id)
+        successful_products = _successful_index_product_ids(store=store, request_id=request.request_id)
+        resolved_job = WORKFLOW.resolve_stage_jobs(REFRESH_STAGE_CODE)[0]
         jobs = []
         target_table_ref = request_payload.get("target_table_ref") or request_payload.get("source_table_ref")
-        for group in writeback_groups:
-            records = list(group.get("records") or [])
-            product_id = str(group.get("product_id") or "").strip()
-            if not records:
+        for row in source_rows:
+            product_id = str(row.get("product_id") or "").strip()
+            creator_unique_id = str(row.get("creator_unique_id") or "").strip()
+            source_record_id = str(row.get("source_record_id") or "").strip()
+            if not product_id or not creator_unique_id or not source_record_id:
                 continue
+            if product_id not in successful_products:
+                continue
+            job_payload = {
+                "request_id": request.request_id,
+                "task_code": TASK_CODE,
+                "workflow_code": WORKFLOW_CODE,
+                "stage_code": REFRESH_STAGE_CODE,
+                "request_payload": request_payload,
+                "target_table_ref": target_table_ref,
+                "trigger_date": trigger_date,
+                **row,
+                **_fastmoss_common_payload(request_payload),
+                **_feishu_common_payload(request_payload),
+            }
+            keys = render_job_keys(
+                resolved_job,
+                job_payload,
+                request_id=request.request_id,
+                task_code=TASK_CODE,
+                workflow_code=WORKFLOW_CODE,
+                stage_code=REFRESH_STAGE_CODE,
+            )
             jobs.append(
                 {
-                    "business_key": f"{target_table_ref}:product:{product_id}",
-                    "dedupe_key": f"{request.request_id}:feishu_table_write:{target_table_ref}:product:{product_id}",
-                    "payload": {
-                        "request_id": request.request_id,
-                        "task_code": TASK_CODE,
-                        "workflow_code": WORKFLOW_CODE,
-                        "stage_code": WRITEBACK_STAGE_CODE,
-                        "request_payload": request_payload,
-                        "target_table_ref": target_table_ref,
-                        "mapper_code": "outreach_result_projection_mapper",
-                        "write_mode": "update",
-                        "product_id": product_id,
-                        "records": records,
-                        "trigger_date": str(request_payload.get("trigger_date") or date.today().isoformat()),
-                        **_feishu_common_payload(request_payload),
-                    },
+                    "business_key": keys["business_key"],
+                    "dedupe_key": keys["dedupe_key"],
+                    "payload": job_payload,
                 }
             )
         enqueue_result = {"created_count": 0, "updated_count": 0, "skipped_count": 0}
@@ -311,26 +324,32 @@ def _advance_writeback(*, store: Any, request: Any) -> dict[str, Any]:
             enqueue_result = store.enqueue_api_worker_jobs(
                 request_id=request.request_id,
                 task_code=TASK_CODE,
-                job_code="feishu_table_write",
+                job_code="outreach_creator_video_metric_refresh",
                 jobs=jobs,
             )
-            return _waiting(WRITEBACK_STAGE_CODE, "Executor dispatched outreach writebacks.", {"dispatch_payload": enqueue_result})
-        return _advance(SUMMARY_STAGE_CODE, {"writeback_record_count": 0})
-    if _has_active_jobs(store=store, request_id=request.request_id, stage_code=WRITEBACK_STAGE_CODE):
-        return _waiting(WRITEBACK_STAGE_CODE, "Outreach writebacks are still running.")
-    return _advance(SUMMARY_STAGE_CODE, {"stage_transition": "writeback_terminal"})
+            return _waiting(REFRESH_STAGE_CODE, "Executor dispatched outreach creator video metric refresh jobs.", {"dispatch_payload": enqueue_result})
+        return _advance(SUMMARY_STAGE_CODE, {"creator_refresh_job_count": 0})
+    if _has_pending_or_running_jobs(store=store, request_id=request.request_id, stage_code=REFRESH_STAGE_CODE):
+        return _waiting(REFRESH_STAGE_CODE, "Outreach creator video metric refresh jobs are still running.")
+    if _fallback_candidates(store=store, request_id=request.request_id):
+        return _advance(FALLBACK_STAGE_CODE, {"stage_transition": "creator_video_metric_refresh_requires_browser_fallback"})
+    return _advance(SUMMARY_STAGE_CODE, {"stage_transition": "creator_video_metric_refresh_terminal"})
 
 
 def _fallback_candidates(*, store: Any, request_id: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for job in _stage_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check"):
-        payload = job.get("payload") or {}
-        if str(job.get("status") or "") != "waiting":
-            continue
-        if int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) >= MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS:
-            continue
-        if is_fallback_required(job):
-            candidates.append(job)
+    for stage_code, job_code in (
+        (CHECK_STAGE_CODE, "product_video_outreach_check"),
+        (REFRESH_STAGE_CODE, "outreach_creator_video_metric_refresh"),
+    ):
+        for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code):
+            payload = job.get("payload") or {}
+            if str(job.get("status") or "") != "waiting":
+                continue
+            if int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) >= MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS:
+                continue
+            if is_fallback_required(job):
+                candidates.append(job)
     return candidates
 
 
@@ -338,11 +357,12 @@ def _dispatch_fallback(*, store: Any, request: Any, candidates: list[dict[str, A
     job_def = WORKFLOW.require_job("fastmoss_security_browser_resolve")
     source_job = candidates[0]
     fallback_payload = _fallback_payload_from_job(source_job)
+    source_stage = str((source_job.get("payload") or {}).get("stage_code") or CHECK_STAGE_CODE)
     payload = {
         **_fastmoss_common_payload(dict(request.payload or {})),
         "stage_code": FALLBACK_STAGE_CODE,
         "fallback_digest": fallback_digest,
-        "source_stage_code": CHECK_STAGE_CODE,
+        "source_stage_code": source_stage,
         "source_job_ids": [str(job.get("job_id") or "") for job in candidates],
         "search_query": str(fallback_payload.get("search_query") or fallback_digest),
         "search_digest": fallback_digest,
@@ -401,11 +421,12 @@ def _fallback_payload_from_job(job: Mapping[str, Any]) -> dict[str, Any]:
 
 def _after_browser_payload(*, candidate: Mapping[str, Any], execution: Any) -> dict[str, Any]:
     payload = dict(candidate.get("payload") or {})
+    source_stage = str(payload.get("stage_code") or CHECK_STAGE_CODE)
     resume_page = _fallback_error_page(candidate)
     partial_rows = _fallback_partial_rows(candidate)
     payload.update(
         {
-            "stage_code": CHECK_STAGE_CODE,
+            "stage_code": source_stage,
             "browser_fallback_resolved": True,
             "browser_fallback_handler": "fastmoss_security_browser_resolve",
             "browser_execution_id": str(getattr(execution, "execution_id", "") or ""),
@@ -482,16 +503,23 @@ def _read_source_rows(*, store: Any, request_id: str) -> list[dict[str, Any]]:
     return []
 
 
-def _build_writeback_groups(*, store: Any, request_id: str) -> list[dict[str, Any]]:
-    groups: list[dict[str, Any]] = []
+def _successful_index_product_ids(*, store: Any, request_id: str) -> set[str]:
+    product_ids: set[str] = set()
     for job in _stage_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check"):
         result = extract_effective_result_payload(job)
-        if not isinstance(result, dict) or result.get("fetch_status") != "success":
-            continue
-        records = [row for row in list(result.get("matched_rows") or []) + list(result.get("unmatched_rows") or []) if isinstance(row, dict)]
-        if records:
-            groups.append({"product_id": str(result.get("product_id") or "").strip(), "records": records})
-    return groups
+        if isinstance(result, dict) and result.get("fetch_status") == "success":
+            product_id = str(result.get("product_id") or "").strip()
+            if product_id:
+                product_ids.add(product_id)
+    return product_ids
+
+
+def _stage_after_fallback(*, store: Any, request_id: str) -> str:
+    if _has_pending_or_running_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE):
+        return CHECK_STAGE_CODE
+    if _stage_jobs(store=store, request_id=request_id, stage_code=REFRESH_STAGE_CODE, job_code="outreach_creator_video_metric_refresh"):
+        return REFRESH_STAGE_CODE
+    return CHECK_STAGE_CODE
 
 
 def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
@@ -501,25 +529,82 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
         if isinstance(result, dict):
             read_result = result
             break
-    check_jobs = _stage_jobs(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check")
-    write_jobs = _stage_jobs(store=store, request_id=request.request_id, stage_code=WRITEBACK_STAGE_CODE, job_code="feishu_table_write")
-    matched = 0
-    unmatched = 0
+    check_jobs = _stage_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=CHECK_STAGE_CODE,
+        job_code="product_video_outreach_check",
+    )
+    refresh_jobs = _stage_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=REFRESH_STAGE_CODE,
+        job_code="outreach_creator_video_metric_refresh",
+    )
+    indexed_video_count = 0
+    new_video_count = 0
+    updated_video_count = 0
     product_success = 0
     product_failed = 0
     for job in check_jobs:
         result = extract_effective_result_payload(job)
         if isinstance(result, dict) and result.get("fetch_status") == "success":
             product_success += 1
-            matched += len(result.get("matched_rows") or [])
-            unmatched += len(result.get("unmatched_rows") or [])
+            indexed_video_count += int(result.get("indexed_video_count") or 0)
+            new_video_count += int(result.get("new_video_count") or 0)
+            updated_video_count += int(result.get("updated_video_count") or 0)
         elif extract_handler_result_status(job) in {"failed", "fallback_required"} or str(
             job.get("result_status") or job.get("status") or ""
         ) in {"failed", "waiting"}:
             product_failed += 1
-    write_success = sum(int((job.get("summary") or {}).get("written_count") or 0) for job in write_jobs if isinstance(job.get("summary"), dict))
-    write_failed = sum(int((job.get("summary") or {}).get("failed_count") or 0) for job in write_jobs if isinstance(job.get("summary"), dict))
-    final_status = "failed" if product_success == 0 and product_failed > 0 else "partial_success" if product_failed or write_failed else "success"
+    refresh_success = 0
+    refresh_skipped = 0
+    refresh_failed = 0
+    feishu_written = 0
+    feishu_failed = 0
+    video_count_total = 0
+    play_count_total = 0
+    no_video_checked = 0
+    index_missing_skipped = 0
+    overview_failed = 0
+    video_count_changed = 0
+    play_count_changed = 0
+    highest_video_changed = 0
+    for job in refresh_jobs:
+        result = extract_effective_result_payload(job)
+        status = extract_handler_result_status(job)
+        if isinstance(result, dict) and result.get("refresh_status") == "success":
+            refresh_success += 1
+            video_count_total += int(result.get("video_count") or 0)
+            play_count_total += int(result.get("total_play_count") or 0)
+            written_fields = set(result.get("written_fields") or [])
+            if int(result.get("video_count") or 0) == 0 and "检查时间" in written_fields:
+                no_video_checked += 1
+            if "视频数量" in written_fields:
+                video_count_changed += 1
+            if "播放量" in written_fields:
+                play_count_changed += 1
+            if "视频链接" in written_fields:
+                highest_video_changed += 1
+            if result.get("feishu_written"):
+                feishu_written += 1
+        elif status == "skipped" or (isinstance(result, dict) and result.get("refresh_status") == "skipped"):
+            refresh_skipped += 1
+            if isinstance(result, dict) and result.get("skip_reason") == "existing_link_missing_from_index":
+                index_missing_skipped += 1
+        elif status in {"failed", "fallback_required"} or str(job.get("result_status") or job.get("status") or "") in {"failed", "waiting"}:
+            refresh_failed += 1
+            if isinstance(result, dict) and result.get("error_stage") == "video_overview":
+                overview_failed += 1
+            if isinstance(result, dict) and result.get("feishu_write"):
+                feishu_failed += 1
+    final_status = (
+        "failed"
+        if product_success == 0 and refresh_success == 0 and (product_failed or refresh_failed)
+        else "partial_success"
+        if product_failed or refresh_failed
+        else "success"
+    )
     adapter_summary = read_result.get("adapter_summary") if isinstance(read_result, dict) else {}
     return {
         "final_status": final_status,
@@ -531,10 +616,22 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
         "product_count": len(check_jobs),
         "product_fetch_success_count": product_success,
         "product_fetch_failed_count": product_failed,
-        "matched_row_count": matched,
-        "unmatched_checked_row_count": unmatched,
-        "feishu_write_success_count": write_success,
-        "feishu_write_failed_count": write_failed,
+        "indexed_video_count": indexed_video_count,
+        "new_video_count": new_video_count,
+        "updated_video_count": updated_video_count,
+        "creator_refresh_success_count": refresh_success,
+        "creator_refresh_skipped_count": refresh_skipped,
+        "creator_refresh_failed_count": refresh_failed,
+        "no_video_checked_count": no_video_checked,
+        "index_missing_skipped_count": index_missing_skipped,
+        "overview_failed_count": overview_failed,
+        "feishu_write_success_count": feishu_written,
+        "feishu_write_failed_count": feishu_failed,
+        "video_count_change_count": video_count_changed,
+        "play_count_change_count": play_count_changed,
+        "highest_video_change_count": highest_video_changed,
+        "aggregated_video_count": video_count_total,
+        "aggregated_play_count": play_count_total,
     }
 
 

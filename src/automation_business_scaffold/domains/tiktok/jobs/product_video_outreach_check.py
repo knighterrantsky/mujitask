@@ -21,12 +21,13 @@ PRODUCT_VIDEO_OUTREACH_CHECK_JOB = JobDefinition(
         "product_video_outreach_check_result",
         required_field("product_id", "FastMoss product_id / SKUID.", type_hint="str"),
         required_field("fetch_status", "success or failed.", type_hint="str"),
-        optional_field("matched_rows", "Rows with matched videos.", type_hint="list[dict[str, Any]]"),
-        optional_field("unmatched_rows", "Rows without matched videos after successful fetch.", type_hint="list[dict[str, Any]]"),
+        optional_field("indexed_video_count", "Videos indexed into Fact DB for this product.", type_hint="int"),
+        optional_field("new_video_count", "New video master rows created for this product.", type_hint="int"),
+        optional_field("updated_video_count", "Existing video master rows seen or updated for this product.", type_hint="int"),
     ),
     business_key_template="product:{product_id}",
     dedupe_key_template="{request_id}:{stage_code}:{product_id}:{query_window}",
-    side_effects=("fastmoss.request", "artifact.write", "runtime_db"),
+    side_effects=("fastmoss.request", "artifact.write", "fact_db.write", "runtime_db"),
 )
 
 JOB_DEFINITION = PRODUCT_VIDEO_OUTREACH_CHECK_JOB
