@@ -164,7 +164,7 @@ flowchart TD
 }
 ```
 
-该 job 调用 `/api/goods/v3/video`，`pagesize=5`，分页直到接口无数据、当前页不足 page size 或达到 `data.total`。
+该 job 调用 `/api/goods/v3/video`，`pagesize=5`，分页直到接口无数据、当前页不足 page size 或达到 `data.total`。如果单页请求返回 HTTP 200 但 FastMoss 业务 `code=500`，视为页级临时失败，按 10/20/30 秒退避重试当前页；重试耗尽后该 SKU 索引失败，result 记录已抓取的 `partial_video_rows` 和 `failed_page`，该 SKU 下达人刷新不派发。
 
 职责：
 
@@ -277,6 +277,18 @@ Runtime result 只保存小型归一化结果和计数，不保存完整 FastMos
 - 单条 video overview 成功后才写入一条 `tk_video_metric_snapshots`。
 - 同一 `SKU + creator_unique_id` 下所有目标视频 overview 全部成功后，才计算并写回聚合结果。
 - overview 失败不能写半截 `播放量`、`视频数量` 或最高播放视频链接。
+
+### 7.3 FastMoss browser fallback
+
+`fastmoss_security_browser_resolve` 默认使用浏览器 profile 的现有 FastMoss 登录态。打开 profile 后先导出当前 `fastmoss.com` cookie 摘要；如果 profile 已有 `fd_tk`，不注入纯 HTTP 登录接口产生的 cookie，避免覆盖浏览器风控态。
+
+只有以下情况才允许导入纯 HTTP 登录 cookie：
+
+- profile 中没有 `fd_tk`。
+- 显式要求配置登录或清理浏览器会话后重新登录。
+- payload 显式开启 `fastmoss_browser_import_login_cookies` 或 `fastmoss_import_login_cookies`。
+
+如果 payload 未传 browser profile，fallback 使用环境配置中的 `DEFAULT_PROFILE_REF`，本地 Roxy 测试默认应指向 `roxy-tiktok`。
 
 ## 8. 飞书写回设计
 

@@ -639,6 +639,138 @@ def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_
     assert loaded["cookies"][0]["value"] == "configured-a-token"
 
 
+def test_fastmoss_security_browser_resolve_reuses_profile_login_cookie_before_http_login(
+    monkeypatch,
+    runtime_db_url: str,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeBrowserContext:
+        def __init__(self) -> None:
+            self.cookies_ = [
+                {
+                    "name": "fd_tk",
+                    "value": "browser-profile-token",
+                    "domain": ".fastmoss.com",
+                    "path": "/",
+                    "secure": True,
+                }
+            ]
+
+        def cookies(self, *_args: object) -> list[dict[str, object]]:
+            calls.append(("cookies", {}))
+            return [dict(cookie) for cookie in self.cookies_]
+
+        def add_cookies(self, cookies: list[dict[str, object]]) -> None:
+            calls.append(("add_cookies", {"cookies": [dict(cookie) for cookie in cookies]}))
+            self.cookies_ = [dict(cookie) for cookie in cookies]
+
+    class _FakeRawPage:
+        def __init__(self) -> None:
+            self.context = _FakeBrowserContext()
+
+    class _FakeOpenPage:
+        def __init__(self, raw_page: _FakeRawPage) -> None:
+            self.raw_page = raw_page
+
+        def __enter__(self) -> SimpleNamespace:
+            return SimpleNamespace(page=self.raw_page, raw_page=self.raw_page)
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    raw_page = _FakeRawPage()
+
+    def fake_open_page(**kwargs: object) -> _FakeOpenPage:
+        calls.append(("open_page", dict(kwargs)))
+        return _FakeOpenPage(raw_page)
+
+    def fail_http_login(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("profile login cookie should be reused before HTTP login bootstrap")
+
+    monkeypatch.setenv("DEFAULT_PROFILE_REF", "roxy-tiktok")
+    monkeypatch.setattr(fastmoss_security_handler, "_bootstrap_fastmoss_login_cookies", fail_http_login)
+    monkeypatch.setattr(fastmoss_security_handler, "open_automation_page", fake_open_page)
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_page_goto",
+        lambda _page, url, **_kwargs: calls.append(("goto", {"url": url})),
+    )
+    monkeypatch.setattr(fastmoss_security_handler, "_safe_wait_for_timeout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fastmoss_security_handler, "_read_fastmoss_slider_state", lambda *_args: {"visible": False})
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_try_resolve_fastmoss_slider_security_check",
+        lambda *_args, **_kwargs: {"attempted": False, "resolved": True, "reason": "not_present", "attempts": []},
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_capture_fastmoss_browser_diagnostic_artifacts",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_verify_original_request_with_cookies_result",
+        lambda *_args, **_kwargs: {
+            "verified": True,
+            "verified_path": "/api/goods/v3/base",
+            "response_code": "200",
+            "ext_is_login": "1",
+        },
+    )
+
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "search_request": {"keyword": SEARCH_QUERY, "search_query": SEARCH_QUERY, "region": "US"},
+                "verification_request": {
+                    "method": "GET",
+                    "path": "/api/goods/v3/base",
+                    "params": {"product_id": PRODUCT_ID},
+                    "region": "US",
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+            }
+        )
+    )
+
+    names = [name for name, _payload in calls]
+    assert result.status == "success"
+    assert calls[0] == (
+        "open_page",
+        {
+            "profile_ref": "roxy-tiktok",
+            "workspace_id": None,
+            "profile_id": "",
+            "provider_name": "",
+            "headless": False,
+            "force_open": False,
+        },
+    )
+    assert "add_cookies" not in names
+    assert result.result["login_cookie_bootstrap"]["status"] == "browser_profile_cookie_reused"
+    assert result.result["login_cookie_bootstrap"]["browser_existing_has_fd_tk"] is True
+    assert result.result["login_cookie_bootstrap"]["browser_cookie_import_status"] == "skipped"
+    assert result.result["login_cookie_bootstrap"]["browser_cookie_import_reason"] == "browser_profile_cookie_reused"
+    assert "browser-profile-token" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+    cache_context = build_fastmoss_cookie_cache_context(
+        base_url="https://www.fastmoss.com",
+        account_key="18000000000",
+        region="US",
+    )
+    loaded = RuntimeStore(db_url=runtime_db_url).load_fastmoss_cookie_cache(
+        cache_key=str(cache_context["cache_key"])
+    )
+    assert loaded is not None
+    assert loaded["cookies"][0]["value"] == "browser-profile-token"
+
+
 def test_fastmoss_original_request_verification_result_preserves_security_failure(
     monkeypatch,
 ) -> None:

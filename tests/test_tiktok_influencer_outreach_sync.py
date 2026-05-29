@@ -28,7 +28,7 @@ from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos i
     match_outreach_rows_to_videos,
     normalize_product_video_rows,
 )
-from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPSession
+from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPError, FastMossHTTPSession
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     build_outreach_query_window,
     group_outreach_rows_by_product,
@@ -388,6 +388,128 @@ def test_product_video_check_uses_fixed_page_size_five(monkeypatch, tmp_path) ->
 
     assert result.status == "success"
     assert captured["pagesize"] == 5
+
+
+def test_product_video_check_retries_business_500_at_page_level(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    sleeps: list[float] = []
+    calls: list[int] = []
+
+    class FakeSession:
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):  # noqa: ANN001
+            return False
+
+        def list_product_videos(self, product_id, *, page, pagesize, **kwargs):  # noqa: ANN001
+            del product_id, pagesize, kwargs
+            calls.append(page)
+            if page == 1:
+                return {
+                    "code": 200,
+                    "data": {
+                        "total": 10,
+                        "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(1, 6)],
+                    },
+                }
+            if page == 2 and calls.count(2) == 1:
+                raise FastMossHTTPError(
+                    "Internal Server Error",
+                    status_code=200,
+                    response_code=500,
+                    payload={"code": 500, "msg": "Internal Server Error"},
+                    path="/api/goods/v3/video",
+                    params={"page": 2},
+                )
+            return {
+                "code": 200,
+                "data": {
+                    "total": 10,
+                    "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(6, 11)],
+                },
+            }
+
+    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
+    monkeypatch.setattr(product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = product_video_outreach_check_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="product_video_outreach_check",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "fastmoss_live_fetch": True,
+                "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert result.summary["fetched_video_count"] == 10
+    assert calls == [1, 2, 2]
+    assert sleeps == [10.0]
+
+
+def test_product_video_check_records_failed_page_after_page_retry_exhausted(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    sleeps: list[float] = []
+
+    class FakeSession:
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):  # noqa: ANN001
+            return False
+
+        def list_product_videos(self, product_id, *, page, pagesize, **kwargs):  # noqa: ANN001
+            del product_id, pagesize, kwargs
+            if page == 1:
+                return {
+                    "code": 200,
+                    "data": {
+                        "total": 10,
+                        "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(1, 6)],
+                    },
+                }
+            raise FastMossHTTPError(
+                "Internal Server Error",
+                status_code=200,
+                response_code=500,
+                payload={"code": 500, "msg": "Internal Server Error"},
+                path="/api/goods/v3/video",
+                params={"page": page},
+            )
+
+    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
+    monkeypatch.setattr(product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = product_video_outreach_check_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="product_video_outreach_check",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "p1",
+                "fastmoss_live_fetch": True,
+                "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.retryable is True
+    assert result.result["failed_page"] == 2
+    assert [row["video_id"] for row in result.result["partial_video_rows"]] == ["1", "2", "3", "4", "5"]
+    assert sleeps == [10.0, 20.0, 30.0]
 
 
 def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, tmp_path) -> None:

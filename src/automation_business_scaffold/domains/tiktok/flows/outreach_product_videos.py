@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import date
 import csv
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,9 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     _extract_list,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+
+PRODUCT_VIDEO_PAGE_RETRY_DELAYS_SECONDS = (10.0, 20.0, 30.0)
+RETRYABLE_PRODUCT_VIDEO_RESPONSE_CODES = {"500"}
 
 
 def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResult:
@@ -82,6 +86,14 @@ def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResu
                 entity_identity={"product_id": product_id},
             )
             return _attach_partial_video_page_state(result, exc)
+        error_result = {
+            "product_id": product_id,
+            "fetch_status": "failed",
+            "error": exc.to_dict(),
+        }
+        payload_state = _partial_video_page_state(exc)
+        if payload_state:
+            error_result.update(payload_state)
         return failed_result(
             context,
             error=build_error(
@@ -92,7 +104,7 @@ def product_video_outreach_check_handler(context: HandlerContext) -> HandlerResu
                 details=exc.to_dict(),
             ),
             summary={"product_id": product_id, "fetch_status": "failed"},
-            result={"product_id": product_id, "fetch_status": "failed", "error": exc.to_dict()},
+            result=error_result,
         )
 
     match_result = match_outreach_rows_to_videos(
@@ -255,7 +267,13 @@ def _fetch_product_video_pages(
     rows: list[dict[str, Any]] = []
     while True:
         try:
-            payload = session.list_product_videos(product_id, page=page, pagesize=page_size, **kwargs)
+            payload = _list_product_videos_with_page_retry(
+                session,
+                product_id=product_id,
+                page=page,
+                pagesize=page_size,
+                **kwargs,
+            )
         except FastMossHTTPError as exc:
             carried = list(rows)
             if isinstance(exc.payload, dict):
@@ -279,6 +297,34 @@ def _fetch_product_video_pages(
         if max_pages is not None and page > max_pages:
             break
     return rows
+
+
+def _list_product_videos_with_page_retry(
+    session: FastMossHTTPSession,
+    *,
+    product_id: str,
+    page: int,
+    pagesize: int,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    delays = PRODUCT_VIDEO_PAGE_RETRY_DELAYS_SECONDS
+    for attempt in range(len(delays) + 1):
+        try:
+            return session.list_product_videos(product_id, page=page, pagesize=pagesize, **kwargs)
+        except FastMossHTTPError as exc:
+            if attempt >= len(delays) or not _is_retryable_product_video_page_error(exc):
+                raise
+            time.sleep(delays[attempt])
+    raise FastMossHTTPError("FastMoss product video page retry exhausted")
+
+
+def _is_retryable_product_video_page_error(exc: FastMossHTTPError) -> bool:
+    if coerce_str(exc.path) != "/api/goods/v3/video":
+        return False
+    if coerce_str(exc.response_code) in RETRYABLE_PRODUCT_VIDEO_RESPONSE_CODES:
+        return True
+    payload = exc.payload if isinstance(exc.payload, Mapping) else {}
+    return coerce_str(payload.get("code")) in RETRYABLE_PRODUCT_VIDEO_RESPONSE_CODES
 
 
 def match_outreach_rows_to_videos(
@@ -411,13 +457,17 @@ def canonical_tiktok_video_url(unique_id: Any, video_id: Any) -> str:
 
 
 def _attach_partial_video_page_state(result: HandlerResult, exc: FastMossHTTPError) -> HandlerResult:
+    result.result.update(_partial_video_page_state(exc))
+    return result
+
+
+def _partial_video_page_state(exc: FastMossHTTPError) -> dict[str, Any]:
     payload = exc.payload if isinstance(exc.payload, dict) else {}
     partial_rows = payload.get("partial_rows")
     failed_page = payload.get("failed_page")
     if partial_rows not in (None, [], {}) or failed_page:
-        result.result["partial_video_rows"] = partial_rows or []
-        result.result["failed_page"] = failed_page
-    return result
+        return {"partial_video_rows": partial_rows or [], "failed_page": failed_page}
+    return {}
 
 
 def _safe_path_part(value: str) -> str:
