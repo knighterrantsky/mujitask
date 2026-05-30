@@ -18,6 +18,7 @@ from automation_business_scaffold.infrastructure.facts.ingestion_payloads import
     product_metric_payload as _product_metric_payload,
     product_status_from_spec as _product_status_from_spec,
     tiktok_product_skus_from_logical_payload as _tiktok_product_skus_from_logical_payload,
+    video_metric_payload as _video_metric_payload,
     video_key as _video_key,
 )
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
@@ -178,6 +179,7 @@ class TKFactIngestionService:
         product_daily_metrics: Sequence[Mapping[str, Any]] | None = None,
         product_distribution_snapshots: Sequence[Mapping[str, Any]] | None = None,
         product_sku_metric_snapshots: Sequence[Mapping[str, Any]] | None = None,
+        video_metric_snapshots: Sequence[Mapping[str, Any]] | None = None,
         relations: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
         raw_entity_links: Sequence[Mapping[str, Any]] | None = None,
         execution: Any | None = None,
@@ -241,6 +243,12 @@ class TKFactIngestionService:
         )
         self._ingest_product_sku_metric_snapshots(
             product_sku_metric_snapshots or [],
+            source_platform=source_platform,
+            source_endpoint=source_endpoint,
+            persisted=persisted,
+        )
+        self._ingest_video_metric_snapshots(
+            video_metric_snapshots or [],
             source_platform=source_platform,
             source_endpoint=source_endpoint,
             persisted=persisted,
@@ -384,15 +392,19 @@ class TKFactIngestionService:
     ) -> dict[str, dict[str, Any]]:
         rows: dict[str, dict[str, Any]] = {}
         for video_spec in videos:
+            creator_uid = _first_non_empty(video_spec.get("creator_uid"), video_spec.get("uid"))
+            creator_unique_id = _first_non_empty(video_spec.get("creator_unique_id"), video_spec.get("unique_id"))
             creator_key = _first_non_empty(video_spec.get("creator_key")) or self.fact_store.build_creator_key(
                 creator_id=_first_non_empty(video_spec.get("creator_id")),
-                uid=_first_non_empty(video_spec.get("uid")),
-                unique_id=_first_non_empty(video_spec.get("unique_id")),
+                uid=creator_uid,
+                unique_id=creator_unique_id,
             )
             product_id = _first_non_empty(video_spec.get("product_id"))
             video = self.fact_store.upsert_video(
                 video_id=_first_non_empty(video_spec.get("video_id"), video_spec.get("id")),
                 creator_key=creator_key,
+                creator_uid=creator_uid,
+                creator_unique_id=creator_unique_id,
                 product_id=product_id,
                 title=_first_non_empty(video_spec.get("title"), video_spec.get("video_title")),
                 video_url=_first_non_empty(video_spec.get("video_url")),
@@ -818,6 +830,36 @@ class TKFactIngestionService:
             )
             _append_dict(persisted["fact_metric_observations"], observation)
             _append_dict(persisted["fact_metric_observations"], latest)
+
+    def _ingest_video_metric_snapshots(
+        self,
+        snapshots: Sequence[Mapping[str, Any]],
+        *,
+        source_platform: str,
+        source_endpoint: str,
+        persisted: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        for snapshot in snapshots:
+            video_id = _first_non_empty(snapshot.get("video_id"))
+            video_key = _first_non_empty(snapshot.get("video_key")) or _video_key(video_id)
+            if not video_key:
+                continue
+            payload = snapshot.get("payload")
+            metric_payload = dict(payload) if isinstance(payload, Mapping) else _video_metric_payload(snapshot)
+            metric_payload.setdefault("source_endpoint", _first_non_empty(snapshot.get("source_endpoint")) or source_endpoint)
+            row = self.fact_store.record_video_metric_snapshot(
+                video_key=video_key,
+                video_id=video_id,
+                creator_key=_first_non_empty(snapshot.get("creator_key")),
+                source_platform=_first_non_empty(snapshot.get("source_platform")) or source_platform,
+                source_endpoint=_first_non_empty(snapshot.get("source_endpoint")) or source_endpoint,
+                play_count=_first_non_empty(snapshot.get("play_count"), metric_payload.get("play_count")),
+                digg_count=_first_non_empty(snapshot.get("digg_count"), metric_payload.get("digg_count")),
+                comment_count=_first_non_empty(snapshot.get("comment_count"), metric_payload.get("comment_count")),
+                share_count=_first_non_empty(snapshot.get("share_count"), metric_payload.get("share_count")),
+                payload=metric_payload,
+            )
+            _append_dict(persisted["fact_metric_observations"], row)
 
     def _link_raw_entities(
         self,

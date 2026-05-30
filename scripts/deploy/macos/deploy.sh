@@ -658,6 +658,9 @@ main() {
     "${artifact_bucket}" \
     "${minio_create_bucket}"
 
+  log "Running database migrations"
+  bash "${install_dir}/scripts/execution_control/run_alembic_upgrade.sh"
+
   local target_skill_dir
   INSTALLED_SKILL_DIR=""
   install_agent_skill \

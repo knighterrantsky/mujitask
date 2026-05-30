@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.control_plane.executor.looping import run_control_loop
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
+    INFLUENCER_OUTREACH_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
     SELECTION_KEYWORD_TASK_CODE,
@@ -219,6 +222,10 @@ def run_sync_tk_influencer_pool_request(params: dict[str, Any]) -> dict[str, Any
     return run_task_request(INFLUENCER_POOL_TASK_CODE, params)
 
 
+def run_tiktok_influencer_outreach_sync_request(params: dict[str, Any]) -> dict[str, Any]:
+    return run_task_request(INFLUENCER_OUTREACH_TASK_CODE, params)
+
+
 def run_tiktok_fastmoss_product_ingest_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(PRODUCT_INGEST_TASK_CODE, params)
 
@@ -330,9 +337,54 @@ def _sanitize_task_payload(
     sanitized.pop("control_action", None)
     for key in FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS:
         sanitized.pop(key, None)
+    if task_code == INFLUENCER_OUTREACH_TASK_CODE:
+        _enrich_influencer_outreach_payload(sanitized)
     if task_code in STRICT_PERSISTENCE_TASK_CODES and settings is not None:
         _enrich_strict_persistence_payload(sanitized, params=params, settings=settings)
     return sanitized
+
+
+def _enrich_influencer_outreach_payload(payload: dict[str, Any]) -> None:
+    _enrich_influencer_outreach_table_payload(payload)
+    _enrich_influencer_outreach_fastmoss_payload(payload)
+
+
+def _enrich_influencer_outreach_table_payload(payload: dict[str, Any]) -> None:
+    alias = "tk_influencer_outreach"
+    table_ref = f"feishu://mujitask/{alias}"
+    payload.setdefault("source_table_ref", table_ref)
+    table_url = _configured_feishu_table_url("TK_INFLUENCER_OUTREACH")
+    if not table_url:
+        return
+    table_refs = _mapping_param(payload.get("table_refs"))
+    table_refs.setdefault(alias, table_url)
+    table_refs.setdefault(table_ref, table_url)
+    payload["table_refs"] = table_refs
+
+
+def _enrich_influencer_outreach_fastmoss_payload(payload: dict[str, Any]) -> None:
+    payload.setdefault("fastmoss_live_fetch", True)
+    phone_env = _first_text(os.environ.get("INFLUENCER_POOL_FASTMOSS_PHONE_ENV"), "FASTMOSS_PHONE")
+    password_env = _first_text(os.environ.get("INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV"), "FASTMOSS_PASSWORD")
+    payload.setdefault("fastmoss_phone_env", phone_env)
+    payload.setdefault("fastmoss_password_env", password_env)
+
+
+def _configured_feishu_table_url(slug: str) -> str:
+    base_url = str(os.environ.get("MUJITASK_FEISHU_BASE_URL") or "").strip()
+    table_id = str(os.environ.get(f"MUJITASK_FEISHU_{slug}_TABLE_ID") or "").strip()
+    view_id = str(os.environ.get(f"MUJITASK_FEISHU_{slug}_VIEW_ID") or "").strip()
+    if not base_url or not table_id:
+        return ""
+    parsed = urlparse(base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["table"] = table_id
+    if view_id:
+        query["view"] = view_id
+    else:
+        query.pop("view", None)
+    path = parsed.path.rstrip("/") or parsed.path
+    return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment))
 
 
 def _strict_persistence_submit_preflight(
@@ -759,6 +811,7 @@ __all__ = [
     "run_search_keyword_competitor_products_request",
     "run_sync_tk_influencer_pool_request",
     "run_task_request",
+    "run_tiktok_influencer_outreach_sync_request",
     "run_tiktok_fastmoss_product_ingest_request",
     "submit_task_request",
 ]

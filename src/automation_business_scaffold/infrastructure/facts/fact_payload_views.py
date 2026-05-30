@@ -69,6 +69,7 @@ def _fact_identity(payload: Mapping[str, Any]) -> str:
         "asset_id",
         "latest_id",
         "observation_id",
+        "snapshot_id",
         "relation_key",
         "raw_response_id",
         "raw_link_id",

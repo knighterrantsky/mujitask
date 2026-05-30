@@ -42,6 +42,12 @@ from automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import import
 from automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery import (
     product_creator_discovery_handler,
 )
+from automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check import (
+    product_video_outreach_check_handler,
+)
+from automation_business_scaffold.domains.tiktok.jobs.outreach_creator_video_metric_refresh import (
+    outreach_creator_video_metric_refresh_handler,
+)
 from automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh import (
     selection_row_refresh_handler,
 )
@@ -64,6 +70,8 @@ BOUND_API_HANDLERS = MappingProxyType(
         "fastmoss_creator_fetch": fastmoss_creator_fetch_handler,
         "fastmoss_shop_fetch": fastmoss_shop_fetch_handler,
         "fastmoss_video_fetch": fastmoss_video_fetch_handler,
+        "product_video_outreach_check": product_video_outreach_check_handler,
+        "outreach_creator_video_metric_refresh": outreach_creator_video_metric_refresh_handler,
         "media_asset_sync": media_asset_sync_handler,
         "fact_bundle_upsert": fact_bundle_upsert_handler,
         "selection_row_refresh": selection_row_refresh_handler,

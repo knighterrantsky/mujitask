@@ -227,17 +227,20 @@ class TaskExecutionRepository:
                           AND execution.available_at <= :available_at
                           AND (:request_id = '' OR execution.request_id = :request_id)
                           AND request.status = 'waiting'
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM task_request older_request
-                              WHERE older_request.status NOT IN ('finished', 'cancelled')
-                                AND (
-                                    older_request.created_at < request.created_at
-                                    OR (
-                                        older_request.created_at = request.created_at
-                                        AND older_request.request_id < request.request_id
+                          AND (
+                              :request_id <> ''
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM task_request older_request
+                                  WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                    AND (
+                                        older_request.created_at < request.created_at
+                                        OR (
+                                            older_request.created_at = request.created_at
+                                            AND older_request.request_id < request.request_id
+                                        )
                                     )
-                                )
+                              )
                           )
                         ORDER BY execution.queue_seq ASC, execution.created_at ASC
                         """
@@ -321,17 +324,20 @@ class TaskExecutionRepository:
                               FROM task_request request
                               WHERE request.request_id = task_execution.request_id
                                 AND request.status = 'waiting'
-                                AND NOT EXISTS (
-                                    SELECT 1
-                                    FROM task_request older_request
-                                    WHERE older_request.status NOT IN ('finished', 'cancelled')
-                                      AND (
-                                          older_request.created_at < request.created_at
-                                          OR (
-                                              older_request.created_at = request.created_at
-                                              AND older_request.request_id < request.request_id
+                                AND (
+                                    :request_id <> ''
+                                    OR NOT EXISTS (
+                                        SELECT 1
+                                        FROM task_request older_request
+                                        WHERE older_request.status NOT IN ('finished', 'cancelled')
+                                          AND (
+                                              older_request.created_at < request.created_at
+                                              OR (
+                                                  older_request.created_at = request.created_at
+                                                  AND older_request.request_id < request.request_id
+                                              )
                                           )
-                                      )
+                                    )
                                 )
                           )
                         """
@@ -348,6 +354,7 @@ class TaskExecutionRepository:
                         "last_progress_at": now,
                         "progress_message": "Browser worker claimed execution.",
                         "execution_id": row["execution_id"],
+                        "request_id": normalized_request_id,
                     },
                 )
                 if int(result.rowcount or 0) <= 0:

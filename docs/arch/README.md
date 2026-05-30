@@ -1,6 +1,6 @@
 # Arch 文档索引
 
-日期: 2026-04-24
+日期: 2026-05-22
 
 本目录维护当前系统架构和核心业务 workflow 的设计文档。
 
@@ -42,6 +42,7 @@
 
 - [选品采集与关键词搜索选品写入 Workflow 设计](./workflow-selection-table-design.md)
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
+- [达人建联检查 Workflow 设计](./workflow-influencer-outreach-design.md)
 - [竞品采集与关键词搜索竞品写入 Workflow 设计](./workflow-competitor-table-design.md)
 
 阶段性 refactor 说明完成后不再保留为 active 架构文档；当前 workflow / Runtime 事实只从上面的 workflow 文档、Runtime 文档和 `contracts/**` 读取。
@@ -54,6 +55,7 @@
 | 选品采集 | `tiktok_fastmoss_product_ingest` | [workflow-selection-table-design.md](./workflow-selection-table-design.md) |
 | 关键词搜索竞品写入 | `search_keyword_competitor_products` | [workflow-competitor-table-design.md](./workflow-competitor-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | [workflow-selection-table-design.md](./workflow-selection-table-design.md) |
+| 达人建联检查 | `tiktok_influencer_outreach_sync` | [workflow-influencer-outreach-design.md](./workflow-influencer-outreach-design.md) |
 
 ## 策略与设计草案
 

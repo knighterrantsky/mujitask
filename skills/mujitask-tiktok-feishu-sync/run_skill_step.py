@@ -477,6 +477,49 @@ def _influencer_pool_sync_submit_params(
     return _append_runtime_params(params, skill_env), extra_env
 
 
+def _influencer_outreach_sync_submit_params(
+    *,
+    skill_env: dict[str, str],
+    include_submit_control_action: bool = True,
+) -> tuple[list[str], dict[str, str]]:
+    table_refs = _load_feishu_table_refs(skill_env)
+    outreach_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
+    outreach_table_ref = _feishu_table_ref(TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
+    feishu_access_token_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
+        or FEISHU_ACCESS_TOKEN_ENV
+    )
+    fastmoss_phone_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
+        or "FASTMOSS_PHONE"
+    )
+    fastmoss_password_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
+        or "FASTMOSS_PASSWORD"
+    )
+    params = _append_feishu_table_refs(
+        [
+            f"source_table_ref={outreach_table_ref}",
+            f"target_table_ref={outreach_table_ref}",
+            f"table_url={outreach_table_url}",
+            f"target_table_url={outreach_table_url}",
+            f"access_token_env={feishu_access_token_env}",
+            f"fastmoss_phone_env={fastmoss_phone_env}",
+            f"fastmoss_password_env={fastmoss_password_env}",
+            "writeback_enabled=true",
+        ],
+        table_refs,
+    )
+    if include_submit_control_action:
+        params.append("control_action=submit")
+    extra_env = {
+        feishu_access_token_env: _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV),
+        fastmoss_phone_env: _optional_env_value(skill_env, "FASTMOSS_PHONE"),
+        fastmoss_password_env: _optional_env_value(skill_env, "FASTMOSS_PASSWORD"),
+    }
+    return _append_runtime_params(params, skill_env), extra_env
+
+
 def _append_influencer_pool_browser_params(
     *,
     params: list[str],
@@ -988,6 +1031,8 @@ def _build_parser() -> argparse.ArgumentParser:
     influencer_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
     influencer_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
 
+    subparsers.add_parser("influencer-outreach-sync-submit")
+
     return parser
 
 
@@ -1286,6 +1331,21 @@ def main(argv: list[str] | None = None) -> int:
             stdout_prefix="influencer-pool-sync-submit-step",
             extra_env={**extra_env, **influencer_pool_env},
             accepted_message="Influencer pool sync task accepted for asynchronous execution.",
+        )
+
+    if args.command == "influencer-outreach-sync-submit":
+        params, outreach_env = _influencer_outreach_sync_submit_params(
+            skill_env=skill_env,
+            include_submit_control_action=True,
+        )
+        return _submit(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="tiktok_influencer_outreach_sync",
+            params=params,
+            stdout_prefix="influencer-outreach-sync-submit-step",
+            extra_env={**extra_env, **outreach_env},
+            accepted_message="Influencer outreach sync task accepted for asynchronous execution.",
         )
 
     raise ValueError(f"Unsupported command: {args.command}")

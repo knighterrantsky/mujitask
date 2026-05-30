@@ -158,6 +158,8 @@ erDiagram
     tk_videos ||--o{ tk_video_product_relations : mounts
     tk_products ||--o{ tk_video_product_relations : mounted_on
 
+    tk_videos ||--o{ tk_video_metric_snapshots : has_video_metric_history
+
     tk_shops ||--o{ tk_shop_creator_relations : has_creator
     tk_creators ||--o{ tk_shop_creator_relations : contributes
 
@@ -193,6 +195,12 @@ erDiagram
 - `platform`, `country_region`, `source_platform`, `status`。
 - `facts_json` 承接尚未结构化的扩展事实。
 - `first_seen_at`, `last_seen_at`, `created_at`, `updated_at`。
+
+视频主档字段边界:
+
+- `tk_videos.creator_key` 是 Fact DB 内部达人 join key，必须保留。
+- `tk_videos.creator_uid` 和 `tk_videos.creator_unique_id` 保存视频作者在 FastMoss/TikTok 返回里的外部身份；建联表当前按 `creator_unique_id` / `unique_id` 口径匹配达人。
+- `tk_videos.product_id` 仅作为历史兼容和旧查询便利字段保留，不再作为视频挂载商品的 canonical 来源；视频 - 商品关系以 `tk_video_product_relations` 为准。
 
 商品主表状态规则:
 
@@ -243,6 +251,7 @@ erDiagram
 - 关系层暂不做周期刷新、自动失效扫描或 stale/inactive 标记。
 - 每次拿到关系数据后先查询数据库，按标准化后的关系键和关系字段对比。
 - 只有新增关系或已存在关系的字段发生变化时才写入；完全一致的关系不重复写入。
+- 商品 - 视频关系的 canonical 表是 `tk_video_product_relations`，关系粒度为 `video_key + product_id`；实现层同时建立 `video_key, product_id, source_platform` 唯一索引和 `product_id, video_key` 查询索引，以支持 SKU/product 维度聚合视频。
 
 ### 4.4 原始证据层
 
@@ -264,6 +273,7 @@ erDiagram
 | `tk_product_distribution_window_observations` | 分布窗口历史观测 | 商品分布类指标历史采样 |
 | `tk_product_sku_window_latest` | SKU 窗口最新快照 | SKU 窗口表现当前值 |
 | `tk_product_sku_window_observations` | SKU 窗口历史观测 | SKU 窗口表现历史采样 |
+| `tk_video_metric_snapshots` | 视频指标历史快照 | `/api/video/overview` 等视频详情指标，每次采集 append |
 | `tk_video_product_window_performance` | 事件/观测记录 | 视频-商品窗口表现 |
 | `tk_creator_product_window_performance` | 事件/观测记录 | 达人-商品窗口表现 |
 
@@ -272,6 +282,7 @@ erDiagram
 - `latest` 表用于当前业务读取和飞书写回。
 - `observations` 表用于历史追踪、排障、趋势分析。
 - daily metric 以自然日期作为唯一维度。
+- 视频播放量、点赞、评论、分享等当前值以 `tk_video_metric_snapshots` 的最新 `collected_at` 记录为准；不要写入 `tk_videos` 主档或 `tk_video_product_relations` 关系表。
 
 ## 5. Upsert 与幂等规则
 
@@ -361,12 +372,25 @@ raw response 存储边界:
 | `record_product_distribution_window_observation` | `tk_product_distribution_window_observations` | insert | 分布维度历史观测 |
 | `upsert_product_sku_window_latest` | `tk_product_sku_window_latest` | `(product_id, sku_key, source_platform, window_days)` | SKU 窗口最新值 |
 | `record_product_sku_window_observation` | `tk_product_sku_window_observations` | insert | SKU 窗口历史观测 |
+| `record_video_metric_snapshot` | `tk_video_metric_snapshots` | insert | 每次 `/api/video/overview` 采集保留一条视频指标快照 |
 
 选择 `latest` 还是 `observation` 的规则:
 
 - 飞书写回、当前推荐、当前分析结果读取 `latest`。
 - 趋势分析、排障、回放读取 `observations`。
 - daily metric 是自然日维度的事实，使用 upsert 避免同日重复行。
+- 视频指标当前分析读取 `tk_video_metric_snapshots` 中同一 `video_key` 的最新 `collected_at`；历史趋势和排障读取所有 snapshot。
+
+### 5.6 视频指标 schema 变更兼容策略
+
+本次视频指标演进是向后兼容变更:
+
+- 新增 `tk_videos.creator_uid`、`tk_videos.creator_unique_id`，默认值为空字符串；旧数据无需回填即可继续读取，后续视频列表或视频详情采集会增量补齐。
+- 保留 `tk_videos.creator_key` 作为内部 join key，旧 worker 继续按 `creator_key` 工作。
+- 保留 `tk_videos.product_id` 字段以兼容旧代码，但新写入和新查询应以 `tk_video_product_relations` 判断视频挂载商品。
+- 新增 `tk_video_metric_snapshots`，所有数值字段默认 0，`payload_json` 默认 `{}`；旧 worker 不写该表不会影响现有主体/关系 upsert。
+- 生产环境通过 Alembic migration 使用 migration user 执行 `ALTER TABLE`、`CREATE TABLE`、`CREATE INDEX`；应用 worker 不应在 claim/job 路径执行 DDL。
+- 回滚时可以删除 `tk_video_metric_snapshots`、相关索引和 `tk_videos` 新增的外部达人字段；主体表、既有关联关系和旧播放量来源不受影响。
 
 ## 6. Workflow 写入路径
 

@@ -75,6 +75,50 @@ class TKFactQueryAccess:
     def get_creator(self, *, creator_key: str) -> dict[str, Any]:
         return self._get_by_unique("tk_creators", "creator_key", _clean_text(creator_key))
 
+    def get_video(self, *, video_key: str = "", video_id: str = "") -> dict[str, Any]:
+        resolved_video_key = _clean_text(video_key) or (f"video:{_clean_text(video_id)}" if _clean_text(video_id) else "")
+        return self._get_by_unique("tk_videos", "video_key", resolved_video_key)
+
+    def list_videos_by_product_and_creator(
+        self,
+        *,
+        product_id: str,
+        creator_unique_id: str,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        product_id = _clean_text(product_id)
+        creator_unique_id = _clean_text(creator_unique_id)
+        if not product_id or not creator_unique_id:
+            return []
+        limit_clause = "LIMIT :limit" if limit is not None and int(limit or 0) > 0 else ""
+        params: dict[str, Any] = {
+            "product_id": product_id,
+            "creator_unique_id": creator_unique_id,
+        }
+        if limit_clause:
+            params["limit"] = int(limit or 0)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    self._text(
+                        f"""
+                        SELECT v.*
+                        FROM tk_video_product_relations AS rel
+                        JOIN tk_videos AS v
+                          ON v.video_key = rel.video_key
+                        WHERE rel.product_id = :product_id
+                          AND v.creator_unique_id = :creator_unique_id
+                        ORDER BY v.video_id ASC
+                        {limit_clause}
+                        """
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+        return [_with_video_fact_fields(self._row_to_dict(row)) for row in rows]
+
     def get_raw_api_response(self, *, raw_response_id: str) -> dict[str, Any]:
         return self._get_by_unique("tk_raw_api_responses", "raw_response_id", _clean_text(raw_response_id))
 
@@ -138,3 +182,19 @@ def _clean_text(value: Any) -> str:
 
 def _media_asset_has_locator(asset: Mapping[str, Any]) -> bool:
     return any(_clean_text(asset.get(key)) for key in ("object_key", "file_token", "local_path"))
+
+
+def _with_video_fact_fields(video: dict[str, Any]) -> dict[str, Any]:
+    facts = video.get("facts") if isinstance(video.get("facts"), Mapping) else {}
+    for target_key, fact_keys in {
+        "published_date": ("published_date", "create_date", "publish_time"),
+        "create_date": ("create_date", "published_date", "publish_time"),
+    }.items():
+        if _clean_text(video.get(target_key)):
+            continue
+        for fact_key in fact_keys:
+            value = _clean_text(facts.get(fact_key))
+            if value:
+                video[target_key] = value
+                break
+    return video

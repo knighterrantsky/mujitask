@@ -357,6 +357,7 @@ def test_map_fastmoss_goods_author_extracts_creator_product_and_representative_v
     assert mapped["relations"]["creator_products"][0]["sold_count"] == 321
     assert mapped["videos"][0]["video_id"] == "7623147954093690143"
     assert mapped["videos"][0]["product_id"] == "1732183068040729370"
+    assert mapped["relations"]["video_products"][0]["product_id"] == "1732183068040729370"
 
 
 def test_video_and_author_video_mappers_extract_video_product_relations():
@@ -369,6 +370,10 @@ def test_video_and_author_video_mappers_extract_video_product_relations():
                 "nickname": "Roxy",
                 "video_desc": "Gift haul",
                 "cover": "https://example.com/video.png",
+                "play_count": 210000,
+                "digg_count": 1200,
+                "comment_count": 34,
+                "share_count": 56,
             }
         }
     )
@@ -404,6 +409,10 @@ def test_video_and_author_video_mappers_extract_video_product_relations():
     )
 
     assert overview["creators"][0]["creator_id"] == "roxy_creator"
+    assert overview["videos"][0]["creator_uid"] == "7094679250578015274"
+    assert overview["videos"][0]["creator_unique_id"] == "roxy_creator"
+    assert overview["video_metric_snapshots"][0]["play_count"] == 210000
+    assert overview["video_metric_snapshots"][0]["source_endpoint"] == "video.overview"
     assert goods["relations"]["video_products"][0]["product_id"] == "1732183068040729370"
     assert goods["relations"]["product_shops"][0]["shop_id"] == "7496166867916327706"
     assert author_videos["relations"]["video_products"][0]["video_id"] == "7623147954093690143"

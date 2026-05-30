@@ -62,6 +62,11 @@ def click_first_visible_locator(page: Any, selectors: tuple[str, ...]) -> bool:
         click(timeout=1_000)
     except TypeError:
         click()
+    except Exception:
+        evaluate = getattr(locator, "evaluate", None)
+        if not callable(evaluate):
+            raise
+        evaluate("element => element.click()")
     return True
 
 

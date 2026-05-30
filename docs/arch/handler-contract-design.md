@@ -1324,6 +1324,7 @@ result 示例:
 - `fact_bundle_upsert` 可以产出 `projections`，但不直接写 Feishu。
 - Projection mapper 可以消费 `projections.*`，也可以直接消费 `entities/relations/observations`；两者字段语义必须保持一致。
 - `raw_refs` 和 `artifact://` 引用只用于审计、排障和 `achieve` 对比，不作为业务主键。
+- 标准 `fact_bundle` 可以携带 `video_metric_snapshots`；`fact_bundle_upsert` 将其追加写入 `tk_video_metric_snapshots`，用于 `/api/video/overview` 播放量、点赞、评论、分享等视频维度指标。
 
 ## 7. Business Handler
 
@@ -1338,6 +1339,8 @@ Business handler 负责有独立运行价值的业务动作。它可以调用 ca
 | `influencer_pool_candidate_select` | 从竞品表源行筛选达人同步候选，并 fan-out product jobs | 当前不准入；优先由 `feishu_table_read` + `influencer_pool_source_adapter` + workflow dispatcher 表达 |
 | `product_creator_discovery` | 每个竞品商品 1 个商品达人发现 job，内部复用 FastMoss 商品达人列表能力，输出 compact normalized creator candidates + product hit context；Runtime result 不承载完整 product fact bundle、raw response、SKU 明细或媒体正文 | 准入；用于 `sync_tk_influencer_pool.discover_related_creators` |
 | `influencer_creator_sync` | 每个 unique 达人 1 个达人同步 job，内部完成达人详情、事实入库、素材同步、达人池飞书 upsert，并在商品 group 终态时写回该商品达人查找状态 | 准入；用于 `sync_tk_influencer_pool.sync_influencer_pool` |
+| `product_video_outreach_check` | 每个商品 1 个建联视频索引 job，调用 FastMoss 商品视频列表并沉淀 `tk_videos` 和 `tk_video_product_relations`；Runtime result 不承载完整视频原始响应 | 准入；用于 `tiktok_influencer_outreach_sync.index_product_videos` |
+| `outreach_creator_video_metric_refresh` | 每个 SKU + 达人行 1 个指标刷新 job，查询全部已知视频，逐条调用 video overview，写 `tk_video_metric_snapshots` 后聚合并写回飞书行 | 准入；用于 `tiktok_influencer_outreach_sync.refresh_creator_video_metrics_and_writeback` |
 | `fastmoss_echarts_render` | 生成 ECharts option / HTML / 图片 artifact | 候选；需要 artifact contract 后才能准入 |
 | `product_candidate_filter` | 过滤 `fastmoss_product_search` 结果，生成 seed rows | 候选；优先复用 `fastmoss_product_search.output_conditions` |
 | `business_snapshot_write` | 写业务快照或任务视角结果 | 候选；需要明确快照归属后才能准入 |
@@ -1396,6 +1399,8 @@ fastmoss_echarts_renderer
 | API | `keyword_seed_import` | `api_worker` | `api_worker_job` | Business | 关键词搜索竞品写入前半段，串行复用 FastMoss search 与飞书 seed 写入 | workflow-competitor-table-design 7.3 |
 | API | `product_creator_discovery` | `api_worker` | `api_worker_job` | Business | 达人池同步商品发现 job；每个竞品商品 1 个，内部复用 FastMoss 商品达人列表并输出 normalized creator candidates | workflow-influencer-pool-sync-design 11.2 |
 | API | `influencer_creator_sync` | `api_worker` | `api_worker_job` | Business | 达人池同步达人 job；每个 unique 达人 1 个，内部完成达人详情、事实入库、达人池飞书 upsert 和商品终态状态回写 | workflow-influencer-pool-sync-design 11.3 |
+| API | `product_video_outreach_check` | `api_worker` | `api_worker_job` | Business | 达人建联商品视频索引 job；每个商品 1 个，内部调用 FastMoss 商品视频列表并沉淀商品-视频索引 | workflow-influencer-outreach-design 6.3 |
+| API | `outreach_creator_video_metric_refresh` | `api_worker` | `api_worker_job` | Business | 达人建联 SKU+达人指标刷新 job；逐条视频采集 overview、写视频指标快照、聚合并写回飞书行 | workflow-influencer-outreach-design 6.5 |
 | API | `tiktok_product_request_fetch` | `api_worker` | `api_worker_job` | Capability | TikTok 商品 request-first 采集 | 6.1 |
 | Browser | `tiktok_product_browser_fetch` | `browser_worker` | `task_execution` | Capability | TikTok 商品 request 失败后的浏览器兜底采集 | 6.2 |
 | Browser | `fastmoss_security_browser_resolve` | `browser_worker` | `task_execution` | Capability | FastMoss API 风控后的浏览器解滑块与 cookie cache 刷新 | 6.2.1 |

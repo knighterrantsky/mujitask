@@ -67,6 +67,7 @@ EXPECTED_FORMAL_TASK_CODES = [
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
     "sync_tk_influencer_pool",
+    "tiktok_influencer_outreach_sync",
     "tiktok_fastmoss_product_ingest",
     "search_keyword_selection_products",
 ]

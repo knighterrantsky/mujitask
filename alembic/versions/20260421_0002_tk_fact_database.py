@@ -23,6 +23,7 @@ depends_on = None
 TK_FACT_TABLES = [
     "tk_creator_product_window_performance",
     "tk_video_product_window_performance",
+    "tk_video_metric_snapshots",
     "tk_product_sku_window_observations",
     "tk_product_sku_window_latest",
     "tk_product_distribution_window_observations",

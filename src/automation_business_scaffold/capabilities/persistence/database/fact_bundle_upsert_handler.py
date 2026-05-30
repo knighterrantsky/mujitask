@@ -140,6 +140,9 @@ def _plan_fact_bundle_upsert(fact_bundle: dict[str, Any]) -> dict[str, Any]:
     observation_refs.extend(
         f"sku_metric:{index}" for index, _ in enumerate(coerce_mapping_list(fact_bundle.get("product_sku_metric_snapshots")), start=1)
     )
+    observation_refs.extend(
+        f"video_metric:{index}" for index, _ in enumerate(coerce_mapping_list(fact_bundle.get("video_metric_snapshots")), start=1)
+    )
     return {
         "upserted_entities": upserted_entities,
         "upserted_relations": upserted_relations,
@@ -224,6 +227,8 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
         row = store.upsert_video(
             video_id=coerce_str(video.get("video_id")),
             creator_key=coerce_str(video.get("creator_key")),
+            creator_uid=coerce_str(first_non_empty(video.get("creator_uid"), video.get("uid"))),
+            creator_unique_id=coerce_str(first_non_empty(video.get("creator_unique_id"), video.get("unique_id"))),
             product_id=coerce_str(video.get("product_id")),
             title=coerce_str(video.get("title")),
             video_url=coerce_str(video.get("video_url")),
@@ -480,6 +485,22 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             observation_refs.append(f"sku_latest:{latest.get('latest_id')}")
         if observed:
             observation_refs.append(f"sku_observation:{observed.get('observation_id')}")
+
+    for observation in coerce_mapping_list(fact_bundle.get("video_metric_snapshots")):
+        row = store.record_video_metric_snapshot(
+            video_key=coerce_str(observation.get("video_key")),
+            video_id=coerce_str(observation.get("video_id")),
+            creator_key=coerce_str(observation.get("creator_key")),
+            source_platform=coerce_str(observation.get("source_platform")),
+            source_endpoint=coerce_str(observation.get("source_endpoint")),
+            play_count=observation.get("play_count"),
+            digg_count=observation.get("digg_count"),
+            comment_count=observation.get("comment_count"),
+            share_count=observation.get("share_count"),
+            payload=coerce_mapping(observation.get("payload")),
+        )
+        if row:
+            observation_refs.append(f"video_metric_snapshot:{row.get('snapshot_id')}")
 
     persisted_counts = {
         "products": sum(1 for key in upserted_entities if key.startswith("product:")),

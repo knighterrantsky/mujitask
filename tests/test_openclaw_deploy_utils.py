@@ -173,3 +173,15 @@ def test_deploy_script_embeds_single_file_payloads() -> None:
     assert ": <<'__OPENCLAW_DEPLOY_UTILS__'" in text
     assert "install_framework_from_pyproject" in text
     assert 'add_parser("read-framework-dependency")' in text
+
+
+def test_macos_deploy_runs_alembic_before_launchd_restart() -> None:
+    deploy_script = ROOT / "scripts" / "deploy" / "macos" / "deploy.sh"
+    text = deploy_script.read_text(encoding="utf-8")
+
+    migration_command = 'bash "${install_dir}/scripts/execution_control/run_alembic_upgrade.sh"'
+    launchd_command = 'bash "${install_dir}/scripts/execution_control/install_launch_agents.sh"'
+
+    assert migration_command in text
+    assert launchd_command in text
+    assert text.index(migration_command) < text.index(launchd_command)

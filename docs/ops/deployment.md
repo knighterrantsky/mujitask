@@ -240,7 +240,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 本机 Postgres 运行时默认通过 TCP 连接，配置为 `mujitask/mujitask@127.0.0.1:5432/automation_business_scaffold`。部署脚本会在 `native` 模式下创建或更新这个 runtime 账号，并把生成的 URL 写入 `scripts/execution_control/executor.local.env`。`MUJITASK_POSTGRES_SOCKET_DIR=/tmp` 只用于部署脚本以本机管理员身份 bootstrap Homebrew Postgres，不进入 daemon 的运行时连接串；切换云 Postgres 时改为 `MUJITASK_RUNTIME_MODE=external` 并填写 `MUJITASK_DB_URL` 即可。对象存储默认前缀为 `MUJITASK_ARTIFACT_OBJECT_PREFIX=mujitask/local`，用于给 MinIO bucket 内的运行产物分目录，例如 `mujitask/local/runs/...`。
 
-首次部署：
+首次部署或更新已有部署：
 
 ```bash
 cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.local.env
@@ -252,7 +252,7 @@ bash scripts/deploy/macos/deploy.sh
 关键文件：
 
 - `scripts/deploy/macos/preflight.sh`：检查 macOS、Homebrew、launchd、端口、Node.js/npm、必填配置、Chrome 提示。
-- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装 Python 与 Node.js 运行依赖、安装并启动本机 Postgres/MinIO、写入运行配置、安装 skill bundle、安装 launchd 并执行 smoke check。
+- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装 Python 与 Node.js 运行依赖、安装并启动本机 Postgres/MinIO、写入运行配置、执行 Alembic migration、安装 skill bundle、安装 launchd 并执行 smoke check。
 - `scripts/deploy/macos/deploy.local.env.example`：一键部署配置模板。
 
 这条路径用于“用户机器依赖不确定”的默认交付；如果目标环境使用已有 Postgres/MinIO，可以在 `deploy.local.env` 中改为 `MUJITASK_RUNTIME_MODE=external` 并提供对应连接配置。
@@ -302,13 +302,29 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 
 这样 daemon、CLI、Alembic 和 pytest 都会从同一个项目配置入口读取，不需要每次运行前再手工 `export`。
 
-### 8.4 初始化数据库
+### 8.4 初始化或升级数据库
 
 如果当前环境还没有对应 schema，本地开发可以使用 runtime store bootstrap 或 migration 脚本初始化。
 
 生产环境不要让 daemon / worker 在正常消费任务时自动建表、改表或删表。生产发布应先使用 migration 账号执行 Alembic migration 或等价迁移脚本，然后让运行进程使用 runtime 账号启动并校验 schema version。
 
-当前本地部署脚本在安装 `launchd` 前会主动触发一次 schema 初始化；这个行为只代表本地部署便利路径，不应等同于生产运行进程拥有 DDL 权限。
+首次部署和更新已有部署都必须在启动或重启 `launchd` 之前执行数据库迁移：
+
+```bash
+bash scripts/execution_control/run_alembic_upgrade.sh
+```
+
+推荐更新顺序：
+
+1. 更新项目代码和 Python 依赖。
+2. 确认 `scripts/execution_control/executor.local.env` 指向目标 Runtime / Fact DB。
+3. 确认 Postgres 可连接。
+4. 执行 `bash scripts/execution_control/run_alembic_upgrade.sh`。
+5. 再安装或重启 `launchd` 守护进程。
+
+当前 macOS 一键部署脚本会在 `install_launch_agents.sh` 之前自动执行上述 migration。`install_launch_agents.sh` 内部的 schema bootstrap 只作为本地便利初始化兜底，不能替代 Alembic migration，也不能保证已有表会执行 `ALTER TABLE` 类升级。
+
+如果跳过 migration，已有环境可能停留在旧 `alembic_version`，新 worker 会在写入或查询新字段时失败，例如 Fact DB 缺少 `tk_videos.creator_uid` / `tk_videos.creator_unique_id`。
 
 ### 8.5 安装 launchd 守护进程
 

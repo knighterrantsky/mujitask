@@ -137,6 +137,17 @@ def test_lightweight_submitter_supports_selection_keyword_search():
     assert submitter is runner.run_search_keyword_selection_products_request
 
 
+def test_lightweight_submitter_supports_influencer_outreach_sync():
+    module = _load_lightweight_submit_module()
+    root = Path(__file__).resolve().parents[1]
+
+    from automation_business_scaffold.control_plane.executor import runner
+
+    submitter = module._load_submitter(root, "tiktok_influencer_outreach_sync")
+
+    assert submitter is runner.run_tiktok_influencer_outreach_sync_request
+
+
 def test_lightweight_submit_rejects_worker_control_actions(tmp_path, monkeypatch):
     module = _load_lightweight_submit_module()
     result_file = tmp_path / "result.json"
@@ -1272,6 +1283,71 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
     assert emitted["request_id"] == "req-influencer-123"
+    assert emitted["request_status"] == "pending"
+
+
+def test_main_influencer_outreach_sync_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+            "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
+            "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV": "FASTMOSS_PASSWORD",
+        },
+    )
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-outreach-123",
+                "request_status": "pending",
+                "summary": {"total": 1, "counts": {"queued": 1}},
+            },
+        )
+
+    def fake_emit_final_result(payload):
+        emitted.update(payload)
+        return 0
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
+
+    exit_code = module.main(["influencer-outreach-sync-submit"])
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "tiktok_influencer_outreach_sync"
+    params = list(captured_calls[0]["params"])
+    assert "control_action=submit" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_influencer_outreach']}" in params
+    assert f"target_table_url={FEISHU_TABLE_URLS['tk_influencer_outreach']}" in params
+    assert "source_table_ref=feishu://mujitask/tk_influencer_outreach" in params
+    assert "target_table_ref=feishu://mujitask/tk_influencer_outreach" in params
+    assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
+    assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
+    assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
+    assert "writeback_enabled=true" in params
+    assert emitted["request_id"] == "req-outreach-123"
     assert emitted["request_status"] == "pending"
 
 

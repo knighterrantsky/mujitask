@@ -470,6 +470,7 @@ class FastMossHTTPSession:
         check_auth: bool = True,
         timeout: float | None = None,
         stage: str = "",
+        sign_request: bool = True,
     ) -> dict[str, Any]:
         """Send a signed FastMoss request and return the parsed JSON payload."""
 
@@ -487,7 +488,8 @@ class FastMossHTTPSession:
             signed_params_with_nonce = dict(signed_params)
             signed_params_with_nonce["_time"] = int(self._time_factory())
             signed_params_with_nonce["cnonce"] = self._nonce_factory()
-            signed_params_with_nonce["fm-sign"] = build_fm_sign(signed_params_with_nonce, body_text)
+            if sign_request:
+                signed_params_with_nonce["fm-sign"] = build_fm_sign(signed_params_with_nonce, body_text)
             self._emit_event(
                 "http_request_start",
                 stage=stage,
@@ -821,11 +823,13 @@ class FastMossHTTPSession:
         product_id: str,
         *,
         page: int = 1,
-        pagesize: int = 10,
-        order: str = "1,2",
+        pagesize: int = 5,
+        order: str = "6,2",
         d_type: int | str = 0,
         date_type: int | str = 28,
         is_promoted: int | str = -1,
+        start_date: str = "",
+        end_date: str = "",
     ) -> dict[str, Any]:
         """Fetch one page of product-to-video relations."""
 
@@ -835,11 +839,15 @@ class FastMossHTTPSession:
             "page": page,
             "product_id": normalized_product_id,
             "order": order,
-            "d_type": d_type,
             "pagesize": pagesize,
             "is_promoted": is_promoted,
             "date_type": date_type,
         }
+        if start_date and end_date:
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+        else:
+            params["d_type"] = d_type
         payload = self.request_json(
             "GET",
             path,
@@ -847,8 +855,55 @@ class FastMossHTTPSession:
             referer=self._build_goods_detail_referer(normalized_product_id),
             region=self.default_region,
             stage="product_videos.list",
+            sign_request=False,
         )
         return payload
+
+    def iter_product_videos(
+        self,
+        product_id: str,
+        *,
+        pagesize: int = 5,
+        order: str = "1,2",
+        d_type: int | str = 90,
+        date_type: int | str = 28,
+        is_promoted: int | str = -1,
+        start_date: str = "",
+        end_date: str = "",
+        max_pages: int | None = None,
+        start_page: int = 1,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield all video rows for a product by paging through /api/goods/v3/video."""
+
+        page = max(1, int(start_page or 1))
+        seen_rows = 0
+        while True:
+            payload = self.list_product_videos(
+                product_id,
+                page=page,
+                pagesize=pagesize,
+                order=order,
+                d_type=d_type,
+                date_type=date_type,
+                is_promoted=is_promoted,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            data = _extract_data(payload)
+            rows = [row for row in _extract_list(payload)]
+            if not rows:
+                break
+            for row in rows:
+                yield row
+            seen_rows += len(rows)
+            total = data.get("total")
+            if isinstance(total, int) and total > 0 and seen_rows >= total:
+                break
+            if len(rows) < pagesize:
+                break
+            page += 1
+            if max_pages is not None and page > max_pages:
+                break
 
     def iter_product_authors(
         self,

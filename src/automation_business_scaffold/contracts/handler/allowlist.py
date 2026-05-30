@@ -232,6 +232,22 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/handler-contract-design.md#65-fastmoss_creator_fetch--fastmoss_shop_fetch--fastmoss_video_fetch",
             side_effects=("fastmoss.request",),
         ),
+        "product_video_outreach_check": _contract(
+            handler_code="product_video_outreach_check",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Collect FastMoss product-associated videos through HTTP for outreach creator matches.",
+            contract_reference="docs/arch/workflow-influencer-outreach-design.md#62-product_video_outreach_check-payload",
+            side_effects=("fastmoss.request", "artifact.write", "fact_db.write"),
+        ),
+        "outreach_creator_video_metric_refresh": _contract(
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Refresh FastMoss video overview metrics for one outreach SKU creator row and write Feishu fields.",
+            contract_reference="docs/arch/workflow-influencer-outreach-design.md#65-outreach_creator_video_metric_refresh-payload",
+            side_effects=("fastmoss.request", "fact_db.write", "feishu.write"),
+        ),
         "media_asset_sync": _contract(
             handler_code="media_asset_sync",
             worker_type="api_worker",

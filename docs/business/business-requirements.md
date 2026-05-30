@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-05-05`
+更新时间：`2026-05-22`
 
 ## 1. 文档目的
 
@@ -13,11 +13,12 @@
 
 客户当前希望通过 `OpenClaw` 驱动自动化流程，持续抓取 `TK` 和 `AWS` 的商业数据，并把结果沉淀到现有飞书多维表中，用于后续选品、竞品分析、达人运营和业务决策。
 
-当前阶段已经明确的业务目标主要有三类：
+当前阶段已经明确的业务目标主要有四类：
 
 1. 通过定时任务持续更新飞书中的 `TK竞品收集` 数据，保证已有竞品信息保持最新。
 2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品或选品数据。
 3. 通过定时任务把 `TK竞品收集` 中的商品继续扩展到 `TK达人池`，形成达人画像与运营沉淀。
+4. 通过定时或手动检查 `TK达人建联表`，跟踪达人是否已为对应商品发布视频，并回写视频链接与发布时间。
 
 ## 3. 客户当前飞书多维表
 
@@ -121,15 +122,17 @@
 - `序号`
 - `SKUID`
 - `建联时间`
-- `达人名称`
+- `达人ID`
 - `粉丝数`
 - `达人类型`
 - `佣金`
 - `视频链接`
-- `发视频时间`
+- `检查时间`
+- `视频发布时间`
 - `建联店铺`
 - `建联产品`
 - `播放量`
+- `备注`
 
 #### 3.2.5 TK合作爆款视频
 
@@ -148,7 +151,7 @@
 
 ### 3.3 已明确需求表的自动维护字段
 
-当前已经明确自动维护口径的表包括 `TK竞品收集`、`TK达人池` 和 `TK选品收集`。
+当前已经明确自动维护口径的表包括 `TK竞品收集`、`TK达人池`、`TK选品收集` 和 `TK达人建联表`。
 
 #### 3.3.1 TK竞品收集
 
@@ -192,7 +195,24 @@
 - `达人联系方式` 来自 FastMoss 达人联系方式；达人存在多个联系方式时优先写入邮箱地址，没有邮箱地址时写入第一个有效联系方式，没有任何联系方式时不写入该字段，也不覆盖已有联系方式。
 - `记录日期` 表示达人首次进入 `TK达人池` 的日期，首次插入时写入，后续不覆盖；`更新日期` 表示该达人行最近一次因系统同步产生新商品合并或字段更新的日期，首次插入时也写入。
 
-#### 3.3.3 TK选品收集
+#### 3.3.3 TK达人建联表
+
+现阶段系统自动维护字段固定为以下 3 个：
+
+- `视频链接`
+- `视频发布时间`
+- `检查时间`
+
+补充说明：
+
+- `SKUID` 和 `达人ID` 是建联检查的输入字段，不由本流程自动维护。
+- `达人ID` 当前按 FastMoss/TikTok `unique_id` 使用，不按 FastMoss 数值型 `uid` 使用。
+- `视频链接` 基于 FastMoss 商品关联视频接口返回的 `unique_id` 和 `video_id` 生成 TikTok 官方视频链接。
+- `视频链接` 已有内容时不覆盖；只有空值行参与检查和回写。
+- `视频发布时间` 写入匹配视频的 `create_date`；同一商品同一达人匹配多条视频时，选择发布时间最早的一条。
+- `检查时间` 只在该商品视频列表抓取成功后更新；如果 FastMoss 抓取失败，该商品对应行不更新检查时间。
+
+#### 3.3.4 TK选品收集
 
 现阶段系统自动维护字段按用途分层：必填补全字段参与表级候选判断；系统运行字段由流程维护但不参与候选判断；可选补充字段有有效数据时写入，缺失时不阻塞采集、不触发候选。
 
@@ -277,7 +297,29 @@
 - `检查达人名称是否重复` 是飞书公式字段，不参与任何自动写入。
 - 其余字段当前仍视为历史沉淀字段或人工维护字段，不纳入本期达人池自动维护范围。
 
-#### 3.4.3 TK选品收集
+#### 3.4.3 TK达人建联表
+
+以下字段当前不纳入自动维护范围：
+
+- `序号`
+- `SKUID`
+- `建联时间`
+- `达人ID`
+- `粉丝数`
+- `达人类型`
+- `佣金`
+- `建联店铺`
+- `建联产品`
+- `播放量`
+- `备注`
+
+其中：
+
+- `SKUID` 和 `达人ID` 是本流程的匹配输入字段，必须由人工或上游流程提供。
+- `播放量` 当前不纳入达人建联检查流程的自动回写范围；如后续要求补充播放量，需要另行确认视频播放量的数据来源和更新频率。
+- 其余字段属于人工运营字段或历史沉淀字段，不纳入当前自动维护范围。
+
+#### 3.4.4 TK选品收集
 
 以下字段当前不纳入自动维护范围：
 
@@ -304,6 +346,7 @@
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
+| 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | [workflow-influencer-outreach-design.md](../arch/workflow-influencer-outreach-design.md) |
 
 ### 4.2 变更隔离规则
 
@@ -322,7 +365,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `选品采集` | `2026-04-14 新增四表需求` | `TK选品收集` | 扫描选品表记录，对自动维护字段存在空值的商品触发 TikTok + FastMoss 采集并补齐字段；URL 无效时标记"链接不可访问"；图表类字段在写回前按需渲染 PNG。 | 店铺入口等独立选品入口需求仍待后续澄清。 | 已提升为正式流程需求文档 [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)；关键词搜索选品写入已提升为 [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)。 | `已澄清` | `P1` |
 | `TK达人池表扩展` | `2026-04-14 新增四表需求` | `TK达人池` | 基于 `TK竞品收集` 中可跳转到 FastMoss 商品详情的商品行，筛选并沉淀满足条件的达人，同时维护达人画像与关联商品字段。 | 当前范围内无新增待澄清点；如后续要求“达人联系方式必须非空”或“合作店铺自动新增新选项”，再单独开启下一轮澄清。 | `TK达人池` 保持一人一行，按 `达人ID` 做 upsert；筛选口径固定为“商品页达人销量 `sold_count > 50` 且粉丝数 `> 5000`”；同一达人命中多个商品时，在原行累加 `带货商品图`、`关联商品销量`、`关联节日`，并合并 `合作店铺`；`合作商品数` 不作为本期更新字段；`粉丝数`、`带货视频 GMV`、`带货直播 GMV` 写入飞书时按整数 `W` 单位四舍五入展示，小于 `10000` 显示 `小于1W`；`达人联系方式` 有多个时优先邮箱，否则第一个有效联系方式，没有则不写入；首次插入达人行时同时写 `记录日期` 和 `更新日期`，后续新商品合并时只刷新 `更新日期`；`检查达人名称是否重复` 不参与写入。 | `已澄清` | `P1` |
-| `TK达人建联表扩展` | `2026-04-14 新增四表需求` | `TK达人建联表` | 以商品与达人建联为入口，跟踪达人是否按约发布视频，并补充视频播放量。 | 是否需要新增 `达人ID` 作为硬键未定；30 天未履约规则的起算点未定；视频监控频率未定；TikTok 视频链接播放量获取方式未定。 | 先按建联事件粒度理解，一行代表一次“商品建联达人”记录，后续应补 `达人ID` 再做稳定自动化。 | `待澄清` | `P1` |
+| `TK达人建联表扩展` | `2026-04-14 新增四表需求` | `TK达人建联表` | 以商品与达人建联为入口，跟踪达人是否按约发布视频，并回写视频链接和视频发布时间。 | 当前范围内无新增待澄清点；播放量自动回写、30 天未履约提醒和正式 task_code 后续单独确认。 | 已提升为正式流程需求文档 [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md)；当前按 `SKUID=FastMoss product_id`、`达人ID=unique_id` 匹配 FastMoss 商品关联视频。 | `已澄清` | `P1` |
 | `TK合作爆款视频表扩展` | `2026-04-14 新增四表需求` | `TK合作爆款视频` | 根据客户提供的 `skuid` 进入 FastMoss 商品详情页，沉淀播放量大于 20 万的关联视频。 | 客户提供的 `skuid` 是商品 ID 还是变体 SKU 未定；关联视频筛选范围未定；回写字段口径未定。 | 先按商品详情页维度理解，一行代表一条满足阈值的视频记录，后续再确认 `skuid` 的真实定义。 | `待澄清` | `P1` |
 
 ## 6. 设计边界
@@ -341,9 +384,9 @@
 ## 7. 版本信息
 
 - 需求版本：`v3.3`
-- 文档版本：`v3.5.0`
-- 版本日期：`2026-05-05`
-- 本次变更：补充关键词搜索选品写入正式流程文档；将选品采集文档口径调整为稳定的数据采集需求。
+- 文档版本：`v3.6.1`
+- 版本日期：`2026-05-22`
+- 本次变更：补充达人建联检查设计文档入口；确定 task_code 为 `tiktok_influencer_outreach_sync`。
 
 ## 8. 关联文档
 
@@ -353,4 +396,5 @@
 - [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md)
 - [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)
 - [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)
+- [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md)
 - [../arch/README.md](../arch/README.md)

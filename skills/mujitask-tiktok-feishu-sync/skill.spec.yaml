@@ -7,9 +7,9 @@ metadata:
   description: >-
     Submits OpenClaw task requests for the current TikTok/TK Feishu workflows:
     competitor-table refresh, competitor keyword search, batch keyword search,
-    influencer-pool sync, selection-table ingest, and selection keyword search. Use only when the user
+    influencer-pool sync, influencer outreach sync, selection-table ingest, and selection keyword search. Use only when the user
     explicitly asks to run, sync, update, complete, search, collect, or write data
-    to TK竞品收集, TK选品收集, or TK达人池. Do not use for conceptual questions,
+    to TK竞品收集, TK选品收集, TK达人池, or TK达人建联表. Do not use for conceptual questions,
     strategy discussion, skill review, configuration support, or general FastMoss
     questions without an explicit table/workflow target.
   short_description: TK选品、竞品、达人池与FastMoss任务提交
@@ -24,6 +24,7 @@ formal_task_codes:
   - refresh_current_competitor_table
   - search_keyword_competitor_products
   - sync_tk_influencer_pool
+  - tiktok_influencer_outreach_sync
   - tiktok_fastmoss_product_ingest
   - search_keyword_selection_products
 
@@ -40,6 +41,7 @@ when_to_use:
   - Preview any task submission inputs, then submit only after explicit confirmation.
   - Preview a batch of keyword-search rows for `TK竞品收集` or `TK选品收集`, then submit only after explicit confirmation.
   - Sync influencer data from `TK竞品收集` to `TK达人池`.
+  - Check and write outreach video/check-time results for `TK达人建联表`.
   - Ingest or complete data for `TK选品收集`.
   - Search keyword products and write new selection seed rows to `TK选品收集`.
 
@@ -64,6 +66,7 @@ do_not_use:
   - asking to analyze, edit, review, or debug this skill
   - discussing TikTok competitor strategy without asking to update the current Feishu table
   - discussing product-selection strategy without asking to write to `TK选品收集`
+  - discussing influencer outreach strategy without asking to update `TK达人建联表`
   - asking about credentials, tokens, environment variables, browser profiles, Runtime DB, deployment, or troubleshooting
   - saying only “FastMoss”, “TK竞品”, “写入飞书”, or “更新当前表” without a clear workflow or target table
 
@@ -216,6 +219,37 @@ intents:
       - submit runtime task_request
       - read TK竞品收集 and TK达人池
       - write influencer-pool rows through async workers
+      - send final outbox notification
+
+  - id: influencer_outreach_sync
+    kind: formal_workflow
+    title: 达人建联检查
+    business_flow_name: 达人建联检查
+    task_code: tiktok_influencer_outreach_sync
+    source_tables:
+      - TK达人建联表
+    target_tables:
+      - TK达人建联表
+    trigger_mode_from_requirements: scheduled or manual trigger
+    conversation_activation: explicit manual submission only
+    source_documents:
+      requirements:
+        - docs/business/requirements/tk-influencer-outreach.md
+      design:
+        - docs/arch/workflow-influencer-outreach-design.md
+    description: Use when the user explicitly asks to run, sync, update, or check `TK达人建联表` outreach rows.
+    behavior_summary:
+      - This workflow reads outreach rows, checks FastMoss product videos by `SKUID` and `达人ID`, and writes matched video fields or check time.
+      - Existing `视频链接` rows are skipped by the Runtime workflow and are not overwritten.
+    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_outreach_sync"
+    required_inputs: []
+    optional_inputs: []
+    default_values: {}
+    side_effects:
+      - submit runtime task_request
+      - read TK达人建联表
+      - call FastMoss product video API
+      - write outreach check results through async workers
       - send final outbox notification
 
   - id: selection_table_ingest
@@ -374,6 +408,7 @@ intent_precedence:
   - If the user asks to complete, ingest, scan, or update `TK选品收集` without keyword-search semantics, choose `selection_table_ingest`.
   - If the user asks to manually refresh, sync, or update the current competitor table, choose `competitor_table_refresh`.
   - If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
+  - If the user asks to run, sync, update, or check `TK达人建联表` or `达人建联表`, choose `influencer_outreach_sync`.
   - If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
   - If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
   - If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.

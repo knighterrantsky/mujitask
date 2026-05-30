@@ -127,6 +127,25 @@ def fastmoss_snapshot_metric_payload(fastmoss_payload: Mapping[str, Any]) -> dic
     return metrics
 
 
+def video_metric_payload(video_payload: Mapping[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for key in (
+        "play_count",
+        "digg_count",
+        "comment_count",
+        "share_count",
+        "engagement_rate",
+        "duration",
+        "publish_time",
+        "create_date",
+        "video_url",
+    ):
+        value = video_payload.get(key)
+        if has_observable_value(value):
+            metrics[key] = value
+    return metrics
+
+
 def has_observable_value(value: Any) -> bool:
     if value is None:
         return False
