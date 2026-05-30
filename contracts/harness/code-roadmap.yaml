@@ -172,6 +172,47 @@ features:
       - Branch names must use the project type prefixes rather than Codex app default prefixes.
       - Branch creation or rename must be followed by a current-branch verification command.
 
+  - feature_code: ops_deployment_migration_flow
+    status: complete
+    feature_type: ops_runbook
+    default_context:
+      - docs/ops/deployment.md
+      - docs/ops/runtime-acceptance-and-rollback.md
+      - docs/arch/database-architecture-design.md
+      - scripts/deploy/macos/deploy.sh
+      - scripts/execution_control/run_alembic_upgrade.sh
+      - scripts/execution_control/install_launch_agents.sh
+      - tests/test_openclaw_deploy_utils.py
+    source_contracts:
+      - docs/ops/deployment.md
+      - docs/ops/runtime-acceptance-and-rollback.md
+      - docs/arch/database-architecture-design.md
+    allowed_paths:
+      - README.md
+      - docs/ops/**
+      - scripts/deploy/**
+      - scripts/execution_control/run_alembic_upgrade.sh
+      - scripts/execution_control/install_launch_agents.sh
+      - contracts/harness/code-roadmap.yaml
+      - tests/test_openclaw_deploy_utils.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_openclaw_deploy_utils.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_completion_claim_gate.py
+      commands:
+        - bash -n scripts/deploy/macos/deploy.sh scripts/execution_control/run_alembic_upgrade.sh scripts/execution_control/install_launch_agents.sh
+        - uv run --extra dev pytest tests/test_openclaw_deploy_utils.py tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - Initial deployment and update deployment must run Alembic migration before launchd restart.
+      - macOS deploy.sh must execute run_alembic_upgrade.sh before install_launch_agents.sh.
+      - install_launch_agents.sh schema bootstrap is only a local convenience fallback, not a replacement for migration.
+
   - feature_code: project_structure_refactor_phase_1
     status: complete
     feature_type: repository_governance

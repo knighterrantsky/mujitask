@@ -12,17 +12,32 @@ def outreach_result_projection_mapper(record: Mapping[str, Any], payload: Mappin
     )
     fields: dict[str, Any] = {}
     video_url = _first_non_empty(record.get("highest_play_video_url"), record.get("video_url"))
+    check_time = _first_non_empty(record.get("checked_at"), payload.get("trigger_date"), payload.get("check_time"))
+    if not video_url:
+        if check_time and not existing_video_url:
+            fields["检查时间"] = check_time
+        return _normalize_write_record(
+            {
+                "op": "update",
+                "record_id": _first_non_empty(record.get("source_record_id"), record.get("record_id")),
+                "business_entity_key": _first_non_empty(
+                    record.get("business_entity_key"),
+                    f"outreach:{_first_non_empty(record.get('source_record_id'), record.get('record_id'))}",
+                ),
+                "fields": fields,
+                "source_context": _source_context_from_record(record, payload),
+            },
+            payload,
+        )
+
     if video_url and video_url != _text_value(existing_video_url):
         fields["视频链接"] = _link_value(video_url)
     published_date = _first_non_empty(record.get("earliest_published_date"), record.get("published_date"))
     if published_date and not _text_value(existing_published_date):
         fields["视频发布时间"] = published_date
-    check_time = _first_non_empty(record.get("checked_at"), payload.get("trigger_date"), payload.get("check_time"))
-    if check_time and not existing_video_url:
-        fields["检查时间"] = check_time
     if "total_play_count" in record or "play_count" in record:
-        play_count = _int(_first_non_empty(record.get("total_play_count"), record.get("play_count")))
-        if play_count != _int(_first_non_empty(record.get("existing_play_count"), _mapping(record.get("source_fields")).get("播放量"))):
+        play_count = _format_feishu_play_count(_first_non_empty(record.get("total_play_count"), record.get("play_count")))
+        if play_count != _existing_play_count_display(record):
             fields["播放量"] = play_count
     if "video_count" in record:
         video_count = _int(record.get("video_count"))
@@ -60,6 +75,23 @@ def _normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any
 def _link_value(value: Any) -> Any:
     url = _text(value)
     return {"link": url, "text": url} if url else ""
+
+
+def _format_feishu_play_count(value: Any) -> str:
+    play_count = max(0, _int(value))
+    if play_count < 10000:
+        return "<1W"
+    return f"{play_count // 10000}W"
+
+
+def _existing_play_count_display(record: Mapping[str, Any]) -> str:
+    source_text = _text_value(_mapping(record.get("source_fields")).get("播放量"))
+    if source_text:
+        return source_text
+    existing_play_count = record.get("existing_play_count")
+    if existing_play_count not in (None, ""):
+        return _format_feishu_play_count(existing_play_count)
+    return ""
 
 
 def _text_value(value: Any) -> str:

@@ -137,6 +137,8 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 bash scripts/execution_control/run_alembic_upgrade.sh
 ```
 
+该步骤必须在安装、重启或 `kickstart` 任一 `launchd` 守护进程之前执行。更新已有部署时也必须执行同一步骤，避免运行进程使用新代码访问旧 schema。
+
 ### 5.4 启动 executor
 历史上早期受控执行只强调过单个 `executor_daemon`。
 按当前实现，正式部署时应同时启动 5 个常驻进程：

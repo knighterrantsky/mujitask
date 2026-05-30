@@ -9,13 +9,21 @@ from automation_business_scaffold.contracts.handler.api import BOUND_API_HANDLER
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.contracts.handler.shared import success_result
 from automation_business_scaffold.control_plane.executor.runner import _sanitize_task_payload
-from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
-from automation_business_scaffold.domains.tiktok.flows import outreach_creator_video_metrics as metric_flow_module
-from automation_business_scaffold.domains.tiktok.flows import outreach_product_videos as product_video_flow_module
+from automation_business_scaffold.control_plane.executor.workflow_registry import (
+    load_workflow_runtime,
+)
+from automation_business_scaffold.domains.tiktok.flows import (
+    outreach_creator_video_metrics as metric_flow_module,
+)
+from automation_business_scaffold.domains.tiktok.flows import (
+    outreach_product_videos as product_video_flow_module,
+)
 from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import (
     _build_summary,
     _merge_video_rows,
+    advance_stage,
     finalize_request,
+    release_request_after_child_completion,
 )
 from automation_business_scaffold.domains.tiktok.jobs.outreach_creator_video_metric_refresh import (
     outreach_creator_video_metric_refresh_handler,
@@ -28,7 +36,10 @@ from automation_business_scaffold.domains.tiktok.flows.outreach_product_videos i
     match_outreach_rows_to_videos,
     normalize_product_video_rows,
 )
-from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPError, FastMossHTTPSession
+from automation_business_scaffold.infrastructure.fastmoss.http_session import (
+    FastMossHTTPError,
+    FastMossHTTPSession,
+)
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     build_outreach_query_window,
     group_outreach_rows_by_product,
@@ -324,14 +335,19 @@ def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypa
 
 
 def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
-    payload = _sanitize_task_payload({"control_action": "submit", "trigger_date": "2026-05-22"}, task_code="tiktok_influencer_outreach_sync")
+    payload = _sanitize_task_payload(
+        {"control_action": "submit", "trigger_date": "2026-05-22"},
+        task_code="tiktok_influencer_outreach_sync",
+    )
 
     assert payload["fastmoss_live_fetch"] is True
     assert payload["fastmoss_phone_env"] == "FASTMOSS_PHONE"
     assert payload["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
 
 
-def test_product_video_check_uses_api_worker_mock_rows_without_live_fastmoss_config(monkeypatch, tmp_path) -> None:
+def test_product_video_check_uses_api_worker_mock_rows_without_live_fastmoss_config(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.chdir(tmp_path)
     result = product_video_outreach_check_handler(
         HandlerContext(
@@ -343,7 +359,9 @@ def test_product_video_check_uses_api_worker_mock_rows_without_live_fastmoss_con
             payload={
                 "product_id": "p1",
                 "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
-                "mock_fastmoss_product_videos": [{"product_id": "p1", "unique_id": "creator", "video_id": "1"}],
+                "mock_fastmoss_product_videos": [
+                    {"product_id": "p1", "unique_id": "creator", "video_id": "1"}
+                ],
             },
         )
     )
@@ -364,11 +382,17 @@ def test_product_video_check_uses_fixed_page_size_five(monkeypatch, tmp_path) ->
             return False
 
         def list_product_videos(self, product_id, *, page, pagesize, **kwargs):  # noqa: ANN001
-            captured.update({"product_id": product_id, "page": page, "pagesize": pagesize, "kwargs": kwargs})
+            captured.update(
+                {"product_id": product_id, "page": page, "pagesize": pagesize, "kwargs": kwargs}
+            )
             return {"code": 200, "data": {"list": []}}
 
-    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
-    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession()
+    )
+    monkeypatch.setattr(
+        product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {}
+    )
 
     result = product_video_outreach_check_handler(
         HandlerContext(
@@ -410,7 +434,10 @@ def test_product_video_check_retries_business_500_at_page_level(monkeypatch, tmp
                     "code": 200,
                     "data": {
                         "total": 10,
-                        "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(1, 6)],
+                        "list": [
+                            {"product_id": "p1", "unique_id": "creator", "video_id": str(index)}
+                            for index in range(1, 6)
+                        ],
                     },
                 }
             if page == 2 and calls.count(2) == 1:
@@ -426,13 +453,22 @@ def test_product_video_check_retries_business_500_at_page_level(monkeypatch, tmp
                 "code": 200,
                 "data": {
                     "total": 10,
-                    "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(6, 11)],
+                    "list": [
+                        {"product_id": "p1", "unique_id": "creator", "video_id": str(index)}
+                        for index in range(6, 11)
+                    ],
                 },
             }
 
-    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
-    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
-    monkeypatch.setattr(product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession()
+    )
+    monkeypatch.setattr(
+        product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
 
     result = product_video_outreach_check_handler(
         HandlerContext(
@@ -455,7 +491,9 @@ def test_product_video_check_retries_business_500_at_page_level(monkeypatch, tmp
     assert sleeps == [10.0]
 
 
-def test_product_video_check_records_failed_page_after_page_retry_exhausted(monkeypatch, tmp_path) -> None:
+def test_product_video_check_records_failed_page_after_page_retry_exhausted(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.chdir(tmp_path)
     sleeps: list[float] = []
 
@@ -473,7 +511,10 @@ def test_product_video_check_records_failed_page_after_page_retry_exhausted(monk
                     "code": 200,
                     "data": {
                         "total": 10,
-                        "list": [{"product_id": "p1", "unique_id": "creator", "video_id": str(index)} for index in range(1, 6)],
+                        "list": [
+                            {"product_id": "p1", "unique_id": "creator", "video_id": str(index)}
+                            for index in range(1, 6)
+                        ],
                     },
                 }
             raise FastMossHTTPError(
@@ -485,9 +526,15 @@ def test_product_video_check_records_failed_page_after_page_retry_exhausted(monk
                 params={"page": page},
             )
 
-    monkeypatch.setattr(product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession())
-    monkeypatch.setattr(product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {})
-    monkeypatch.setattr(product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        product_video_flow_module, "build_fastmoss_session", lambda *args, **kwargs: FakeSession()
+    )
+    monkeypatch.setattr(
+        product_video_flow_module, "prepare_fastmoss_session", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        product_video_flow_module.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
 
     result = product_video_outreach_check_handler(
         HandlerContext(
@@ -508,7 +555,13 @@ def test_product_video_check_records_failed_page_after_page_retry_exhausted(monk
     assert result.error is not None
     assert result.error.retryable is True
     assert result.result["failed_page"] == 2
-    assert [row["video_id"] for row in result.result["partial_video_rows"]] == ["1", "2", "3", "4", "5"]
+    assert [row["video_id"] for row in result.result["partial_video_rows"]] == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    ]
     assert sleeps == [10.0, 20.0, 30.0]
 
 
@@ -526,8 +579,18 @@ def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, 
                 "trigger_date": "2026-05-22",
                 "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
                 "mock_fastmoss_product_videos": [
-                    {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-20"},
-                    {"product_id": "p1", "author": {"unique_id": "other"}, "video_id": "2", "create_date": "2026-05-21"},
+                    {
+                        "product_id": "p1",
+                        "unique_id": "creator",
+                        "video_id": "1",
+                        "create_date": "2026-05-20",
+                    },
+                    {
+                        "product_id": "p1",
+                        "author": {"unique_id": "other"},
+                        "video_id": "2",
+                        "create_date": "2026-05-21",
+                    },
                 ],
             },
         )
@@ -558,7 +621,9 @@ def test_product_video_check_persists_full_video_audit_for_success(monkeypatch, 
         assert len(list(csv.DictReader(file))) == 2
 
 
-def test_product_video_check_indexes_product_videos_in_fact_db(monkeypatch, tmp_path, runtime_db_url) -> None:
+def test_product_video_check_indexes_product_videos_in_fact_db(
+    monkeypatch, tmp_path, runtime_db_url
+) -> None:
     monkeypatch.chdir(tmp_path)
     result = product_video_outreach_check_handler(
         HandlerContext(
@@ -572,15 +637,27 @@ def test_product_video_check_indexes_product_videos_in_fact_db(monkeypatch, tmp_
                 "fact_db_url": runtime_db_url,
                 "rows": [{"source_record_id": "rec1", "creator_unique_id": "creator"}],
                 "mock_fastmoss_product_videos": [
-                    {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-20"},
-                    {"product_id": "p1", "unique_id": "creator", "video_id": "2", "create_date": "2026-05-21"},
+                    {
+                        "product_id": "p1",
+                        "unique_id": "creator",
+                        "video_id": "1",
+                        "create_date": "2026-05-20",
+                    },
+                    {
+                        "product_id": "p1",
+                        "unique_id": "creator",
+                        "video_id": "2",
+                        "create_date": "2026-05-21",
+                    },
                 ],
             },
         )
     )
 
     fact_store = TKFactStore(db_url=runtime_db_url)
-    videos = fact_store.list_videos_by_product_and_creator(product_id="p1", creator_unique_id="creator")
+    videos = fact_store.list_videos_by_product_and_creator(
+        product_id="p1", creator_unique_id="creator"
+    )
 
     assert result.status == "success"
     assert result.result["indexed_video_count"] == 2
@@ -589,7 +666,9 @@ def test_product_video_check_indexes_product_videos_in_fact_db(monkeypatch, tmp_
     assert videos[0]["published_date"] == "2026-05-20"
 
 
-def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(monkeypatch, runtime_db_url) -> None:
+def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(
+    monkeypatch, runtime_db_url
+) -> None:
     fact_store = TKFactStore(db_url=runtime_db_url)
     creator_key = fact_store.build_creator_key(unique_id="creator")
     for video_id, published_date in (("1", "2026-05-20"), ("2", "2026-05-19")):
@@ -602,7 +681,9 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(mo
             source_platform="fastmoss",
             facts={"published_date": published_date},
         )
-        fact_store.upsert_video_product_relation(video_key=video["video_key"], product_id="p1", source_platform="fastmoss")
+        fact_store.upsert_video_product_relation(
+            video_key=video["video_key"], product_id="p1", source_platform="fastmoss"
+        )
 
     captured: dict[str, object] = {}
 
@@ -630,7 +711,13 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(mo
                 "trigger_date": "2026-05-28",
                 "target_table_ref": "tbl",
                 "fact_db_url": runtime_db_url,
-                "source_fields": {"视频链接": "", "视频发布时间": "", "检查时间": "", "播放量": 0, "视频数量": 0},
+                "source_fields": {
+                    "视频链接": "",
+                    "视频发布时间": "",
+                    "检查时间": "",
+                    "播放量": 0,
+                    "视频数量": 0,
+                },
                 "mock_fastmoss_video_overviews": {
                     "1": {"video_id": "1", "play_count": 10},
                     "2": {"video_id": "2", "play_count": 30},
@@ -651,16 +738,20 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(mo
     assert result.result["highest_play_video_url"] == "https://www.tiktok.com/@creator/video/2"
     assert result.result["earliest_published_date"] == "2026-05-19"
     assert fields == {
-        "视频链接": {"link": "https://www.tiktok.com/@creator/video/2", "text": "https://www.tiktok.com/@creator/video/2"},
-        "播放量": 40,
+        "视频链接": {
+            "link": "https://www.tiktok.com/@creator/video/2",
+            "text": "https://www.tiktok.com/@creator/video/2",
+        },
+        "播放量": "<1W",
         "视频数量": 2,
         "视频发布时间": "2026-05-19",
-        "检查时间": "2026-05-28",
         "更新时间": "2026-05-28",
     }
 
 
-def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(monkeypatch, runtime_db_url) -> None:
+def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
+    monkeypatch, runtime_db_url
+) -> None:
     fact_store = TKFactStore(db_url=runtime_db_url)
     creator_key = fact_store.build_creator_key(unique_id="creator")
     video = fact_store.upsert_video(
@@ -672,7 +763,9 @@ def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
         source_platform="fastmoss",
         facts={"published_date": "2026-05-20"},
     )
-    fact_store.upsert_video_product_relation(video_key=video["video_key"], product_id="p1", source_platform="fastmoss")
+    fact_store.upsert_video_product_relation(
+        video_key=video["video_key"], product_id="p1", source_platform="fastmoss"
+    )
     calls: list[dict[str, object]] = []
 
     def fake_write(context: HandlerContext):  # noqa: ANN001
@@ -704,7 +797,9 @@ def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
     assert calls == []
 
 
-def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_link(monkeypatch, runtime_db_url) -> None:
+def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_link(
+    monkeypatch, runtime_db_url
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_write(context: HandlerContext):  # noqa: ANN001
@@ -740,13 +835,15 @@ def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_
 
     write_payload = captured["payload"]
     assert isinstance(write_payload, dict)
-    assert write_payload["records"][0]["fields"] == {"检查时间": "2026-05-28", "更新时间": "2026-05-28"}
+    assert write_payload["records"][0]["fields"] == {"检查时间": "2026-05-28"}
     assert result.status == "success"
     assert result.result["video_count"] == 0
-    assert result.result["written_fields"] == ["检查时间", "更新时间"]
+    assert result.result["written_fields"] == ["检查时间"]
 
 
-def test_creator_video_metric_refresh_skips_existing_link_from_source_fields_when_index_missing(monkeypatch, runtime_db_url) -> None:
+def test_creator_video_metric_refresh_skips_existing_link_from_source_fields_when_index_missing(
+    monkeypatch, runtime_db_url
+) -> None:
     calls: list[dict[str, object]] = []
 
     def fake_write(context: HandlerContext):  # noqa: ANN001
@@ -769,7 +866,9 @@ def test_creator_video_metric_refresh_skips_existing_link_from_source_fields_whe
                 "trigger_date": "2026-05-28",
                 "target_table_ref": "tbl",
                 "fact_db_url": runtime_db_url,
-                "source_fields": {"视频链接": {"link": "https://www.tiktok.com/@creator/video/existing"}},
+                "source_fields": {
+                    "视频链接": {"link": "https://www.tiktok.com/@creator/video/existing"}
+                },
             },
         )
     )
@@ -798,18 +897,316 @@ def test_outreach_fallback_merges_carried_video_rows_across_retries() -> None:
     ]
 
 
+class _OutreachFallbackStore:
+    def __init__(self, *, current_stage: str, jobs: list[dict[str, object]]) -> None:
+        self.request = SimpleNamespace(
+            request_id="req-fallback",
+            task_code="tiktok_influencer_outreach_sync",
+            status="waiting",
+            current_stage=current_stage,
+            progress_stage=current_stage,
+            payload={},
+        )
+        self.jobs = jobs
+        self.executions: list[SimpleNamespace] = []
+        self.enqueued_executions: list[dict[str, object]] = []
+        self.requeued_jobs: list[dict[str, object]] = []
+        self.failed_jobs: list[dict[str, object]] = []
+        self.request_updates: list[dict[str, object]] = []
+
+    def load_task_request(self, request_id):  # noqa: ANN001
+        assert request_id == self.request.request_id
+        return self.request
+
+    def update_task_request(self, **kwargs):  # noqa: ANN001
+        self.request_updates.append(dict(kwargs))
+        for key, value in kwargs.items():
+            setattr(self.request, key, value)
+        return self.request
+
+    def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
+        assert request_id == self.request.request_id
+        return [job for job in self.jobs if not job_code or job.get("job_code") == job_code]
+
+    def list_task_executions(self, request_id):  # noqa: ANN001
+        assert request_id == self.request.request_id
+        return list(self.executions)
+
+    def enqueue_task_executions(self, **kwargs):  # noqa: ANN001
+        self.enqueued_executions.extend(kwargs["items"])
+        return {"created_count": len(kwargs["items"])}
+
+    def requeue_waiting_api_worker_job(self, **kwargs):  # noqa: ANN001
+        self.requeued_jobs.append(dict(kwargs))
+        for job in self.jobs:
+            if job.get("job_id") == kwargs["job_id"]:
+                job["status"] = "pending"
+                job["payload"] = kwargs["payload"]
+                return job
+        return dict(kwargs)
+
+    def mark_waiting_api_worker_job_failed(self, **kwargs):  # noqa: ANN001
+        self.failed_jobs.append(dict(kwargs))
+        for job in self.jobs:
+            if job.get("job_id") == kwargs["job_id"]:
+                job["status"] = "finished"
+                job["result_status"] = "failed"
+                job["error_code"] = kwargs["error_code"]
+                return job
+        return dict(kwargs)
+
+
+def _outreach_fallback_job(
+    job_id: str, *, stage_code: str, status: str = "waiting"
+) -> dict[str, object]:
+    return {
+        "job_id": job_id,
+        "job_code": "outreach_creator_video_metric_refresh"
+        if stage_code == "refresh_creator_video_metrics_and_writeback"
+        else "product_video_outreach_check",
+        "business_key": job_id,
+        "status": status,
+        "payload": {"stage_code": stage_code},
+        "result": {
+            "handler_result": {
+                "status": "fallback_required",
+                "result": {
+                    "fallback_required": True,
+                    "fallback_reason": "fastmoss_api_security_verification",
+                    "security_context": {"path": "/api/video/overview"},
+                    "verification_request": {
+                        "path": "/api/video/overview",
+                        "params": {"video_id": job_id},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _browser_execution(
+    *, execution_id: str, status: str, payload: dict[str, object], result: dict[str, object]
+) -> SimpleNamespace:
+    execution = SimpleNamespace(
+        execution_id=execution_id, status=status, payload=payload, result=result
+    )
+    execution.to_dict = lambda: {
+        "execution_id": execution_id,
+        "status": status,
+        "payload": payload,
+        "result": result,
+    }
+    return execution
+
+
+def test_outreach_release_routes_waiting_fallback_before_pending_jobs() -> None:
+    store = _OutreachFallbackStore(
+        current_stage="refresh_creator_video_metrics_and_writeback",
+        jobs=[
+            _outreach_fallback_job(
+                "job-waiting", stage_code="refresh_creator_video_metrics_and_writeback"
+            ),
+            _outreach_fallback_job(
+                "job-pending",
+                stage_code="refresh_creator_video_metrics_and_writeback",
+                status="pending",
+            ),
+        ],
+    )
+
+    released = release_request_after_child_completion(store, request_id=store.request.request_id)
+
+    assert released == [
+        {
+            "request_id": "req-fallback",
+            "stage_code": "fastmoss_security_browser_fallback",
+            "released": True,
+        }
+    ]
+    assert store.request_updates[-1]["current_stage"] == "fastmoss_security_browser_fallback"
+
+
+def test_outreach_refresh_stage_routes_fallback_before_waiting_on_pending_jobs() -> None:
+    store = _OutreachFallbackStore(
+        current_stage="refresh_creator_video_metrics_and_writeback",
+        jobs=[
+            _outreach_fallback_job(
+                "job-waiting", stage_code="refresh_creator_video_metrics_and_writeback"
+            ),
+            _outreach_fallback_job(
+                "job-pending",
+                stage_code="refresh_creator_video_metrics_and_writeback",
+                status="pending",
+            ),
+        ],
+    )
+
+    result = advance_stage(
+        store=store,
+        request=store.request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="refresh_creator_video_metrics_and_writeback",
+    )
+
+    assert result["action"] == "advance"
+    assert result["next_stage"] == "fastmoss_security_browser_fallback"
+
+
+def test_outreach_release_waits_while_browser_fallback_execution_is_active() -> None:
+    store = _OutreachFallbackStore(
+        current_stage="fastmoss_security_browser_fallback",
+        jobs=[],
+    )
+    store.executions.append(
+        _browser_execution(
+            execution_id="browser-1",
+            status="running",
+            payload={
+                "stage_code": "fastmoss_security_browser_fallback",
+                "fallback_digest": "digest",
+            },
+            result={},
+        )
+    )
+
+    released = release_request_after_child_completion(store, request_id=store.request.request_id)
+
+    assert released == []
+    assert store.request_updates == []
+
+
+def test_outreach_browser_fallback_success_requeues_all_waiting_jobs() -> None:
+    store = _OutreachFallbackStore(
+        current_stage="fastmoss_security_browser_fallback",
+        jobs=[
+            _outreach_fallback_job(
+                "job-1", stage_code="refresh_creator_video_metrics_and_writeback"
+            ),
+            _outreach_fallback_job(
+                "job-2", stage_code="refresh_creator_video_metrics_and_writeback"
+            ),
+        ],
+    )
+
+    dispatch = advance_stage(
+        store=store,
+        request=store.request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="fastmoss_security_browser_fallback",
+    )
+    assert dispatch["action"] == "waiting"
+    fallback_payload = store.enqueued_executions[0]["payload"]
+    assert fallback_payload["source_job_ids"] == ["job-1", "job-2"]
+    store.executions.append(
+        _browser_execution(
+            execution_id="browser-1",
+            status="success",
+            payload={
+                "stage_code": "fastmoss_security_browser_fallback",
+                "fallback_digest": fallback_payload["fallback_digest"],
+            },
+            result={"handler_result": {"status": "success", "result": {"resolved": True}}},
+        )
+    )
+
+    result = advance_stage(
+        store=store,
+        request=store.request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="fastmoss_security_browser_fallback",
+    )
+
+    assert result["action"] == "waiting"
+    assert result["current_stage"] == "refresh_creator_video_metrics_and_writeback"
+    assert [job["job_id"] for job in store.requeued_jobs] == ["job-1", "job-2"]
+    assert all(job["payload"]["browser_fallback_resolved"] is True for job in store.requeued_jobs)
+
+
+def test_outreach_browser_fallback_failure_fails_waiting_jobs_and_parent() -> None:
+    store = _OutreachFallbackStore(
+        current_stage="fastmoss_security_browser_fallback",
+        jobs=[
+            _outreach_fallback_job("job-1", stage_code="index_product_videos"),
+            _outreach_fallback_job("job-2", stage_code="index_product_videos"),
+        ],
+    )
+    dispatch = advance_stage(
+        store=store,
+        request=store.request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="fastmoss_security_browser_fallback",
+    )
+    fallback_payload = store.enqueued_executions[0]["payload"]
+    store.executions.append(
+        _browser_execution(
+            execution_id="browser-1",
+            status="failed",
+            payload={
+                "stage_code": "fastmoss_security_browser_fallback",
+                "fallback_digest": fallback_payload["fallback_digest"],
+            },
+            result={
+                "handler_result": {
+                    "status": "failed",
+                    "error": {
+                        "error_type": "auth_failure",
+                        "error_code": "fastmoss_auth_session_recovery_required",
+                        "message": "FastMoss auth recovery is still required after browser fallback.",
+                    },
+                }
+            },
+        )
+    )
+
+    result = advance_stage(
+        store=store,
+        request=store.request,
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="fastmoss_security_browser_fallback",
+    )
+
+    assert dispatch["action"] == "waiting"
+    assert result["action"] == "finalize"
+    assert result["final_status"] == "failed"
+    assert result["error_code"] == "fastmoss_security_browser_fallback_failed"
+    assert result["failed_waiting_job_count"] == 2
+    assert [job["job_id"] for job in store.failed_jobs] == ["job-1", "job-2"]
+    assert all(
+        job["error_code"] == "fastmoss_security_browser_fallback_failed"
+        for job in store.failed_jobs
+    )
+
+
 def test_product_video_matching_normalizes_unique_id_and_selects_earliest_video() -> None:
     videos = normalize_product_video_rows(
         [
-            {"product_id": "p1", "author": {"unique_id": "creator"}, "video_id": "2", "create_date": "2026-05-20"},
-            {"product_id": "p1", "unique_id": "creator", "video_id": "1", "create_date": "2026-05-19"},
-            {"product_id": "other", "unique_id": "creator", "video_id": "0", "create_date": "2026-05-18"},
+            {
+                "product_id": "p1",
+                "author": {"unique_id": "creator"},
+                "video_id": "2",
+                "create_date": "2026-05-20",
+            },
+            {
+                "product_id": "p1",
+                "unique_id": "creator",
+                "video_id": "1",
+                "create_date": "2026-05-19",
+            },
+            {
+                "product_id": "other",
+                "unique_id": "creator",
+                "video_id": "0",
+                "create_date": "2026-05-18",
+            },
         ]
     )
 
     result = match_outreach_rows_to_videos(
         product_id="p1",
-        rows=[{"source_record_id": "rec1", "creator_unique_id": "creator"}, {"source_record_id": "rec2", "creator_unique_id": "missing"}],
+        rows=[
+            {"source_record_id": "rec1", "creator_unique_id": "creator"},
+            {"source_record_id": "rec2", "creator_unique_id": "missing"},
+        ],
         videos=videos,
         query_window={"mode": "d_type", "d_type": 90},
         trigger_date="2026-05-22",
@@ -840,15 +1237,20 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "video_count": 2,
             "checked_at": "2026-05-22",
         },
-        {"workflow_code": "tiktok_influencer_outreach_sync", "stage_code": "refresh_creator_video_metrics_and_writeback"},
+        {
+            "workflow_code": "tiktok_influencer_outreach_sync",
+            "stage_code": "refresh_creator_video_metrics_and_writeback",
+        },
     )
     assert matched["op"] == "update"
     assert matched["record_id"] == "rec1"
     assert matched["fields"] == {
-        "视频链接": {"link": "https://www.tiktok.com/@creator/video/123", "text": "https://www.tiktok.com/@creator/video/123"},
+        "视频链接": {
+            "link": "https://www.tiktok.com/@creator/video/123",
+            "text": "https://www.tiktok.com/@creator/video/123",
+        },
         "视频发布时间": "2026-05-20",
-        "检查时间": "2026-05-22",
-        "播放量": 42,
+        "播放量": "<1W",
         "视频数量": 2,
         "更新时间": "2026-05-22",
     }
@@ -858,22 +1260,40 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "source_record_id": "rec1",
             "highest_play_video_url": "https://www.tiktok.com/@creator/video/123",
             "earliest_published_date": "2026-05-20",
-            "total_play_count": 42,
+            "total_play_count": 120345,
             "video_count": 2,
             "checked_at": "2026-05-22",
             "existing_video_url": "https://www.tiktok.com/@creator/video/existing",
             "existing_video_published_date": "2026-05-18",
-            "existing_play_count": 40,
+            "existing_play_count": 40000,
             "existing_video_count": 1,
         },
         {},
     )
     assert refreshed["fields"] == {
-        "视频链接": {"link": "https://www.tiktok.com/@creator/video/123", "text": "https://www.tiktok.com/@creator/video/123"},
-        "播放量": 42,
+        "视频链接": {
+            "link": "https://www.tiktok.com/@creator/video/123",
+            "text": "https://www.tiktok.com/@creator/video/123",
+        },
+        "播放量": "12W",
         "视频数量": 2,
         "更新时间": "2026-05-22",
     }
+
+
+def test_outreach_projection_writes_only_check_time_when_no_aggregate_video_url() -> None:
+    record = outreach_result_projection_mapper(
+        {
+            "source_record_id": "rec1",
+            "creator_unique_id": "creator",
+            "checked_at": "2026-05-22",
+            "total_play_count": 0,
+            "video_count": 0,
+        },
+        {},
+    )
+
+    assert record["fields"] == {"检查时间": "2026-05-22"}
 
 
 def test_outreach_workflow_and_handler_are_registered() -> None:
@@ -942,6 +1362,42 @@ def test_outreach_finalize_persists_request_and_outbox() -> None:
     assert store.outbox_payload["dedupe_key"] == "task_request.completed:req1"
 
 
+def test_outreach_read_failure_finalizes_parent_as_failed() -> None:
+    class Store:
+        def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
+            del request_id, job_code
+            return [
+                {
+                    "job_id": "job-read",
+                    "job_code": "feishu_table_read",
+                    "status": "finished",
+                    "result_status": "failed",
+                    "error_code": "handler_unhandled_exception",
+                    "error_text": "'outreach_creator_video_metric_refresh'",
+                    "payload": {"stage_code": "read_outreach_rows"},
+                    "result": {
+                        "handler_result": {
+                            "status": "failed",
+                            "error": {"error_code": "handler_unhandled_exception"},
+                        }
+                    },
+                }
+            ]
+
+    result = advance_stage(
+        store=Store(),
+        request=SimpleNamespace(request_id="req1", payload={}),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="read_outreach_rows",
+    )
+
+    assert result["action"] == "finalize"
+    assert result["final_status"] == "failed"
+    assert result["failed_stage"] == "read_outreach_rows"
+    assert result["failed_job_code"] == "feishu_table_read"
+    assert result["failed_job_id"] == "job-read"
+
+
 def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
     class Store:
         def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
@@ -952,13 +1408,24 @@ def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
                     "payload": {"stage_code": "read_outreach_rows"},
                     "result": {
                         "source_rows": [{"source_record_id": "rec1"}],
-                        "adapter_summary": {"input_row_count": 2, "source_row_count": 1, "skipped_count": 1, "skip_reasons": {"missing_product_id": 1}},
+                        "adapter_summary": {
+                            "input_row_count": 2,
+                            "source_row_count": 1,
+                            "skipped_count": 1,
+                            "skip_reasons": {"missing_product_id": 1},
+                        },
                     },
                 },
                 {
                     "status": "success",
                     "payload": {"stage_code": "index_product_videos"},
-                    "result": {"product_id": "p1", "fetch_status": "success", "indexed_video_count": 2, "new_video_count": 1, "updated_video_count": 1},
+                    "result": {
+                        "product_id": "p1",
+                        "fetch_status": "success",
+                        "indexed_video_count": 2,
+                        "new_video_count": 1,
+                        "updated_video_count": 1,
+                    },
                 },
                 {
                     "status": "success",
@@ -974,7 +1441,10 @@ def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
                 {
                     "status": "skipped",
                     "payload": {"stage_code": "refresh_creator_video_metrics_and_writeback"},
-                    "result": {"refresh_status": "skipped", "skip_reason": "existing_link_missing_from_index"},
+                    "result": {
+                        "refresh_status": "skipped",
+                        "skip_reason": "existing_link_missing_from_index",
+                    },
                 },
                 {
                     "status": "failed",
@@ -982,7 +1452,17 @@ def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
                     "result": {"refresh_status": "failed", "error_stage": "video_overview"},
                 },
             ]
-            return [job for job in jobs if not job_code or job_code in {"feishu_table_read", "product_video_outreach_check", "outreach_creator_video_metric_refresh"}]
+            return [
+                job
+                for job in jobs
+                if not job_code
+                or job_code
+                in {
+                    "feishu_table_read",
+                    "product_video_outreach_check",
+                    "outreach_creator_video_metric_refresh",
+                }
+            ]
 
     summary = _build_summary(
         store=Store(),

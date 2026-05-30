@@ -46,11 +46,23 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
         entry_stage_code="read_outreach_rows",
         payload_contract=contract(
             "tiktok_influencer_outreach_sync_payload",
-            required_field("source_table_ref", "TK influencer outreach table reference.", type_hint="str"),
-            optional_field("source_record_ids", "Optional subset of outreach rows to process.", type_hint="list[str]"),
+            required_field(
+                "source_table_ref", "TK influencer outreach table reference.", type_hint="str"
+            ),
+            optional_field(
+                "source_record_ids",
+                "Optional subset of outreach rows to process.",
+                type_hint="list[str]",
+            ),
             optional_field("trigger_date", "Task trigger date used as 检查时间.", type_hint="str"),
-            optional_field("reply_target", "Reply target used by the final outbox.", type_hint="str"),
-            optional_field("writeback_enabled", "Optional Feishu writeback switch; defaults to true and explicit false disables row updates.", type_hint="bool"),
+            optional_field(
+                "reply_target", "Reply target used by the final outbox.", type_hint="str"
+            ),
+            optional_field(
+                "writeback_enabled",
+                "Optional Feishu writeback switch; defaults to true and explicit false disables row updates.",
+                type_hint="bool",
+            ),
         ),
         stages=(
             StageDefinition(
@@ -85,8 +97,8 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
                 stage_code="fastmoss_security_browser_fallback",
                 description="Resolve FastMoss auth or security recovery in browser and refresh shared cookies.",
                 execution_mode="worker_jobs",
-                enter_condition="product video check returned fallback_required for FastMoss auth/security",
-                exit_condition="FastMoss browser recovery is terminal and waiting API jobs are requeued once",
+                enter_condition="product video check or creator video metric refresh returned fallback_required for FastMoss auth/security",
+                exit_condition="FastMoss browser recovery succeeds and waiting API jobs are requeued, or recovery failure fails the task",
                 job_bindings=(
                     StageJobBinding(
                         job_code="fastmoss_security_browser_resolve",
@@ -139,8 +151,28 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
             ),
             TransitionDefinition(
                 from_stage_code="index_product_videos",
+                to_stage_code="fastmoss_security_browser_fallback",
+                condition="one or more product video index jobs returned fallback_required for FastMoss auth/security",
+            ),
+            TransitionDefinition(
+                from_stage_code="fastmoss_security_browser_fallback",
+                to_stage_code="index_product_videos",
+                condition="browser recovery succeeded and original product video index jobs were requeued",
+            ),
+            TransitionDefinition(
+                from_stage_code="index_product_videos",
                 to_stage_code="refresh_creator_video_metrics_and_writeback",
                 condition="product video index jobs are terminal and creator metric refresh jobs can be created",
+            ),
+            TransitionDefinition(
+                from_stage_code="refresh_creator_video_metrics_and_writeback",
+                to_stage_code="fastmoss_security_browser_fallback",
+                condition="one or more creator video metric refresh jobs returned fallback_required for FastMoss auth/security",
+            ),
+            TransitionDefinition(
+                from_stage_code="fastmoss_security_browser_fallback",
+                to_stage_code="refresh_creator_video_metrics_and_writeback",
+                condition="browser recovery succeeded and original creator video metric refresh jobs were requeued",
             ),
             TransitionDefinition(
                 from_stage_code="refresh_creator_video_metrics_and_writeback",
@@ -149,17 +181,30 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
             ),
         ),
         summary_policy=notification_summary_policy(
-            SummaryStatusRule(final_status="success", when="all product indexes and creator metric refresh jobs succeeded"),
-            SummaryStatusRule(final_status="partial_success", when="some product indexes or creator metric refresh jobs failed after retries"),
-            SummaryStatusRule(final_status="failed", when="outreach rows could not be read or no required side effect completed"),
-            notes=("Outbox title defaults to 达人建联检查完成 and must not include FastMoss raw responses or cookies.",),
+            SummaryStatusRule(
+                final_status="success",
+                when="all product indexes and creator metric refresh jobs succeeded",
+            ),
+            SummaryStatusRule(
+                final_status="partial_success",
+                when="some product indexes or creator metric refresh jobs failed after retries",
+            ),
+            SummaryStatusRule(
+                final_status="failed",
+                when="outreach rows could not be read or no required side effect completed",
+            ),
+            notes=(
+                "Outbox title defaults to 达人建联检查完成 and must not include FastMoss raw responses or cookies.",
+            ),
         ),
         idempotency_policy=influencer_idempotency_rules(),
         timeout_policy=influencer_timeout_rules(),
         watchdog_policy=standard_watchdog_rules(include_browser=True),
         summary_contract=STANDARD_SUMMARY_CONTRACT,
         error_contract=STANDARD_ERROR_CONTRACT,
-        notes=("Normal product video matching uses FastMoss HTTP API; browser is only for auth/security recovery.",),
+        notes=(
+            "Normal product video matching uses FastMoss HTTP API; browser is only for auth/security recovery.",
+        ),
     )
 
 

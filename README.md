@@ -81,6 +81,8 @@ bash scripts/deploy/macos/preflight.sh
 bash scripts/deploy/macos/deploy.sh
 ```
 
+`deploy.sh` 会在启动或重启 `launchd` 守护进程前执行 Alembic migration，避免新代码访问旧 schema。
+
 飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`），运行时从 `MUJITASK_FEISHU_BASE_URL` 和每张表的 `TABLE_ID` / `VIEW_ID` 拼出完整 table URL。
 
 ## 4. 本地开发运行

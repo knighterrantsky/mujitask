@@ -71,7 +71,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- |
 | `read_outreach_rows` | task 创建后 | 读取达人建联表，生成有效行、跳过摘要、SKU 分组和分页窗口 | `feishu_table_read` | 得到有效行或确认无候选 | 读表失败则 task 失败 |
 | `index_product_videos` | 已得到 SKU 分组 | 每个 unique `SKUID` 派发 1 个商品视频索引 job | `product_video_outreach_check` | 所有 SKU 索引 job 终态 | 单 SKU 失败则该 SKU 下达人刷新不派发 |
-| `fastmoss_security_browser_fallback` | SKU 索引或视频 overview 遇到 FastMoss auth/security 恢复需求 | 使用 browser worker 恢复共享 cookie，并 requeue 原 job | `fastmoss_security_browser_resolve` | 原 job 重试完成 | 重试后仍失败则按原 job 失败收敛 |
+| `fastmoss_security_browser_fallback` | SKU 索引或视频 overview 遇到 FastMoss auth/security 恢复需求 | 使用 browser worker 恢复共享 cookie，并 requeue 原 waiting API job | `fastmoss_security_browser_resolve` | browser 恢复成功后原 job 被 requeue | browser 恢复失败则原 waiting API job 标记失败，并使整个 task 失败 |
 | `refresh_creator_video_metrics_and_writeback` | SKU 视频索引已成功 | 按有效飞书行派发 `SKU + creator_unique_id + record_id` job，采集 overview、落快照、聚合并写回飞书 | `outreach_creator_video_metric_refresh` | 所有达人行刷新 job 终态 | 单行失败按 job retry；3 次失败后跳过该行 |
 | `ready_for_summary` | SKU 索引和达人行刷新均终态 | 汇总 SKU、达人行、写回结果并生成 outbox | workflow finalizer | task 终态 | summary 失败不改变已完成外部副作用 |
 
@@ -322,7 +322,9 @@ Runtime result 只保存小型归一化结果和计数，不保存完整 FastMos
 - 视频 metric snapshot 是 append-only；重复 overview 成功会追加新快照。
 - 飞书写回使用 Feishu `record_id` 更新，不新增行。
 - 同一行重复写入相同字段值视为幂等成功。
-- FastMoss auth/session/security 错误进入 browser fallback，fallback 成功后原 job requeue。
+- FastMoss auth/session/security 错误进入 browser fallback；workflow 发现 waiting fallback job 后优先切入 `fastmoss_security_browser_fallback`，不等待同 stage 其他 pending/running job 全部完成。
+- browser fallback 成功后原 waiting API job requeue，父任务回到原 source stage 继续执行。
+- browser fallback 失败后原 waiting API job 标记为 failed，父 task 直接失败。
 - `outreach_creator_video_metric_refresh` 三次失败后跳过该行，不阻塞其他达人。
 
 ## 10. Summary / Outbox

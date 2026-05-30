@@ -134,6 +134,20 @@ def outreach_creator_video_metric_refresh_handler(context: HandlerContext) -> Ha
         )
 
     aggregate = _aggregate_metrics(videos=videos, snapshots=snapshots, creator_unique_id=creator_unique_id)
+    if not _text_value(aggregate.get("highest_play_video_url")) and _existing_video_url(payload, source_fields):
+        result = {
+            **_base_summary(product_id, creator_unique_id, source_record_id, "skipped"),
+            "video_count": aggregate["video_count"],
+            "overview_success_count": len(overview_rows),
+            "overview_failed_count": 0,
+            "total_play_count": aggregate["total_play_count"],
+            "highest_play_video_url": "",
+            "earliest_published_date": aggregate["earliest_published_date"],
+            "skip_reason": "existing_link_missing_from_index",
+            "feishu_written": False,
+            "written_fields": [],
+        }
+        return skipped_result(context, summary=result, result=result)
     write_fields = _build_write_fields(
         payload,
         source_fields=source_fields,
@@ -195,8 +209,6 @@ def _handle_no_videos(context: HandlerContext, *, payload: Mapping[str, Any], tr
             "检查时间": first_non_empty(payload.get("last_checked_at"), source_fields.get("检查时间")),
         },
     )
-    if fields:
-        fields["更新时间"] = trigger_date
     write_result = _write_feishu_row(context, payload=payload, source_record_id=source_record_id, fields=fields)
     if write_result.status == "failed":
         return failed_result(
@@ -300,21 +312,29 @@ def _build_write_fields(
     trigger_date: str,
 ) -> dict[str, Any]:
     existing_video_url = _existing_video_url(payload, source_fields)
+    aggregate_video_url = _link_value(aggregate.get("highest_play_video_url"))
+    if not _text_value(aggregate_video_url):
+        if existing_video_url:
+            return {}
+        return _diff_fields(
+            {"检查时间": trigger_date},
+            {
+                "检查时间": first_non_empty(payload.get("last_checked_at"), _text_value(source_fields.get("检查时间"))),
+            },
+        )
+
     existing_published = first_non_empty(payload.get("existing_video_published_date"), _text_value(source_fields.get("视频发布时间")))
     desired: dict[str, Any] = {
-        "视频链接": _link_value(aggregate.get("highest_play_video_url")),
-        "播放量": int(aggregate.get("total_play_count") or 0),
+        "视频链接": aggregate_video_url,
+        "播放量": _format_feishu_play_count(aggregate.get("total_play_count")),
         "视频数量": int(aggregate.get("video_count") or 0),
     }
     if not existing_published and aggregate.get("earliest_published_date"):
         desired["视频发布时间"] = aggregate["earliest_published_date"]
-    if not existing_video_url:
-        desired["检查时间"] = trigger_date
     existing = {
         "视频链接": existing_video_url,
         "视频发布时间": existing_published,
-        "检查时间": first_non_empty(payload.get("last_checked_at"), _text_value(source_fields.get("检查时间"))),
-        "播放量": _int(first_non_empty(payload.get("existing_play_count"), source_fields.get("播放量"))),
+        "播放量": _existing_play_count_display(payload, source_fields),
         "视频数量": _int(first_non_empty(payload.get("existing_video_count"), source_fields.get("视频数量"))),
     }
     fields = _diff_fields(desired, existing)
@@ -451,7 +471,8 @@ def _diff_fields(desired: Mapping[str, Any], existing: Mapping[str, Any]) -> dic
             if _text_value(value) and _text_value(value) != _text_value(existing.get(key)):
                 fields[key] = value
             continue
-        if str(value) != str(existing.get(key) or ""):
+        existing_value = existing.get(key)
+        if str(value) != str(existing_value if existing_value is not None else ""):
             fields[key] = value
     return fields
 
@@ -479,6 +500,23 @@ def _existing_video_url(payload: Mapping[str, Any], source_fields: Mapping[str, 
 def _link_value(value: Any) -> dict[str, str] | str:
     url = coerce_str(value)
     return {"link": url, "text": url} if url else ""
+
+
+def _format_feishu_play_count(value: Any) -> str:
+    play_count = max(0, _int(value))
+    if play_count < 10000:
+        return "<1W"
+    return f"{play_count // 10000}W"
+
+
+def _existing_play_count_display(payload: Mapping[str, Any], source_fields: Mapping[str, Any]) -> str:
+    source_text = _text_value(source_fields.get("播放量"))
+    if source_text:
+        return source_text
+    existing_play_count = payload.get("existing_play_count")
+    if existing_play_count not in (None, ""):
+        return _format_feishu_play_count(existing_play_count)
+    return ""
 
 
 def _text_value(value: Any) -> str:

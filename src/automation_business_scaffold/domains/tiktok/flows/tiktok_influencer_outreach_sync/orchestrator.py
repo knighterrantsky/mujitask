@@ -5,7 +5,10 @@ import time
 from datetime import date
 from typing import Any, Mapping
 
-from automation_business_scaffold.contracts.handler.shared import coerce_mapping_list
+from automation_business_scaffold.contracts.handler.shared import (
+    coerce_mapping,
+    coerce_mapping_list,
+)
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     any_browser_executions_active,
     browser_executions_for_stage,
@@ -64,10 +67,27 @@ def release_request_after_child_completion(store: Any, *, request_id: str) -> li
     if str(request.status or "") in {"finished", "cancelled"}:
         return []
     current_stage = _current_stage(request)
-    if current_stage not in {READ_STAGE_CODE, CHECK_STAGE_CODE, FALLBACK_STAGE_CODE, REFRESH_STAGE_CODE}:
+    if current_stage not in {
+        READ_STAGE_CODE,
+        CHECK_STAGE_CODE,
+        FALLBACK_STAGE_CODE,
+        REFRESH_STAGE_CODE,
+    }:
         return []
     if current_stage in {CHECK_STAGE_CODE, REFRESH_STAGE_CODE}:
-        if _has_pending_or_running_jobs(store=store, request_id=request_id, stage_code=current_stage):
+        if _fallback_candidates(
+            store=store, request_id=request_id, source_stage_code=current_stage
+        ):
+            current_stage = FALLBACK_STAGE_CODE
+        elif _has_pending_or_running_jobs(
+            store=store, request_id=request_id, stage_code=current_stage
+        ):
+            return []
+    elif current_stage == FALLBACK_STAGE_CODE:
+        executions = browser_executions_for_stage(
+            store, request_id=request_id, stage_code=FALLBACK_STAGE_CODE
+        )
+        if any_browser_executions_active(executions):
             return []
     elif _has_active_jobs(store=store, request_id=request_id, stage_code=current_stage):
         return []
@@ -83,7 +103,9 @@ def release_request_after_child_completion(store: Any, *, request_id: str) -> li
     return [{"request_id": request_id, "stage_code": current_stage, "released": True}]
 
 
-def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: dict[str, Any] | None = None) -> dict[str, Any]:
+def finalize_request(
+    *, store: Any, request: Any, workflow: Any, force_result: dict[str, Any] | None = None
+) -> dict[str, Any]:
     del workflow
     summary = force_result or _build_summary(store=store, request=request)
     final_status = str(summary.get("final_status") or "success")
@@ -120,8 +142,12 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
                 task_code=request.task_code,
                 summary=summary,
                 result=result,
-                message_format=str((getattr(request, "payload", {}) or {}).get("outbox_message_format") or ""),
-                message_template=str((getattr(request, "payload", {}) or {}).get("outbox_message_template") or ""),
+                message_format=str(
+                    (getattr(request, "payload", {}) or {}).get("outbox_message_format") or ""
+                ),
+                message_template=str(
+                    (getattr(request, "payload", {}) or {}).get("outbox_message_template") or ""
+                ),
             ),
         },
         dedupe_key=f"task_request.completed:{request.request_id}",
@@ -141,7 +167,13 @@ def finalize_request(*, store: Any, request: Any, workflow: Any, force_result: d
 
 
 def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
-    if not _stage_jobs(store=store, request_id=request.request_id, stage_code=READ_STAGE_CODE, job_code="feishu_table_read"):
+    read_jobs = _stage_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+    )
+    if not read_jobs:
         request_payload = dict(request.payload or {})
         resolved_job = WORKFLOW.resolve_stage_jobs(READ_STAGE_CODE)[0]
         keys = render_job_keys(
@@ -167,7 +199,8 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
                         "stage_code": READ_STAGE_CODE,
                         "request_payload": request_payload,
                         "source_table_ref": request_payload.get("source_table_ref"),
-                        "target_table_ref": request_payload.get("target_table_ref") or request_payload.get("source_table_ref"),
+                        "target_table_ref": request_payload.get("target_table_ref")
+                        or request_payload.get("source_table_ref"),
                         "field_names": list(OUTREACH_READ_FIELD_NAMES),
                         "adapter_code": "outreach_source_adapter",
                         "source_record_ids": list(request_payload.get("source_record_ids") or []),
@@ -176,9 +209,26 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
                 }
             ],
         )
-        return _waiting(READ_STAGE_CODE, "Executor dispatched outreach table read.", {"dispatch_payload": enqueue_result})
+        return _waiting(
+            READ_STAGE_CODE,
+            "Executor dispatched outreach table read.",
+            {"dispatch_payload": enqueue_result},
+        )
     if _has_active_jobs(store=store, request_id=request.request_id, stage_code=READ_STAGE_CODE):
         return _waiting(READ_STAGE_CODE, "Outreach table read is still running.")
+    failed_job = _first_failed_job(read_jobs)
+    if failed_job:
+        return {
+            "action": "finalize",
+            "final_status": "failed",
+            "title": "达人建联读取失败",
+            "read_status": "failed",
+            "failed_stage": READ_STAGE_CODE,
+            "failed_job_code": "feishu_table_read",
+            "failed_job_id": str(failed_job.get("job_id") or ""),
+            "error_code": str(failed_job.get("error_code") or ""),
+            "error": str(failed_job.get("error_text") or ""),
+        }
     return _advance(CHECK_STAGE_CODE, {"stage_transition": "outreach_rows_read"})
 
 
@@ -193,7 +243,9 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
         request_payload = dict(request.payload or {})
         trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
         source_rows = _read_source_rows(store=store, request_id=request.request_id)
-        product_groups = group_outreach_rows_by_product(source_rows, trigger_date=trigger_date, request_payload=request_payload)
+        product_groups = group_outreach_rows_by_product(
+            source_rows, trigger_date=trigger_date, request_payload=request_payload
+        )
         resolved_job = WORKFLOW.resolve_stage_jobs(CHECK_STAGE_CODE)[0]
         jobs = []
         for group in product_groups:
@@ -229,35 +281,66 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
                 jobs=jobs,
             )
         if jobs:
-            return _waiting(CHECK_STAGE_CODE, "Executor dispatched API product video outreach checks.", {"dispatch_payload": enqueue_result})
+            return _waiting(
+                CHECK_STAGE_CODE,
+                "Executor dispatched API product video outreach checks.",
+                {"dispatch_payload": enqueue_result},
+            )
         return _advance(REFRESH_STAGE_CODE, {"candidate_count": 0})
-    if _has_pending_or_running_jobs(store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE):
+    if _fallback_candidates(
+        store=store, request_id=request.request_id, source_stage_code=CHECK_STAGE_CODE
+    ):
+        return _advance(
+            FALLBACK_STAGE_CODE,
+            {"stage_transition": "product_video_check_requires_browser_fallback"},
+        )
+    if _has_pending_or_running_jobs(
+        store=store, request_id=request.request_id, stage_code=CHECK_STAGE_CODE
+    ):
         return _waiting(CHECK_STAGE_CODE, "API product video outreach checks are still running.")
-    if _fallback_candidates(store=store, request_id=request.request_id):
-        return _advance(FALLBACK_STAGE_CODE, {"stage_transition": "product_video_check_requires_browser_fallback"})
     return _advance(REFRESH_STAGE_CODE, {"stage_transition": "product_video_indexes_terminal"})
 
 
 def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
     candidates = _fallback_candidates(store=store, request_id=request.request_id)
-    executions = browser_executions_for_stage(store, request_id=request.request_id, stage_code=FALLBACK_STAGE_CODE)
+    executions = browser_executions_for_stage(
+        store, request_id=request.request_id, stage_code=FALLBACK_STAGE_CODE
+    )
     if not candidates:
         if any_browser_executions_active(executions):
-            return _waiting(FALLBACK_STAGE_CODE, "Waiting for FastMoss security browser fallback to finish.")
-        return _advance(_stage_after_fallback(store=store, request_id=request.request_id), {"fallback_candidate_count": 0})
-    candidates = candidates[:1]
+            return _waiting(
+                FALLBACK_STAGE_CODE, "Waiting for FastMoss security browser fallback to finish."
+            )
+        return _advance(
+            _stage_after_fallback(store=store, request_id=request.request_id),
+            {"fallback_candidate_count": 0},
+        )
     fallback_digest = _fallback_digest(candidates)
-    relevant_executions = [execution for execution in executions if _execution_payload(execution).get("fallback_digest") == fallback_digest]
+    relevant_executions = [
+        execution
+        for execution in executions
+        if _execution_payload(execution).get("fallback_digest") == fallback_digest
+    ]
     if not relevant_executions:
-        dispatch = _dispatch_fallback(store=store, request=request, candidates=candidates, fallback_digest=fallback_digest)
-        return _waiting(FALLBACK_STAGE_CODE, "Enqueued FastMoss security browser fallback.", {"dispatch_payload": dispatch, "fallback_candidate_count": len(candidates)})
+        dispatch = _dispatch_fallback(
+            store=store, request=request, candidates=candidates, fallback_digest=fallback_digest
+        )
+        return _waiting(
+            FALLBACK_STAGE_CODE,
+            "Enqueued FastMoss security browser fallback.",
+            {"dispatch_payload": dispatch, "fallback_candidate_count": len(candidates)},
+        )
     if any_browser_executions_active(relevant_executions):
-        return _waiting(FALLBACK_STAGE_CODE, "Waiting for FastMoss security browser fallback to finish.")
+        return _waiting(
+            FALLBACK_STAGE_CODE, "Waiting for FastMoss security browser fallback to finish."
+        )
     execution = relevant_executions[-1]
     if extract_handler_result_status(execution) in {"success", "partial_success"}:
         requeued = []
         for candidate in candidates:
-            source_stage = str((candidate.get("payload") or {}).get("stage_code") or CHECK_STAGE_CODE)
+            source_stage = str(
+                (candidate.get("payload") or {}).get("stage_code") or CHECK_STAGE_CODE
+            )
             requeued.append(
                 store.requeue_waiting_api_worker_job(
                     job_id=str(candidate.get("job_id") or ""),
@@ -265,8 +348,28 @@ def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
                     stage=source_stage,
                 )
             )
-        return _waiting(_stage_after_fallback(store=store, request_id=request.request_id), "Requeued FastMoss jobs after browser fallback.", {"requeued_count": len(requeued)})
-    return _advance(_stage_after_fallback(store=store, request_id=request.request_id), {"fallback_status": "failed", "browser_execution_status": extract_handler_result_status(execution)})
+        return _waiting(
+            _stage_after_fallback(store=store, request_id=request.request_id),
+            "Requeued FastMoss jobs after browser fallback.",
+            {"requeued_count": len(requeued)},
+        )
+    error = _browser_execution_error(execution)
+    failed_jobs = _fail_waiting_jobs_after_browser_failure(
+        store=store, candidates=candidates, execution=execution
+    )
+    return {
+        "action": "finalize",
+        "final_status": "failed",
+        "title": "达人建联 FastMoss 浏览器恢复失败",
+        "failed_stage": FALLBACK_STAGE_CODE,
+        "fallback_status": "failed",
+        "error_code": "fastmoss_security_browser_fallback_failed",
+        "error_type": error["error_type"],
+        "error": error["message"],
+        "browser_execution_id": _execution_attr(execution, "execution_id"),
+        "browser_execution_status": extract_handler_result_status(execution),
+        "failed_waiting_job_count": len(failed_jobs),
+    }
 
 
 def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
@@ -280,10 +383,14 @@ def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
         request_payload = dict(request.payload or {})
         trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
         source_rows = _read_source_rows(store=store, request_id=request.request_id)
-        successful_products = _successful_index_product_ids(store=store, request_id=request.request_id)
+        successful_products = _successful_index_product_ids(
+            store=store, request_id=request.request_id
+        )
         resolved_job = WORKFLOW.resolve_stage_jobs(REFRESH_STAGE_CODE)[0]
         jobs = []
-        target_table_ref = request_payload.get("target_table_ref") or request_payload.get("source_table_ref")
+        target_table_ref = request_payload.get("target_table_ref") or request_payload.get(
+            "source_table_ref"
+        )
         for row in source_rows:
             product_id = str(row.get("product_id") or "").strip()
             creator_unique_id = str(row.get("creator_unique_id") or "").strip()
@@ -327,33 +434,59 @@ def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
                 job_code="outreach_creator_video_metric_refresh",
                 jobs=jobs,
             )
-            return _waiting(REFRESH_STAGE_CODE, "Executor dispatched outreach creator video metric refresh jobs.", {"dispatch_payload": enqueue_result})
+            return _waiting(
+                REFRESH_STAGE_CODE,
+                "Executor dispatched outreach creator video metric refresh jobs.",
+                {"dispatch_payload": enqueue_result},
+            )
         return _advance(SUMMARY_STAGE_CODE, {"creator_refresh_job_count": 0})
-    if _has_pending_or_running_jobs(store=store, request_id=request.request_id, stage_code=REFRESH_STAGE_CODE):
-        return _waiting(REFRESH_STAGE_CODE, "Outreach creator video metric refresh jobs are still running.")
-    if _fallback_candidates(store=store, request_id=request.request_id):
-        return _advance(FALLBACK_STAGE_CODE, {"stage_transition": "creator_video_metric_refresh_requires_browser_fallback"})
-    return _advance(SUMMARY_STAGE_CODE, {"stage_transition": "creator_video_metric_refresh_terminal"})
+    if _fallback_candidates(
+        store=store, request_id=request.request_id, source_stage_code=REFRESH_STAGE_CODE
+    ):
+        return _advance(
+            FALLBACK_STAGE_CODE,
+            {"stage_transition": "creator_video_metric_refresh_requires_browser_fallback"},
+        )
+    if _has_pending_or_running_jobs(
+        store=store, request_id=request.request_id, stage_code=REFRESH_STAGE_CODE
+    ):
+        return _waiting(
+            REFRESH_STAGE_CODE, "Outreach creator video metric refresh jobs are still running."
+        )
+    return _advance(
+        SUMMARY_STAGE_CODE, {"stage_transition": "creator_video_metric_refresh_terminal"}
+    )
 
 
-def _fallback_candidates(*, store: Any, request_id: str) -> list[dict[str, Any]]:
+def _fallback_candidates(
+    *, store: Any, request_id: str, source_stage_code: str = ""
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for stage_code, job_code in (
         (CHECK_STAGE_CODE, "product_video_outreach_check"),
         (REFRESH_STAGE_CODE, "outreach_creator_video_metric_refresh"),
     ):
-        for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code, job_code=job_code):
+        if source_stage_code and source_stage_code != stage_code:
+            continue
+        for job in _stage_jobs(
+            store=store, request_id=request_id, stage_code=stage_code, job_code=job_code
+        ):
             payload = job.get("payload") or {}
             if str(job.get("status") or "") != "waiting":
                 continue
-            if int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) >= MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS:
+            if (
+                int(payload.get("fastmoss_security_browser_fallback_attempt") or 0)
+                >= MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS
+            ):
                 continue
             if is_fallback_required(job):
                 candidates.append(job)
     return candidates
 
 
-def _dispatch_fallback(*, store: Any, request: Any, candidates: list[dict[str, Any]], fallback_digest: str) -> dict[str, Any]:
+def _dispatch_fallback(
+    *, store: Any, request: Any, candidates: list[dict[str, Any]], fallback_digest: str
+) -> dict[str, Any]:
     job_def = WORKFLOW.require_job("fastmoss_security_browser_resolve")
     source_job = candidates[0]
     fallback_payload = _fallback_payload_from_job(source_job)
@@ -389,7 +522,9 @@ def _dispatch_fallback(*, store: Any, request: Any, candidates: list[dict[str, A
         items=[
             {
                 "business_key": keys["business_key"] or f"fastmoss-security:{fallback_digest}",
-                "dedupe_key": build_stage_local_dedupe_key(keys["dedupe_key"], job_def.job_code, stage_scope=FALLBACK_STAGE_CODE),
+                "dedupe_key": build_stage_local_dedupe_key(
+                    keys["dedupe_key"], job_def.job_code, stage_scope=FALLBACK_STAGE_CODE
+                ),
                 "resource_code": _fastmoss_browser_resource_code(payload),
                 "payload": payload,
             }
@@ -397,8 +532,78 @@ def _dispatch_fallback(*, store: Any, request: Any, candidates: list[dict[str, A
     )
 
 
+def _fail_waiting_jobs_after_browser_failure(
+    *, store: Any, candidates: list[dict[str, Any]], execution: Any
+) -> list[dict[str, Any]]:
+    error = _browser_execution_error(execution)
+    failed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        failed.append(
+            store.mark_waiting_api_worker_job_failed(
+                job_id=str(candidate.get("job_id") or ""),
+                summary={
+                    "handler_status": "failed",
+                    "fallback_source_status": "failed",
+                    "fallback_source_stage": str(
+                        (candidate.get("payload") or {}).get("stage_code") or ""
+                    ),
+                    "browser_execution_id": _execution_attr(execution, "execution_id"),
+                    "browser_error_code": error["error_code"],
+                },
+                result={
+                    "status": "failed",
+                    "fallback_required": False,
+                    "browser_fallback_resolved": False,
+                    "browser_execution_id": _execution_attr(execution, "execution_id"),
+                    "browser_error": error,
+                },
+                error_text=error["message"],
+                error_type=error["error_type"],
+                error_code="fastmoss_security_browser_fallback_failed",
+                dead_letter_reason="browser_fallback_failed",
+            )
+        )
+    return failed
+
+
+def _browser_execution_error(execution: Any) -> dict[str, str]:
+    result = _execution_result(execution)
+    handler_error = coerce_mapping(coerce_mapping(result.get("handler_result")).get("error"))
+    return {
+        "error_type": _first_non_empty(
+            handler_error.get("error_type"),
+            _execution_attr(execution, "error_type"),
+            "browser_failure",
+        ),
+        "error_code": _first_non_empty(
+            handler_error.get("error_code"),
+            _execution_attr(execution, "error_code"),
+            "fastmoss_security_browser_fallback_failed",
+        ),
+        "message": _first_non_empty(
+            handler_error.get("message"),
+            _execution_attr(execution, "error_text"),
+            "FastMoss auth/security browser fallback failed.",
+        ),
+    }
+
+
+def _execution_result(execution: Any) -> dict[str, Any]:
+    if isinstance(execution, Mapping):
+        return coerce_mapping(execution.get("result"))
+    return coerce_mapping(getattr(execution, "result", None))
+
+
+def _execution_attr(execution: Any, key: str) -> str:
+    if isinstance(execution, Mapping):
+        return str(execution.get(key) or "")
+    return str(getattr(execution, key, "") or "")
+
+
 def _writeback_enabled(payload: Mapping[str, Any]) -> bool:
-    return str(payload.get("writeback_enabled") or payload.get("allow_feishu_writeback") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(
+        payload.get("writeback_enabled") or payload.get("allow_feishu_writeback") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _fastmoss_browser_resource_code(payload: Mapping[str, Any]) -> str:
@@ -431,13 +636,18 @@ def _after_browser_payload(*, candidate: Mapping[str, Any], execution: Any) -> d
             "browser_fallback_handler": "fastmoss_security_browser_resolve",
             "browser_execution_id": str(getattr(execution, "execution_id", "") or ""),
             "browser_execution_status": extract_handler_result_status(execution),
-            "fastmoss_security_browser_fallback_attempt": int(payload.get("fastmoss_security_browser_fallback_attempt") or 0) + 1,
+            "fastmoss_security_browser_fallback_attempt": int(
+                payload.get("fastmoss_security_browser_fallback_attempt") or 0
+            )
+            + 1,
             "fallback_reason": "",
         }
     )
     if resume_page:
         payload["fastmoss_video_start_page"] = resume_page
-    carried_rows = _merge_video_rows(coerce_mapping_list(payload.get("fastmoss_video_carried_rows")), partial_rows)
+    carried_rows = _merge_video_rows(
+        coerce_mapping_list(payload.get("fastmoss_video_carried_rows")), partial_rows
+    )
     if carried_rows:
         payload["fastmoss_video_carried_rows"] = carried_rows
     payload.pop("force_fallback", None)
@@ -450,7 +660,9 @@ def _fallback_partial_rows(candidate: Mapping[str, Any]) -> list[dict[str, Any]]
     return [dict(row) for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
 
 
-def _merge_video_rows(existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_video_rows(
+    existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for row in [*existing_rows, *new_rows]:
@@ -468,9 +680,17 @@ def _merge_video_rows(existing_rows: list[dict[str, Any]], new_rows: list[dict[s
 
 def _fallback_error_page(candidate: Mapping[str, Any]) -> int:
     result = extract_effective_result_payload(candidate)
-    params = result.get("verification_request", {}).get("params") if isinstance(result.get("verification_request"), Mapping) else {}
+    params = (
+        result.get("verification_request", {}).get("params")
+        if isinstance(result.get("verification_request"), Mapping)
+        else {}
+    )
     if not isinstance(params, Mapping):
-        params = result.get("security_context", {}).get("params") if isinstance(result.get("security_context"), Mapping) else {}
+        params = (
+            result.get("security_context", {}).get("params")
+            if isinstance(result.get("security_context"), Mapping)
+            else {}
+        )
     try:
         return int(str((params or {}).get("page") or "").strip())
     except ValueError:
@@ -481,7 +701,9 @@ def _fallback_digest(candidates: list[dict[str, Any]]) -> str:
     parts = []
     for candidate in candidates:
         payload = candidate.get("payload") or {}
-        parts.append(f"{candidate.get('job_id') or ''}:{payload.get('fastmoss_security_browser_fallback_attempt') or 0}")
+        parts.append(
+            f"{candidate.get('job_id') or ''}:{payload.get('fastmoss_security_browser_fallback_attempt') or 0}"
+        )
     raw = ",".join(sorted(parts))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -495,7 +717,14 @@ def _execution_payload(execution: Any) -> dict[str, Any]:
 
 
 def _read_source_rows(*, store: Any, request_id: str) -> list[dict[str, Any]]:
-    for job in reversed(_stage_jobs(store=store, request_id=request_id, stage_code=READ_STAGE_CODE, job_code="feishu_table_read")):
+    for job in reversed(
+        _stage_jobs(
+            store=store,
+            request_id=request_id,
+            stage_code=READ_STAGE_CODE,
+            job_code="feishu_table_read",
+        )
+    ):
         result = extract_effective_result_payload(job)
         rows = result.get("source_rows") if isinstance(result, dict) else []
         if isinstance(rows, list):
@@ -505,7 +734,12 @@ def _read_source_rows(*, store: Any, request_id: str) -> list[dict[str, Any]]:
 
 def _successful_index_product_ids(*, store: Any, request_id: str) -> set[str]:
     product_ids: set[str] = set()
-    for job in _stage_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE, job_code="product_video_outreach_check"):
+    for job in _stage_jobs(
+        store=store,
+        request_id=request_id,
+        stage_code=CHECK_STAGE_CODE,
+        job_code="product_video_outreach_check",
+    ):
         result = extract_effective_result_payload(job)
         if isinstance(result, dict) and result.get("fetch_status") == "success":
             product_id = str(result.get("product_id") or "").strip()
@@ -515,16 +749,30 @@ def _successful_index_product_ids(*, store: Any, request_id: str) -> set[str]:
 
 
 def _stage_after_fallback(*, store: Any, request_id: str) -> str:
-    if _has_pending_or_running_jobs(store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE):
+    if _has_pending_or_running_jobs(
+        store=store, request_id=request_id, stage_code=CHECK_STAGE_CODE
+    ):
         return CHECK_STAGE_CODE
-    if _stage_jobs(store=store, request_id=request_id, stage_code=REFRESH_STAGE_CODE, job_code="outreach_creator_video_metric_refresh"):
+    if _stage_jobs(
+        store=store,
+        request_id=request_id,
+        stage_code=REFRESH_STAGE_CODE,
+        job_code="outreach_creator_video_metric_refresh",
+    ):
         return REFRESH_STAGE_CODE
     return CHECK_STAGE_CODE
 
 
 def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
     read_result = {}
-    for job in reversed(_stage_jobs(store=store, request_id=request.request_id, stage_code=READ_STAGE_CODE, job_code="feishu_table_read")):
+    for job in reversed(
+        _stage_jobs(
+            store=store,
+            request_id=request.request_id,
+            stage_code=READ_STAGE_CODE,
+            job_code="feishu_table_read",
+        )
+    ):
         result = extract_effective_result_payload(job)
         if isinstance(result, dict):
             read_result = result
@@ -588,11 +836,18 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
                 highest_video_changed += 1
             if result.get("feishu_written"):
                 feishu_written += 1
-        elif status == "skipped" or (isinstance(result, dict) and result.get("refresh_status") == "skipped"):
+        elif status == "skipped" or (
+            isinstance(result, dict) and result.get("refresh_status") == "skipped"
+        ):
             refresh_skipped += 1
-            if isinstance(result, dict) and result.get("skip_reason") == "existing_link_missing_from_index":
+            if (
+                isinstance(result, dict)
+                and result.get("skip_reason") == "existing_link_missing_from_index"
+            ):
                 index_missing_skipped += 1
-        elif status in {"failed", "fallback_required"} or str(job.get("result_status") or job.get("status") or "") in {"failed", "waiting"}:
+        elif status in {"failed", "fallback_required"} or str(
+            job.get("result_status") or job.get("status") or ""
+        ) in {"failed", "waiting"}:
             refresh_failed += 1
             if isinstance(result, dict) and result.get("error_stage") == "video_overview":
                 overview_failed += 1
@@ -635,25 +890,55 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
     }
 
 
-def _stage_jobs(*, store: Any, request_id: str, stage_code: str, job_code: str | None = None) -> list[dict[str, Any]]:
+def _stage_jobs(
+    *, store: Any, request_id: str, stage_code: str, job_code: str | None = None
+) -> list[dict[str, Any]]:
     list_jobs = getattr(store, "list_api_worker_jobs_for_request")
     try:
-        jobs = list_jobs(request_id=request_id, job_code=job_code) if job_code else list_jobs(request_id=request_id)
+        jobs = (
+            list_jobs(request_id=request_id, job_code=job_code)
+            if job_code
+            else list_jobs(request_id=request_id)
+        )
     except TypeError:
         jobs = list_jobs(request_id=request_id)
-    return [dict(job) for job in jobs if str((job.get("payload") or {}).get("stage_code") or "") == stage_code]
+    return [
+        dict(job)
+        for job in jobs
+        if str((job.get("payload") or {}).get("stage_code") or "") == stage_code
+    ]
+
+
+def _first_failed_job(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    for job in jobs:
+        if (
+            extract_handler_result_status(job) == "failed"
+            or str(job.get("result_status") or job.get("status") or "") == "failed"
+        ):
+            return job
+    return {}
 
 
 def _has_active_jobs(*, store: Any, request_id: str, stage_code: str) -> bool:
-    return any(str(job.get("status") or "") in ACTIVE_STATUSES for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code))
+    return any(
+        str(job.get("status") or "") in ACTIVE_STATUSES
+        for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code)
+    )
 
 
 def _has_pending_or_running_jobs(*, store: Any, request_id: str, stage_code: str) -> bool:
-    return any(str(job.get("status") or "") in {"pending", "running"} for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code))
+    return any(
+        str(job.get("status") or "") in {"pending", "running"}
+        for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code)
+    )
 
 
 def _current_stage(request: Any) -> str:
-    return str(getattr(request, "current_stage", "") or getattr(request, "progress_stage", "") or READ_STAGE_CODE)
+    return str(
+        getattr(request, "current_stage", "")
+        or getattr(request, "progress_stage", "")
+        or READ_STAGE_CODE
+    )
 
 
 def _feishu_common_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
@@ -671,11 +956,30 @@ def _feishu_common_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fastmoss_common_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in request_payload.items() if str(key).startswith(("fastmoss", "mock_fastmoss")) or key in {"browser_cookies"}}
+    return {
+        key: value
+        for key, value in request_payload.items()
+        if str(key).startswith(("fastmoss", "mock_fastmoss")) or key in {"browser_cookies"}
+    }
 
 
-def _waiting(stage_code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"action": "waiting", "current_stage": stage_code, "message": message, "details": details or {}}
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _waiting(
+    stage_code: str, message: str, details: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return {
+        "action": "waiting",
+        "current_stage": stage_code,
+        "message": message,
+        "details": details or {},
+    }
 
 
 def _advance(next_stage: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
