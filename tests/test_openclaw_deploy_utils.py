@@ -164,6 +164,27 @@ def test_read_framework_dependency_prefers_pyproject_as_single_source(tmp_path: 
     }
 
 
+def test_read_framework_dependency_accepts_extras(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\n"
+        "dependencies = [\n"
+        '  "automation-framework[captcha] @ git+https://github.com/example/framework.git@v0.3.8",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    dependency = MODULE.read_framework_dependency(pyproject)
+
+    assert dependency == {
+        "dependency": "automation-framework[captcha] @ git+https://github.com/example/framework.git@v0.3.8",
+        "source": "git+https://github.com/example/framework.git@v0.3.8",
+        "kind": "git",
+        "repo_url": "https://github.com/example/framework.git",
+        "ref": "v0.3.8",
+    }
+
+
 def test_deploy_script_embeds_single_file_payloads() -> None:
     deploy_script = ROOT / "examples" / "openclaw" / "deploy-openclaw.sh"
     text = deploy_script.read_text(encoding="utf-8")
@@ -185,3 +206,51 @@ def test_macos_deploy_runs_alembic_before_launchd_restart() -> None:
     assert migration_command in text
     assert launchd_command in text
     assert text.index(migration_command) < text.index(launchd_command)
+
+
+def test_smoke_check_requires_current_public_tasks() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    for task_name in (
+        "refresh_competitor_row_by_url",
+        "refresh_current_competitor_table",
+        "search_keyword_competitor_products",
+        "search_keyword_selection_products",
+        "sync_tk_influencer_pool",
+        "tiktok_fastmoss_product_ingest",
+        "tiktok_influencer_outreach_sync",
+    ):
+        assert f'"{task_name}"' in text
+    assert '"feishu_single_row_update"' not in text
+    assert '"fastmoss_keyword_candidate_discovery"' not in text
+
+
+def test_smoke_check_uses_launchctl_print_for_daemon_labels() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    assert 'launchctl print "gui/${launchd_uid}/${launchd_label}"' in text
+    assert "launchctl list | grep -q" not in text
+    assert '"com.happyzhao.mujitask.watchdog"' in text
+
+
+def test_smoke_check_runtime_tables_follow_current_schema() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    for table_name in (
+        "task_request",
+        "task_execution",
+        "api_worker_job",
+        "notification_outbox",
+        "artifact_object",
+        "fastmoss_session_cookie_cache",
+        "tk_videos",
+        "tk_video_product_relations",
+        "tk_video_metric_snapshots",
+    ):
+        assert f'"{table_name}"' in text
+    assert '"entity_registry"' not in text
+    assert '"external_binding"' not in text
+    assert '"entity_snapshot"' not in text

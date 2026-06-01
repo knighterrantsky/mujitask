@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import time
 from datetime import date
 from typing import Any, Mapping
 
@@ -21,9 +20,6 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 from automation_business_scaffold.domains.tiktok.mappers.feishu_outreach_source_mapper import (
     OUTREACH_READ_FIELD_NAMES,
     group_outreach_rows_by_product,
-)
-from automation_business_scaffold.domains.tiktok.projections.outbox_message_projection import (
-    build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 
@@ -106,64 +102,9 @@ def release_request_after_child_completion(store: Any, *, request_id: str) -> li
 def finalize_request(
     *, store: Any, request: Any, workflow: Any, force_result: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    del workflow
-    summary = force_result or _build_summary(store=store, request=request)
-    final_status = str(summary.get("final_status") or "success")
-    result = {"summary": summary, "title": "达人建联检查完成"}
-    updated = store.update_task_request(
-        request_id=request.request_id,
-        status=final_status,
-        current_stage=SUMMARY_STAGE_CODE,
-        progress_stage=SUMMARY_STAGE_CODE,
-        summary=summary,
-        result=result,
-        worker_id="",
-        lease_until=0.0,
-        heartbeat_at=0.0,
-        error_text="",
-        error_type="",
-        error_code="",
-        dead_letter_reason="",
-        finished_at=time.time(),
-    )
-    outbox = store.create_notification_outbox(
-        channel_code=str(getattr(request, "source_channel_code", "") or "noop"),
-        event_type="task_request.completed",
-        ref_id=request.request_id,
-        reply_target=str(getattr(request, "reply_target", "") or ""),
-        payload={
-            "request_id": request.request_id,
-            "task_code": request.task_code,
-            "workflow_code": WORKFLOW_CODE,
-            "summary_payload": summary,
-            "result": result,
-            "message_text": build_outbox_message_text(
-                request_id=request.request_id,
-                task_code=request.task_code,
-                summary=summary,
-                result=result,
-                message_format=str(
-                    (getattr(request, "payload", {}) or {}).get("outbox_message_format") or ""
-                ),
-                message_template=str(
-                    (getattr(request, "payload", {}) or {}).get("outbox_message_template") or ""
-                ),
-            ),
-        },
-        dedupe_key=f"task_request.completed:{request.request_id}",
-    )
-    return {
-        "action": "finalized",
-        "request_id": request.request_id,
-        "request_status": updated.result_status or updated.status,
-        "status": updated.status,
-        "result_status": updated.result_status,
-        "current_stage": updated.current_stage,
-        "summary": updated.summary,
-        "result": updated.result,
-        "task_request": updated.to_dict(),
-        "outbox": [outbox.to_dict()],
-    }
+    from .summary import finalize_request as _finalize_request
+
+    return _finalize_request(store=store, request=request, workflow=workflow, force_result=force_result)
 
 
 def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
@@ -761,133 +702,6 @@ def _stage_after_fallback(*, store: Any, request_id: str) -> str:
     ):
         return REFRESH_STAGE_CODE
     return CHECK_STAGE_CODE
-
-
-def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
-    read_result = {}
-    for job in reversed(
-        _stage_jobs(
-            store=store,
-            request_id=request.request_id,
-            stage_code=READ_STAGE_CODE,
-            job_code="feishu_table_read",
-        )
-    ):
-        result = extract_effective_result_payload(job)
-        if isinstance(result, dict):
-            read_result = result
-            break
-    check_jobs = _stage_jobs(
-        store=store,
-        request_id=request.request_id,
-        stage_code=CHECK_STAGE_CODE,
-        job_code="product_video_outreach_check",
-    )
-    refresh_jobs = _stage_jobs(
-        store=store,
-        request_id=request.request_id,
-        stage_code=REFRESH_STAGE_CODE,
-        job_code="outreach_creator_video_metric_refresh",
-    )
-    indexed_video_count = 0
-    new_video_count = 0
-    updated_video_count = 0
-    product_success = 0
-    product_failed = 0
-    for job in check_jobs:
-        result = extract_effective_result_payload(job)
-        if isinstance(result, dict) and result.get("fetch_status") == "success":
-            product_success += 1
-            indexed_video_count += int(result.get("indexed_video_count") or 0)
-            new_video_count += int(result.get("new_video_count") or 0)
-            updated_video_count += int(result.get("updated_video_count") or 0)
-        elif extract_handler_result_status(job) in {"failed", "fallback_required"} or str(
-            job.get("result_status") or job.get("status") or ""
-        ) in {"failed", "waiting"}:
-            product_failed += 1
-    refresh_success = 0
-    refresh_skipped = 0
-    refresh_failed = 0
-    feishu_written = 0
-    feishu_failed = 0
-    video_count_total = 0
-    play_count_total = 0
-    no_video_checked = 0
-    index_missing_skipped = 0
-    overview_failed = 0
-    video_count_changed = 0
-    play_count_changed = 0
-    highest_video_changed = 0
-    for job in refresh_jobs:
-        result = extract_effective_result_payload(job)
-        status = extract_handler_result_status(job)
-        if isinstance(result, dict) and result.get("refresh_status") == "success":
-            refresh_success += 1
-            video_count_total += int(result.get("video_count") or 0)
-            play_count_total += int(result.get("total_play_count") or 0)
-            written_fields = set(result.get("written_fields") or [])
-            if int(result.get("video_count") or 0) == 0 and "检查时间" in written_fields:
-                no_video_checked += 1
-            if "视频数量" in written_fields:
-                video_count_changed += 1
-            if "播放量" in written_fields:
-                play_count_changed += 1
-            if "视频链接" in written_fields:
-                highest_video_changed += 1
-            if result.get("feishu_written"):
-                feishu_written += 1
-        elif status == "skipped" or (
-            isinstance(result, dict) and result.get("refresh_status") == "skipped"
-        ):
-            refresh_skipped += 1
-            if (
-                isinstance(result, dict)
-                and result.get("skip_reason") == "existing_link_missing_from_index"
-            ):
-                index_missing_skipped += 1
-        elif status in {"failed", "fallback_required"} or str(
-            job.get("result_status") or job.get("status") or ""
-        ) in {"failed", "waiting"}:
-            refresh_failed += 1
-            if isinstance(result, dict) and result.get("error_stage") == "video_overview":
-                overview_failed += 1
-            if isinstance(result, dict) and result.get("feishu_write"):
-                feishu_failed += 1
-    final_status = (
-        "failed"
-        if product_success == 0 and refresh_success == 0 and (product_failed or refresh_failed)
-        else "partial_success"
-        if product_failed or refresh_failed
-        else "success"
-    )
-    adapter_summary = read_result.get("adapter_summary") if isinstance(read_result, dict) else {}
-    return {
-        "final_status": final_status,
-        "title": "达人建联检查完成",
-        "total_rows_read": int((adapter_summary or {}).get("input_row_count") or 0),
-        "candidate_row_count": int((adapter_summary or {}).get("source_row_count") or 0),
-        "skipped_rows": int((adapter_summary or {}).get("skipped_count") or 0),
-        "skip_reasons": dict((adapter_summary or {}).get("skip_reasons") or {}),
-        "product_count": len(check_jobs),
-        "product_fetch_success_count": product_success,
-        "product_fetch_failed_count": product_failed,
-        "indexed_video_count": indexed_video_count,
-        "new_video_count": new_video_count,
-        "updated_video_count": updated_video_count,
-        "creator_refresh_success_count": refresh_success,
-        "creator_refresh_skipped_count": refresh_skipped,
-        "creator_refresh_failed_count": refresh_failed,
-        "no_video_checked_count": no_video_checked,
-        "index_missing_skipped_count": index_missing_skipped,
-        "overview_failed_count": overview_failed,
-        "feishu_write_success_count": feishu_written,
-        "feishu_write_failed_count": feishu_failed,
-        "video_count_change_count": video_count_changed,
-        "play_count_change_count": play_count_changed,
-        "highest_video_change_count": highest_video_changed,
-        "aggregated_video_count": video_count_total,
-        "aggregated_play_count": play_count_total,
-    }
 
 
 def _stage_jobs(

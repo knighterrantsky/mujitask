@@ -142,6 +142,7 @@ def outreach_creator_video_metric_refresh_handler(context: HandlerContext) -> Ha
             "overview_failed_count": 0,
             "total_play_count": aggregate["total_play_count"],
             "highest_play_video_url": "",
+            "highest_play_count": aggregate["highest_play_count"],
             "earliest_published_date": aggregate["earliest_published_date"],
             "skip_reason": "existing_link_missing_from_index",
             "feishu_written": False,
@@ -182,6 +183,7 @@ def outreach_creator_video_metric_refresh_handler(context: HandlerContext) -> Ha
         "overview_failed_count": 0,
         "total_play_count": aggregate["total_play_count"],
         "highest_play_video_url": aggregate["highest_play_video_url"],
+        "highest_play_count": aggregate["highest_play_count"],
         "earliest_published_date": aggregate["earliest_published_date"],
         "feishu_written": bool(write_fields and write_result.status != "skipped"),
         "written_fields": list(write_fields.keys()) if write_result.status != "skipped" else [],
@@ -230,6 +232,7 @@ def _handle_no_videos(context: HandlerContext, *, payload: Mapping[str, Any], tr
         "overview_failed_count": 0,
         "total_play_count": 0,
         "highest_play_video_url": "",
+        "highest_play_count": 0,
         "earliest_published_date": "",
         "feishu_written": bool(fields and write_result.status != "skipped"),
         "written_fields": list(fields.keys()) if write_result.status != "skipped" else [],
@@ -300,6 +303,7 @@ def _aggregate_metrics(
         "video_count": len(rows),
         "total_play_count": sum(row["play_count"] for row in rows),
         "highest_play_video_url": highest["video_url"],
+        "highest_play_count": highest["play_count"],
         "earliest_published_date": min(published_dates) if published_dates else "",
     }
 
