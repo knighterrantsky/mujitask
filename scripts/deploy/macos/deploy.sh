@@ -144,10 +144,13 @@ ensure_project_install() {
   ensure_uv
   ensure_python_311
 
-  log "Creating project virtual environment"
-  "${UV_BIN}" venv --python 3.11 "${install_dir}/.venv" >/dev/null
-
   local venv_python="${install_dir}/.venv/bin/python"
+  if [[ -x "${venv_python}" ]]; then
+    log "Using existing project virtual environment"
+  else
+    log "Creating project virtual environment"
+    "${UV_BIN}" venv --python 3.11 "${install_dir}/.venv" >/dev/null
+  fi
   [[ -x "${venv_python}" ]] || fail_deploy "Virtual environment python was not created: ${venv_python}"
 
   install_framework_from_pyproject "${install_dir}/pyproject.toml" "${venv_python}"

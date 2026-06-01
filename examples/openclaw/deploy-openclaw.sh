@@ -384,7 +384,7 @@ description_match = re.search(r"(?m)^\s*description:\s*.+$", frontmatter)
 
 if not name_match:
     raise SystemExit(f"{skill_md} frontmatter is missing name.")
-if name_match.group(1).strip() != "mujitask-tiktok-feishu-sync":
+if name_match.group(1).strip().strip("\"'") != "mujitask-tiktok-feishu-sync":
     raise SystemExit(f"{skill_md} frontmatter name must be mujitask-tiktok-feishu-sync.")
 if not description_match:
     raise SystemExit(f"{skill_md} frontmatter is missing description.")
@@ -957,11 +957,13 @@ import json
 import sys
 
 required = {
-    "refresh_current_competitor_table",
     "refresh_competitor_row_by_url",
-    "tiktok_fastmoss_product_ingest",
+    "refresh_current_competitor_table",
     "search_keyword_competitor_products",
+    "search_keyword_selection_products",
     "sync_tk_influencer_pool",
+    "tiktok_fastmoss_product_ingest",
+    "tiktok_influencer_outreach_sync",
 }
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)

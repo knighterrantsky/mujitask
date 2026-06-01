@@ -107,10 +107,14 @@ def read_framework_dependency(path: Path) -> dict[str, str]:
         data = tomllib.load(handle)
 
     dependencies = data.get("project", {}).get("dependencies", [])
-    matches = [dep for dep in dependencies if dep.startswith("automation-framework @ ")]
+    matches = [
+        dep
+        for dep in dependencies
+        if " @ " in dep and dep.split(" @ ", 1)[0].split("[", 1)[0].strip() == "automation-framework"
+    ]
     if len(matches) != 1:
         raise ValueError(
-            "pyproject.toml must declare exactly one 'automation-framework @ ...' dependency."
+            "pyproject.toml must declare exactly one direct 'automation-framework @ ...' dependency."
         )
 
     dependency = matches[0]

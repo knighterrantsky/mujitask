@@ -19,11 +19,13 @@ from automation_business_scaffold.domains.tiktok.flows import (
     outreach_product_videos as product_video_flow_module,
 )
 from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator import (
-    _build_summary,
     _merge_video_rows,
     advance_stage,
     finalize_request,
     release_request_after_child_completion,
+)
+from automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.summary import (
+    _build_summary,
 )
 from automation_business_scaffold.domains.tiktok.jobs.outreach_creator_video_metric_refresh import (
     outreach_creator_video_metric_refresh_handler,
@@ -50,6 +52,29 @@ from automation_business_scaffold.domains.tiktok.projections.feishu_outreach_pro
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
+
+
+FLOW_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "automation_business_scaffold"
+    / "domains"
+    / "tiktok"
+    / "flows"
+    / "tiktok_influencer_outreach_sync"
+)
+
+
+def test_outreach_summary_owns_final_assembly() -> None:
+    orchestrator_source = (FLOW_ROOT / "orchestrator.py").read_text(encoding="utf-8")
+    summary_source = (FLOW_ROOT / "summary.py").read_text(encoding="utf-8")
+
+    assert "def finalize_request" in summary_source
+    assert "def _build_summary" in summary_source
+    assert "create_notification_outbox" in summary_source
+    assert "build_outbox_message_text" in summary_source
+    assert "def _build_summary" not in orchestrator_source
+    assert "create_notification_outbox" not in orchestrator_source
 
 
 def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> None:
@@ -168,6 +193,37 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
     assert result["adapter_summary"]["skip_reasons"] == {
         "missing_product_id": 1,
         "missing_creator_unique_id": 1,
+    }
+
+
+def test_outreach_source_adapter_reads_feishu_date_timestamps() -> None:
+    result = outreach_source_adapter(
+        [
+            {
+                "record_id": "rec-date",
+                "fields": {
+                    "SKUID": "1732266893752242590",
+                    "达人ID": "creator",
+                    "检查时间": 1780070400000,
+                    "更新时间": "1780156800",
+                },
+            }
+        ],
+        {"source_table_ref": "tbl"},
+    )
+
+    row = result["source_rows"][0]
+    assert row["last_checked_at"] == "2026-05-30"
+    assert row["last_updated_at"] == "2026-05-31"
+
+    groups = group_outreach_rows_by_product(
+        result["source_rows"],
+        trigger_date="2026-06-01",
+    )
+    assert groups[0]["query_window"] == {
+        "mode": "date_range",
+        "start_date": "2026-05-29",
+        "end_date": "2026-06-01",
     }
 
 
@@ -736,6 +792,7 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(
     assert result.result["video_count"] == 2
     assert result.result["total_play_count"] == 40
     assert result.result["highest_play_video_url"] == "https://www.tiktok.com/@creator/video/2"
+    assert result.result["highest_play_count"] == 30
     assert result.result["earliest_published_date"] == "2026-05-19"
     assert fields == {
         "视频链接": {
@@ -1360,6 +1417,129 @@ def test_outreach_finalize_persists_request_and_outbox() -> None:
     assert store.update_payload["worker_id"] == ""
     assert store.outbox_payload["event_type"] == "task_request.completed"
     assert store.outbox_payload["dedupe_key"] == "task_request.completed:req1"
+
+
+def test_outreach_finalize_builds_detailed_outbox_message() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.outbox_payload = {}
+            self.jobs = [
+                {
+                    "job_code": "feishu_table_read",
+                    "status": "success",
+                    "payload": {"stage_code": "read_outreach_rows"},
+                    "result": {
+                        "adapter_summary": {
+                            "input_row_count": 2,
+                            "source_row_count": 2,
+                            "skipped_count": 0,
+                            "skip_reasons": {},
+                        },
+                    },
+                },
+                {
+                    "job_code": "product_video_outreach_check",
+                    "status": "success",
+                    "payload": {"stage_code": "index_product_videos", "product_id": "sku1"},
+                    "summary": {
+                        "product_id": "sku1",
+                        "fetch_status": "success",
+                        "fetched_video_count": 2,
+                        "matched_row_count": 1,
+                        "indexed_video_count": 2,
+                        "new_video_count": 0,
+                        "updated_video_count": 2,
+                    },
+                    "result": {
+                        "product_id": "sku1",
+                        "fetch_status": "success",
+                        "indexed_video_count": 2,
+                        "new_video_count": 0,
+                        "updated_video_count": 2,
+                    },
+                },
+                {
+                    "job_code": "outreach_creator_video_metric_refresh",
+                    "status": "success",
+                    "payload": {
+                        "stage_code": "refresh_creator_video_metrics_and_writeback",
+                        "product_id": "sku1",
+                    },
+                    "result": {
+                        "product_id": "sku1",
+                        "creator_unique_id": "creator1",
+                        "source_record_id": "rec1",
+                        "refresh_status": "success",
+                        "video_count": 2,
+                        "total_play_count": 12080,
+                        "highest_play_video_url": "https://www.tiktok.com/@creator1/video/1",
+                        "highest_play_count": 6051,
+                        "earliest_published_date": "2026-04-24",
+                        "feishu_written": True,
+                        "written_fields": ["视频链接", "更新时间"],
+                    },
+                },
+                {
+                    "job_code": "outreach_creator_video_metric_refresh",
+                    "status": "success",
+                    "payload": {
+                        "stage_code": "refresh_creator_video_metrics_and_writeback",
+                        "product_id": "sku1",
+                    },
+                    "result": {
+                        "product_id": "sku1",
+                        "creator_unique_id": "creator2",
+                        "source_record_id": "rec2",
+                        "refresh_status": "success",
+                        "video_count": 0,
+                        "total_play_count": 0,
+                        "feishu_written": True,
+                        "written_fields": ["检查时间"],
+                    },
+                },
+            ]
+
+        def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
+            del request_id
+            return [job for job in self.jobs if not job_code or job.get("job_code") == job_code]
+
+        def update_task_request(self, **kwargs):  # noqa: ANN001
+            return SimpleNamespace(
+                request_id=kwargs["request_id"],
+                status=kwargs["status"],
+                result_status=kwargs["status"],
+                current_stage=kwargs["current_stage"],
+                summary=kwargs["summary"],
+                result=kwargs["result"],
+                to_dict=lambda: {"request_id": kwargs["request_id"], "status": kwargs["status"]},
+            )
+
+        def create_notification_outbox(self, **kwargs):  # noqa: ANN001
+            self.outbox_payload = dict(kwargs)
+            return SimpleNamespace(to_dict=lambda: {"outbox_id": "outbox1", "status": "pending"})
+
+    store = Store()
+    result = finalize_request(
+        store=store,
+        request=SimpleNamespace(
+            request_id="req-detail",
+            task_code="tiktok_influencer_outreach_sync",
+            source_channel_code="feishu_bot_api",
+            reply_target="user:1",
+            payload={},
+            started_at=1780232645,
+        ),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+    )
+
+    message_text = store.outbox_payload["payload"]["message_text"]
+    assert result["request_status"] == "success"
+    assert "TK达人建联表检查完成" in message_text
+    assert "SKU：sku1" in message_text
+    assert "达人ID：creator1" in message_text
+    assert "更新字段：视频链接、更新时间" in message_text
+    assert "最高播放视频播放量：6,051" in message_text
+    assert "- 1 行未发现可写视频链接，仅写入检查时间" in message_text
 
 
 def test_outreach_read_failure_finalizes_parent_as_failed() -> None:

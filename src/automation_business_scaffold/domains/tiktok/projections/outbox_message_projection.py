@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone, tzinfo
 import json
 import os
 import re
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
 KEYWORD_TASK_CODE = "search_keyword_competitor_products"
 SELECTION_KEYWORD_TASK_CODE = "search_keyword_selection_products"
 INFLUENCER_TASK_CODE = "sync_tk_influencer_pool"
+OUTREACH_TASK_CODE = "tiktok_influencer_outreach_sync"
 PRODUCT_INGEST_TASK_CODE = "tiktok_fastmoss_product_ingest"
 DEFAULT_MESSAGE_FORMAT = "plain_text_detail"
 SUPPORTED_MESSAGE_FORMATS = {"json", "plain_text_summary", "plain_text_detail", "template"}
@@ -50,6 +53,14 @@ def build_tiktok_outbox_message_text(
         return _render_message_payload(payload, message_format=selected_format, message_template=message_template)
     if task_code == INFLUENCER_TASK_CODE:
         payload = _build_influencer_outbox_message(
+            request_id=request_id,
+            task_code=task_code,
+            summary=summary,
+            result=result,
+        )
+        return _render_message_payload(payload, message_format=selected_format, message_template=message_template)
+    if task_code == OUTREACH_TASK_CODE:
+        payload = _build_outreach_outbox_message(
             request_id=request_id,
             task_code=task_code,
             summary=summary,
@@ -250,6 +261,36 @@ def _build_influencer_outbox_message(
     }
 
 
+def _build_outreach_outbox_message(
+    *,
+    request_id: str,
+    task_code: str,
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    detail = result.get("outbox_detail") if isinstance(result.get("outbox_detail"), dict) else {}
+    product_groups = [
+        dict(item)
+        for item in detail.get("product_groups", [])
+        if isinstance(item, dict)
+    ]
+    execution_window = (
+        result.get("execution_window")
+        if isinstance(result.get("execution_window"), dict)
+        else {}
+    )
+    return {
+        "request_id": request_id,
+        "task_code": task_code,
+        "summary": summary,
+        "final_status": str(summary.get("final_status") or result.get("final_status") or "").strip(),
+        "execution_window": execution_window,
+        "changed_row_count": int(detail.get("changed_row_count") or 0),
+        "truncated_changed_row_count": int(detail.get("truncated_changed_row_count") or 0),
+        "product_groups": product_groups,
+    }
+
+
 def _resolve_message_format(*, message_format: str | None, message_template: str | None) -> str:
     if message_template:
         return "template"
@@ -285,6 +326,8 @@ def _render_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
         return _render_selection_ingest_plain_text(payload, include_rows=include_rows)
     if task_code == INFLUENCER_TASK_CODE:
         return _render_influencer_plain_text(payload, include_rows=include_rows)
+    if task_code == OUTREACH_TASK_CODE:
+        return _render_outreach_plain_text(payload, include_rows=include_rows)
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     lines = [
         "任务完成",
@@ -406,6 +449,97 @@ def _render_influencer_plain_text(payload: dict[str, Any], *, include_rows: bool
     return "\n".join(lines).strip()
 
 
+def _render_outreach_plain_text(payload: dict[str, Any], *, include_rows: bool) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    groups = [dict(item) for item in payload.get("product_groups", []) if isinstance(item, dict)]
+    lines = [
+        "TK达人建联表检查完成",
+        "",
+        f"任务：{payload.get('task_code') or '-'}",
+        f"请求：{payload.get('request_id') or '-'}",
+        f"状态：{payload.get('final_status') or summary.get('final_status') or '-'}",
+    ]
+    execution_time = _format_execution_window(payload.get("execution_window"))
+    if execution_time:
+        lines.append(f"执行时间：{execution_time}")
+    lines.extend(
+        [
+            "",
+            "整体汇总：",
+            f"- 读取飞书行数：{_format_int(summary.get('total_rows_read'))}",
+            f"- SKU 数量：{_format_int(summary.get('product_count'))}",
+            "- 商品视频分页："
+            f"{_format_int(summary.get('product_fetch_success_count'))}/"
+            f"{_format_int(summary.get('product_count'))} 成功",
+            f"- 索引视频数：{_format_int(summary.get('indexed_video_count'))}",
+            "- 达人视频指标刷新："
+            f"成功 {_format_int(summary.get('creator_refresh_success_count'))}，"
+            f"跳过 {_format_int(summary.get('creator_refresh_skipped_count'))}，"
+            f"失败 {_format_int(summary.get('creator_refresh_failed_count'))}",
+            "- 飞书写回："
+            f"成功 {_format_int(summary.get('feishu_write_success_count'))}，"
+            f"失败 {_format_int(summary.get('feishu_write_failed_count'))}",
+            f"- 仅写入检查时间：{_format_int(summary.get('no_video_checked_count'))}",
+            f"- 视频链接更新：{_format_int(summary.get('highest_video_change_count'))}",
+            f"- 播放量更新：{_format_int(summary.get('play_count_change_count'))}",
+            f"- 视频数量更新：{_format_int(summary.get('video_count_change_count'))}",
+            f"- 聚合视频总数：{_format_int(summary.get('aggregated_video_count'))}",
+            f"- 聚合播放量：{_format_int(summary.get('aggregated_play_count'))}",
+        ]
+    )
+    if include_rows and groups:
+        for group in groups:
+            lines.extend(["", f"SKU：{group.get('product_id') or '-'}"])
+            lines.append(
+                "商品视频分页结果："
+                f"{_format_int(group.get('fetched_video_count'))} 条视频，"
+                f"命中达人 {_format_int(group.get('matched_row_count'))} 行"
+            )
+            changed_rows = [
+                dict(item)
+                for item in group.get("changed_rows", [])
+                if isinstance(item, dict)
+            ]
+            if changed_rows:
+                lines.extend(["", "本次字段发生变化的达人："])
+                for index, row in enumerate(changed_rows, start=1):
+                    lines.append(f"{index}. 达人ID：{row.get('creator_unique_id') or '-'}")
+                    lines.append(f"   更新字段：{_format_field_list(row.get('updated_fields'))}")
+                    lines.append(f"   视频数量：{_format_int(row.get('video_count'))}")
+                    lines.append(f"   聚合播放量：{_format_int(row.get('total_play_count'))}")
+                    lines.append(
+                        f"   最高播放视频播放量：{_format_int(row.get('highest_play_count'))}"
+                    )
+                    lines.append("   最高播放视频链接：")
+                    lines.append(f"   {row.get('highest_play_video_url') or '-'}")
+            elif int(group.get("changed_row_count") or 0) > 0:
+                lines.extend(["", "本次字段发生变化的达人："])
+                lines.append("明细过长，已省略。")
+            truncated_count = int(group.get("truncated_changed_row_count") or 0)
+            if truncated_count:
+                lines.append(f"其余 {truncated_count} 条已写入，详见运行明细。")
+            no_video_count = int(group.get("no_video_checked_count") or 0)
+            if no_video_count:
+                lines.extend(["", "无视频结果："])
+                lines.append(
+                    f"- {no_video_count} 行未发现可写视频链接，仅写入检查时间"
+                )
+    _append_outreach_exceptions(lines, summary)
+    return "\n".join(lines).strip()
+
+
+def _append_outreach_exceptions(lines: list[str], summary: dict[str, Any]) -> None:
+    lines.extend(
+        [
+            "",
+            "异常：",
+            f"- 失败达人刷新：{_format_int(summary.get('creator_refresh_failed_count'))}",
+            f"- overview 失败：{_format_int(summary.get('overview_failed_count'))}",
+            f"- 飞书写入失败：{_format_int(summary.get('feishu_write_failed_count'))}",
+        ]
+    )
+
+
 def _format_filter_info(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
@@ -481,6 +615,52 @@ def _flatten_template_values(payload: dict[str, Any]) -> dict[str, Any]:
 
     walk("", payload)
     return values
+
+
+def _format_execution_window(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    started = _format_timestamp(value.get("started_at"))
+    finished = _format_timestamp(value.get("finished_at"))
+    if started and finished:
+        return f"{started} ~ {finished}"
+    return started or finished
+
+
+def _format_timestamp(value: Any) -> str:
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError):
+        return str(value or "").strip()
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp, tz=_display_timezone()).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _display_timezone() -> tzinfo:
+    zone_name = os.environ.get("MUJITASK_DISPLAY_TIMEZONE", "Asia/Shanghai")
+    try:
+        return ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=8))
+
+
+def _format_int(value: Any) -> str:
+    try:
+        return f"{int(float(str(value or '0').replace(',', ''))):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _format_field_list(value: Any) -> str:
+    if isinstance(value, list):
+        return "、".join(str(item).strip() for item in value if str(item or "").strip()) or "-"
+    if isinstance(value, tuple):
+        return "、".join(str(item).strip() for item in value if str(item or "").strip()) or "-"
+    return str(value or "-").strip() or "-"
 
 
 def _count_values(items: list[dict[str, Any]], key: str) -> dict[str, int]:

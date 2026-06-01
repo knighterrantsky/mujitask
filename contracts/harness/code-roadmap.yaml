@@ -1046,6 +1046,7 @@ features:
       - contracts/facts/product-fact-collection.yaml
       - src/automation_business_scaffold/domains/tiktok/workflows/tiktok_influencer_outreach_sync.py
       - src/automation_business_scaffold/domains/tiktok/flows/tiktok_influencer_outreach_sync/orchestrator.py
+      - src/automation_business_scaffold/domains/tiktok/flows/tiktok_influencer_outreach_sync/summary.py
       - src/automation_business_scaffold/domains/tiktok/flows/outreach_product_videos.py
       - src/automation_business_scaffold/domains/tiktok/flows/outreach_creator_video_metrics.py
       - src/automation_business_scaffold/domains/tiktok/mappers/feishu_outreach_source_mapper.py

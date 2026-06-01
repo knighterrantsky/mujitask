@@ -52,7 +52,7 @@ description_match = re.search(r"(?m)^\s*description:\s*.+$", frontmatter)
 
 if not name_match:
     raise SystemExit(f"{skill_md} frontmatter is missing name.")
-if name_match.group(1).strip() != "mujitask-tiktok-feishu-sync":
+if name_match.group(1).strip().strip("\"'") != "mujitask-tiktok-feishu-sync":
     raise SystemExit(f"{skill_md} frontmatter name must be mujitask-tiktok-feishu-sync.")
 if not description_match:
     raise SystemExit(f"{skill_md} frontmatter is missing description.")
@@ -799,10 +799,13 @@ import json
 import sys
 
 required = {
+    "refresh_competitor_row_by_url",
     "refresh_current_competitor_table",
     "search_keyword_competitor_products",
-    "feishu_single_row_update",
-    "fastmoss_keyword_candidate_discovery",
+    "search_keyword_selection_products",
+    "sync_tk_influencer_pool",
+    "tiktok_fastmoss_product_ingest",
+    "tiktok_influencer_outreach_sync",
 }
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
@@ -850,26 +853,21 @@ PY
     [[ -f "$file_name" ]] || fail "Smoke check failed: $file_name is missing."
   done
 
-  if launchctl list | grep -q 'com.happyzhao.mujitask.executor-daemon'; then
-    :
-  else
-    fail "Smoke check failed: launchd service com.happyzhao.mujitask.executor-daemon is not loaded."
-  fi
-  if launchctl list | grep -q 'com.happyzhao.mujitask.api-worker'; then
-    :
-  else
-    fail "Smoke check failed: launchd service com.happyzhao.mujitask.api-worker is not loaded."
-  fi
-  if launchctl list | grep -q 'com.happyzhao.mujitask.browser-runloop'; then
-    :
-  else
-    fail "Smoke check failed: launchd service com.happyzhao.mujitask.browser-runloop is not loaded."
-  fi
-  if launchctl list | grep -q 'com.happyzhao.mujitask.outbox-dispatcher'; then
-    :
-  else
-    fail "Smoke check failed: launchd service com.happyzhao.mujitask.outbox-dispatcher is not loaded."
-  fi
+  local launchd_uid
+  launchd_uid="$(id -u)"
+  local launchd_label
+  for launchd_label in \
+    "com.happyzhao.mujitask.executor-daemon" \
+    "com.happyzhao.mujitask.api-worker" \
+    "com.happyzhao.mujitask.browser-runloop" \
+    "com.happyzhao.mujitask.outbox-dispatcher" \
+    "com.happyzhao.mujitask.watchdog"; do
+    if launchctl print "gui/${launchd_uid}/${launchd_label}" >/dev/null 2>&1; then
+      :
+    else
+      fail "Smoke check failed: launchd service ${launchd_label} is not loaded."
+    fi
+  done
 
   set -a
   # shellcheck disable=SC1090
@@ -891,12 +889,16 @@ inspector = inspect(engine)
 required_tables = {
     "task_request",
     "task_execution",
+    "api_worker_job",
     "resource_lease",
     "notification_outbox",
     "artifact_object",
-    "entity_registry",
-    "external_binding",
-    "entity_snapshot",
+    "fastmoss_session_cookie_cache",
+    "tk_products",
+    "tk_creators",
+    "tk_videos",
+    "tk_video_product_relations",
+    "tk_video_metric_snapshots",
 }
 names = set(inspector.get_table_names())
 missing = sorted(required_tables - names)

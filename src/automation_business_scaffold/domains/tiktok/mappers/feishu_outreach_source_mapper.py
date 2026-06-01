@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 OUTREACH_READ_FIELD_NAMES = (
@@ -242,6 +244,9 @@ def _parse_date(value: Any) -> date | None:
     text = _text_value(value)
     if not text:
         return None
+    timestamp_date = _parse_timestamp_date(text)
+    if timestamp_date is not None:
+        return timestamp_date
     if "T" in text:
         text = text.split("T", 1)[0]
     if " " in text:
@@ -256,6 +261,29 @@ def _parse_date(value: Any) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def _parse_timestamp_date(text: str) -> date | None:
+    try:
+        timestamp = float(text)
+    except ValueError:
+        return None
+    if timestamp <= 0:
+        return None
+    if timestamp > 10_000_000_000:
+        timestamp = timestamp / 1000
+    try:
+        return datetime.fromtimestamp(timestamp, tz=_feishu_date_timezone()).date()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _feishu_date_timezone() -> tzinfo:
+    zone_name = os.environ.get("FEISHU_DATE_TIMEZONE", "Asia/Shanghai")
+    try:
+        return ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        return timezone(timedelta(hours=8))
 
 
 def _mapping(value: Any) -> dict[str, Any]:
