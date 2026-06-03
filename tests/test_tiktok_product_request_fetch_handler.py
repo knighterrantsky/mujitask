@@ -700,6 +700,88 @@ def test_tiktok_framework_slider_requires_page_state_confirmation_and_humanized_
     assert wait_calls == [product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS]
 
 
+def test_tiktok_framework_slider_download_failure_uses_default_five_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import automation_framework.captcha as captcha_module
+
+    wait_calls: list[int] = []
+    refresh_calls: list[tuple[str, ...]] = []
+    resolve_calls: list[object] = []
+
+    class _FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    class _FakeAudit:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "attempts": [
+                    {
+                        "attempt_index": 1,
+                        "success": False,
+                        "mode": "match",
+                        "simple_target": False,
+                        "error": "RuntimeError: failed to load background image",
+                        "error_code": "background_download_failed",
+                    }
+                ]
+            }
+
+    class _FakeResolver:
+        def __init__(self, *, provider: object, selectors: object, config: object) -> None:
+            del provider, selectors, config
+
+        def resolve(self, automation_page: object) -> SimpleNamespace:
+            resolve_calls.append(automation_page)
+            return SimpleNamespace(
+                success=False,
+                audit=_FakeAudit(),
+                artifacts_payload={},
+            )
+
+    def fake_click_first_visible_locator(page: object, selectors: tuple[str, ...]) -> bool:
+        del page
+        refresh_calls.append(selectors)
+        return True
+
+    page = SimpleNamespace(wait_for_timeout=lambda timeout_ms: wait_calls.append(timeout_ms))
+    automation_page = object()
+
+    monkeypatch.setattr(captcha_module, "DdddOcrCaptchaProvider", _FakeProvider)
+    monkeypatch.setattr(captcha_module, "SliderCaptchaResolver", _FakeResolver)
+    monkeypatch.setattr(product_page, "_click_first_visible_locator", fake_click_first_visible_locator)
+    monkeypatch.setattr(
+        product_page,
+        "_wait_for_tiktok_slider_post_drag_state",
+        lambda _page, *, timeout_ms: {"visible": True, "wait_elapsed_ms": timeout_ms},
+    )
+
+    result = product_page._resolve_tiktok_slider_with_framework_captcha(
+        automation_page,
+        page=page,
+        product_url="https://www.tiktok.com/view/product/1729492379807814341",
+        max_attempts=product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_MAX_ATTEMPTS,
+        settle_ms=product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_SETTLE_MS,
+        confirm_ms=product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_CONFIRM_MS,
+        audit_dir=str(tmp_path),
+        provider_config=None,
+        resolver_config=None,
+        selectors=None,
+        trace_id="trace-download-failed",
+    )
+
+    assert result["resolved"] is False
+    assert result["reason"] == "slider_popup_still_visible"
+    assert len(resolve_calls) == 5
+    assert len(result["attempts"]) == 5
+    assert len(refresh_calls) == 4
+    assert wait_calls == [product_page.DEFAULT_TIKTOK_SLIDER_CAPTCHA_REFRESH_SETTLE_MS] * 4
+    assert result["audit"]["attempts"][0]["error_code"] == "background_download_failed"
+
+
 def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
