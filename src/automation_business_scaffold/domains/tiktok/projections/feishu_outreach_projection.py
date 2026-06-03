@@ -85,9 +85,9 @@ def _format_feishu_play_count(value: Any) -> str:
 
 
 def _existing_play_count_display(record: Mapping[str, Any]) -> str:
-    source_text = _text_value(_mapping(record.get("source_fields")).get("播放量"))
-    if source_text:
-        return source_text
+    source_fields = _mapping(record.get("source_fields"))
+    if "播放量" in source_fields:
+        return _text_value(source_fields.get("播放量"))
     existing_play_count = record.get("existing_play_count")
     if existing_play_count not in (None, ""):
         return _format_feishu_play_count(existing_play_count)

@@ -227,6 +227,34 @@ def test_outreach_source_adapter_reads_feishu_date_timestamps() -> None:
     }
 
 
+def test_outreach_source_adapter_preserves_missing_play_count_as_empty() -> None:
+    result = outreach_source_adapter(
+        [
+            {
+                "record_id": "rec-empty-play",
+                "fields": {
+                    "SKUID": "1732266893752242590",
+                    "达人ID": "shaycroft",
+                    "视频链接": {
+                        "link": "https://www.tiktok.com/@shaycroft/video/7642489799089179918"
+                    },
+                    "视频数量": 1,
+                },
+            }
+        ],
+        {"source_table_ref": "tbl"},
+    )
+
+    row = result["source_rows"][0]
+    assert row["existing_play_count"] is None
+
+    groups = group_outreach_rows_by_product(
+        result["source_rows"],
+        trigger_date="2026-06-01",
+    )
+    assert groups[0]["rows"][0]["existing_play_count"] is None
+
+
 def test_outreach_query_window_honors_request_payload_priority() -> None:
     rows = [{"existing_video_url": "", "last_checked_at": "2026-05-19"}]
 
@@ -806,6 +834,79 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(
     }
 
 
+def test_creator_video_metric_refresh_writes_less_than_1w_when_existing_play_count_blank(
+    monkeypatch, runtime_db_url
+) -> None:
+    fact_store = TKFactStore(db_url=runtime_db_url)
+    creator_key = fact_store.build_creator_key(unique_id="shaycroft")
+    video_url = canonical_tiktok_video_url("shaycroft", "7642489799089179918")
+    video = fact_store.upsert_video(
+        video_id="7642489799089179918",
+        creator_key=creator_key,
+        creator_unique_id="shaycroft",
+        product_id="1732266893752242590",
+        video_url=video_url,
+        source_platform="fastmoss",
+        facts={"published_date": "2026-05-22"},
+    )
+    fact_store.upsert_video_product_relation(
+        video_key=video["video_key"],
+        product_id="1732266893752242590",
+        source_platform="fastmoss",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_write(context: HandlerContext):  # noqa: ANN001
+        captured["payload"] = context.payload
+        return success_result(
+            context,
+            summary={"written_count": 1, "skipped_count": 0, "failed_count": 0},
+            result={"written_count": 1, "records": [{"status": "success"}]},
+        )
+
+    monkeypatch.setattr(metric_flow_module, "feishu_table_write_handler", fake_write)
+
+    result = outreach_creator_video_metric_refresh_handler(
+        HandlerContext(
+            request_id="req",
+            job_id="job",
+            handler_code="outreach_creator_video_metric_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            payload={
+                "product_id": "1732266893752242590",
+                "creator_unique_id": "shaycroft",
+                "source_record_id": "recvj0hfWqPJMS",
+                "trigger_date": "2026-05-31",
+                "target_table_ref": "tbl",
+                "existing_play_count": None,
+                "fact_db_url": runtime_db_url,
+                "source_fields": {
+                    "视频链接": {"link": video_url, "text": video_url},
+                    "视频发布时间": "2026-05-22",
+                    "视频数量": 1,
+                },
+                "mock_fastmoss_video_overviews": {
+                    "7642489799089179918": {
+                        "video_id": "7642489799089179918",
+                        "play_count": 5866,
+                    }
+                },
+            },
+        )
+    )
+
+    write_payload = captured["payload"]
+    assert isinstance(write_payload, dict)
+    assert write_payload["records"][0]["fields"] == {
+        "播放量": "<1W",
+        "更新时间": "2026-05-31",
+    }
+    assert result.status == "success"
+    assert result.result["feishu_written"] is True
+    assert result.result["written_fields"] == ["播放量", "更新时间"]
+
+
 def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
     monkeypatch, runtime_db_url
 ) -> None:
@@ -1334,6 +1435,27 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
         },
         "播放量": "12W",
         "视频数量": 2,
+        "更新时间": "2026-05-22",
+    }
+
+    blank_play_count = outreach_result_projection_mapper(
+        {
+            "source_record_id": "rec1",
+            "highest_play_video_url": "https://www.tiktok.com/@creator/video/123",
+            "earliest_published_date": "2026-05-20",
+            "total_play_count": 5866,
+            "video_count": 1,
+            "checked_at": "2026-05-22",
+            "existing_video_url": "https://www.tiktok.com/@creator/video/123",
+            "existing_video_published_date": "2026-05-20",
+            "existing_play_count": None,
+            "existing_video_count": 1,
+            "source_fields": {"播放量": ""},
+        },
+        {},
+    )
+    assert blank_play_count["fields"] == {
+        "播放量": "<1W",
         "更新时间": "2026-05-22",
     }
 
