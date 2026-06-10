@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import automation_business_scaffold.capabilities.browser.tiktok_product_fetch_handler as browser_handler
+from automation_business_scaffold.capabilities.browser.tiktok import product_page
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 
 
@@ -194,3 +195,9 @@ def test_tiktok_product_browser_fetch_returns_unavailable_as_terminal_result(mon
     normalized = result.result["normalized_product_result"]
     assert normalized["product"]["status"] == "off_shelf_or_region_unavailable"
     assert normalized["product"]["facts"]["availability_status"] == "unavailable"
+
+
+def test_tiktok_product_browser_fetch_recognizes_country_region_unprovided_message() -> None:
+    message = product_page._extract_unavailable_message("此国家或地区未提供的商品")
+
+    assert message == "TikTok product unavailable: 此国家或地区未提供的商品"
