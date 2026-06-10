@@ -500,6 +500,8 @@ def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_
     runtime_db_url: str,
 ) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
+    slider_calls: list[dict[str, object]] = []
+    verify_calls: list[dict[str, object]] = []
 
     class _FakeBrowserContext:
         def __init__(self) -> None:
@@ -575,25 +577,38 @@ def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_
     )
     monkeypatch.setattr(fastmoss_security_handler, "_safe_wait_for_timeout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(fastmoss_security_handler, "_read_fastmoss_slider_state", lambda *_args: {"visible": False})
-    monkeypatch.setattr(
-        fastmoss_security_handler,
-        "_try_resolve_fastmoss_slider_security_check",
-        lambda *_args, **_kwargs: {"attempted": False, "resolved": True, "reason": "not_present", "attempts": []},
-    )
+    def fake_slider_resolution(*_args: object, **kwargs: object) -> dict[str, object]:
+        slider_calls.append(dict(kwargs))
+        if len(slider_calls) == 1:
+            return {"attempted": False, "resolved": True, "reason": "slider_not_visible", "attempts": []}
+        return {"attempted": False, "resolved": True, "reason": "not_present", "attempts": []}
+
+    monkeypatch.setattr(fastmoss_security_handler, "_try_resolve_fastmoss_slider_security_check", fake_slider_resolution)
     monkeypatch.setattr(
         fastmoss_security_handler,
         "_capture_fastmoss_browser_diagnostic_artifacts",
         lambda *_args, **_kwargs: [],
     )
-    monkeypatch.setattr(
-        fastmoss_security_handler,
-        "_verify_original_request_with_cookies_result",
-        lambda *_args, **_kwargs: {
+    def fake_verify_original_request(*_args: object, **kwargs: object) -> dict[str, object]:
+        verify_calls.append({"cookies": [dict(cookie) for cookie in kwargs.get("cookies", [])]})
+        if len(verify_calls) == 1:
+            return {
+                "verified": False,
+                "verified_path": "/api/goods/v3/base",
+                "response_code": "MSG_SAFE_0001",
+                "ext_is_login": "1",
+            }
+        return {
             "verified": True,
             "verified_path": "/api/goods/v3/base",
             "response_code": "200",
             "ext_is_login": "1",
-        },
+        }
+
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_verify_original_request_with_cookies_result",
+        fake_verify_original_request,
     )
 
     result = fastmoss_security_browser_resolve_handler(
@@ -621,7 +636,39 @@ def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_
 
     names = [name for name, _payload in calls]
     assert result.status == "success"
-    assert names.index("clear_cookies") < names.index("add_cookies") < names.index("goto")
+    goto_indexes = [index for index, name in enumerate(names) if name == "goto"]
+    open_indexes = [index for index, name in enumerate(names) if name == "open_page"]
+    assert len(open_indexes) == 2
+    assert "clear_cookies" not in names[: goto_indexes[0]]
+    assert "add_cookies" not in names[: goto_indexes[0]]
+    assert open_indexes[1] < names.index("clear_cookies") < names.index("add_cookies") < goto_indexes[1]
+    assert [call["appear_timeout_ms"] for call in slider_calls] == [12_000, 12_000]
+    assert verify_calls[0]["cookies"][0]["value"] == "browser-b-token"
+    assert verify_calls[1]["cookies"][0]["value"] == "configured-a-token"
+    assert result.result["browser_attempts"] == [
+        {
+            "attempt": 1,
+            "profile_only": True,
+            "cleared_session": False,
+            "import_status": "skipped",
+            "slider_reason": "slider_not_visible",
+            "slider_attempted": False,
+            "slider_resolved": False,
+            "response_code": "MSG_SAFE_0001",
+        },
+        {
+            "attempt": 2,
+            "profile_only": False,
+            "cleared_session": True,
+            "import_status": "imported",
+            "slider_reason": "not_present",
+            "slider_attempted": False,
+            "slider_resolved": True,
+            "response_code": "200",
+        },
+    ]
+    assert result.result["login_cookie_bootstrap"]["browser_attempt_index"] == 2
+    assert result.result["login_cookie_bootstrap"]["browser_profile_only_attempt"] is False
     assert result.result["login_cookie_bootstrap"]["browser_session_reset_status"] == "reset"
     assert result.result["login_cookie_bootstrap"]["browser_session_cleared_cookie_count"] == 1
     assert result.result["login_cookie_bootstrap"]["browser_cookie_import_status"] == "imported"
@@ -637,6 +684,148 @@ def test_fastmoss_security_browser_resolve_resets_profile_session_before_config_
     )
     assert loaded is not None
     assert loaded["cookies"][0]["value"] == "configured-a-token"
+
+
+def test_fastmoss_security_browser_resolve_exports_latest_cookie_after_slider_verify_poll(
+    monkeypatch,
+    runtime_db_url: str,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    verify_calls: list[dict[str, object]] = []
+
+    class _FakeBrowserContext:
+        def __init__(self) -> None:
+            self.read_count = 0
+
+        def cookies(self, *_args: object) -> list[dict[str, object]]:
+            token_by_read = {
+                1: "browser-profile-token",
+                2: "post-slider-stale-token",
+            }
+            token = token_by_read.get(self.read_count + 1, "post-slider-fresh-token")
+            self.read_count += 1
+            calls.append(("cookies", {"token": token}))
+            return [{"name": "fd_tk", "value": token, "domain": ".fastmoss.com", "path": "/", "secure": True}]
+
+    class _FakeRawPage:
+        def __init__(self) -> None:
+            self.context = _FakeBrowserContext()
+
+    class _FakeOpenPage:
+        def __init__(self, raw_page: _FakeRawPage) -> None:
+            self.raw_page = raw_page
+
+        def __enter__(self) -> SimpleNamespace:
+            return SimpleNamespace(page=self.raw_page, raw_page=self.raw_page)
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    raw_page = _FakeRawPage()
+
+    def fake_open_page(**kwargs: object) -> _FakeOpenPage:
+        calls.append(("open_page", dict(kwargs)))
+        return _FakeOpenPage(raw_page)
+
+    def fake_verify_original_request(*_args: object, **kwargs: object) -> dict[str, object]:
+        cookies = [dict(cookie) for cookie in kwargs.get("cookies", [])]
+        verify_calls.append({"cookies": cookies})
+        if len(verify_calls) == 1:
+            return {
+                "verified": False,
+                "verified_path": "/api/goods/v3/base",
+                "response_code": "MSG_SAFE_0001",
+                "ext_is_login": "1",
+            }
+        return {
+            "verified": True,
+            "verified_path": "/api/goods/v3/base",
+            "response_code": "200",
+            "ext_is_login": "1",
+        }
+
+    monkeypatch.setattr(fastmoss_security_handler, "open_automation_page", fake_open_page)
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_page_goto",
+        lambda _page, url, **_kwargs: calls.append(("goto", {"url": url})),
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_safe_wait_for_timeout",
+        lambda *_args, **_kwargs: calls.append(("wait", {})),
+    )
+    monkeypatch.setattr(fastmoss_security_handler, "_read_fastmoss_slider_state", lambda *_args: {"visible": True})
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_try_resolve_fastmoss_slider_security_check",
+        lambda *_args, **_kwargs: {
+            "attempted": True,
+            "resolved": True,
+            "reason": "slider_cleared",
+            "attempts": [],
+        },
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_capture_fastmoss_browser_diagnostic_artifacts",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        fastmoss_security_handler,
+        "_verify_original_request_with_cookies_result",
+        fake_verify_original_request,
+    )
+
+    result = fastmoss_security_browser_resolve_handler(
+        _browser_handler_context(
+            {
+                "execution_control_db_url": runtime_db_url,
+                "search_request": {"keyword": SEARCH_QUERY, "search_query": SEARCH_QUERY, "region": "US"},
+                "verification_request": {
+                    "method": "GET",
+                    "path": "/api/goods/v3/base",
+                    "params": {"product_id": PRODUCT_ID},
+                    "region": "US",
+                },
+                "fastmoss": {
+                    "phone": "18000000000",
+                    "base_url": "https://www.fastmoss.com",
+                    "region": "US",
+                },
+                "fastmoss_browser_verify_poll_ms": 1,
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert [call["cookies"][0]["value"] for call in verify_calls] == [
+        "post-slider-stale-token",
+        "post-slider-fresh-token",
+    ]
+    assert result.result["browser_attempts"] == [
+        {
+            "attempt": 1,
+            "profile_only": True,
+            "cleared_session": False,
+            "import_status": "skipped",
+            "slider_reason": "slider_cleared",
+            "slider_attempted": True,
+            "slider_resolved": True,
+            "response_code": "200",
+        }
+    ]
+
+    cache_context = build_fastmoss_cookie_cache_context(
+        base_url="https://www.fastmoss.com",
+        account_key="18000000000",
+        region="US",
+    )
+    loaded = RuntimeStore(db_url=runtime_db_url).load_fastmoss_cookie_cache(
+        cache_key=str(cache_context["cache_key"])
+    )
+    assert loaded is not None
+    assert loaded["cookies"][0]["value"] == "post-slider-fresh-token"
 
 
 def test_fastmoss_security_browser_resolve_reuses_profile_login_cookie_before_http_login(
