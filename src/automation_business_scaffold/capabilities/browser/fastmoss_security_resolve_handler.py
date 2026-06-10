@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
@@ -63,6 +64,9 @@ from automation_business_scaffold.infrastructure.fastmoss.http_session import (
 
 HANDLER_CODE = "fastmoss_security_browser_resolve"
 CONTRACT = BROWSER_HANDLER_CONTRACTS[HANDLER_CODE]
+DEFAULT_FASTMOSS_BROWSER_SECURITY_ATTEMPTS = 5
+DEFAULT_FASTMOSS_POST_CHALLENGE_VERIFY_TIMEOUT_MS = 20_000
+DEFAULT_FASTMOSS_VERIFY_POLL_MS = 2_000
 
 
 def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> HandlerResult:
@@ -211,6 +215,7 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         "slider_captcha_audit_artifact_refs": coerce_mapping_list(browser_result.get("slider_captcha_audit_artifact_refs")),
         "browser_diagnostic_artifact_refs": coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs")),
         "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
+        "browser_attempts": coerce_mapping_list(browser_result.get("browser_attempts")),
     }
     return success_result(context, summary=summary, result=result)
 
@@ -272,6 +277,7 @@ def _browser_resolve_failure_summary(browser_result: Mapping[str, Any], *, error
             "browser_cookie_import_reason": first_non_empty(
                 coerce_mapping(browser_result.get("login_cookie_bootstrap")).get("browser_cookie_import_reason")
             ),
+            "browser_attempt_count": len(coerce_mapping_list(browser_result.get("browser_attempts"))),
             "slider_artifact_count": len(coerce_mapping_list(browser_result.get("slider_captcha_audit_artifact_refs"))),
             "browser_diagnostic_artifact_count": len(
                 coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs"))
@@ -321,6 +327,7 @@ def _browser_resolve_result_payload(
                 browser_result.get("browser_diagnostic_artifact_refs")
             ),
             "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
+            "browser_attempts": coerce_mapping_list(browser_result.get("browser_attempts")),
         }
     )
 
@@ -378,156 +385,216 @@ def _resolve_fastmoss_security_with_browser(
         ),
         default=False,
     )
+    max_browser_attempts = _positive_int(
+        first_non_empty(
+            payload.get("fastmoss_browser_max_attempts"),
+            payload.get("fastmoss_security_browser_max_attempts"),
+        ),
+        DEFAULT_FASTMOSS_BROWSER_SECURITY_ATTEMPTS,
+    )
+    profile_first_attempt = coerce_bool(
+        first_non_empty(
+            payload.get("fastmoss_browser_profile_first_attempt"),
+            payload.get("fastmoss_profile_only_first_attempt"),
+        ),
+        default=True,
+    )
+    slider_appear_timeout_ms = _positive_int(
+        payload.get("fastmoss_slider_appear_timeout_ms"),
+        DEFAULT_FASTMOSS_SLIDER_APPEAR_TIMEOUT_MS,
+    )
+    verify_timeout_ms = _positive_int(
+        first_non_empty(
+            payload.get("fastmoss_post_challenge_verify_timeout_ms"),
+            payload.get("fastmoss_browser_verify_timeout_ms"),
+        ),
+        DEFAULT_FASTMOSS_POST_CHALLENGE_VERIFY_TIMEOUT_MS,
+    )
+    verify_poll_ms = _positive_int(
+        first_non_empty(
+            payload.get("fastmoss_verify_poll_ms"),
+            payload.get("fastmoss_browser_verify_poll_ms"),
+        ),
+        DEFAULT_FASTMOSS_VERIFY_POLL_MS,
+    )
     audit_dir = first_non_empty(
         payload.get("fastmoss_slider_captcha_audit_dir"),
         payload.get("slider_captcha_audit_dir"),
         DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
     )
-    diagnostic_artifact_refs: list[dict[str, Any]] = []
-    browser_session_reset: dict[str, Any] = {}
-    existing_browser_cookie_snapshot: dict[str, Any] = {}
-    login_cookie_bootstrap: dict[str, Any] = {}
-    imported_cookie_status: dict[str, Any] = {}
-    with open_automation_page(
-        profile_ref=profile_ref,
-        workspace_id=_optional_int(
-            first_non_empty(
-                payload.get("fastmoss_browser_workspace_id"),
-                payload.get("browser_workspace_id"),
-                os.environ.get("FASTMOSS_BROWSER_WORKSPACE_ID"),
-                os.environ.get("BROWSER_WORKSPACE_ID"),
-            )
-        ),
-        profile_id=profile_id,
-        provider_name=provider_name,
-        headless=coerce_bool(payload.get("browser_headless"), default=False),
-        force_open=coerce_bool(payload.get("browser_force_open"), default=False),
-    ) as browser_session:
-        if clear_browser_session:
-            browser_session_reset = _reset_fastmoss_browser_session(
-                browser_session.raw_page,
-                base_url=str(fastmoss_settings["base_url"]),
-            )
-        else:
-            existing_browser_cookies = _export_fastmoss_browser_cookies(
-                browser_session.raw_page,
-                base_url=str(fastmoss_settings["base_url"]),
-            )
-            existing_browser_cookie_snapshot = _cookie_snapshot_from_browser_cookies(existing_browser_cookies)
-        if _should_import_fastmoss_login_cookies(
-            payload,
-            existing_cookie_snapshot=existing_browser_cookie_snapshot,
-            require_config_login=require_config_login,
-            clear_browser_session=clear_browser_session,
-        ):
-            login_cookie_bootstrap = _bootstrap_fastmoss_login_cookies(
-                db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
-                fastmoss_settings=fastmoss_settings,
-            )
-            login_cookies = coerce_mapping_list(login_cookie_bootstrap.get("cookies"))
-            if require_config_login and not login_cookies:
-                raise ValueError("FastMoss browser fallback requires configured FastMoss login cookies.")
-            imported_cookie_status = _import_fastmoss_browser_cookies(
-                browser_session.raw_page,
-                cookies=login_cookies,
-                base_url=str(fastmoss_settings["base_url"]),
-            )
-        else:
-            login_cookie_bootstrap = {
-                "status": {
-                    "status": "browser_profile_cookie_reused",
-                    "cookie_count": existing_browser_cookie_snapshot.get("cookie_count"),
-                    "has_fd_tk": existing_browser_cookie_snapshot.get("has_fd_tk"),
+    browser_attempts: list[dict[str, Any]] = []
+    last_result: dict[str, Any] = {}
+    for browser_attempt_index in range(1, max_browser_attempts + 1):
+        diagnostic_artifact_refs: list[dict[str, Any]] = []
+        browser_session_reset: dict[str, Any] = {}
+        existing_browser_cookie_snapshot: dict[str, Any] = {}
+        login_cookie_bootstrap: dict[str, Any] = {}
+        imported_cookie_status: dict[str, Any] = {}
+        use_profile_only = bool(profile_first_attempt and browser_attempt_index == 1)
+        attempt_require_config_login = False if use_profile_only else require_config_login
+        attempt_clear_browser_session = False if use_profile_only else bool(clear_browser_session or browser_attempt_index > 1)
+        with open_automation_page(
+            profile_ref=profile_ref,
+            workspace_id=_optional_int(
+                first_non_empty(
+                    payload.get("fastmoss_browser_workspace_id"),
+                    payload.get("browser_workspace_id"),
+                    os.environ.get("FASTMOSS_BROWSER_WORKSPACE_ID"),
+                    os.environ.get("BROWSER_WORKSPACE_ID"),
+                )
+            ),
+            profile_id=profile_id,
+            provider_name=provider_name,
+            headless=coerce_bool(payload.get("browser_headless"), default=False),
+            force_open=coerce_bool(payload.get("browser_force_open"), default=False),
+        ) as browser_session:
+            if attempt_clear_browser_session:
+                browser_session_reset = _reset_fastmoss_browser_session(
+                    browser_session.raw_page,
+                    base_url=str(fastmoss_settings["base_url"]),
+                )
+            else:
+                existing_browser_cookies = _export_fastmoss_browser_cookies(
+                    browser_session.raw_page,
+                    base_url=str(fastmoss_settings["base_url"]),
+                )
+                existing_browser_cookie_snapshot = _cookie_snapshot_from_browser_cookies(existing_browser_cookies)
+            if not use_profile_only and _should_import_fastmoss_login_cookies(
+                payload,
+                existing_cookie_snapshot=existing_browser_cookie_snapshot,
+                require_config_login=attempt_require_config_login,
+                clear_browser_session=attempt_clear_browser_session,
+            ):
+                login_cookie_bootstrap = _bootstrap_fastmoss_login_cookies(
+                    db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
+                    fastmoss_settings=fastmoss_settings,
+                )
+                login_cookies = coerce_mapping_list(login_cookie_bootstrap.get("cookies"))
+                if attempt_require_config_login and not login_cookies:
+                    raise ValueError("FastMoss browser fallback requires configured FastMoss login cookies.")
+                imported_cookie_status = _import_fastmoss_browser_cookies(
+                    browser_session.raw_page,
+                    cookies=login_cookies,
+                    base_url=str(fastmoss_settings["base_url"]),
+                )
+            else:
+                login_cookie_bootstrap = {
+                    "status": {
+                        "status": "browser_profile_cookie_reused",
+                        "cookie_count": existing_browser_cookie_snapshot.get("cookie_count"),
+                        "has_fd_tk": existing_browser_cookie_snapshot.get("has_fd_tk"),
+                    }
                 }
-            }
-            imported_cookie_status = {
-                "status": "skipped",
-                "reason": "browser_profile_cookie_reused",
-                "imported_count": 0,
-            }
-        _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
-        _safe_wait_for_timeout(browser_session.page, 1_000)
-        initial_slider_state = _read_fastmoss_slider_state(browser_session.page)
-        diagnostic_artifact_refs.extend(
-            _capture_fastmoss_browser_diagnostic_artifacts(
-                browser_session.page,
-                raw_page=browser_session.raw_page,
-                audit_dir=audit_dir,
-                search_url=security_page_url,
-                label="after_security_page_goto",
-                state={"slider_state": initial_slider_state, "security_page_url": security_page_url},
+                imported_cookie_status = {
+                    "status": "skipped",
+                    "reason": "browser_profile_cookie_reused",
+                    "imported_count": 0,
+                }
+            _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
+            _safe_wait_for_timeout(browser_session.page, 1_000)
+            initial_slider_state = _read_fastmoss_slider_state(browser_session.page)
+            diagnostic_artifact_refs.extend(
+                _capture_fastmoss_browser_diagnostic_artifacts(
+                    browser_session.page,
+                    raw_page=browser_session.raw_page,
+                    audit_dir=audit_dir,
+                    search_url=security_page_url,
+                    label="after_security_page_goto",
+                    state={
+                        "browser_attempt_index": browser_attempt_index,
+                        "slider_state": initial_slider_state,
+                        "security_page_url": security_page_url,
+                    },
+                )
             )
-        )
-        slider_resolver_config = (
-            coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
-            or coerce_mapping(payload.get("slider_captcha_resolver_config"))
-        )
-        slider_piece_image_source = first_non_empty(
-            payload.get("fastmoss_slider_piece_image_source"),
-            payload.get("slider_piece_image_source"),
-        )
-        if slider_piece_image_source and "piece_image_source" not in slider_resolver_config:
-            slider_resolver_config = {
-                **slider_resolver_config,
-                "piece_image_source": slider_piece_image_source,
-            }
-        slider_resolution = _try_resolve_fastmoss_slider_security_check(
-            browser_session.page,
-            automation_page=browser_session,
-            raw_page=browser_session.raw_page,
-            search_url=security_page_url,
-            max_attempts=_positive_int(
-                payload.get("fastmoss_slider_max_attempts"),
-                DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
-            ),
-            appear_timeout_ms=_positive_int(
-                payload.get("fastmoss_slider_appear_timeout_ms"),
-                DEFAULT_FASTMOSS_SLIDER_APPEAR_TIMEOUT_MS,
-            ),
-            settle_ms=_positive_int(payload.get("fastmoss_slider_settle_ms"), DEFAULT_FASTMOSS_SLIDER_SETTLE_MS),
-            confirm_ms=_positive_int(
-                payload.get("fastmoss_slider_confirm_ms"),
-                DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS,
-            ),
-            audit_dir=audit_dir,
-            provider_config=(
-                coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
-                or coerce_mapping(payload.get("slider_captcha_provider_config"))
-            ),
-            resolver_config=slider_resolver_config,
-            selectors=(
-                coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
-                or coerce_mapping(payload.get("slider_captcha_selectors"))
-            ),
-        )
-        diagnostic_artifact_refs.extend(
-            _capture_fastmoss_browser_diagnostic_artifacts(
-                browser_session.page,
-                raw_page=browser_session.raw_page,
-                audit_dir=audit_dir,
-                search_url=security_page_url,
-                label="after_slider_resolution",
-                state={"slider_resolution": slider_resolution, "security_page_url": security_page_url},
+            slider_resolver_config = (
+                coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
+                or coerce_mapping(payload.get("slider_captcha_resolver_config"))
             )
-        )
-        cookies = _export_fastmoss_browser_cookies(browser_session.raw_page, base_url=str(fastmoss_settings["base_url"]))
+            slider_piece_image_source = first_non_empty(
+                payload.get("fastmoss_slider_piece_image_source"),
+                payload.get("slider_piece_image_source"),
+            )
+            if slider_piece_image_source and "piece_image_source" not in slider_resolver_config:
+                slider_resolver_config = {
+                    **slider_resolver_config,
+                    "piece_image_source": slider_piece_image_source,
+                }
+            slider_resolution = _try_resolve_fastmoss_slider_security_check(
+                browser_session.page,
+                automation_page=browser_session,
+                raw_page=browser_session.raw_page,
+                search_url=security_page_url,
+                max_attempts=_positive_int(
+                    payload.get("fastmoss_slider_max_attempts"),
+                    DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
+                ),
+                appear_timeout_ms=slider_appear_timeout_ms,
+                settle_ms=_positive_int(payload.get("fastmoss_slider_settle_ms"), DEFAULT_FASTMOSS_SLIDER_SETTLE_MS),
+                confirm_ms=_positive_int(
+                    payload.get("fastmoss_slider_confirm_ms"),
+                    DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS,
+                ),
+                audit_dir=audit_dir,
+                provider_config=(
+                    coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
+                    or coerce_mapping(payload.get("slider_captcha_provider_config"))
+                ),
+                resolver_config=slider_resolver_config,
+                selectors=(
+                    coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
+                    or coerce_mapping(payload.get("slider_captcha_selectors"))
+                ),
+            )
+            diagnostic_artifact_refs.extend(
+                _capture_fastmoss_browser_diagnostic_artifacts(
+                    browser_session.page,
+                    raw_page=browser_session.raw_page,
+                    audit_dir=audit_dir,
+                    search_url=security_page_url,
+                    label="after_slider_resolution",
+                    state={
+                        "browser_attempt_index": browser_attempt_index,
+                        "slider_resolution": slider_resolution,
+                        "security_page_url": security_page_url,
+                    },
+                )
+            )
+            cookies: list[dict[str, Any]] = []
+            verification: dict[str, Any] = {}
+            verify_started_at = time.monotonic()
+            while True:
+                cookies = _export_fastmoss_browser_cookies(
+                    browser_session.raw_page,
+                    base_url=str(fastmoss_settings["base_url"]),
+                )
+                verification = _verify_original_request_with_cookies_result(
+                    verification_request,
+                    fastmoss_settings=fastmoss_settings,
+                    cookies=cookies,
+                    default_referer=security_page_url,
+                )
+                response_code = first_non_empty(verification.get("response_code"))
+                if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_response_code(response_code):
+                    break
+                if not bool(slider_resolution.get("attempted")):
+                    break
+                elapsed_ms = int((time.monotonic() - verify_started_at) * 1000)
+                if elapsed_ms >= verify_timeout_ms:
+                    break
+                _safe_wait_for_timeout(browser_session.page, min(verify_poll_ms, verify_timeout_ms - elapsed_ms))
 
-    verification = _verify_original_request_with_cookies_result(
-        verification_request,
-        fastmoss_settings=fastmoss_settings,
-        cookies=cookies,
-        default_referer=security_page_url,
-    )
-    return {
-        "cookies": cookies,
-        "verification": verification,
-        "slider_resolution": slider_resolution,
-        "slider_captcha_audit_artifact_refs": coerce_mapping_list(slider_resolution.get("artifact_refs")),
-        "browser_diagnostic_artifact_refs": diagnostic_artifact_refs,
-        "login_cookie_bootstrap": {
+        response_code = first_non_empty(verification.get("response_code"))
+        if response_code in FASTMOSS_SECURITY_VERIFICATION_CODES and first_non_empty(
+            slider_resolution.get("reason")
+        ) == "slider_not_visible":
+            slider_resolution = {**slider_resolution, "resolved": False}
+        login_cookie_bootstrap_result = {
             key: value
             for key, value in {
                 **coerce_mapping(login_cookie_bootstrap.get("status")),
+                "browser_attempt_index": browser_attempt_index,
+                "browser_profile_only_attempt": use_profile_only,
                 "browser_existing_cookie_count": existing_browser_cookie_snapshot.get("cookie_count"),
                 "browser_existing_has_fd_tk": existing_browser_cookie_snapshot.get("has_fd_tk"),
                 "browser_session_reset_status": browser_session_reset.get("status"),
@@ -539,8 +606,33 @@ def _resolve_fastmoss_security_with_browser(
                 "browser_cookie_import_reason": imported_cookie_status.get("reason"),
             }.items()
             if value not in ("", None, [], {})
-        },
-    }
+        }
+        browser_attempts.append(
+            compact_dict(
+                {
+                    "attempt": browser_attempt_index,
+                    "profile_only": use_profile_only,
+                    "cleared_session": attempt_clear_browser_session,
+                    "import_status": imported_cookie_status.get("status"),
+                    "slider_reason": first_non_empty(slider_resolution.get("reason")),
+                    "slider_attempted": bool(slider_resolution.get("attempted")),
+                    "slider_resolved": bool(slider_resolution.get("resolved")),
+                    "response_code": response_code,
+                }
+            )
+        )
+        last_result = {
+            "cookies": cookies,
+            "verification": verification,
+            "slider_resolution": slider_resolution,
+            "slider_captcha_audit_artifact_refs": coerce_mapping_list(slider_resolution.get("artifact_refs")),
+            "browser_diagnostic_artifact_refs": diagnostic_artifact_refs,
+            "login_cookie_bootstrap": login_cookie_bootstrap_result,
+            "browser_attempts": list(browser_attempts),
+        }
+        if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_response_code(response_code):
+            return last_result
+    return last_result
 
 
 def _should_import_fastmoss_login_cookies(
