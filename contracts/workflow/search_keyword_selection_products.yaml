@@ -17,6 +17,11 @@ target_table:
   table_code: tk_selection
 
 payload_contract:
+  total_sales_threshold:
+    type: int
+    required: false
+    source: skill_payload
+    invariant: Explicit total-sales search maps to total_sales_threshold/min_sold_count and must not auto-add the default sales_7d_threshold.
   fastmoss_phone_env:
     type: env_ref
     required: false
@@ -77,6 +82,9 @@ protected_invariants:
   - New seed rows write 商品ID, 商品链接, 关键词, 备注, and 记录日期.
   - 备注 must be written as 通过搜索关键字：{关键词} on keyword seed creation.
   - Default search-list filters are 近7天销量 >= 500 and price range maximum >= 10.99.
+  - Explicit total-sales search uses the shared FastMoss total-sales parameter semantics; total_sales_threshold/min_sold_count switches the search primary metric to sold_count and does not create a separate selection workflow branch.
+  - Explicit total-sales search must not auto-add the default 近7天销量 >= 500 filter.
+  - A single FastMoss keyword search may use only one sales primary metric for sorting and pagination early-stop; selection keyword search must reject payloads that explicitly provide both total_sales_threshold/min_sold_count and sales_7d_threshold/min_day7_sold_count.
   - If FastMoss returns a price range, the maximum price in that range is used for the price threshold.
   - Price filtering is a candidate filter, not a pagination early-stop condition.
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.

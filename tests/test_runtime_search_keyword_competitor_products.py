@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from automation_framework.captcha import SliderMatchResult
 from PIL import Image, ImageDraw
+import pytest
 
 import automation_business_scaffold.capabilities.browser.fastmoss_security.coordinate_mapping as fastmoss_coordinate_mapping
 import automation_business_scaffold.capabilities.browser.fastmoss_security.diagnostics as fastmoss_diagnostics
@@ -1580,6 +1581,41 @@ def test_keyword_search_parameter_mapper_applies_selection_defaults() -> None:
         "min_day7_sold_count": "500",
         "min_price_range_max_amount": "10.99",
     }
+
+
+def test_keyword_search_parameter_mapper_selection_total_sales_skips_day7_default() -> None:
+    mapped = keyword_search_parameter_mapper(
+        {
+            "search_keyword": SEARCH_QUERY,
+            "keyword_workflow_mode": "selection",
+            "total_sales_threshold": "300",
+        }
+    )
+
+    assert mapped["sort"] == {
+        "field": "sold_count",
+        "direction": "desc",
+        "source_order": "3,2",
+        "source_column_key": "3",
+        "source_field": "sold_count_show",
+    }
+    assert mapped["output_conditions"]["business_conditions"] == {
+        "min_sold_count": "300",
+        "min_price_range_max_amount": "10.99",
+    }
+    assert "min_day7_sold_count" not in mapped["output_conditions"]["business_conditions"]
+
+
+def test_keyword_search_parameter_mapper_selection_rejects_sales_primary_conflict() -> None:
+    with pytest.raises(ValueError, match="one sales primary metric"):
+        keyword_search_parameter_mapper(
+            {
+                "search_keyword": SEARCH_QUERY,
+                "keyword_workflow_mode": "selection",
+                "total_sales_threshold": "300",
+                "sales_7d_threshold": "500",
+            }
+        )
 
 
 def test_keyword_search_parameter_mapper_selection_defaults_are_overridable() -> None:

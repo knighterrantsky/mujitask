@@ -46,7 +46,7 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
     if total_sales_threshold:
         business_conditions.setdefault("min_sold_count", total_sales_threshold)
 
-    sales_7d_threshold = _first_text(
+    explicit_sales_7d_threshold = _first_text(
         explicit.get("sales_7d_threshold"),
         explicit.get("min_day7_sold_count"),
         explicit.get("day7_sales_threshold"),
@@ -54,7 +54,16 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
         payload.get("min_day7_sold_count"),
         payload.get("day7_sales_threshold"),
         business_conditions.get("min_day7_sold_count"),
-        "500" if selection_mode else "",
+    )
+    if selection_mode and total_sales_threshold and explicit_sales_7d_threshold:
+        raise ValueError(
+            "Selection keyword search supports one sales primary metric; "
+            "choose total_sales_threshold or sales_7d_threshold."
+        )
+
+    sales_7d_threshold = _first_text(
+        explicit_sales_7d_threshold,
+        "" if total_sales_threshold else ("500" if selection_mode else ""),
     )
     if sales_7d_threshold:
         business_conditions.setdefault("min_day7_sold_count", sales_7d_threshold)

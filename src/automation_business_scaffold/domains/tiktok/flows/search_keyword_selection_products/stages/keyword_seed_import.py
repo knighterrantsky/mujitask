@@ -84,12 +84,43 @@ def advance(
             }
 
     if not jobs or retry_after_fastmoss_browser:
+        request_payload = dict(request.payload or {})
+        explicit_search_request = request_payload.get("search_request")
+        explicit_search_request = explicit_search_request if isinstance(explicit_search_request, Mapping) else {}
+        output_conditions = request_payload.get("output_conditions")
+        business_conditions: Mapping[str, Any] = {}
+        if isinstance(output_conditions, Mapping):
+            maybe_business_conditions = output_conditions.get("business_conditions")
+            if isinstance(maybe_business_conditions, Mapping):
+                business_conditions = maybe_business_conditions
+        total_sales_threshold = _first_text(
+            explicit_search_request.get("total_sales_threshold"),
+            explicit_search_request.get("min_sold_count"),
+            explicit_search_request.get("sold_count_threshold"),
+            explicit_search_request.get("cumulative_sales_threshold"),
+            request_payload.get("total_sales_threshold"),
+            request_payload.get("min_sold_count"),
+            request_payload.get("sold_count_threshold"),
+            request_payload.get("cumulative_sales_threshold"),
+            business_conditions.get("min_sold_count"),
+        )
+        sales_7d_threshold = _first_text(
+            explicit_search_request.get("sales_7d_threshold"),
+            explicit_search_request.get("min_day7_sold_count"),
+            explicit_search_request.get("day7_sales_threshold"),
+            request_payload.get("sales_7d_threshold"),
+            request_payload.get("min_day7_sold_count"),
+            request_payload.get("day7_sales_threshold"),
+            business_conditions.get("min_day7_sold_count"),
+        )
+        if not total_sales_threshold and not sales_7d_threshold:
+            sales_7d_threshold = "500"
         search_request = _keyword_seed_import_search_request(
             {
-                **dict(request.payload or {}),
+                **request_payload,
                 "keyword_workflow_mode": "selection",
-                "sales_7d_threshold": _first_text(request.payload.get("sales_7d_threshold"), request.payload.get("min_day7_sold_count"), "500"),
-                "product_price_threshold": _first_text(request.payload.get("product_price_threshold"), request.payload.get("price_threshold"), "10.99"),
+                "sales_7d_threshold": sales_7d_threshold,
+                "product_price_threshold": _first_text(request_payload.get("product_price_threshold"), request_payload.get("price_threshold"), "10.99"),
             },
             latest_import_job=latest_import_job,
             retry_after_fastmoss_browser=retry_after_fastmoss_browser,

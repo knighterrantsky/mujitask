@@ -26,10 +26,21 @@ cases:
   - id: keyword-selection-search
     user: 帮我按关键词 east egg 搜索 7日销量大于500 且价格大于10.99 的 TK 商品，写入 TK选品表
     expected_intent: keyword_selection_search
-    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --price-range-max-threshold <price_range_max_threshold>
     expected_task_code: search_keyword_selection_products
     expected_defaults:
       sales_7d_threshold: 500
+      price_range_max_threshold: 10.99
+    must_not_include:
+      - keyword_competitor_search
+      - TK竞品收集
+
+  - id: keyword-selection-total-sales-search
+    user: 帮我按关键词 east egg 搜索总销量大于200 且价格大于10.99 的 TK 商品，写入 TK选品表
+    expected_intent: keyword_selection_search
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --price-range-max-threshold <price_range_max_threshold>
+    expected_task_code: search_keyword_selection_products
+    expected_defaults:
       price_range_max_threshold: 10.99
     must_not_include:
       - keyword_competitor_search

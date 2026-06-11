@@ -86,7 +86,14 @@ case "$intent" in
     ;;
   keyword_selection_search)
     args=(selection-keyword-search-submit --search-keyword "$search_keyword")
-    args+=(--sales-7d-threshold "${sales_7d_threshold:-500}")
+    if [[ -n "$total_sales_threshold" ]]; then
+      args+=(--total-sales-threshold "$total_sales_threshold")
+      if [[ -n "$sales_7d_threshold" ]]; then
+        args+=(--sales-7d-threshold "$sales_7d_threshold")
+      fi
+    else
+      args+=(--sales-7d-threshold "${sales_7d_threshold:-500}")
+    fi
     args+=(--price-range-max-threshold "${price_range_max_threshold:-10.99}")
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" "${args[@]}"
     ;;

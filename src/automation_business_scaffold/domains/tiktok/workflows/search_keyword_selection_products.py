@@ -55,6 +55,7 @@ def build_search_keyword_selection_products_definition() -> WorkflowDefinition:
                 type_hint="int",
             ),
             optional_field("sales_7d_threshold", "Minimum 7-day sales threshold; defaults to 500.", type_hint="int"),
+            optional_field("total_sales_threshold", "Minimum cumulative sold count threshold.", type_hint="int"),
             optional_field("product_price_threshold", "Minimum product price using the FastMoss range maximum; defaults to 10.99.", type_hint="float"),
             optional_field("selection_table_ref", "Target TK selection table reference.", type_hint="str"),
             optional_field("seed_table_ref", "Compatible target TK selection table reference alias.", type_hint="str"),
