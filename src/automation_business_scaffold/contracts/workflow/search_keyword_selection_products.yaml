@@ -43,6 +43,9 @@ custom_logic:
     - code: keyword_search_parameter_mapper
       module: automation_business_scaffold.domains.tiktok.mappers.keyword_search_mapper
       export: keyword_search_parameter_mapper
+      supports:
+        - day7_sold_count_desc
+        - sold_count_desc
   policies:
     - code: selection_keyword_candidate_filter
       module: automation_business_scaffold.domains.tiktok.flows.search_keyword_selection_products.policies.candidate_filter
@@ -68,6 +71,11 @@ custom_logic:
     - code: selection_table_projection_mapper
       module: automation_business_scaffold.domains.tiktok.projections.feishu_selection_projection
       export: selection_table_projection_mapper
+implementation_constraints:
+  - Selection keyword search keeps default day7_sold_count/order=2,2 behavior when no sales primary metric is explicit.
+  - Explicit total_sales_threshold/min_sold_count switches FastMoss product search to sold_count/order=3,2 with columnKey=3 and field=sold_count_show.
+  - Explicit total-sales selection search must not auto-add the default sales_7d_threshold=500 filter.
+  - Selection keyword search rejects payloads that explicitly provide both total_sales_threshold/min_sold_count and sales_7d_threshold/min_day7_sold_count because a single FastMoss request cannot use both sales sort parameters.
 outbox:
   job_code: task_completed_notification
   handler_code: outbox_dispatch

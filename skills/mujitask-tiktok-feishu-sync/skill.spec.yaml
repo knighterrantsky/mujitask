@@ -101,11 +101,12 @@ inputs:
       - "销量阈值300 -> 300"
   total_sales_threshold:
     description: Total cumulative sales threshold.
-    usage: Use only for `keyword_competitor_search` when the user explicitly says `总销量` or `累计销量`.
+    usage: Use for `keyword_competitor_search` or `keyword_selection_search` when the user explicitly says `总销量` or `累计销量`.
     extraction_rules:
       - Extract from expressions such as `总销量超过 300`, `累计销量大于 200`, `total sales >= 300`.
       - Do not map plain `销量阈值` or `销量超过 N` to this input unless the user explicitly says total/cumulative sales.
-      - When this input is present, do not add the default `sales_7d_threshold` unless the user also explicitly asks for a 7-day sales condition.
+      - When this input is present, do not add the default `sales_7d_threshold`.
+      - For `keyword_selection_search`, if the user asks for both total sales and 7-day sales, ask them to choose one primary search metric before submitting.
     extraction_examples:
       - "总销量超过300 -> 300"
       - "累计销量大于200 -> 200"
@@ -132,7 +133,7 @@ inputs:
       - Each row must contain `search_keyword` and may contain `threshold_type` plus `threshold_value`.
       - Support line-based input where each non-threshold line is a keyword and the final threshold line applies to all keywords.
       - "Example line-based input: `Splatter Ball`, `Splatter Ball 1`, `Splatter Ball 2`, `Splatter Ball 3`, final line `总销量>200` -> four rows with `threshold_type=total_sales` and `threshold_value=200`."
-      - Allowed `threshold_type` values are `sales_7d` and `total_sales`; `total_sales` is only for `TK竞品收集`.
+      - Allowed `threshold_type` values are `sales_7d` and `total_sales` for both competitor and selection keyword search; each row can use only one threshold type.
       - Do not include filters, max candidates, price threshold, or other optional parameters in v1 batch rows.
       - If the user asks to change a row, regenerate the preview instead of submitting.
 
@@ -292,11 +293,12 @@ intents:
       design:
         - docs/arch/workflow-selection-table-design.md
     description: Use when the user asks to search keyword products and write new selection seed rows to `TK选品收集`.
-    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
+    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --price-range-max-threshold <price_range_max_threshold>
     required_inputs:
       - search_keyword
     optional_inputs:
       - sales_7d_threshold
+      - total_sales_threshold
       - price_range_max_threshold
     default_values:
       sales_7d_threshold: 500
@@ -482,6 +484,13 @@ examples:
     inputs:
       search_keyword: east egg
       sales_7d_threshold: 500
+      price_range_max_threshold: 10.99
+    reply: "先展示确认预览；用户确认后回复 `request_id: <request_id>`."
+  - user: 帮我按关键词 east egg 搜索总销量大于200 且价格大于10.99 的 TK 商品，写入 TK选品表
+    intent: keyword_selection_search
+    inputs:
+      search_keyword: east egg
+      total_sales_threshold: 200
       price_range_max_threshold: 10.99
     reply: "先展示确认预览；用户确认后回复 `request_id: <request_id>`."
   - user: "Splatter Ball\nSplatter Ball 1\nSplatter Ball 2\nSplatter Ball 3\n总销量>200\n写入 TK竞品收集"

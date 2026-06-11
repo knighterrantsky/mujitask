@@ -624,9 +624,6 @@ def _normalize_batch_keyword_item(raw: Any, *, target_intent: str, row_index: in
         raise ValueError(f"Batch keyword row {row_index} requires threshold_value when threshold_type is set.")
     if not threshold_type and threshold_value:
         raise ValueError(f"Batch keyword row {row_index} requires threshold_type when threshold_value is set.")
-    if target_intent == KEYWORD_SELECTION_SEARCH_INTENT and threshold_type == "total_sales":
-        raise ValueError("Selection keyword batch rows do not support total_sales threshold.")
-
     return {
         "row_index": row_index,
         "search_keyword": search_keyword,
@@ -729,13 +726,22 @@ def _batch_keyword_submit_params(
             ),
             skill_env,
         )
+        sales_7d_threshold = ""
+        total_sales_threshold = ""
+        if row["threshold_type"] == "total_sales":
+            total_sales_threshold = row["threshold_value"]
+        elif row["threshold_type"] == "sales_7d":
+            sales_7d_threshold = row["threshold_value"]
+        else:
+            sales_7d_threshold = "500"
         params.extend(
             _keyword_search_submit_params(
                 python_bin=python_bin,
                 install_dir=install_dir,
                 requested_profile_ref=requested_profile_ref,
                 search_keyword=row["search_keyword"],
-                sales_7d_threshold=row["threshold_value"] if row["threshold_type"] == "sales_7d" else "500",
+                sales_7d_threshold=sales_7d_threshold,
+                total_sales_threshold=total_sales_threshold,
                 product_price_threshold="10.99",
                 keyword_workflow_mode="selection",
             )
@@ -1006,7 +1012,8 @@ def _build_parser() -> argparse.ArgumentParser:
     selection_keyword_parser = subparsers.add_parser("selection-keyword-search-submit")
     _add_profile_arg(selection_keyword_parser)
     selection_keyword_parser.add_argument("--search-keyword", required=True)
-    selection_keyword_parser.add_argument("--sales-7d-threshold", default="500")
+    selection_keyword_parser.add_argument("--sales-7d-threshold", default="")
+    selection_keyword_parser.add_argument("--total-sales-threshold", default="")
     selection_keyword_parser.add_argument("--price-range-max-threshold", default="10.99")
     selection_keyword_parser.add_argument("--skip-fastmoss-login-validation", action="store_true")
 
@@ -1254,6 +1261,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "selection-keyword-search-submit":
+        if args.total_sales_threshold and args.sales_7d_threshold:
+            raise ValueError(
+                "Selection keyword search supports one sales primary metric; "
+                "choose total_sales_threshold or sales_7d_threshold."
+            )
         params = _append_runtime_params(
             _append_feishu_table_refs(
                 [
@@ -1274,7 +1286,8 @@ def main(argv: list[str] | None = None) -> int:
                 install_dir=install_dir,
                 requested_profile_ref=args.profile_ref,
                 search_keyword=args.search_keyword,
-                sales_7d_threshold=args.sales_7d_threshold,
+                sales_7d_threshold=args.sales_7d_threshold or ("" if args.total_sales_threshold else "500"),
+                total_sales_threshold=args.total_sales_threshold,
                 product_price_threshold=args.price_range_max_threshold,
                 keyword_workflow_mode="selection",
                 skip_fastmoss_login_validation=args.skip_fastmoss_login_validation,

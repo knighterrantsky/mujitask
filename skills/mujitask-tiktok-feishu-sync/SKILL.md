@@ -145,13 +145,14 @@ Extraction examples:
 
 Total cumulative sales threshold.
 
-Use only for `keyword_competitor_search` when the user explicitly says `总销量` or `累计销量`.
+Use for `keyword_competitor_search` or `keyword_selection_search` when the user explicitly says `总销量` or `累计销量`.
 
 Rules:
 
 - Extract from expressions such as `总销量超过 300`, `累计销量大于 200`, `total sales >= 300`.
 - Do not map plain `销量阈值` or `销量超过 N` to this input unless the user explicitly says total/cumulative sales.
-- When this input is present, do not add the default `sales_7d_threshold` unless the user also explicitly asks for a 7-day sales condition.
+- When this input is present, do not add the default `sales_7d_threshold`.
+- For `keyword_selection_search`, if the user asks for both total sales and 7-day sales, ask them to choose one primary search metric before submitting.
 
 Extraction examples:
 
@@ -197,7 +198,7 @@ Rules:
 - Each row must contain `search_keyword` and may contain `threshold_type` plus `threshold_value`.
 - Support line-based input where each non-threshold line is a keyword and the final threshold line applies to all keywords.
 - Example line-based input: `Splatter Ball`, `Splatter Ball 1`, `Splatter Ball 2`, `Splatter Ball 3`, final line `总销量>200` -> four rows with `threshold_type=total_sales` and `threshold_value=200`.
-- Allowed `threshold_type` values are `sales_7d` and `total_sales`; `total_sales` is only for `TK竞品收集`.
+- Allowed `threshold_type` values are `sales_7d` and `total_sales` for both competitor and selection keyword search; each row can use only one threshold type.
 - Do not include filters, max candidates, price threshold, or other optional parameters in v1 batch rows.
 - If the user asks to change a row, regenerate the preview instead of submitting.
 
@@ -402,7 +403,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "selection_table_in
 ### `keyword_selection_search`
 
 ```bash
-bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --price-range-max-threshold <price_range_max_threshold>
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_selection_search" --search-keyword "<search_keyword>" --sales-7d-threshold <sales_7d_threshold> --total-sales-threshold <total_sales_threshold> --price-range-max-threshold <price_range_max_threshold>
 ```
 
 ### `batch_keyword_search_submit`
@@ -530,6 +531,20 @@ Inputs:
 
 - `search_keyword`: `east egg`
 - `sales_7d_threshold`: `500`
+- `price_range_max_threshold`: `10.99`
+
+Reply:
+
+```text
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
+```
+
+User: 帮我按关键词 east egg 搜索总销量大于200 且价格大于10.99 的 TK 商品，写入 TK选品表
+Intent: `keyword_selection_search`
+Inputs:
+
+- `search_keyword`: `east egg`
+- `total_sales_threshold`: `200`
 - `price_range_max_threshold`: `10.99`
 
 Reply:

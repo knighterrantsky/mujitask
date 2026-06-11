@@ -970,6 +970,104 @@ def test_main_selection_keyword_search_returns_after_submit(tmp_path, monkeypatc
     assert emitted["request_status"] == "pending"
 
 
+def test_main_selection_keyword_search_total_sales_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-selection-keyword-total-sales-123",
+                "request_status": "pending",
+            },
+        )
+
+    monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: emitted.update(payload) or 0)
+
+    exit_code = module.main(
+        [
+            "selection-keyword-search-submit",
+            "--search-keyword",
+            "east egg",
+            "--total-sales-threshold",
+            "200",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "search_keyword_selection_products"
+    params = list(captured_calls[0]["params"])
+    assert "search_keyword=east egg" in params
+    assert "total_sales_threshold=200" in params
+    assert "sales_7d_threshold=500" not in params
+    assert "product_price_threshold=10.99" in params
+    assert "keyword_workflow_mode=selection" in params
+    assert emitted["request_id"] == "req-selection-keyword-total-sales-123"
+
+
+def test_main_selection_keyword_search_rejects_sales_primary_conflict(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_lightweight_submit_capture_payload",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("submit should not run")),
+    )
+
+    with pytest.raises(ValueError, match="one sales primary metric"):
+        module.main(
+            [
+                "selection-keyword-search-submit",
+                "--search-keyword",
+                "east egg",
+                "--total-sales-threshold",
+                "200",
+                "--sales-7d-threshold",
+                "500",
+            ]
+        )
+
+
 def test_main_batch_keyword_competitor_search_submit_fans_out_rows(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
@@ -1133,12 +1231,15 @@ def test_batch_keyword_submit_rejects_unsupported_fields_before_submit(tmp_path,
         )
 
 
-def test_batch_keyword_selection_rejects_total_sales_before_submit(tmp_path, monkeypatch):
+def test_batch_keyword_selection_search_submit_supports_total_sales(tmp_path, monkeypatch):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
     python_bin = install_dir / ".venv" / "bin" / "python"
     python_bin.parent.mkdir(parents=True, exist_ok=True)
     python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
 
     monkeypatch.setattr(
         module,
@@ -1147,29 +1248,43 @@ def test_batch_keyword_selection_rejects_total_sales_before_submit(tmp_path, mon
             "INSTALL_DIR": str(install_dir),
             **FEISHU_TABLE_ROUTE_ENV,
             "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
         },
     )
+    monkeypatch.setattr(module, "_resolve_profile_ref_for_task", lambda **kwargs: "roxy-tiktok")
     monkeypatch.setattr(
         module,
         "_run_lightweight_submit_capture_payload",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("submit should not run")),
+        lambda **kwargs: (captured_calls.append(kwargs) or (0, {"status": "success", "request_id": "req-selection-batch-total-sales"})),
     )
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: emitted.update(payload) or 0)
 
     items_json = json.dumps(
         [{"search_keyword": "summer dress", "threshold_type": "total_sales", "threshold_value": "300"}],
         ensure_ascii=False,
     )
 
-    with pytest.raises(ValueError, match="do not support total_sales"):
-        module.main(
-            [
-                "batch-keyword-search-submit",
-                "--target-intent",
-                "keyword_selection_search",
-                "--items-json",
-                items_json,
-            ]
-        )
+    exit_code = module.main(
+        [
+            "batch-keyword-search-submit",
+            "--target-intent",
+            "keyword_selection_search",
+            "--items-json",
+            items_json,
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "search_keyword_selection_products"
+    params = list(captured_calls[0]["params"])
+    assert "search_keyword=summer dress" in params
+    assert "total_sales_threshold=300" in params
+    assert "sales_7d_threshold=500" not in params
+    assert "product_price_threshold=10.99" in params
+    assert "keyword_workflow_mode=selection" in params
+    assert emitted["request_ids"] == ["req-selection-batch-total-sales"]
 
 
 def test_main_batch_keyword_search_submit_reports_partial_success(tmp_path, monkeypatch):
