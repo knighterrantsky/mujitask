@@ -415,7 +415,65 @@ def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypa
         "cnonce": "54361571",
     }
     assert "fm-sign" not in captured["params"]
+    assert "fm-sign" not in captured["headers"]
+    assert captured["headers"]["sec-ch-ua"] == (
+        '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"'
+    )
+    assert captured["headers"]["sec-ch-ua-mobile"] == "?0"
+    assert captured["headers"]["sec-ch-ua-platform"] == '"macOS"'
     assert captured["data"] is None
+
+
+def test_fastmoss_video_overview_http_request_matches_roxy_browser_headers(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def json(self) -> dict[str, object]:
+            return {"code": 200, "data": {}}
+
+    def fake_request(method, url, *, params, data, headers, timeout):  # noqa: ANN001
+        captured.update(
+            {
+                "method": method,
+                "url": url,
+                "params": dict(params),
+                "data": data,
+                "headers": dict(headers),
+                "timeout": timeout,
+            }
+        )
+        return Response()
+
+    session = FastMossHTTPSession(
+        request_delay_range=(0.0, 0.0),
+        time_factory=lambda: 1781322123,
+        nonce_factory=lambda: "27195563",
+    )
+    monkeypatch.setattr(session.session, "request", fake_request)
+
+    session.get_video_overview("7631305086458662158")
+
+    assert captured["method"] == "GET"
+    assert captured["params"] == {
+        "id": "7631305086458662158",
+        "_time": 1781322123,
+        "cnonce": "27195563",
+    }
+    assert captured["data"] is None
+    assert (
+        captured["headers"]["Referer"]
+        == "https://www.fastmoss.com/zh/media-source/video/7631305086458662158"
+    )
+    assert captured["headers"]["region"] == "Global"
+    assert captured["headers"]["fm-sign"] == "8ef64cd1b3da4b126d4a9fd216c237c4"
+    assert captured["headers"]["sec-ch-ua"] == (
+        '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"'
+    )
+    assert captured["headers"]["sec-ch-ua-mobile"] == "?0"
+    assert captured["headers"]["sec-ch-ua-platform"] == '"macOS"'
 
 
 def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
