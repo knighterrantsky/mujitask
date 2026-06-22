@@ -1211,6 +1211,22 @@ class FastMossHTTPSession:
         )
         return _extract_data(payload)
 
+    def get_video_overview_data(self, video_id: str) -> dict[str, Any]:
+        """Return the `data` object from /api/video/overviewData."""
+
+        normalized_video_id = self._normalize_video_id(video_id)
+        path = "/api/video/overviewData"
+        params = {"id": normalized_video_id}
+        payload = self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_video_detail_referer(normalized_video_id),
+            region=FASTMOSS_DEFAULT_LOGIN_REGION,
+            stage="video.overview_data",
+        )
+        return _extract_data(payload)
+
     def list_video_goods(
         self,
         video_id: str,
@@ -1411,6 +1427,12 @@ class FastMossHTTPSession:
             "sec-ch-ua": _build_sec_ch_ua(self.user_agent),
             "sec-ch-ua-mobile": _build_sec_ch_ua_mobile(self.user_agent),
             "sec-ch-ua-platform": _build_sec_ch_ua_platform(self.user_agent),
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Priority": "u=1, i",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         if referer:
             headers["Referer"] = referer

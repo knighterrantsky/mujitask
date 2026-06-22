@@ -34,6 +34,11 @@ from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFa
 from .outreach_product_videos import canonical_tiktok_video_url
 
 
+FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MIN_SECONDS = 3.0
+FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MAX_SECONDS = 6.0
+FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MIN_SECONDS = 0.8
+FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MAX_SECONDS = 1.5
+
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 
 
@@ -248,9 +253,46 @@ def _fetch_video_overviews(payload: Mapping[str, Any], *, videos: list[Mapping[s
     live_fetch = bool(fastmoss_settings.get("live_fetch") or fastmoss_settings.get("_has_live_config"))
     if not live_fetch:
         raise FastMossAuthError("FastMoss live fetch config is missing for outreach video metric refresh.")
+    if not fastmoss_settings.get("fastmoss_api_request_delay_min_seconds"):
+        fastmoss_settings["fastmoss_api_request_delay_min_seconds"] = (
+            FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MIN_SECONDS
+        )
+    if not fastmoss_settings.get("fastmoss_api_request_delay_max_seconds"):
+        fastmoss_settings["fastmoss_api_request_delay_max_seconds"] = (
+            FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MAX_SECONDS
+        )
     with build_fastmoss_session(fastmoss_settings, session_factory=FastMossHTTPSession) as session:
         prepare_fastmoss_session(session, settings=fastmoss_settings)
-        return [dict(session.get_video_overview(coerce_str(video.get("video_id")))) for video in videos]
+        video_delay_range = session.request_delay_range
+        return [
+            _fetch_frontend_video_overview_pair(
+                session,
+                coerce_str(video.get("video_id")),
+                video_delay_range=video_delay_range,
+            )
+            for video in videos
+        ]
+
+
+def _fetch_frontend_video_overview_pair(
+    session: FastMossHTTPSession,
+    video_id: str,
+    *,
+    video_delay_range: tuple[float, float],
+) -> dict[str, Any]:
+    session.request_delay_range = video_delay_range
+    overview = dict(session.get_video_overview(video_id))
+    session.request_delay_range = (
+        FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MIN_SECONDS,
+        FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MAX_SECONDS,
+    )
+    overview_data = dict(session.get_video_overview_data(video_id))
+    return {
+        **overview,
+        **overview_data,
+        "_frontend_overview": overview,
+        "_frontend_overview_data": overview_data,
+    }
 
 
 def _record_metric_snapshots(

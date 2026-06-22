@@ -457,6 +457,7 @@ def test_fastmoss_video_overview_http_request_matches_roxy_browser_headers(monke
     session.get_video_overview("7631305086458662158")
 
     assert captured["method"] == "GET"
+    assert str(captured["url"]).endswith("/api/video/overview")
     assert captured["params"] == {
         "id": "7631305086458662158",
         "_time": 1781322123,
@@ -474,6 +475,71 @@ def test_fastmoss_video_overview_http_request_matches_roxy_browser_headers(monke
     )
     assert captured["headers"]["sec-ch-ua-mobile"] == "?0"
     assert captured["headers"]["sec-ch-ua-platform"] == '"macOS"'
+    assert captured["headers"]["Cache-Control"] == "no-cache"
+    assert captured["headers"]["Pragma"] == "no-cache"
+    assert captured["headers"]["Priority"] == "u=1, i"
+    assert captured["headers"]["Sec-Fetch-Dest"] == "empty"
+    assert captured["headers"]["Sec-Fetch-Mode"] == "cors"
+    assert captured["headers"]["Sec-Fetch-Site"] == "same-origin"
+
+
+def test_fastmoss_video_overview_data_http_request_matches_roxy_browser_headers(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def json(self) -> dict[str, object]:
+            return {"code": 200, "data": {}}
+
+    def fake_request(method, url, *, params, data, headers, timeout):  # noqa: ANN001
+        captured.update(
+            {
+                "method": method,
+                "url": url,
+                "params": dict(params),
+                "data": data,
+                "headers": dict(headers),
+                "timeout": timeout,
+            }
+        )
+        return Response()
+
+    session = FastMossHTTPSession(
+        request_delay_range=(0.0, 0.0),
+        time_factory=lambda: 1781341566,
+        nonce_factory=lambda: "45720275",
+    )
+    monkeypatch.setattr(session.session, "request", fake_request)
+
+    session.get_video_overview_data("7635077049085922574")
+
+    assert captured["method"] == "GET"
+    assert str(captured["url"]).endswith("/api/video/overviewData")
+    assert captured["params"] == {
+        "id": "7635077049085922574",
+        "_time": 1781341566,
+        "cnonce": "45720275",
+    }
+    assert captured["data"] is None
+    assert (
+        captured["headers"]["Referer"]
+        == "https://www.fastmoss.com/zh/media-source/video/7635077049085922574"
+    )
+    assert captured["headers"]["region"] == "Global"
+    assert captured["headers"]["fm-sign"] == "e55e8ef60f857cf3cf91ab44348e5e6b"
+    assert captured["headers"]["sec-ch-ua"] == (
+        '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"'
+    )
+    assert captured["headers"]["sec-ch-ua-mobile"] == "?0"
+    assert captured["headers"]["sec-ch-ua-platform"] == '"macOS"'
+    assert captured["headers"]["Cache-Control"] == "no-cache"
+    assert captured["headers"]["Pragma"] == "no-cache"
+    assert captured["headers"]["Priority"] == "u=1, i"
+    assert captured["headers"]["Sec-Fetch-Dest"] == "empty"
+    assert captured["headers"]["Sec-Fetch-Mode"] == "cors"
+    assert captured["headers"]["Sec-Fetch-Site"] == "same-origin"
 
 
 def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
@@ -1011,6 +1077,139 @@ def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
 
     assert result.status == "failed"
     assert calls == []
+
+
+def test_creator_video_metric_refresh_live_overview_defaults_to_slower_fastmoss_delay(monkeypatch) -> None:
+    captured_settings: list[dict[str, object]] = []
+
+    class FakeSession:
+        request_delay_range = (3.0, 6.0)
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return None
+
+        def get_video_overview(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 1}
+
+        def get_video_overview_data(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 1}
+
+    def fake_build_fastmoss_session(settings, *, session_factory):  # noqa: ANN001
+        captured_settings.append(dict(settings))
+        return FakeSession()
+
+    monkeypatch.setattr(metric_flow_module, "build_fastmoss_session", fake_build_fastmoss_session)
+    monkeypatch.setattr(metric_flow_module, "prepare_fastmoss_session", lambda session, *, settings: None)
+
+    rows = metric_flow_module._fetch_video_overviews(
+        {"fastmoss_live_fetch": True},
+        videos=[{"video_id": "1"}, {"video_id": "2"}],
+    )
+
+    assert [row["video_id"] for row in rows] == ["1", "2"]
+    assert [row["play_count"] for row in rows] == [1, 1]
+    assert captured_settings[0]["fastmoss_api_request_delay_min_seconds"] == 3.0
+    assert captured_settings[0]["fastmoss_api_request_delay_max_seconds"] == 6.0
+
+
+def test_creator_video_metric_refresh_live_overview_preserves_explicit_fastmoss_delay(monkeypatch) -> None:
+    captured_settings: list[dict[str, object]] = []
+
+    class FakeSession:
+        request_delay_range = (8.0, 13.0)
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return None
+
+        def get_video_overview(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 1}
+
+        def get_video_overview_data(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 1}
+
+    def fake_build_fastmoss_session(settings, *, session_factory):  # noqa: ANN001
+        captured_settings.append(dict(settings))
+        return FakeSession()
+
+    monkeypatch.setattr(metric_flow_module, "build_fastmoss_session", fake_build_fastmoss_session)
+    monkeypatch.setattr(metric_flow_module, "prepare_fastmoss_session", lambda session, *, settings: None)
+
+    metric_flow_module._fetch_video_overviews(
+        {
+            "fastmoss_live_fetch": True,
+            "fastmoss_api_request_delay_min_seconds": 8.0,
+            "fastmoss_api_request_delay_max_seconds": 13.0,
+        },
+        videos=[{"video_id": "1"}],
+    )
+
+    assert captured_settings[0]["fastmoss_api_request_delay_min_seconds"] == "8.0"
+    assert captured_settings[0]["fastmoss_api_request_delay_max_seconds"] == "13.0"
+
+
+def test_creator_video_metric_refresh_live_overview_fetches_frontend_pair(monkeypatch) -> None:
+    calls: list[tuple[str, str, tuple[float, float]]] = []
+
+    class FakeSession:
+        request_delay_range = (3.0, 6.0)
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return None
+
+        def get_video_overview(self, video_id: str) -> dict[str, object]:
+            calls.append(("overview", video_id, self.request_delay_range))
+            return {
+                "video_id": video_id,
+                "video_desc": "rich",
+                "play_count": 1,
+                "digg_count": 2,
+                "comment_count": 3,
+                "share_count": 4,
+            }
+
+        def get_video_overview_data(self, video_id: str) -> dict[str, object]:
+            calls.append(("overviewData", video_id, self.request_delay_range))
+            return {
+                "video_id": video_id,
+                "play_count": 101,
+                "digg_count": 102,
+                "comment_count": 103,
+                "share_count": 104,
+            }
+
+    def fake_build_fastmoss_session(settings, *, session_factory):  # noqa: ANN001
+        return FakeSession()
+
+    monkeypatch.setattr(metric_flow_module, "build_fastmoss_session", fake_build_fastmoss_session)
+    monkeypatch.setattr(metric_flow_module, "prepare_fastmoss_session", lambda session, *, settings: None)
+
+    rows = metric_flow_module._fetch_video_overviews(
+        {"fastmoss_live_fetch": True},
+        videos=[{"video_id": "1"}, {"video_id": "2"}],
+    )
+
+    assert calls == [
+        ("overview", "1", (3.0, 6.0)),
+        ("overviewData", "1", (0.8, 1.5)),
+        ("overview", "2", (3.0, 6.0)),
+        ("overviewData", "2", (0.8, 1.5)),
+    ]
+    assert rows[0]["video_desc"] == "rich"
+    assert rows[0]["play_count"] == 101
+    assert rows[0]["digg_count"] == 102
+    assert rows[0]["comment_count"] == 103
+    assert rows[0]["share_count"] == 104
+    assert rows[0]["_frontend_overview"]["play_count"] == 1
+    assert rows[0]["_frontend_overview_data"]["play_count"] == 101
 
 
 def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_link(
