@@ -144,6 +144,37 @@ def _clean_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
     return cleaned
 
 
+def _build_sec_ch_ua(user_agent: str) -> str:
+    chrome_major = "145"
+    for marker in ("Chrome/", "Chromium/"):
+        if marker not in user_agent:
+            continue
+        version_text = user_agent.split(marker, 1)[1].split(" ", 1)[0]
+        major_text = version_text.split(".", 1)[0]
+        if major_text.isdigit():
+            chrome_major = major_text
+            break
+    return f'"Not:A-Brand";v="99", "Google Chrome";v="{chrome_major}", "Chromium";v="{chrome_major}"'
+
+
+def _build_sec_ch_ua_platform(user_agent: str) -> str:
+    if "Windows" in user_agent:
+        return '"Windows"'
+    if "Android" in user_agent:
+        return '"Android"'
+    if "iPhone" in user_agent or "iPad" in user_agent:
+        return '"iOS"'
+    if "Linux" in user_agent:
+        return '"Linux"'
+    return '"macOS"'
+
+
+def _build_sec_ch_ua_mobile(user_agent: str) -> str:
+    if "Mobile" in user_agent or "Android" in user_agent or "iPhone" in user_agent:
+        return "?1"
+    return "?0"
+
+
 def _cookie_domain_matches(domain: str, domain_keyword: str) -> bool:
     normalized_domain = str(domain or "").strip().lstrip(".").lower()
     normalized_keyword = str(domain_keyword or "").strip().lstrip(".").lower()
@@ -488,8 +519,7 @@ class FastMossHTTPSession:
             signed_params_with_nonce = dict(signed_params)
             signed_params_with_nonce["_time"] = int(self._time_factory())
             signed_params_with_nonce["cnonce"] = self._nonce_factory()
-            if sign_request:
-                signed_params_with_nonce["fm-sign"] = build_fm_sign(signed_params_with_nonce, body_text)
+            fm_sign = build_fm_sign(signed_params_with_nonce, body_text) if sign_request else ""
             self._emit_event(
                 "http_request_start",
                 stage=stage,
@@ -508,6 +538,8 @@ class FastMossHTTPSession:
                 has_json_body=bool(body_text),
                 extra_headers=headers,
             )
+            if fm_sign:
+                request_headers["fm-sign"] = fm_sign
             url = self._build_url(path)
 
             try:
@@ -1174,8 +1206,24 @@ class FastMossHTTPSession:
             path,
             params=params,
             referer=self._build_video_detail_referer(normalized_video_id),
-            region=self.default_region,
+            region=FASTMOSS_DEFAULT_LOGIN_REGION,
             stage="video.overview",
+        )
+        return _extract_data(payload)
+
+    def get_video_overview_data(self, video_id: str) -> dict[str, Any]:
+        """Return the `data` object from /api/video/overviewData."""
+
+        normalized_video_id = self._normalize_video_id(video_id)
+        path = "/api/video/overviewData"
+        params = {"id": normalized_video_id}
+        payload = self.request_json(
+            "GET",
+            path,
+            params=params,
+            referer=self._build_video_detail_referer(normalized_video_id),
+            region=FASTMOSS_DEFAULT_LOGIN_REGION,
+            stage="video.overview_data",
         )
         return _extract_data(payload)
 
@@ -1376,6 +1424,15 @@ class FastMossHTTPSession:
             "source": "pc",
             "region": region or self.default_region,
             "User-Agent": self.user_agent,
+            "sec-ch-ua": _build_sec_ch_ua(self.user_agent),
+            "sec-ch-ua-mobile": _build_sec_ch_ua_mobile(self.user_agent),
+            "sec-ch-ua-platform": _build_sec_ch_ua_platform(self.user_agent),
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Priority": "u=1, i",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         if referer:
             headers["Referer"] = referer

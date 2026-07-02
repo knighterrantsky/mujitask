@@ -194,6 +194,45 @@ def test_fastmoss_cookie_cache_does_not_reuse_auth_failed_cookie(runtime_db_url)
     assert session.token == ""
 
 
+def test_fastmoss_cookie_cache_does_not_reuse_record_without_fd_tk(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    context = build_fastmoss_cookie_cache_context(
+        base_url="https://www.fastmoss.com",
+        account_key="18000000000",
+        region="US",
+    )
+    store.save_fastmoss_cookie_cache(
+        cache_key=context["cache_key"],
+        account_key="18000000000",
+        base_url="https://www.fastmoss.com",
+        region="US",
+        cookies=[
+            {
+                "name": "anonymous_session",
+                "value": "not-a-login-token",
+                "domain": ".fastmoss.com",
+                "path": "/",
+            }
+        ],
+        cookie_count=1,
+        has_fd_tk=False,
+        fd_tk_digest="",
+        expires_at=time.time() + 3600,
+    )
+    session = _CookieCacheFakeSession()
+
+    status = attach_fastmoss_cookie_cache(
+        session,
+        store=store,
+        account_key="18000000000",
+        region="US",
+    )
+
+    assert status["status"] == "expired"
+    assert status["has_fd_tk"] is False
+    assert session.token == ""
+
+
 def test_fastmoss_cookie_cache_logs_in_when_newer_db_cookie_still_fails(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     context = build_fastmoss_cookie_cache_context(

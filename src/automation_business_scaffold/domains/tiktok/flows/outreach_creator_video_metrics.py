@@ -34,6 +34,11 @@ from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFa
 from .outreach_product_videos import canonical_tiktok_video_url
 
 
+FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MIN_SECONDS = 3.0
+FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MAX_SECONDS = 6.0
+FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MIN_SECONDS = 0.8
+FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MAX_SECONDS = 1.5
+
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 
 
@@ -69,7 +74,13 @@ def outreach_creator_video_metric_refresh_handler(context: HandlerContext) -> Ha
         return _handle_no_videos(context, payload=payload, trigger_date=trigger_date)
 
     try:
-        overview_rows = _fetch_video_overviews(payload, videos=videos)
+        overview_rows = _fetch_video_overviews(
+            payload,
+            videos=videos,
+            progress_callback=context.metadata.get("progress_callback"),
+            product_id=product_id,
+            creator_unique_id=creator_unique_id,
+        )
     except FastMossAuthError as exc:
         return fastmoss_security_fallback_required_result(
             context,
@@ -118,7 +129,14 @@ def outreach_creator_video_metric_refresh_handler(context: HandlerContext) -> Ha
         )
 
     try:
-        snapshots = _record_metric_snapshots(fact_store, videos=videos, overview_rows=overview_rows)
+        snapshots = _record_metric_snapshots(
+            fact_store,
+            videos=videos,
+            overview_rows=overview_rows,
+            progress_callback=context.metadata.get("progress_callback"),
+            product_id=product_id,
+            creator_unique_id=creator_unique_id,
+        )
     except Exception as exc:  # noqa: BLE001 - worker retry boundary.
         return failed_result(
             context,
@@ -240,7 +258,14 @@ def _handle_no_videos(context: HandlerContext, *, payload: Mapping[str, Any], tr
     return success_result(context, summary=result, result=result)
 
 
-def _fetch_video_overviews(payload: Mapping[str, Any], *, videos: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _fetch_video_overviews(
+    payload: Mapping[str, Any],
+    *,
+    videos: list[Mapping[str, Any]],
+    progress_callback: Any | None = None,
+    product_id: str = "",
+    creator_unique_id: str = "",
+) -> list[dict[str, Any]]:
     mock_rows = _mock_overviews(payload)
     if "mock_fastmoss_video_overviews" in payload:
         return [_overview_for_video(mock_rows, video) for video in videos]
@@ -248,9 +273,96 @@ def _fetch_video_overviews(payload: Mapping[str, Any], *, videos: list[Mapping[s
     live_fetch = bool(fastmoss_settings.get("live_fetch") or fastmoss_settings.get("_has_live_config"))
     if not live_fetch:
         raise FastMossAuthError("FastMoss live fetch config is missing for outreach video metric refresh.")
+    if not fastmoss_settings.get("fastmoss_api_request_delay_min_seconds"):
+        fastmoss_settings["fastmoss_api_request_delay_min_seconds"] = (
+            FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MIN_SECONDS
+        )
+    if not fastmoss_settings.get("fastmoss_api_request_delay_max_seconds"):
+        fastmoss_settings["fastmoss_api_request_delay_max_seconds"] = (
+            FASTMOSS_VIDEO_OVERVIEW_REQUEST_DELAY_MAX_SECONDS
+        )
     with build_fastmoss_session(fastmoss_settings, session_factory=FastMossHTTPSession) as session:
         prepare_fastmoss_session(session, settings=fastmoss_settings)
-        return [dict(session.get_video_overview(coerce_str(video.get("video_id")))) for video in videos]
+        video_delay_range = session.request_delay_range
+        rows: list[dict[str, Any]] = []
+        total_count = len(videos)
+        for index, video in enumerate(videos, start=1):
+            video_id = coerce_str(video.get("video_id"))
+            _emit_video_metric_progress(
+                progress_callback,
+                "video_metric_fetch_started",
+                message=f"Fetching FastMoss video metrics {index}/{total_count}.",
+                product_id=product_id,
+                creator_unique_id=creator_unique_id,
+                video_id=video_id,
+                current_index=index,
+                total_count=total_count,
+            )
+            rows.append(
+                _fetch_frontend_video_overview_pair(
+                    session,
+                    video_id,
+                    video_delay_range=video_delay_range,
+                )
+            )
+            _emit_video_metric_progress(
+                progress_callback,
+                "video_metric_fetch_completed",
+                message=f"Fetched FastMoss video metrics {index}/{total_count}.",
+                product_id=product_id,
+                creator_unique_id=creator_unique_id,
+                video_id=video_id,
+                current_index=index,
+                total_count=total_count,
+            )
+        return rows
+
+
+def _emit_video_metric_progress(
+    progress_callback: Any | None,
+    progress_stage: str,
+    *,
+    message: str,
+    product_id: str,
+    creator_unique_id: str,
+    video_id: str,
+    current_index: int,
+    total_count: int,
+) -> None:
+    if not callable(progress_callback):
+        return
+    progress_callback(
+        progress_stage,
+        message=message,
+        details={
+            "product_id": product_id,
+            "creator_unique_id": creator_unique_id,
+            "video_id": video_id,
+            "current_index": current_index,
+            "total_count": total_count,
+        },
+    )
+
+
+def _fetch_frontend_video_overview_pair(
+    session: FastMossHTTPSession,
+    video_id: str,
+    *,
+    video_delay_range: tuple[float, float],
+) -> dict[str, Any]:
+    session.request_delay_range = video_delay_range
+    overview = dict(session.get_video_overview(video_id))
+    session.request_delay_range = (
+        FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MIN_SECONDS,
+        FASTMOSS_VIDEO_OVERVIEW_PAIR_DELAY_MAX_SECONDS,
+    )
+    overview_data = dict(session.get_video_overview_data(video_id))
+    return {
+        **overview,
+        **overview_data,
+        "_frontend_overview": overview,
+        "_frontend_overview_data": overview_data,
+    }
 
 
 def _record_metric_snapshots(
@@ -258,9 +370,13 @@ def _record_metric_snapshots(
     *,
     videos: list[Mapping[str, Any]],
     overview_rows: list[Mapping[str, Any]],
+    progress_callback: Any | None = None,
+    product_id: str = "",
+    creator_unique_id: str = "",
 ) -> list[dict[str, Any]]:
     snapshots: list[dict[str, Any]] = []
-    for video, overview in zip(videos, overview_rows, strict=True):
+    total_count = len(videos)
+    for index, (video, overview) in enumerate(zip(videos, overview_rows, strict=True), start=1):
         counts = _overview_counts(overview)
         snapshots.append(
             fact_store.record_video_metric_snapshot(
@@ -275,6 +391,16 @@ def _record_metric_snapshots(
                 share_count=counts["share_count"],
                 payload=dict(overview),
             )
+        )
+        _emit_video_metric_progress(
+            progress_callback,
+            "video_metric_snapshot_recorded",
+            message=f"Recorded FastMoss video metric snapshot {index}/{total_count}.",
+            product_id=product_id,
+            creator_unique_id=creator_unique_id,
+            video_id=coerce_str(video.get("video_id")),
+            current_index=index,
+            total_count=total_count,
         )
     return snapshots
 

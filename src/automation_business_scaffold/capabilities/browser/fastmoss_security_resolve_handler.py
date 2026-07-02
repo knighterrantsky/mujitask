@@ -91,34 +91,27 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
 
         cookies = coerce_mapping_list(browser_result.get("cookies"))
         verification = coerce_mapping(browser_result.get("verification"))
-        if _is_fastmoss_auth_response_code(verification.get("response_code")):
-            error = build_error(
-                error_type="auth_failure",
-                error_code="fastmoss_auth_session_recovery_required",
-                message="FastMoss auth recovery is still required after browser fallback.",
-                retryable=False,
-                details={
-                    "verified_path": first_non_empty(verification.get("verified_path"), verified_path),
-                    "response_code": first_non_empty(verification.get("response_code")),
-                    "ext_is_login": first_non_empty(verification.get("ext_is_login")),
-                },
-            )
-            return failed_result(
+        if _is_fastmoss_auth_verification_failure(verification):
+            return _fastmoss_auth_recovery_failed_result(
                 context,
-                error=error,
-                summary=_browser_resolve_failure_summary(
-                    browser_result,
-                    error_code="fastmoss_auth_session_recovery_required",
-                ),
-                result=_browser_resolve_result_payload(
-                    payload,
-                    browser_result,
-                    resolved=False,
-                    error_details=error.details,
-                ),
+                payload,
+                browser_result,
+                verified_path=verified_path,
             )
         if not cookies:
             raise ValueError("FastMoss browser security resolve did not export cookies.")
+        cookie_snapshot = _cookie_snapshot_from_browser_cookies(cookies)
+        if not bool(cookie_snapshot.get("has_fd_tk")):
+            return _fastmoss_auth_recovery_failed_result(
+                context,
+                payload,
+                browser_result,
+                verified_path=verified_path,
+                extra_details={
+                    "cookie_count": cookie_snapshot.get("cookie_count"),
+                    "has_fd_tk": cookie_snapshot.get("has_fd_tk"),
+                },
+            )
 
         if verification.get("response_code") in FASTMOSS_SECURITY_VERIFICATION_CODES:
             exc = FastMossHTTPError(
@@ -575,7 +568,7 @@ def _resolve_fastmoss_security_with_browser(
                     default_referer=security_page_url,
                 )
                 response_code = first_non_empty(verification.get("response_code"))
-                if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_response_code(response_code):
+                if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_verification_failure(verification):
                     break
                 if not bool(slider_resolution.get("attempted")):
                     break
@@ -630,7 +623,7 @@ def _resolve_fastmoss_security_with_browser(
             "login_cookie_bootstrap": login_cookie_bootstrap_result,
             "browser_attempts": list(browser_attempts),
         }
-        if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_response_code(response_code):
+        if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_verification_failure(verification):
             return last_result
     return last_result
 
@@ -939,6 +932,62 @@ def _optional_int(value: Any) -> int | None:
 def _is_fastmoss_auth_response_code(value: Any) -> bool:
     code = first_non_empty(value)
     return code in FASTMOSS_AUTH_VERIFICATION_CODES or code.startswith("MAG_AUTH_")
+
+
+def _is_fastmoss_auth_verification_failure(verification: Mapping[str, Any]) -> bool:
+    if _is_fastmoss_auth_response_code(verification.get("response_code")):
+        return True
+    return _is_fastmoss_logged_out_value(verification.get("ext_is_login"))
+
+
+def _is_fastmoss_logged_out_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, (int, float)):
+        return value == 0
+    if value in (None, ""):
+        return False
+    return str(value).strip().lower() in {"0", "false"}
+
+
+def _fastmoss_auth_recovery_failed_result(
+    context: HandlerContext,
+    payload: Mapping[str, Any],
+    browser_result: Mapping[str, Any],
+    *,
+    verified_path: str,
+    extra_details: Mapping[str, Any] | None = None,
+) -> HandlerResult:
+    verification = coerce_mapping(browser_result.get("verification"))
+    details = compact_dict(
+        {
+            "verified_path": first_non_empty(verification.get("verified_path"), verified_path),
+            "response_code": first_non_empty(verification.get("response_code")),
+            "ext_is_login": first_non_empty(verification.get("ext_is_login")),
+            **dict(extra_details or {}),
+        }
+    )
+    error = build_error(
+        error_type="auth_failure",
+        error_code="fastmoss_auth_session_recovery_required",
+        message="FastMoss auth recovery is still required after browser fallback.",
+        retryable=False,
+        details=details,
+    )
+    return failed_result(
+        context,
+        error=error,
+        summary=_browser_resolve_failure_summary(
+            browser_result,
+            error_code="fastmoss_auth_session_recovery_required",
+        ),
+        result=_browser_resolve_result_payload(
+            payload,
+            browser_result,
+            resolved=False,
+            error_details=error.details,
+        ),
+    )
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "fastmoss_security_browser_resolve_handler"]

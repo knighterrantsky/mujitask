@@ -221,6 +221,13 @@ def save_fastmoss_cookie_cache_from_session(
             "status": "skipped_empty_cookie_jar",
             **snapshot,
         }
+    if not bool(snapshot.get("has_fd_tk")):
+        return {
+            "enabled": True,
+            "cache_key": str(context.get("cache_key") or ""),
+            "status": "skipped_missing_fd_tk",
+            **snapshot,
+        }
 
     saved = store.save_fastmoss_cookie_cache(
         cache_key=str(context["cache_key"]),
@@ -248,6 +255,8 @@ def _record_can_be_reused(record: Mapping[str, Any] | None) -> bool:
         return False
     cookies = record.get("cookies")
     if not isinstance(cookies, list) or not cookies:
+        return False
+    if not bool(record.get("has_fd_tk")):
         return False
     if float(record.get("last_auth_failed_at") or 0.0) > 0:
         return False
