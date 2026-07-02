@@ -481,6 +481,7 @@ def test_fastmoss_video_overview_http_request_matches_roxy_browser_headers(monke
     assert captured["headers"]["Sec-Fetch-Dest"] == "empty"
     assert captured["headers"]["Sec-Fetch-Mode"] == "cors"
     assert captured["headers"]["Sec-Fetch-Site"] == "same-origin"
+    assert captured["timeout"] == 30.0
 
 
 def test_fastmoss_video_overview_data_http_request_matches_roxy_browser_headers(monkeypatch) -> None:
@@ -540,6 +541,7 @@ def test_fastmoss_video_overview_data_http_request_matches_roxy_browser_headers(
     assert captured["headers"]["Sec-Fetch-Dest"] == "empty"
     assert captured["headers"]["Sec-Fetch-Mode"] == "cors"
     assert captured["headers"]["Sec-Fetch-Site"] == "same-origin"
+    assert captured["timeout"] == 30.0
 
 
 def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
@@ -1210,6 +1212,82 @@ def test_creator_video_metric_refresh_live_overview_fetches_frontend_pair(monkey
     assert rows[0]["share_count"] == 104
     assert rows[0]["_frontend_overview"]["play_count"] == 1
     assert rows[0]["_frontend_overview_data"]["play_count"] == 101
+
+
+def test_creator_video_metric_refresh_reports_video_fetch_and_snapshot_progress(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+
+    class FakeSession:
+        request_delay_range = (3.0, 6.0)
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return None
+
+        def get_video_overview(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 1}
+
+        def get_video_overview_data(self, video_id: str) -> dict[str, object]:
+            return {"video_id": video_id, "play_count": 11}
+
+    class FakeFactStore:
+        def record_video_metric_snapshot(self, **kwargs):  # noqa: ANN001
+            return {
+                "video_id": kwargs["video_id"],
+                "play_count": kwargs["play_count"],
+                "payload": kwargs["payload"],
+            }
+
+    def fake_build_fastmoss_session(settings, *, session_factory):  # noqa: ANN001
+        return FakeSession()
+
+    def progress_callback(progress_stage: str, *, message: str = "", details=None):  # noqa: ANN001
+        events.append(
+            {
+                "progress_stage": progress_stage,
+                "message": message,
+                "details": dict(details or {}),
+            }
+        )
+
+    monkeypatch.setattr(metric_flow_module, "build_fastmoss_session", fake_build_fastmoss_session)
+    monkeypatch.setattr(metric_flow_module, "prepare_fastmoss_session", lambda session, *, settings: None)
+
+    videos = [
+        {"video_key": "video:1", "video_id": "1", "creator_key": "creator:c"},
+        {"video_key": "video:2", "video_id": "2", "creator_key": "creator:c"},
+    ]
+    overview_rows = metric_flow_module._fetch_video_overviews(
+        {"fastmoss_live_fetch": True},
+        videos=videos,
+        progress_callback=progress_callback,
+        product_id="p",
+        creator_unique_id="creator_c",
+    )
+    metric_flow_module._record_metric_snapshots(
+        FakeFactStore(),
+        videos=videos,
+        overview_rows=overview_rows,
+        progress_callback=progress_callback,
+        product_id="p",
+        creator_unique_id="creator_c",
+    )
+
+    assert [event["progress_stage"] for event in events] == [
+        "video_metric_fetch_started",
+        "video_metric_fetch_completed",
+        "video_metric_fetch_started",
+        "video_metric_fetch_completed",
+        "video_metric_snapshot_recorded",
+        "video_metric_snapshot_recorded",
+    ]
+    assert [event["details"]["video_id"] for event in events] == ["1", "1", "2", "2", "1", "2"]
+    assert [event["details"]["current_index"] for event in events] == [1, 1, 2, 2, 1, 2]
+    assert [event["details"]["total_count"] for event in events] == [2, 2, 2, 2, 2, 2]
+    assert {event["details"]["product_id"] for event in events} == {"p"}
+    assert {event["details"]["creator_unique_id"] for event in events} == {"creator_c"}
 
 
 def test_creator_video_metric_refresh_writes_check_time_when_no_video_for_empty_link(
