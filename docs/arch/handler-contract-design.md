@@ -238,6 +238,7 @@ table-specific adapter / projection mapper
 | --- | --- |
 | 判断竞品表哪些行要处理 | `competitor_table_source_adapter` |
 | 判断达人同步候选竞品 | `influencer_pool_source_adapter` |
+| 判断达人建联表哪些行要检查 | `outreach_source_adapter` |
 | 解析 `TK选品收集` 的商品 URL | `selection_table_source_adapter` |
 | 根据业务状态决定是否跳过 | table-specific validator / workflow stage |
 | 把事实结果映射成飞书写回字段 | projection mapper |
@@ -367,6 +368,10 @@ competitor_table_source_adapter
 influencer_pool_source_adapter
   feishu rows
   -> influencer_pool_product_candidates
+
+outreach_source_adapter
+  feishu rows
+  -> influencer_outreach_rows
 ```
 
 `selection_table_source_adapter` 输出示例:
