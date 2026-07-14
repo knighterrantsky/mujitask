@@ -1205,6 +1205,8 @@ features:
       - src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py
       - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
       - src/automation_business_scaffold/infrastructure/artifacts/**
+      - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
+      - src/automation_business_scaffold/infrastructure/runtime/repositories/task_execution_repo.py
       - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
       - src/automation_business_scaffold/control_plane/runtime_config/settings.py
       - tests/test_amazon_product_contracts.py

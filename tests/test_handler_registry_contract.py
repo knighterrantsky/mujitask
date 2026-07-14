@@ -36,7 +36,11 @@ ALLOWLIST_BY_WORKER = {
         "fact_bundle_upsert",
         "amazon_product_fact_upsert",
     },
-    "browser": {"fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"},
+    "browser": {
+        "amazon_product_browser_fetch",
+        "fastmoss_security_browser_resolve",
+        "tiktok_product_browser_fetch",
+    },
     "outbox": {"outbox_dispatch"},
 }
 FORBIDDEN_EXACT_NAMES = {

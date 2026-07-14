@@ -1253,6 +1253,29 @@ class RuntimeStore:
     ) -> RuntimeTaskExecutionRecord:
         return self._task_execution_repo.mark_browser_execution_skipped(execution_id=execution_id, run_id=run_id, summary=summary, result=result)
 
+    def mark_browser_execution_failed(
+        self,
+        *,
+        execution_id: str,
+        run_id: str,
+        error_text: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        error_type: str,
+        error_code: str,
+        dead_letter_reason: str,
+    ) -> RuntimeTaskExecutionRecord:
+        return self._task_execution_repo.mark_browser_execution_failed(
+            execution_id=execution_id,
+            run_id=run_id,
+            error_text=error_text,
+            summary=summary,
+            result=result,
+            error_type=error_type,
+            error_code=error_code,
+            dead_letter_reason=dead_letter_reason,
+        )
+
     def mark_browser_execution_retry_or_failed(
         self,
         *,

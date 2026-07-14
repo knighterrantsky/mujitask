@@ -164,10 +164,10 @@ def extract_amazon_product_capture(
     observed_at: datetime | str,
 ) -> dict[str, Any]:
     requested = normalize_asin(requested_asin)
-    resolved_from_url = extract_asin_from_url(resolved_url)
     if not isinstance(html, str):
         raise AmazonProductExtractionError("Amazon page HTML must be a string")
     _raise_if_access_blocked(html)
+    resolved_from_url = extract_asin_from_url(resolved_url)
 
     document = _parse_document(html)
     structured = _extract_structured_product(document)

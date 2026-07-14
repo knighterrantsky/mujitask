@@ -474,6 +474,18 @@ def test_robot_check_with_captcha_raises_typed_blocked_error() -> None:
     assert error.value.error_code == "captcha_required"
 
 
+def test_robot_check_redirect_without_asin_is_still_classified_as_blocked() -> None:
+    with pytest.raises(AmazonAccessBlockedError) as error:
+        extract_amazon_product_capture(
+            _fixture("product_detail_blocked.html"),
+            requested_asin="B0BLOCK001",
+            resolved_url="https://www.amazon.com/errors/validateCaptcha",
+            observed_at=OBSERVED_AT,
+        )
+
+    assert error.value.error_code == "captcha_required"
+
+
 def test_robot_check_without_captcha_uses_access_blocked_error_code() -> None:
     with pytest.raises(AmazonAccessBlockedError) as error:
         extract_amazon_product_capture(

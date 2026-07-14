@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -18,8 +19,10 @@ from automation_business_scaffold.control_plane.supervisor.execution_supervisor 
     ExecutionSupervisorOutcome,
     run_supervised_handler,
 )
+from automation_business_scaffold.contracts.handler.allowlist import BROWSER_HANDLER_CODES
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.models import ArtifactObjectRecord
 
 
 def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
@@ -129,7 +132,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         worker_pid=os.getpid(),
         lease_seconds=settings.lease_seconds,
         request_id=str(params.get("request_id") or ""),
-        item_codes=("fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"),
+        item_codes=tuple(sorted(BROWSER_HANDLER_CODES)),
     )
     if execution is None:
         return build_idle_payload(
@@ -281,7 +284,50 @@ def persist_browser_execution_outcome(
 ) -> tuple[Any, int, int]:
     stored_summary = outcome.storage_summary()
     stored_result = outcome.storage_result()
+    try:
+        _index_amazon_browser_artifacts(store=store, run_id=run_id, outcome=outcome)
+    except Exception as exc:
+        stored_summary.update(
+            {
+                "error_type": "runtime_artifact_index_failure",
+                "error_code": "artifact_index_failed",
+                "retryable": True,
+                "terminal_error": False,
+            }
+        )
+        execution = store.mark_browser_execution_retry_or_failed(
+            execution_id=execution_id,
+            run_id=run_id,
+            error_text=str(exc),
+            summary=stored_summary,
+            result=stored_result,
+            retry_delay_seconds=retry_delay_seconds,
+            error_type="runtime_artifact_index_failure",
+            error_code="artifact_index_failed",
+            dead_letter_reason="",
+        )
+        return execution, 0, 1 if execution.result_status == "failed" else 0
     if outcome.should_mark_failed:
+        if _is_terminal_amazon_browser_failure(outcome):
+            execution = store.mark_browser_execution_failed(
+                execution_id=execution_id,
+                run_id=run_id,
+                summary=stored_summary,
+                result=stored_result,
+                error_text=outcome.error_text,
+                error_type=(
+                    outcome.error.error_type
+                    if outcome.error is not None
+                    else outcome.worker_result.error.error_type
+                ),
+                error_code=(
+                    outcome.error.error_code
+                    if outcome.error is not None
+                    else outcome.worker_result.error.error_code
+                ),
+                dead_letter_reason="terminal_handler_failure",
+            )
+            return execution, 0, 1 if execution.result_status == "failed" else 0
         execution = store.mark_browser_execution_retry_or_failed(
             execution_id=execution_id,
             run_id=run_id,
@@ -309,6 +355,86 @@ def persist_browser_execution_outcome(
         result=stored_result,
     )
     return execution, 1 if execution.result_status in {"success", "partial_success"} else 0, 0
+
+
+def _index_amazon_browser_artifacts(
+    *,
+    store: RuntimeStore,
+    run_id: str,
+    outcome: ExecutionSupervisorOutcome,
+) -> None:
+    if outcome.context.handler_code != "amazon_product_browser_fetch":
+        return
+    artifact_refs = outcome.worker_result.result.get("artifact_refs")
+    if not isinstance(artifact_refs, list) or not artifact_refs:
+        return
+    artifact_run_id = str(outcome.context.payload.get("run_id") or run_id).strip()
+    if not artifact_run_id:
+        raise ValueError("Amazon browser artifacts require a stable capture run_id.")
+    records: list[ArtifactObjectRecord] = []
+    for ref in artifact_refs:
+        if not isinstance(ref, dict):
+            raise ValueError("Amazon browser artifact_refs must contain objects.")
+        bucket = str(ref.get("bucket") or "").strip()
+        object_key = str(ref.get("object_key") or "").strip()
+        kind = str(ref.get("capture_kind") or "").strip()
+        if not bucket or not object_key or not kind:
+            raise ValueError("Amazon browser artifact ref is missing bucket, object_key, or kind.")
+        seed = f"{artifact_run_id}:{bucket}:{object_key}".encode("utf-8")
+        try:
+            size = max(int(ref.get("size") or 0), 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Amazon browser artifact size must be an integer.") from exc
+        try:
+            created_at = float(ref.get("created_at_epoch") or outcome.finished_at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Amazon browser artifact created_at_epoch is invalid.") from exc
+        records.append(
+            ArtifactObjectRecord(
+                artifact_id=hashlib.sha256(seed).hexdigest(),
+                request_id=outcome.context.request_id,
+                execution_id=outcome.context.job_id,
+                run_id=artifact_run_id,
+                step_id=outcome.context.stage_code or outcome.context.handler_code,
+                kind=kind,
+                bucket=bucket,
+                object_key=object_key,
+                etag=str(ref.get("etag") or "").strip(),
+                size=size,
+                content_type=str(ref.get("content_type") or "").strip(),
+                source_path="",
+                metadata={
+                    "content_digest": str(ref.get("content_digest") or "").strip(),
+                    "sanitization_status": str(
+                        ref.get("sanitization_status") or ""
+                    ).strip(),
+                    "remote_uri": str(ref.get("remote_uri") or "").strip(),
+                },
+                created_at=created_at,
+            )
+        )
+    by_coordinate = {
+        (record.bucket, record.object_key): record
+        for record in store.list_artifacts(run_id=artifact_run_id)
+    }
+    for record in records:
+        by_coordinate[(record.bucket, record.object_key)] = record
+    store.replace_artifacts(
+        run_id=artifact_run_id,
+        records=sorted(
+            by_coordinate.values(),
+            key=lambda record: (record.created_at, record.artifact_id),
+        ),
+    )
+
+
+def _is_terminal_amazon_browser_failure(outcome: ExecutionSupervisorOutcome) -> bool:
+    if outcome.context.handler_code != "amazon_product_browser_fetch":
+        return False
+    if outcome.error is not None:
+        return outcome.error.terminal
+    handler_error = outcome.worker_result.error
+    return handler_error is not None and not handler_error.retryable
 
 
 def _dispatch_api_runtime_handler(context: HandlerContext) -> Any:

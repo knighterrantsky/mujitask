@@ -285,6 +285,18 @@ API_HANDLER_CONTRACTS = MappingProxyType(
 
 BROWSER_HANDLER_CONTRACTS = MappingProxyType(
     {
+        "amazon_product_browser_fetch": _contract(
+            handler_code="amazon_product_browser_fetch",
+            worker_type="browser_worker",
+            runtime_table="task_execution",
+            purpose=(
+                "Collect one Amazon US product page and write governed capture artifacts."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("browser.fetch", "artifact.write"),
+        ),
         "tiktok_product_browser_fetch": _contract(
             handler_code="tiktok_product_browser_fetch",
             worker_type="browser_worker",
