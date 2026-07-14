@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, automation-framework public runtime contract, Playwright-compatible browser bridge, SQLAlchemy/PostgreSQL, Alembic, MinIO/S3 artifact store, Feishu Bitable handlers, pytest, YAML contracts.
 
-**Global Constraints:** US marketplace only; ASIN is normalized to uppercase and must match `^[A-Z0-9]{10}$`; formal task payload contains business inputs only; no production DDL from workers; no new generic helper/service/manager abstraction; no CAPTCHA or block bypass; missing fields never erase old Feishu values; only the requested ASIN page is visited; batch/search are out of scope; no `.platform/**`, `agent.py`, `registry.py`, or framework package edits.
+**Global Constraints:** US marketplace only; ASIN is normalized to uppercase and must match `^[A-Z0-9]{10}$`; formal task payload contains business inputs only; no production DDL from workers; no new generic helper/service/manager abstraction; no CAPTCHA or block bypass; missing fields never erase old Feishu values; only the requested ASIN page is visited; batch/search are out of scope; no `.platform/**`, `src/automation_business_scaffold/agent.py`, `src/automation_business_scaffold/registry.py`, or framework package edits.
 
 ---
 
@@ -28,7 +28,7 @@
 - Modify: `docs/arch/workflow-amazon-product-detail-design.md`
 - Test: `tests/test_amazon_product_contracts.py`
 
-- [ ] Write failing contract tests that assert the formal task/workflow code, four stable stages, two new handlers, US-only identity rule, Feishu field ownership, Amazon fact tables, object prefixes, owner boundaries, and a roadmap feature named `amazon_single_product_ingest`.
+- [ ] Write failing contract tests that assert the formal task/workflow code, four stable stages, three new handlers, US-only identity rule, Feishu field ownership, Amazon fact tables, object prefixes, owner boundaries, and a roadmap feature named `amazon_single_product_ingest`.
 - [ ] Run `uv run --extra dev pytest tests/test_amazon_product_contracts.py -q` and confirm failure because contracts do not yet exist.
 - [ ] Add the requirement and domain route documents, then encode fields, statuses, workflow, Fact DB boundaries, artifact prefixes, and handler ownership in YAML.
 - [ ] Add an `amazon_single_product_ingest` roadmap item with `requires_architecture_delta_gate: true`, exact allowed paths, source contracts, tests, and done-gate commands; keep status `in_progress` until final verification.
@@ -88,8 +88,8 @@
 
 - [ ] Write failing store tests for idempotent `(marketplace_code, asin)` master upsert, append-only snapshots, deterministic snapshot dedupe, offer/variant/BSR persistence, media relations, raw capture refs, and `(source_table_ref, source_record_id)` binding upsert.
 - [ ] Implement `AmazonFactStore` with explicit SQL methods and no DDL; retain the original row identity and return compact mutation counts/IDs.
-- [ ] Write failing handler tests for strict Fact DB configuration, invalid capture payload, success, repeated execution, unavailable product, and missing raw-capture evidence.
-- [ ] Implement `amazon_product_fact_upsert_handler(context)` using project runtime Fact DB config or test-only overrides, returning compact refs/counts only and never a full capture.
+- [ ] Write failing handler tests for strict Fact DB/object-store configuration, capture artifact loading, invalid capture payload, success, repeated execution, unavailable product, and missing raw-capture evidence.
+- [ ] Implement `amazon_product_fact_upsert_handler(context)` using project runtime Fact DB/object-store config or test-only overrides; load the capture from its artifact coordinates, return in-process projection facts plus compact refs/counts, and ensure the enclosing row handler does not persist the full projection/capture in Runtime DB.
 - [ ] Add the handler contract, API allowlist entry, binding, and job definition.
 - [ ] Run the two new test modules plus registry and architecture tests.
 - [ ] Commit with `feat: persist amazon product facts`.
@@ -100,6 +100,8 @@
 
 - Create: `src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py`
 - Create: `src/automation_business_scaffold/domains/amazon/jobs/amazon_product_browser_fetch.py`
+- Modify: `src/automation_business_scaffold/infrastructure/artifacts/artifact_store.py`
+- Modify: `src/automation_business_scaffold/infrastructure/artifacts/minio_store.py`
 - Modify: `src/automation_business_scaffold/contracts/handler/allowlist.py`
 - Modify: `src/automation_business_scaffold/contracts/handler/browser.py`
 - Modify: `src/automation_business_scaffold/control_plane/executor/worker_dispatch.py`
@@ -108,7 +110,8 @@
 
 - [ ] Write failing handler tests with a fake browser page for configured-profile resolution, canonical navigation, HTML capture, parser output, object prefix `amazon/raw/US/{asin}/...`, compact Runtime result, unavailable terminal result, identity mismatch, blocked/access-limited failure, and missing object-storage configuration.
 - [ ] Implement the browser handler on `infrastructure/browser/browser_bridge.open_automation_page`, resolving `AMAZON_US_BROWSER_PROFILE_REF` then framework default configuration without accepting profile secrets in formal payloads.
-- [ ] Save HTML, normalized capture JSON, and optional screenshot to temporary files; upload them through the existing artifact store and return `raw_capture_ref`, artifact metadata, identity, collection status, coverage, and media source refs only.
+- [ ] Extend the existing Artifact Store protocol and MinIO implementation with byte reads so downstream capability handlers can resolve a capture artifact by bucket/object key; keep this low-level read inside infrastructure ownership.
+- [ ] Save HTML, normalized capture JSON, and optional screenshot to temporary files; upload them through the existing artifact store and return `raw_capture_ref`, capture artifact coordinates, artifact metadata, identity, collection status, coverage, and media source refs only.
 - [ ] Add `amazon_product_browser_fetch` to the browser job contract, registry binding, and `BROWSER_HANDLER_CODES`-driven browser claim filter; remove the hard-coded two-handler tuple from `worker_dispatch.py`.
 - [ ] Index returned artifact records in `artifact_object` from the existing worker-dispatch persistence boundary so the runtime can audit Amazon captures without embedding their contents.
 - [ ] Run the browser tests, existing TikTok browser/fallback tests, handler registry tests, and control-plane structure tests.
@@ -208,4 +211,3 @@
 - [ ] Change the roadmap feature status to `complete`, then run `python scripts/harness/claim_done.py amazon_single_product_ingest --run-gates` and require `claim=complete` with no failed checks.
 - [ ] Invoke the verification-before-completion and requesting-code-review skills; address only actionable, in-scope findings and rerun affected gates.
 - [ ] Confirm `git status --short`, review the final diff for secrets/unrelated changes, and commit with `feat: implement amazon single product ingest`.
-
