@@ -33,9 +33,9 @@ if (-not $chromeExe) {
 $profileDir = if ($env:MUJITASK_CHROME_PROFILE_DIR) {
     $env:MUJITASK_CHROME_PROFILE_DIR
 } elseif ($env:LOCALAPPDATA) {
-    Join-Path $env:LOCALAPPDATA "mujitask\chrome-cdp-profile"
+    Join-Path $env:LOCALAPPDATA "mujitask\chrome-cdp\local-chrome"
 } else {
-    Join-Path $env:USERPROFILE "AppData\Local\mujitask\chrome-cdp-profile"
+    Join-Path $env:USERPROFILE "AppData\Local\mujitask\chrome-cdp\local-chrome"
 }
 
 New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
@@ -43,5 +43,9 @@ New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
 Write-Host "[browser-cdp] Starting Chrome with remote debugging on port 9222"
 Start-Process -FilePath $chromeExe -ArgumentList @(
     "--remote-debugging-port=9222",
-    "--user-data-dir=$profileDir"
+    "--remote-debugging-address=127.0.0.1",
+    "--user-data-dir=$profileDir",
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check"
 ) | Out-Null

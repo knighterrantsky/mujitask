@@ -69,7 +69,7 @@ main() {
   [[ -n "$chrome_bin" ]] || fail "Google Chrome was not found. Install Chrome and rerun deployment or this script."
 
   local port="${MUJITASK_CHROME_CDP_PORT:-9222}"
-  local profile_dir="${MUJITASK_CHROME_PROFILE_DIR:-$HOME/.mujitask/chrome-cdp-profile}"
+  local profile_dir="${MUJITASK_CHROME_PROFILE_DIR:-$HOME/.mujitask/chrome-cdp/local-chrome}"
   mkdir -p "$profile_dir"
 
   if probe_cdp_ready "$port"; then
@@ -84,6 +84,7 @@ main() {
     --remote-debugging-port="$port" \
     --remote-debugging-address=127.0.0.1 \
     --user-data-dir="$profile_dir" \
+    --disable-blink-features=AutomationControlled \
     --no-first-run \
     --no-default-browser-check
 }

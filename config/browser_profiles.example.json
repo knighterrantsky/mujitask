@@ -3,7 +3,12 @@
     "provider": "chrome_cdp",
     "profile_id": "local-chrome",
     "metadata": {
-      "debug_http": "http://127.0.0.1:9222"
+      "debug_http": "http://127.0.0.1:9222",
+      "auto_start": true,
+      "user_data_dir": "~/.mujitask/chrome-cdp/local-chrome",
+      "launch_args": [
+        "--disable-blink-features=AutomationControlled"
+      ]
     }
   }
 }
