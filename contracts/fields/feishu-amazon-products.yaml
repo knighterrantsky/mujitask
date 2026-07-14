@@ -1,0 +1,224 @@
+schema_version: 1
+contract_type: feishu_field_contract
+table_code: amazon_products
+table_alias: AMAZON_PRODUCTS
+owner: amazon_business
+
+business_truth: docs/business/requirements/amazon-product-detail-collection.md
+arch_truth: docs/arch/workflow-amazon-product-detail-design.md
+source_adapter: amazon_product_table_source_adapter
+projection_mapper: amazon_product_projection_mapper
+
+identity:
+  marketplace_code: US
+  field: ASIN
+  normalization: trim_uppercase
+  pattern: ^[A-Z0-9]{10}$
+  projection_may_write: false
+
+writeback_rules:
+  record_target: source_record_id
+  observed: write_value
+  explicitly_unavailable: write_terminal_value
+  missing: preserve_existing
+  identity_mismatch: preserve_product_fields_and_write_status_only
+
+fields:
+  - name: ASIN
+    canonical_name: asin
+    type: single_line_text
+    owner: business_input
+    role: identity
+    write_policy: never_write
+
+  - name: 商品链接
+    canonical_name: canonical_url
+    type: url
+    owner: amazon_projection
+    write_policy: refresh_when_identity_valid
+
+  - name: 来源关键词
+    canonical_name: source_keyword
+    type: single_line_text
+    owner: amazon_search_workflow
+    write_policy: preserve_existing
+
+  - name: 强制刷新
+    canonical_name: force_refresh
+    type: checkbox
+    owner: business_input
+    write_policy: never_write
+
+  - name: 采集状态
+    canonical_name: collection_status
+    type: single_select
+    owner: amazon_workflow
+    write_policy: update_on_stage_or_terminal_transition
+
+  - name: 上次采集时间
+    canonical_name: last_collected_at
+    type: datetime
+    owner: amazon_projection
+    write_policy: update_on_terminal_result
+
+  - name: 采集错误
+    canonical_name: collection_error
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: write_redacted_error_or_clear_on_success
+
+  - name: 标题
+    canonical_name: title
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 品牌
+    canonical_name: brand
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 类目路径
+    canonical_name: category_path
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 卖点
+    canonical_name: bullet_points
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 描述
+    canonical_name: description
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 主图
+    canonical_name: main_image
+    type: attachment
+    owner: amazon_projection
+    write_policy: observed_materialized_media_only
+
+  - name: 图库
+    canonical_name: gallery_images
+    type: attachment
+    owner: amazon_projection
+    write_policy: observed_materialized_media_only
+
+  - name: 当前价格
+    canonical_name: current_price
+    type: number
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 原价
+    canonical_name: list_price
+    type: number
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 币种
+    canonical_name: currency
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 评分
+    canonical_name: rating
+    type: number
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 评论数
+    canonical_name: review_count
+    type: number
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 库存状态
+    canonical_name: availability_status
+    type: single_select
+    owner: amazon_projection
+    write_policy: observed_or_explicitly_unavailable
+
+  - name: Parent ASIN
+    canonical_name: parent_asin
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: Child ASIN列表
+    canonical_name: child_asins
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 变体属性
+    canonical_name: variant_attributes
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only_stable_json
+
+  - name: 卖家
+    canonical_name: seller_name
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 配送方式
+    canonical_name: fulfillment
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: Buy Box卖家
+    canonical_name: buy_box_seller
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: Buy Box价格
+    canonical_name: buy_box_price
+    type: number
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 优惠券
+    canonical_name: coupon_text
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 促销
+    canonical_name: promotions
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: BSR排名
+    canonical_name: bsr_rankings
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only
+
+  - name: 技术参数
+    canonical_name: technical_details
+    type: multiline_text
+    owner: amazon_projection
+    write_policy: observed_only_stable_json
+
+  - name: 页面ASIN
+    canonical_name: resolved_asin
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: write_for_identity_audit
+
+  - name: 字段完整度
+    canonical_name: field_coverage_percent
+    type: number
+    owner: amazon_projection
+    write_policy: update_on_terminal_result

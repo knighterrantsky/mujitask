@@ -16,6 +16,10 @@ owners:
         reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
       - path: src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/stages/dispatch_product_collection.py
         reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
+      - path: src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py
+        reason: Required Amazon single-row workflow package entrypoint for four-stage dispatch; business stage logic remains inside the owned flow package.
+      - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py
+        reason: Required Amazon row persistence package entrypoint that serially composes existing media, fact persistence, projection, and Feishu handlers without creating a generic helper owner.
     responsibilities:
       - decide what business targets to collect
       - decide business filtering and row follow-up strategy
@@ -106,6 +110,36 @@ owners:
       - collect external facts
       - upload media
       - upsert Fact DB
+
+  amazon_browser_capture:
+    paths:
+      - src/automation_business_scaffold/capabilities/browser/amazon/**
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+    responsibilities:
+      - normalize Amazon US ASIN identity and canonical URL for browser collection
+      - visit one Amazon product page through the existing browser bridge
+      - parse embedded data, same-origin page responses, semantic DOM, and controlled text blocks in precedence order
+      - persist complete capture evidence to object storage and return compact artifact references
+    forbidden:
+      - write Fact DB
+      - write Feishu business projections
+      - materialize long-lived product media
+      - bypass captcha, access blocks, or provider security policy
+
+  amazon_fact_persistence:
+    paths:
+      - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
+      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
+      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
+    responsibilities:
+      - define Amazon fact tables for migration and test bootstrap consumers
+      - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
+      - enforce marketplace plus ASIN identity and per-run idempotency keys
+    forbidden:
+      - decide Feishu fields
+      - visit or parse Amazon pages
+      - decide workflow stage transitions
+      - execute production DDL from daemon or worker paths
 
   rate_limit:
     paths:

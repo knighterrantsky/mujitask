@@ -58,6 +58,40 @@ business_job_usage:
     - influencer_creator_sync Runtime DB result_json must remain a small structured handoff for downstream stages and summary; full fact bundles, raw FastMoss responses, full media sync payloads, and full Feishu write records belong in Fact DB or artifact/object storage and must not be embedded in runtime result_json.
     - influencer_creator_sync may persist per-step timing diagnostics in handler summary/result for creator_fetch, media_asset_sync, fact_bundle_upsert, influencer_pool_write, product_status_reconcile, and total duration; these diagnostics are observational metadata only and must not alter fact persistence, media materialization, Feishu projection, or workflow status semantics.
 
+platform_contracts:
+  amazon_us:
+    workflow_code: refresh_amazon_product_row_by_asin
+    marketplace_code: US
+    identity_key:
+      - marketplace_code
+      - asin
+    fact_tables:
+      - amazon_products
+      - amazon_product_snapshots
+      - amazon_offer_snapshots
+      - amazon_product_variants
+      - amazon_bsr_snapshots
+      - amazon_media_assets
+      - amazon_product_media_assets
+      - amazon_raw_captures
+      - amazon_feishu_bindings
+    object_prefixes:
+      runtime_evidence: <env>/runs/<run_id>/amazon/<asin>/
+      raw_capture: <env>/raw-captures/amazon/us/<asin>/
+      product_media: <env>/product-media/amazon/us/<asin>/
+    runtime_db_schema_change: false
+    cross_platform_foreign_keys: false
+    fact_database_policy: same_fact_database_instance_with_isolated_amazon_tables
+    object_storage_policy: reuse_configured_bucket_with_isolated_amazon_prefixes
+    persistence_handler: amazon_product_fact_upsert
+    runtime_result_policy: compact_references_only
+    required_evidence:
+      - normalized_capture_ref
+      - raw_capture_ref
+      - field_coverage
+    prohibited_fact_targets:
+      - tk_*
+
 formal_workflow_persistence_contract:
   required_flags:
     requires_fact_db: true

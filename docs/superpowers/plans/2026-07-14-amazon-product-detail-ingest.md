@@ -28,10 +28,10 @@
 - Modify: `docs/arch/workflow-amazon-product-detail-design.md`
 - Test: `tests/test_amazon_product_contracts.py`
 
-- [ ] Write failing contract tests that assert the formal task/workflow code, four stable stages, three new handlers, US-only identity rule, Feishu field ownership, Amazon fact tables, object prefixes, owner boundaries, and a roadmap feature named `amazon_single_product_ingest`.
+- [ ] Write failing contract tests that assert the formal task/workflow code, four stable stages, three new handlers, US-only identity rule, Feishu field ownership, Amazon fact tables, object prefixes, owner boundaries, and roadmap features named `amazon_product_fact_schema` and `amazon_single_product_ingest`.
 - [ ] Run `uv run --extra dev pytest tests/test_amazon_product_contracts.py -q` and confirm failure because contracts do not yet exist.
 - [ ] Add the requirement and domain route documents, then encode fields, statuses, workflow, Fact DB boundaries, artifact prefixes, and handler ownership in YAML.
-- [ ] Add an `amazon_single_product_ingest` roadmap item with `requires_architecture_delta_gate: true`, exact allowed paths, source contracts, tests, and done-gate commands; keep status `in_progress` until final verification.
+- [ ] Add separate `amazon_product_fact_schema` and `amazon_single_product_ingest` roadmap items with `requires_architecture_delta_gate: true`, exact allowed paths, source contracts, tests, and done-gate commands; keep both statuses `in_progress` until their final verification.
 - [ ] Update the design document status to approved/implementing without claiming the capability is complete.
 - [ ] Run the contract test and existing contract harness tests; confirm they pass.
 - [ ] Commit with `docs: define amazon product ingest contracts`.
@@ -208,6 +208,6 @@
 - [ ] Run regression gates: `uv run --extra dev pytest tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_project_structure_contract.py tests/test_project_architecture_contract.py tests/test_system_architecture_contract.py tests/test_architecture_ownership.py tests/test_browser_fallback_boundary.py tests/test_feishu_common_handlers.py tests/test_media_asset_sync_handler.py tests/test_tiktok_product_browser_fetch_handler.py tests/test_runtime_store.py`.
 - [ ] Run the full test suite if the focused and regression gates pass.
 - [ ] Update the design/index/readme to describe the implemented first-version boundary and explicitly retain batch/search as out of scope.
-- [ ] Change the roadmap feature status to `complete`, then run `python scripts/harness/claim_done.py amazon_single_product_ingest --run-gates` and require `claim=complete` with no failed checks.
+- [ ] Change both roadmap feature statuses to `complete`, then run `python scripts/harness/claim_done.py amazon_product_fact_schema --run-gates` and `python scripts/harness/claim_done.py amazon_single_product_ingest --run-gates`; require `claim=complete` with no failed checks from both.
 - [ ] Invoke the verification-before-completion and requesting-code-review skills; address only actionable, in-scope findings and rerun affected gates.
 - [ ] Confirm `git status --short`, review the final diff for secrets/unrelated changes, and commit with `feat: implement amazon single product ingest`.

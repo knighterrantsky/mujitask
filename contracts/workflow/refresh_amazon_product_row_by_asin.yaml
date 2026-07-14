@@ -1,0 +1,78 @@
+schema_version: 1
+contract_type: workflow_contract
+domain: amazon_product_detail
+task_code: refresh_amazon_product_row_by_asin
+workflow_code: refresh_amazon_product_row_by_asin
+status: in_progress
+
+business_requirement: docs/business/requirements/amazon-product-detail-collection.md
+architecture_design: docs/arch/workflow-amazon-product-detail-design.md
+field_contracts:
+  - contracts/fields/feishu-amazon-products.yaml
+state_contracts:
+  - contracts/states/amazon-product-collection-status.yaml
+
+payload:
+  business_inputs_only: true
+  required:
+    - table_ref
+    - source_record_id
+  forbidden:
+    - run_mode
+    - db_url
+    - fact_db_url
+    - artifact_store_provider
+    - artifact_bucket
+    - browser_profile_ref
+    - browser_provider_name
+    - browser_profile_id
+    - browser_workspace_id
+    - browser_cookies
+
+identity:
+  marketplace_code: US
+  domain: amazon.com
+  asin_normalization: trim_uppercase
+  asin_pattern: ^[A-Z0-9]{10}$
+  canonical_url_template: https://www.amazon.com/dp/{asin}
+
+persistence:
+  requires_fact_db: true
+  requires_object_storage: true
+  runtime_result_policy: compact_references_only
+
+new_handlers:
+  - amazon_product_browser_fetch
+  - amazon_product_row_persist
+  - amazon_product_fact_upsert
+
+stages:
+  - stage_code: read_amazon_product_row
+    execution_mode: api_worker_job
+    handler_code: feishu_table_read
+    source_adapter: amazon_product_table_source_adapter
+    exit_condition: 唯一来源行已读取且 ASIN 通过美国站身份校验
+  - stage_code: collect_amazon_product_detail
+    execution_mode: browser_task_execution
+    handler_code: amazon_product_browser_fetch
+    exit_condition: normalized capture 引用或受控终态错误已持久化
+  - stage_code: persist_amazon_product_detail
+    execution_mode: api_worker_job
+    handler_code: amazon_product_row_persist
+    inner_handlers:
+      - media_asset_sync
+      - amazon_product_fact_upsert
+      - feishu_table_write
+    exit_condition: 媒体、Amazon 事实和来源行投影均已收敛
+  - stage_code: ready_for_summary
+    execution_mode: summary
+    handler_code: task_completed_notification
+    exit_condition: 行结果、summary 和 outbox 已持久化
+
+protected_invariants:
+  - Browser 是 Amazon 正常采集阶段，不使用 fallback_required 表示正常流程。
+  - 完整 capture、HTML 和媒体正文不得进入 Runtime DB；Runtime 只保存紧凑对象引用。
+  - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
+  - 飞书投影只更新 source_record_id；missing 字段必须保留已有值。
+  - blocked/captcha 保存证据并失败收敛，不新增绕过路径。
+  - 单行重复执行必须按来源行、ASIN、run 和事实唯一键保持幂等。

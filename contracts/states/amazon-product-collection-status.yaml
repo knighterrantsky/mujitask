@@ -1,0 +1,69 @@
+schema_version: 1
+contract_type: state_contract
+state_code: amazon_product_collection_status
+display_name: 采集状态
+field_contract: contracts/fields/feishu-amazon-products.yaml
+owner: amazon_workflow
+
+initial_state: pending
+
+states:
+  - code: pending
+    terminal: false
+    meaning: 等待单行任务采集
+  - code: collecting
+    terminal: false
+    meaning: 浏览器正在访问并解析商品页
+  - code: persisting
+    terminal: false
+    meaning: 正在同步媒体、事实和飞书投影
+  - code: success
+    terminal: true
+    runtime_result_status: success
+    meaning: 身份、事实、证据和飞书写回完成
+  - code: partial_success
+    terminal: true
+    runtime_result_status: partial_success
+    meaning: 身份与事实完成，但部分可选字段、媒体或投影缺失
+  - code: unavailable
+    terminal: true
+    runtime_result_status: success
+    meaning: 商品明确不可售、下架或不存在，终态事实已持久化
+  - code: blocked
+    terminal: true
+    runtime_result_status: failed
+    meaning: 验证码、机器人页或访问限制，保存证据且不自动绕过
+  - code: failed
+    terminal: true
+    runtime_result_status: failed
+    meaning: 身份、配置、解析、持久化或写回未能收敛
+
+runtime_boundary:
+  blocked_is_runtime_status: false
+  runtime_lifecycle_states:
+    - pending
+    - running
+    - waiting
+    - finished
+    - cancelled
+  rule: 业务采集状态不得替代 Runtime DB lifecycle status；blocked 通过 failed result_status 收敛。
+
+transitions:
+  pending:
+    - collecting
+    - failed
+  collecting:
+    - persisting
+    - blocked
+    - unavailable
+    - failed
+  persisting:
+    - success
+    - partial_success
+    - unavailable
+    - failed
+
+reset_rules:
+  - trigger: 人工修改 ASIN 或勾选强制刷新
+    action: 由新任务把状态重置为 pending
+    effect: 允许同一来源行重新进入采集
