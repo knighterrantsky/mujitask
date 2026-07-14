@@ -42,6 +42,13 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
             op = "update"
         else:
             op = "append"
+    fields = mapping(record.get("fields"))
+    clear_fields = list(record.get("clear_fields") or payload.get("clear_fields") or [])
+    normalized_fields = compact(fields)
+    for field_name in clear_fields:
+        name = text(field_name)
+        if name in fields and fields[name] in (None, "", []):
+            normalized_fields[name] = fields[name]
     item = {
         "op": op,
         "record_id": record_id,
@@ -50,10 +57,14 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
         "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
         "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
         "update_accumulate_fields": mapping(record.get("update_accumulate_fields") or payload.get("update_accumulate_fields")),
-        "fields": mapping(record.get("fields")),
+        "clear_fields": clear_fields,
+        "fields": normalized_fields,
         "source_context": mapping(record.get("source_context")) or source_context_from_record(record, payload),
     }
-    return compact(item)
+    normalized = compact(item)
+    if normalized_fields:
+        normalized["fields"] = normalized_fields
+    return normalized
 
 
 def write_record_key(record: Mapping[str, Any]) -> str:

@@ -19,6 +19,20 @@ def read_feishu_records(
     if inline_rows:
         return inline_rows, {"next_page_token": "", "has_more": False, "source": "inline"}
 
+    source_record_id = _text(payload.get("source_record_id"))
+    if source_record_id:
+        response = client.get_record(target.app_token, target.table_id, source_record_id)
+        data = _mapping(response.get("data"))
+        record = _mapping(data.get("record")) or _mapping(response.get("record"))
+        if not record and "fields" in data:
+            record = data
+        if record and not _text(record.get("record_id") or record.get("id")):
+            record["record_id"] = source_record_id
+        return (
+            [record] if record else [],
+            {"next_page_token": "", "has_more": False, "source": "record_id"},
+        )
+
     view_id = _text(
         _mapping(payload.get("feishu_table")).get("view_id")
         or target.view_id

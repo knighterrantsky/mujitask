@@ -1197,6 +1197,10 @@ features:
       - src/automation_business_scaffold/config.py
       - src/automation_business_scaffold/contracts/handler/**
       - src/automation_business_scaffold/contracts/workflow/**
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/write_payloads.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/row_reading.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/row_updates.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/field_envelopes.py
       - src/automation_business_scaffold/capabilities/browser/amazon/product_page.py
       - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
       - src/automation_business_scaffold/capabilities/fact_sources/amazon/mappers/**
