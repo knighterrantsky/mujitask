@@ -35,6 +35,7 @@ ALLOWLIST_BY_WORKER = {
         "media_asset_sync",
         "fact_bundle_upsert",
         "amazon_product_fact_upsert",
+        "amazon_product_row_persist",
     },
     "browser": {
         "amazon_product_browser_fetch",

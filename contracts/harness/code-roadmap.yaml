@@ -1157,6 +1157,7 @@ features:
       - Amazon identity is unique by marketplace_code plus asin and does not add cross-platform foreign keys.
       - Product, snapshot, offer, variant, BSR, media, raw capture, and Feishu binding upserts are independently idempotent.
       - Amazon artifacts reuse the configured bucket with governed Amazon prefixes; Runtime DB schema remains unchanged.
+      - Fact persistence accepts a validated subset of observed Amazon media, reports compact coverage, and remains idempotent when the same run retries from partial to complete media.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 
   - feature_code: amazon_single_product_ingest
@@ -1201,6 +1202,7 @@ features:
       - src/automation_business_scaffold/capabilities/input_sources/feishu/row_reading.py
       - src/automation_business_scaffold/capabilities/input_sources/feishu/row_updates.py
       - src/automation_business_scaffold/capabilities/input_sources/feishu/field_envelopes.py
+      - src/automation_business_scaffold/capabilities/media/asset_sync_handler.py
       - src/automation_business_scaffold/capabilities/browser/amazon/product_page.py
       - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
       - src/automation_business_scaffold/capabilities/fact_sources/amazon/mappers/**
@@ -1217,6 +1219,7 @@ features:
       - tests/test_amazon_product_page.py
       - tests/test_amazon_product_browser_fetch_handler.py
       - tests/test_feishu_amazon_product_mapping.py
+      - tests/test_media_asset_sync_handler.py
       - tests/test_amazon_product_row_persist.py
       - tests/test_refresh_amazon_product_row_by_asin.py
       - tests/test_runtime_amazon_product_ingest.py
@@ -1239,6 +1242,7 @@ features:
         - tests/test_amazon_product_page.py
         - tests/test_amazon_product_browser_fetch_handler.py
         - tests/test_feishu_amazon_product_mapping.py
+        - tests/test_media_asset_sync_handler.py
         - tests/test_amazon_product_row_persist.py
         - tests/test_refresh_amazon_product_row_by_asin.py
         - tests/test_runtime_amazon_product_ingest.py
@@ -1248,7 +1252,7 @@ features:
         - tests/test_harness_code_roadmap.py
         - tests/test_architecture_ownership.py
       commands:
-        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_amazon_product_row_persist.py
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_media_asset_sync_handler.py tests/test_amazon_product_row_persist.py
         - uv run --extra dev pytest tests/test_refresh_amazon_product_row_by_asin.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_ownership.py
     completion_rules:

@@ -36,6 +36,11 @@ AMAZON_PRODUCT_FACT_UPSERT_JOB = JobDefinition(
             "Source Feishu record id.",
             type_hint="str",
         ),
+        required_field(
+            "requested_asin",
+            "Expected source-row ASIN validated before any Fact write.",
+            type_hint="str",
+        ),
         required_field("run_id", "Stable collection run id.", type_hint="str"),
         optional_field(
             "materialized_media_assets",

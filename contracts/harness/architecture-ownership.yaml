@@ -19,7 +19,7 @@ owners:
       - path: src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py
         reason: Required Amazon single-row workflow package entrypoint for four-stage dispatch; business stage logic remains inside the owned flow package.
       - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py
-        reason: Required Amazon row persistence package entrypoint that serially composes existing media, fact persistence, projection, and Feishu handlers without creating a generic helper owner.
+        reason: Required Amazon row persistence package entrypoint that serially composes existing media, fact persistence, projection, and Feishu handlers through dispatch boundaries, preserves media-partial retry semantics, and does not create a generic helper owner.
     responsibilities:
       - decide what business targets to collect
       - decide business filtering and row follow-up strategy

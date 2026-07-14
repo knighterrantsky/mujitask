@@ -116,15 +116,23 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
 
     try:
         capture = _decode_and_validate_capture(capture_bytes)
+        expected_requested_asin = normalize_asin(
+            _required_text(payload.get("requested_asin"), "requested_asin")
+        )
+        if capture["requested_asin"] != expected_requested_asin:
+            raise _InvalidCapture(
+                "Normalized capture requested_asin does not match the source-row ASIN."
+            )
         source_table_ref = _validate_source_binding(payload)
         run_id = _required_text(payload.get("run_id"), "run_id")
         source_record_id = _required_text(payload.get("source_record_id"), "source_record_id")
         _validate_raw_capture_identity(raw_capture_refs, capture, artifact_policy)
-        payload["materialized_media_assets"] = _validate_materialized_media_assets(
+        materialized_media_assets, media_coverage = _validate_materialized_media_assets(
             payload,
             capture,
             artifact_policy,
         )
+        payload["materialized_media_assets"] = materialized_media_assets
     except (
         AmazonProductExtractionError,
         TypeError,
@@ -171,22 +179,40 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
             },
         )
 
+    collection_status = _effective_collection_status(
+        capture["collection_status"],
+        media_coverage,
+    )
+    projection_facts = persisted["projection_facts"]
+    projection_facts["collection_status"] = collection_status
+    _suppress_incomplete_media_projection(
+        projection_facts,
+        capture=capture,
+        materialized_media_assets=materialized_media_assets,
+    )
+
     if context.metadata.get("include_transient_projection_facts") is not True:
         persisted.pop("projection_facts", None)
 
     summary = {
-        "collection_status": capture["collection_status"],
+        "collection_status": collection_status,
         "marketplace_code": capture["marketplace_code"],
         "requested_asin": capture["requested_asin"],
         "persistence_mode": "database",
         "persisted_counts": dict(persisted["persisted_counts"]),
+        "media_coverage": dict(media_coverage),
     }
-    if capture["collection_status"] == "partial_success":
+    if collection_status == "partial_success":
+        warnings: list[str] = []
+        if capture["collection_status"] == "partial_success":
+            warnings.append("Amazon capture contains fields without observed evidence.")
+        if not media_coverage["complete"]:
+            warnings.append("Amazon media materialization is incomplete.")
         return partial_success_result(
             context,
             summary=summary,
             result=persisted,
-            warnings=("Amazon capture contains fields without observed evidence.",),
+            warnings=tuple(warnings),
         )
     return success_result(context, summary=summary, result=persisted)
 
@@ -613,11 +639,7 @@ def _validate_materialized_media_assets(
     payload: dict[str, Any],
     capture: dict[str, Any],
     artifact_policy: Mapping[str, str],
-) -> list[dict[str, Any]]:
-    if capture["collection_status"] == "unavailable" or not _has_observed_media(
-        capture["field_evidence"]
-    ):
-        return []
+) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
     required_media = _required_materialized_media(capture)
     assets = coerce_mapping_list(payload.get("materialized_media_assets"))
     expected_bucket = artifact_policy["bucket"]
@@ -665,14 +687,19 @@ def _validate_materialized_media_assets(
             raise ValueError(
                 "Materialized media assets require asset_key, content_digest, or source_url."
             )
-    if provided_media != required_media:
-        missing = sorted(required_media - provided_media)
-        extra = sorted(provided_media - required_media)
+    extra = sorted(provided_media - required_media)
+    if extra:
         raise ValueError(
-            "Materialized media does not exactly cover observed Amazon images: "
-            f"missing={missing}, extra={extra}."
+            "Materialized media contains images not observed in the Amazon capture: "
+            f"extra={extra}."
         )
-    return assets
+    missing_count = len(required_media - provided_media)
+    return assets, {
+        "expected": len(required_media),
+        "materialized": len(provided_media),
+        "missing": missing_count,
+        "complete": missing_count == 0,
+    }
 
 
 def _required_materialized_media(capture: Mapping[str, Any]) -> set[tuple[str, str, int]]:
@@ -680,16 +707,59 @@ def _required_materialized_media(capture: Mapping[str, Any]) -> set[tuple[str, s
     evidence = _mapping_value(capture.get("field_evidence"))
     required: set[tuple[str, str, int]] = set()
     main_url = ""
-    if _is_observed(evidence, "media.main_image"):
+    if _is_strictly_observed(evidence, "media.main_image"):
         main_url = _media_url(media.get("main_image"), "media.main_image")
         required.add((main_url, "main_image", 0))
-    if _is_observed(evidence, "media.gallery_images"):
+    if _is_strictly_observed(evidence, "media.gallery_images"):
         for index, item in enumerate(_list_value(media.get("gallery_images"))):
             gallery_url = _media_url(item, f"media.gallery_images[{index}]")
             if gallery_url == main_url or any(key[0] == gallery_url for key in required):
                 continue
             required.add((gallery_url, "gallery_image", index))
     return required
+
+
+def _effective_collection_status(
+    capture_status: str,
+    media_coverage: Mapping[str, int | bool],
+) -> str:
+    if capture_status == "unavailable":
+        return "unavailable"
+    if capture_status == "partial_success" or media_coverage.get("complete") is not True:
+        return "partial_success"
+    return "success"
+
+
+def _suppress_incomplete_media_projection(
+    projection_facts: dict[str, Any],
+    *,
+    capture: Mapping[str, Any],
+    materialized_media_assets: list[dict[str, Any]],
+) -> None:
+    required_media = _required_materialized_media(capture)
+    provided_media = {
+        (
+            _clean_text(asset.get("source_url")),
+            _clean_text(asset.get("media_role")),
+            int(asset.get("position") or 0),
+        )
+        for asset in materialized_media_assets
+    }
+    evidence = dict(_mapping_value(projection_facts.get("field_evidence")))
+    required_main = {item for item in required_media if item[1] == "main_image"}
+    required_gallery = {item for item in required_media if item[1] == "gallery_image"}
+    if required_main and not required_main.issubset(provided_media):
+        _mark_projection_evidence_missing(evidence, "media.main_image")
+    if required_gallery and not required_gallery.issubset(provided_media):
+        _mark_projection_evidence_missing(evidence, "media.gallery_images")
+    projection_facts["field_evidence"] = evidence
+
+
+def _mark_projection_evidence_missing(evidence: dict[str, Any], path: str) -> None:
+    item = evidence.get(path)
+    normalized = dict(item) if isinstance(item, Mapping) else {}
+    normalized["status"] = "missing"
+    evidence[path] = normalized
 
 
 def _validate_source_binding(payload: dict[str, Any]) -> dict[str, str]:
@@ -967,13 +1037,6 @@ def _has_observed_offer(evidence: Mapping[str, Any]) -> bool:
     )
 
 
-def _has_observed_media(evidence: Mapping[str, Any]) -> bool:
-    return any(
-        path.startswith("media.") and isinstance(item, dict) and item.get("status") == "observed"
-        for path, item in evidence.items()
-    )
-
-
 def _product_master_status(capture: Mapping[str, Any], evidence: Mapping[str, Any]) -> str | None:
     if capture.get("collection_status") == "unavailable":
         return "unavailable"
@@ -988,6 +1051,11 @@ def _is_observed(evidence: Mapping[str, Any], path: str) -> bool:
         "observed",
         "explicitly_unavailable",
     }
+
+
+def _is_strictly_observed(evidence: Mapping[str, Any], path: str) -> bool:
+    item = evidence.get(path)
+    return isinstance(item, dict) and item.get("status") == "observed"
 
 
 def _observed_value(evidence: Mapping[str, Any], path: str, value: Any) -> Any:

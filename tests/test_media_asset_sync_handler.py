@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from automation_business_scaffold.capabilities.media import asset_sync_handler
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import (
+    StoredArtifact,
+)
 
 
 class _FakeResponse:
@@ -71,6 +75,7 @@ def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypa
     assert asset["source_url"] == "https://cdn.example.com/gallery.webp?from=2378011839"
     assert asset["local_path"].endswith(".webp")
     assert asset["object_key"].endswith(".webp")
+    assert asset["object_key"].startswith("runs/job-media/assets/")
     assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
 
 
@@ -298,3 +303,191 @@ def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch,
     assert asset["sync_state"] == "reused"
     assert asset["asset_id"] == "asset-cached"
     assert asset["object_key"] == "runtime/media/gallery.webp"
+
+
+def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FakeArtifactStore:
+        provider_code = "minio"
+
+        def __init__(self) -> None:
+            self.uploads: list[dict[str, Any]] = []
+
+        def upload_file(
+            self,
+            *,
+            bucket,
+            object_key,
+            local_path,
+            content_type,
+            metadata=None,
+        ):
+            payload = local_path.read_bytes()
+            self.uploads.append(
+                {
+                    "bucket": bucket,
+                    "object_key": object_key,
+                    "payload": payload,
+                    "content_type": content_type,
+                    "metadata": dict(metadata or {}),
+                }
+            )
+            return StoredArtifact(
+                bucket=bucket,
+                object_key=object_key,
+                etag="minio-etag-is-not-the-content-digest",
+                size=len(payload),
+                content_type=content_type,
+                uri=f"s3://{bucket}/{object_key}",
+            )
+
+        def build_uri(self, *, bucket, object_key):
+            return f"s3://{bucket}/{object_key}"
+
+    class ForbiddenTKFactStore:
+        def __init__(self, **kwargs):
+            raise AssertionError(f"Amazon media must not open TKFactStore: {kwargs}")
+
+    store = FakeArtifactStore()
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "TKFactStore", ForbiddenTKFactStore)
+    monkeypatch.setattr(asset_sync_handler, "urlopen", lambda request, timeout: _FakeResponse())
+
+    source_bytes = b"fake-webp-bytes"
+    content_digest = hashlib.sha256(source_bytes).hexdigest()
+    common_payload = {
+        "artifact_root": str(tmp_path / "artifacts"),
+        "artifact_store_provider": "minio",
+        "artifact_bucket": "runtime-artifacts",
+        "artifact_object_prefix": "dev",
+        "fact_db_url": "postgresql+psycopg://facts",
+        "sync_referenced_files": True,
+        "media_download_dir": str(tmp_path / "downloads"),
+        "asset_refs": [
+            {
+                "entity_type": "product",
+                "product_id": "B0CHILD001",
+                "media_role": "main_image",
+                "position": 0,
+                "marketplace_code": "US",
+                "source_platform": "amazon",
+                "source_url": "https://images.example.test/main.webp",
+            },
+            {
+                "entity_type": "product",
+                "product_id": "B0CHILD001",
+                "media_role": "gallery_image",
+                "position": 2,
+                "marketplace_code": "US",
+                "source_platform": "amazon",
+                "source_url": "https://images.example.test/gallery.webp",
+            },
+        ],
+    }
+
+    first = asset_sync_handler.media_asset_sync_handler(
+        _context({**common_payload, "run_id": "amazon-run-1"})
+    )
+    second = asset_sync_handler.media_asset_sync_handler(
+        _context({**common_payload, "run_id": "amazon-run-2"})
+    )
+
+    assert first.status == "success"
+    assert second.status == "success"
+    expected_keys = [
+        (
+            "dev/product-media/amazon/us/B0CHILD001/main_image/"
+            f"{content_digest}.webp"
+        ),
+        (
+            "dev/product-media/amazon/us/B0CHILD001/gallery_image/"
+            f"{content_digest}.webp"
+        ),
+    ]
+    assert [asset["object_key"] for asset in first.result["synced_assets"]] == expected_keys
+    assert [asset["object_key"] for asset in second.result["synced_assets"]] == expected_keys
+    assert [asset["position"] for asset in first.result["synced_assets"]] == [0, 2]
+    assert [asset["source_platform"] for asset in first.result["synced_assets"]] == [
+        "amazon",
+        "amazon",
+    ]
+    assert [asset["marketplace_code"] for asset in first.result["synced_assets"]] == [
+        "US",
+        "US",
+    ]
+    assert all(
+        asset["content_digest"] == content_digest
+        and asset["size_bytes"] == len(source_bytes)
+        and asset["asset_key"] == f"content_sha256:{content_digest}"
+        and asset["remote_uri"] == f"s3://runtime-artifacts/{asset['object_key']}"
+        and "artifact_uri_prefix" not in asset
+        for asset in first.result["synced_assets"]
+    )
+    assert [ref["object_key"] for ref in first.result["artifact_refs"]] == expected_keys
+
+
+def test_media_asset_sync_scopes_duplicate_refs_by_platform_and_amazon_role(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int):
+        del timeout
+        requested_urls.append(request.full_url)
+        return _FakeResponse()
+
+    monkeypatch.setattr(asset_sync_handler, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "_create_fact_store",
+        lambda payload, *, asset_refs, warnings: None,
+    )
+
+    shared_url = "https://images.example.test/shared.webp"
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "sync_referenced_files": True,
+                "media_download_dir": str(tmp_path / "downloads"),
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "product_id": "1730964478199763166",
+                        "media_role": "main_image",
+                        "source_platform": "tiktok",
+                        "source_url": shared_url,
+                    },
+                    {
+                        "entity_type": "product",
+                        "product_id": "B0CHILD001",
+                        "media_role": "main_image",
+                        "source_platform": "amazon",
+                        "marketplace_code": "US",
+                        "source_url": shared_url,
+                    },
+                    {
+                        "entity_type": "product",
+                        "product_id": "B0CHILD001",
+                        "media_role": "gallery_image",
+                        "source_platform": "amazon",
+                        "marketplace_code": "US",
+                        "source_url": shared_url,
+                    },
+                ],
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert requested_urls == [shared_url, shared_url, shared_url]
+    assert len(result.result["artifact_refs"]) == 3
+    object_keys = [asset["object_key"] for asset in result.result["synced_assets"]]
+    assert object_keys[0].startswith("runs/job-media/assets/")
+    assert object_keys[1].startswith("product-media/amazon/us/B0CHILD001/main_image/")
+    assert object_keys[2].startswith("product-media/amazon/us/B0CHILD001/gallery_image/")

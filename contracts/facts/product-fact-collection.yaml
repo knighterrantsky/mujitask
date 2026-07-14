@@ -4,7 +4,8 @@ status: active_contract
 
 principles:
   - product facts are independent from Feishu business writeback
-  - all product media facts must be materialized to object storage before being persisted as fact media
+  - every persisted product media fact must be materialized to object storage before being persisted as fact media
+  - Amazon media materialization may persist a validated subset of observed media; missing observed media makes the handler partial_success, while unexpected or duplicate media remains invalid
   - formal workflows that use fact_bundle_upsert or media_asset_sync must declare requires_fact_db=true and requires_object_storage=true
   - missing Fact DB or object storage configuration must fail fast during submit or handler execution
   - formal skill payloads carry business inputs only; project runtime config resolves Runtime DB, Fact DB, and object storage
@@ -91,6 +92,20 @@ platform_contracts:
       - field_coverage
     prohibited_fact_targets:
       - tk_*
+    media_coverage_policy:
+      validated_subset_may_persist: true
+      unexpected_assets: reject
+      duplicate_role_position_mapping: reject
+      invalid_storage_reference: reject
+      missing_observed_assets_status: partial_success
+      compact_summary_fields:
+        - expected
+        - materialized
+        - missing
+        - complete
+      projection:
+        main_image: project_independently_when_materialized
+        gallery_images: project_only_when_the_observed_gallery_is_fully_materialized
 
 formal_workflow_persistence_contract:
   required_flags:

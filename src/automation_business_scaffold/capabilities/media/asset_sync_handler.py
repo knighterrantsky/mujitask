@@ -38,6 +38,7 @@ from typing import Any
 
 HANDLER_CODE = "media_asset_sync"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
+_TK_MEDIA_CACHE_PLATFORMS = frozenset({"fastmoss", "tiktok"})
 
 
 def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
@@ -115,11 +116,22 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     synced_assets_by_ref: dict[str, dict[str, Any]] = {}
     deferred_reuse_assets: list[tuple[dict[str, Any], str]] = []
     warnings: list[str] = []
-    fact_store = _create_fact_store(payload, warnings=warnings)
+    normalized_asset_refs = [
+        _normalize_media_asset(
+            asset,
+            fallback_product_id=payload.get("product_id"),
+            fallback_source_platform=payload.get("source_platform"),
+        )
+        for asset in asset_refs
+    ]
+    fact_store = _create_fact_store(
+        payload,
+        asset_refs=normalized_asset_refs,
+        warnings=warnings,
+    )
     request_pacer = RequestPacer(resolve_api_request_pacer_config(payload, provider="media"))
 
-    for index, asset in enumerate(asset_refs):
-        normalized_asset = _normalize_media_asset(asset, fallback_product_id=payload.get("product_id"))
+    for index, normalized_asset in enumerate(normalized_asset_refs):
         asset_ref_key = _asset_ref_key(normalized_asset)
         if asset_ref_key and asset_ref_key in synced_assets_by_ref:
             existing_asset = synced_assets_by_ref[asset_ref_key]
@@ -255,7 +267,17 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     return success_result(context, summary=summary, result=result)
 
 
-def _create_fact_store(payload: dict[str, Any], *, warnings: list[str]) -> TKFactStore | None:
+def _create_fact_store(
+    payload: dict[str, Any],
+    *,
+    asset_refs: list[dict[str, Any]],
+    warnings: list[str],
+) -> TKFactStore | None:
+    if not any(
+        coerce_str(asset.get("source_platform")).lower() in _TK_MEDIA_CACHE_PLATFORMS
+        for asset in asset_refs
+    ):
+        return None
     request_payload = coerce_mapping(payload.get("request_payload"))
     fact_db_url = first_non_empty(
         payload.get("fact_db_url"),
@@ -277,7 +299,11 @@ def _create_fact_store(payload: dict[str, Any], *, warnings: list[str]) -> TKFac
 
 
 def _find_reusable_media_asset(fact_store: TKFactStore | None, asset: dict[str, Any]) -> dict[str, Any]:
-    if fact_store is None:
+    if (
+        fact_store is None
+        or coerce_str(asset.get("source_platform")).lower()
+        not in _TK_MEDIA_CACHE_PLATFORMS
+    ):
         return {}
     cached = fact_store.find_media_asset(
         source_url=coerce_str(asset.get("source_url")),
@@ -326,6 +352,8 @@ def _reused_in_run_media_asset(asset: dict[str, Any], existing: dict[str, Any]) 
             "remote_uri": existing.get("remote_uri"),
             "file_name": first_non_empty(existing.get("file_name"), asset.get("file_name")),
             "mime_type": first_non_empty(existing.get("mime_type"), asset.get("mime_type")),
+            "content_digest": existing.get("content_digest"),
+            "size_bytes": existing.get("size_bytes"),
             "source_platform": first_non_empty(asset.get("source_platform"), existing.get("source_platform")),
             "metadata": asset.get("metadata"),
         }
@@ -339,6 +367,13 @@ def _asset_ref_key(asset: dict[str, Any]) -> str:
 
 def _asset_ref_keys(asset: dict[str, Any]) -> list[str]:
     keys: list[str] = []
+    source_platform = coerce_str(asset.get("source_platform")).lower() or "legacy"
+    duplicate_scope = source_platform
+    if source_platform == "amazon":
+        duplicate_scope = (
+            f"{source_platform}:"
+            f"{coerce_str(asset.get('media_role')).lower() or 'asset'}"
+        )
     for prefix, value in (
         ("file_token", asset.get("file_token")),
         ("object_key", asset.get("object_key")),
@@ -348,7 +383,7 @@ def _asset_ref_keys(asset: dict[str, Any]) -> list[str]:
     ):
         text = coerce_str(value)
         if text:
-            keys.append(f"{prefix}:{text}")
+            keys.append(f"{duplicate_scope}:{prefix}:{text}")
     return keys
 
 
@@ -496,7 +531,12 @@ def _object_storage_requirement_error(
     )
 
 
-def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = "") -> dict[str, Any]:
+def _normalize_media_asset(
+    asset: dict[str, Any],
+    *,
+    fallback_product_id: str = "",
+    fallback_source_platform: str = "",
+) -> dict[str, Any]:
     entity_key_type, entity_key_external_id = _entity_parts_from_key(asset.get("entity_key"))
     entity_type = first_non_empty(asset.get("entity_type"), entity_key_type, "product")
     entity_external_id = first_non_empty(
@@ -520,7 +560,13 @@ def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = 
             "mime_type": asset.get("mime_type"),
             "bucket": asset.get("bucket"),
             "remote_uri": asset.get("remote_uri"),
-            "source_platform": first_non_empty(asset.get("source_platform"), "tiktok"),
+            "source_platform": first_non_empty(
+                asset.get("source_platform"),
+                fallback_source_platform,
+                "tiktok",
+            ).lower(),
+            "marketplace_code": coerce_str(asset.get("marketplace_code")).upper(),
+            "position": asset.get("position"),
             "metadata": coerce_mapping(asset.get("metadata")),
         }
     )
@@ -545,6 +591,22 @@ def _append_artifact_spec(
     handler_code: str,
     local_path: Path,
 ) -> None:
+    resolved_path = local_path.resolve()
+    stored_asset = dict(asset)
+    explicit_object_key = ""
+    if _is_amazon_product_media(asset):
+        content_digest = _sha256_of_file(resolved_path)
+        stored_asset.update(
+            {
+                "asset_key": f"content_sha256:{content_digest}",
+                "content_digest": content_digest,
+                "size_bytes": resolved_path.stat().st_size,
+            }
+        )
+        explicit_object_key = _amazon_product_media_object_key(
+            stored_asset,
+            local_path=resolved_path,
+        )
     specs.append(
         ArtifactFileSpec(
             kind=first_non_empty(asset.get("media_role"), "asset_file"),
@@ -556,10 +618,46 @@ def _append_artifact_spec(
                 "entity_type": coerce_str(asset.get("entity_type")),
                 "entity_external_id": coerce_str(asset.get("entity_external_id")),
                 "media_role": coerce_str(asset.get("media_role")),
+                "source_platform": coerce_str(asset.get("source_platform")),
+                "marketplace_code": coerce_str(asset.get("marketplace_code")),
+                "position": asset.get("position"),
+                "content_digest": stored_asset.get("content_digest"),
             },
+            object_key=explicit_object_key,
         )
     )
-    local_assets_by_path[str(local_path.resolve())] = asset
+    local_assets_by_path[str(resolved_path)] = compact_dict(stored_asset)
+
+
+def _is_amazon_product_media(asset: dict[str, Any]) -> bool:
+    return (
+        coerce_str(asset.get("source_platform")).lower() == "amazon"
+        and coerce_str(asset.get("marketplace_code")).upper() == "US"
+        and coerce_str(asset.get("entity_type")) == "product"
+        and bool(coerce_str(asset.get("entity_external_id")))
+    )
+
+
+def _amazon_product_media_object_key(
+    asset: dict[str, Any],
+    *,
+    local_path: Path,
+) -> str:
+    suffix = local_path.suffix.lower() or ".bin"
+    return (
+        "product-media/amazon/us/"
+        f"{_safe_segment(asset.get('entity_external_id')).upper()}/"
+        f"{_safe_segment(asset.get('media_role')).lower()}/"
+        f"{coerce_str(asset.get('content_digest')).lower()}{suffix}"
+    )
+
+
+def _sha256_of_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _sync_referenced_files_enabled(payload: dict[str, Any], artifact_settings: dict[str, Any]) -> bool:

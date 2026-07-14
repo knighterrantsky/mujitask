@@ -272,6 +272,19 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/workflow-amazon-product-detail-design.md#104-fact-persistence-owner",
             side_effects=("artifact.read", "fact_db.write"),
         ),
+        "amazon_product_row_persist": _contract(
+            handler_code="amazon_product_row_persist",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose=(
+                "Serially converge Amazon product media, facts, projection, and same-row "
+                "Feishu writeback."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("artifact.read", "artifact.write", "fact_db.write", "feishu.write"),
+        ),
         "selection_row_refresh": _contract(
             handler_code="selection_row_refresh",
             worker_type="api_worker",

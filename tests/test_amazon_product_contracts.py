@@ -259,6 +259,7 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         "tests/test_amazon_product_page.py",
         "tests/test_amazon_product_browser_fetch_handler.py",
         "tests/test_feishu_amazon_product_mapping.py",
+        "tests/test_media_asset_sync_handler.py",
         "tests/test_amazon_product_row_persist.py",
         "tests/test_refresh_amazon_product_row_by_asin.py",
         "tests/test_runtime_amazon_product_ingest.py",
