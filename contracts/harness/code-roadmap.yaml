@@ -1199,6 +1199,8 @@ features:
       - src/automation_business_scaffold/contracts/handler/**
       - src/automation_business_scaffold/contracts/workflow/**
       - src/automation_business_scaffold/capabilities/input_sources/feishu/write_payloads.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/table_common.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/table_read_handler.py
       - src/automation_business_scaffold/capabilities/input_sources/feishu/row_reading.py
       - src/automation_business_scaffold/capabilities/input_sources/feishu/row_updates.py
       - src/automation_business_scaffold/capabilities/input_sources/feishu/field_envelopes.py
@@ -1214,6 +1216,9 @@ features:
       - src/automation_business_scaffold/infrastructure/runtime/runtime_store.py
       - src/automation_business_scaffold/infrastructure/runtime/repositories/task_execution_repo.py
       - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/workflow_registry.py
+      - src/automation_business_scaffold/control_plane/executor/request_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/runner.py
       - src/automation_business_scaffold/control_plane/runtime_config/settings.py
       - tests/test_amazon_product_contracts.py
       - tests/test_amazon_product_page.py
@@ -1221,9 +1226,11 @@ features:
       - tests/test_feishu_amazon_product_mapping.py
       - tests/test_media_asset_sync_handler.py
       - tests/test_amazon_product_row_persist.py
+      - tests/test_feishu_common_handlers.py
       - tests/test_refresh_amazon_product_row_by_asin.py
       - tests/test_runtime_amazon_product_ingest.py
       - tests/test_runtime_amazon_product_business_e2e.py
+      - tests/test_runtime_workflow_registry.py
       - tests/test_handler_registry_contract.py
       - tests/test_workflow_architecture_manifests.py
       - tests/test_harness_code_roadmap.py
@@ -1244,16 +1251,18 @@ features:
         - tests/test_feishu_amazon_product_mapping.py
         - tests/test_media_asset_sync_handler.py
         - tests/test_amazon_product_row_persist.py
+        - tests/test_feishu_common_handlers.py
         - tests/test_refresh_amazon_product_row_by_asin.py
         - tests/test_runtime_amazon_product_ingest.py
         - tests/test_runtime_amazon_product_business_e2e.py
+        - tests/test_runtime_workflow_registry.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
         - tests/test_harness_code_roadmap.py
         - tests/test_architecture_ownership.py
       commands:
         - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_media_asset_sync_handler.py tests/test_amazon_product_row_persist.py
-        - uv run --extra dev pytest tests/test_refresh_amazon_product_row_by_asin.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_refresh_amazon_product_row_by_asin.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py tests/test_feishu_common_handlers.py tests/test_runtime_workflow_registry.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_ownership.py
     completion_rules:
       - Formal payload carries only table_ref and source_record_id; runtime config resolves browser profile, Runtime DB, Fact DB, and object storage.

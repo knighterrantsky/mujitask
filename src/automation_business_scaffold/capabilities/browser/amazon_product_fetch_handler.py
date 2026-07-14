@@ -241,6 +241,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
 
     coverage = _field_coverage(capture.get("field_evidence"))
     collection_status = _clean_text(capture.get("collection_status"))
+    variants = capture.get("variants")
+    parent_asin = _clean_text(variants.get("parent_asin")) if isinstance(variants, Mapping) else ""
     result = {
         "marketplace_code": "US",
         "requested_asin": requested_asin,
@@ -254,6 +256,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "media_source_refs": _media_source_refs(capture),
         "browser_target_digest": browser_target_digest,
     }
+    if parent_asin and result["resolved_asin"] != requested_asin:
+        result["parent_asin"] = parent_asin
     summary = {
         "marketplace_code": "US",
         "requested_asin": requested_asin,

@@ -25,6 +25,11 @@ AMAZON_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
         required_field("marketplace_code", "Amazon marketplace code.", type_hint="str"),
         required_field("requested_asin", "Requested source ASIN.", type_hint="str"),
         required_field("resolved_asin", "Resolved page ASIN.", type_hint="str"),
+        optional_field(
+            "parent_asin",
+            "Page-declared parent ASIN used to validate a parent-to-child redirect.",
+            type_hint="str",
+        ),
         required_field("canonical_url", "Canonical requested product URL.", type_hint="str"),
         required_field("collection_status", "Amazon row collection status.", type_hint="str"),
         required_field("field_coverage", "Compact field coverage counts.", type_hint="dict[str, Any]"),

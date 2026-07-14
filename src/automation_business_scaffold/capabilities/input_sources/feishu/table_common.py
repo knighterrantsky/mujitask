@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from automation_business_scaffold.capabilities.input_sources.feishu.batch_write import (
     execute_write_records,
@@ -144,16 +145,47 @@ def _resolve_table_payload(
     *,
     table_ref: str,
 ) -> dict[str, Any]:
-    table_payload = _mapping(payload.get("feishu_table"))
-    if table_payload:
-        return table_payload
-    table_refs = _mapping(payload.get("table_refs")) or _mapping(request_payload.get("table_refs"))
-    resolved = table_refs.get(table_ref)
+    return {
+        **_configured_table_payload(table_ref),
+        **_table_ref_payload(request_payload, table_ref=table_ref),
+        **_table_ref_payload(payload, table_ref=table_ref),
+        **_mapping(payload.get("feishu_table")),
+    }
+
+
+def _table_ref_payload(payload: Mapping[str, Any], *, table_ref: str) -> dict[str, Any]:
+    resolved = _mapping(payload.get("table_refs")).get(table_ref)
     if isinstance(resolved, Mapping):
         return dict(resolved)
     if isinstance(resolved, str):
         return {"table_url": resolved}
     return {}
+
+
+def _configured_table_payload(table_ref: str) -> dict[str, Any]:
+    if not table_ref or table_ref.startswith(("http://", "https://")):
+        return {}
+    alias = table_ref.rstrip("/").rsplit("/", 1)[-1]
+    alias_key = re.sub(r"[^A-Za-z0-9]+", "_", alias).strip("_").upper()
+    if not alias_key:
+        return {}
+
+    result: dict[str, Any] = {"access_token_env": "MUJITASK_FEISHU_ACCESS_TOKEN"}
+    base_url = _text(os.environ.get("MUJITASK_FEISHU_BASE_URL"))
+    table_id = _text(os.environ.get(f"MUJITASK_FEISHU_{alias_key}_TABLE_ID"))
+    if not base_url or not table_id:
+        return result
+
+    parsed = urlparse(base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["table"] = table_id
+    view_id = _text(os.environ.get(f"MUJITASK_FEISHU_{alias_key}_VIEW_ID"))
+    if view_id:
+        query["view"] = view_id
+    else:
+        query.pop("view", None)
+    result["table_url"] = urlunparse(parsed._replace(query=urlencode(query)))
+    return result
 
 
 def _resolve_access_token(

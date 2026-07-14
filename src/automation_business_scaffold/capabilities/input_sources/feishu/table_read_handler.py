@@ -87,6 +87,10 @@ def feishu_table_read_handler(context: HandlerContext) -> HandlerResult:
 
     result = {
         "source_rows": adapter_payload["source_rows"],
+        "source_table_identity": {
+            "base_id": target.app_token,
+            "table_id": target.table_id,
+        },
         "schema": {"field_names": field_names},
         "pagination": pagination,
         "raw_snapshot_ref": raw_snapshot_ref,

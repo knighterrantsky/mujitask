@@ -232,6 +232,7 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
     write_payload["feishu_table"] = {
         "app_token": inputs["source_table_identity"]["base_id"],
         "table_id": inputs["source_table_identity"]["table_id"],
+        **inputs["feishu_credential_refs"],
     }
     write_context = _child_context(
         context,
@@ -295,11 +296,15 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
     collection_status = _required_text(payload.get("collection_status"), "collection_status")
     if collection_status not in _COLLECTION_STATUSES:
         raise ValueError("collection_status must be success, partial_success, or unavailable.")
-    source_table_identity = _mapping(payload.get("source_table_identity"))
+    raw_source_table_identity = _mapping(payload.get("source_table_identity"))
     source_table_identity = {
-        "base_id": _required_text(source_table_identity.get("base_id"), "source_table_identity.base_id"),
+        "base_id": _required_text(
+            raw_source_table_identity.get("base_id"),
+            "source_table_identity.base_id",
+        ),
         "table_id": _required_text(
-            source_table_identity.get("table_id"), "source_table_identity.table_id"
+            raw_source_table_identity.get("table_id"),
+            "source_table_identity.table_id",
         ),
     }
     normalized_capture_ref = _mapping(payload.get("normalized_capture_ref"))
@@ -320,16 +325,22 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Every media_source_ref must have a non-negative integer position.")
     if collection_status == "unavailable" and media_source_refs:
         raise ValueError("Unavailable captures must not materialize product media.")
-    request_payload = _mapping(payload.get("request_payload"))
+    raw_request_payload = _mapping(payload.get("request_payload"))
+    feishu_credential_refs = _feishu_credential_refs(
+        table_ref=table_ref,
+        source_table_identity=raw_source_table_identity,
+        request_payload=raw_request_payload,
+    )
     request_payload = {
-        key: request_payload[key]
-        for key in ("table_ref", "source_record_id", "table_refs")
-        if key in request_payload
+        key: raw_request_payload[key]
+        for key in ("table_ref", "source_record_id")
+        if key in raw_request_payload
     }
     return {
         "table_ref": table_ref,
         "source_record_id": source_record_id,
         "source_table_identity": source_table_identity,
+        "feishu_credential_refs": feishu_credential_refs,
         "requested_asin": requested_asin,
         "resolved_asin": _text(payload.get("resolved_asin")),
         "run_id": run_id,
@@ -340,6 +351,26 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
         "field_coverage": _mapping(payload.get("field_coverage")),
         "request_payload": request_payload,
     }
+
+
+def _feishu_credential_refs(
+    *,
+    table_ref: str,
+    source_table_identity: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+) -> dict[str, str]:
+    table_refs = _mapping(request_payload.get("table_refs"))
+    configured_table = _mapping(table_refs.get(table_ref))
+    refs: dict[str, str] = {}
+    for key in ("access_token_env", "access_token_ref"):
+        value = _text(
+            source_table_identity.get(key)
+            or configured_table.get(key)
+            or request_payload.get(key)
+        )
+        if value:
+            refs[key] = value
+    return refs
 
 
 def _child_context(

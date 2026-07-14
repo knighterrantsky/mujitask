@@ -55,10 +55,12 @@ stages:
     execution_mode: api_worker_job
     handler_code: feishu_table_read
     source_adapter: amazon_product_table_source_adapter
+    terminal_failure_writeback_handler_code: feishu_table_write
     exit_condition: 唯一来源行已读取且 ASIN 通过美国站身份校验
   - stage_code: collect_amazon_product_detail
     execution_mode: browser_task_execution
     handler_code: amazon_product_browser_fetch
+    terminal_failure_writeback_handler_code: feishu_table_write
     exit_condition: normalized capture 引用或受控终态错误已持久化
   - stage_code: persist_amazon_product_detail
     execution_mode: api_worker_job
@@ -79,4 +81,5 @@ protected_invariants:
   - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
   - 飞书投影只更新 source_record_id；missing 字段必须保留已有值。
   - blocked/captcha 保存证据并失败收敛，不新增绕过路径。
+  - 已定位来源行的 blocked/failed 只通过 status-only projection 写回，不进入商品 Fact persistence。
   - 单行重复执行必须按来源行、ASIN、run 和事实唯一键保持幂等。

@@ -619,6 +619,7 @@ def test_unavailable_is_success_and_parent_redirect_is_partial(monkeypatch) -> N
 
     assert parent_result.status == "partial_success"
     assert parent_result.result["resolved_asin"] == "B0CHILD001"
+    assert parent_result.result["parent_asin"] == "B0PARENT01"
     assert parent_result.result["media_source_refs"] == []
 
 

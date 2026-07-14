@@ -255,8 +255,18 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
         amazon_product_row_persist_handler,
     )
 
+    payload = _payload()
+    payload["request_payload"]["table_refs"] = {
+        "AMAZON_PRODUCTS": {
+            "app_token": "must-not-override-resolved-identity",
+            "table_id": "must-not-override-resolved-identity",
+            "access_token": "must-not-be-forwarded",
+            "access_token_env": "AMAZON_FEISHU_TOKEN",
+            "access_token_ref": "secret://feishu/amazon-token",
+        }
+    }
     calls = _fake_dispatch(monkeypatch, _success_outcomes())
-    result = amazon_product_row_persist_handler(_context())
+    result = amazon_product_row_persist_handler(_context(payload))
 
     assert result.status == "success"
     assert result.result["row_status"] == "success"
@@ -290,7 +300,15 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
     assert write_payload["feishu_table"] == {
         "app_token": "app-1",
         "table_id": "tbl-1",
+        "access_token_env": "AMAZON_FEISHU_TOKEN",
+        "access_token_ref": "secret://feishu/amazon-token",
     }
+    assert write_payload["request_payload"] == {
+        "table_ref": "AMAZON_PRODUCTS",
+        "source_record_id": "rec-1",
+    }
+    assert "table_refs" not in repr(write_payload)
+    assert "must-not-be-forwarded" not in repr(write_payload)
 
     serialized = repr(result.result)
     for forbidden in (

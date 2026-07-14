@@ -71,6 +71,8 @@
 - `MUJITASK_FEISHU_BASE_URL`
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
@@ -83,6 +85,12 @@
 - Runtime DB / Fact DB / MinIO/S3 / 浏览器 profile 的正式默认配置必须放在项目运行配置中，不能由 skill env 或 skill submit payload 透传。
 - 旧 `skill.local.env` 中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键会被项目配置加载器忽略。
 
+Amazon 单商品任务的正式 payload 只传 `table_ref=AMAZON_PRODUCTS` 和
+`source_record_id`。运行时使用 `MUJITASK_FEISHU_BASE_URL`、
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`、可选的
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 与全局
+`MUJITASK_FEISHU_ACCESS_TOKEN` 解析实际飞书表，不把 URL、token 或表身份写入正式任务输入。
+
 ### 2.3 `.env`
 
 这是项目根目录的通用本地默认配置。
@@ -90,6 +98,7 @@
 适合放：
 
 - `BROWSER_PROFILES_FILE`
+- `AMAZON_US_BROWSER_PROFILE_REF`
 - `DEFAULT_PROFILE_REF`
 - `AGENT_HOST`
 - `AGENT_PORT`

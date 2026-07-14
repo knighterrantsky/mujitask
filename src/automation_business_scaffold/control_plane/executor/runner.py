@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.control_plane.executor.looping import run_control_loop
 from automation_business_scaffold.control_plane.runtime_config.settings import (
+    AMAZON_PRODUCT_ROW_TASK_CODE,
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
     INFLUENCER_OUTREACH_TASK_CODE,
@@ -21,9 +22,11 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     ensure_formal_task_code,
     normalize_control_action,
 )
+from automation_business_scaffold.control_plane.executor.workflow_registry import (
+    get_workflow_definition,
+)
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import ExecutionSupervisorOutcome
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
-from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
@@ -81,11 +84,59 @@ FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS = FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS | {
     TEST_PERSISTENCE_OVERRIDE_FLAG,
     "run_mode",
 }
+AMAZON_FORMAL_BUSINESS_FIELDS = {"table_ref", "source_record_id"}
+AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS = {
+    "BROWSER_PROFILE_ID",
+    "BROWSER_PROFILE_REF",
+    "BROWSER_PROVIDER_NAME",
+    "BROWSER_WORKSPACE_ID",
+    "browser_cookies",
+    "browser_profile_id",
+    "browser_profile_ref",
+    "browser_provider_name",
+    "browser_workspace_id",
+}
+FORMAL_SUBMIT_CONTROL_FIELDS = {
+    "allow_test_persistence_overrides",
+    "control_action",
+    "execution_child_runner_mode",
+    "execution_control_db_health_max_connection_ratio",
+    "execution_control_db_health_max_idle_in_transaction",
+    "execution_control_db_health_preflight_enabled",
+    "execution_control_max_idle_cycles",
+    "execution_control_max_iterations",
+    "execution_control_poll_interval_seconds",
+    "execution_control_stop_when_idle",
+    "execution_heartbeat_interval_seconds",
+    "execution_lease_seconds",
+    "execution_retry_delay_seconds",
+    "execution_worker_id",
+    "idempotency_key",
+    "notification_channel_code",
+    "reply_target",
+    "requested_by",
+    "source_channel_code",
+    "source_session_id",
+    "trigger_mode",
+}
 
 
 def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any]:
     normalized_task_code = ensure_formal_task_code(task_code)
     settings = build_runtime_settings(params)
+    amazon_preflight = _amazon_product_submit_preflight(
+        task_code=normalized_task_code,
+        params=params,
+    )
+    if amazon_preflight:
+        return _rejected_submit_payload(
+            task_code=normalized_task_code,
+            error_type=str(amazon_preflight["error_type"]),
+            error_code=str(amazon_preflight["error_code"]),
+            message=str(amazon_preflight["message"]),
+            retryable=False,
+            result=amazon_preflight,
+        )
     persistence_preflight = _strict_persistence_submit_preflight(
         task_code=normalized_task_code,
         params=params,
@@ -204,6 +255,12 @@ def run_outbox_dispatcher(params: dict[str, Any]) -> dict[str, Any]:
 
 def run_refresh_current_competitor_table_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(REFRESH_TASK_CODE, params)
+
+
+def run_refresh_amazon_product_row_by_asin_request(
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return run_task_request(AMAZON_PRODUCT_ROW_TASK_CODE, params)
 
 
 def run_refresh_competitor_row_by_url_request(params: dict[str, Any]) -> dict[str, Any]:
@@ -333,6 +390,11 @@ def _sanitize_task_payload(
     task_code: str = "",
     settings: Any | None = None,
 ) -> dict[str, Any]:
+    if task_code == AMAZON_PRODUCT_ROW_TASK_CODE:
+        return {
+            "table_ref": str(params.get("table_ref") or "").strip(),
+            "source_record_id": str(params.get("source_record_id") or "").strip(),
+        }
     sanitized = dict(params)
     sanitized.pop("control_action", None)
     for key in FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS:
@@ -342,6 +404,74 @@ def _sanitize_task_payload(
     if task_code in STRICT_PERSISTENCE_TASK_CODES and settings is not None:
         _enrich_strict_persistence_payload(sanitized, params=params, settings=settings)
     return sanitized
+
+
+def _amazon_product_submit_preflight(
+    *,
+    task_code: str,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    if task_code != AMAZON_PRODUCT_ROW_TASK_CODE:
+        return {}
+    missing = [
+        field
+        for field in sorted(AMAZON_FORMAL_BUSINESS_FIELDS)
+        if not str(params.get(field) or "").strip()
+    ]
+    if missing:
+        return {
+            "error_type": "invalid_input",
+            "error_code": "invalid_amazon_task_payload",
+            "message": "Amazon product row submit requires table_ref and source_record_id.",
+            "missing_business_fields": missing,
+        }
+    forbidden_browser_fields = sorted(
+        field
+        for field in AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS
+        if params.get(field) not in (None, "", [], {})
+    )
+    if forbidden_browser_fields:
+        return {
+            "error_type": "invalid_input",
+            "error_code": "invalid_amazon_task_payload",
+            "message": (
+                "Amazon browser profile and credential settings must come from project runtime "
+                "configuration."
+            ),
+            "forbidden_runtime_config_fields": forbidden_browser_fields,
+        }
+    ignored_control_fields = FORMAL_SUBMIT_CONTROL_FIELDS | FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS
+    unexpected = sorted(
+        str(key)
+        for key, value in params.items()
+        if key not in AMAZON_FORMAL_BUSINESS_FIELDS
+        and key not in ignored_control_fields
+        and value not in (None, "", [], {})
+    )
+    if unexpected:
+        return {
+            "error_type": "invalid_input",
+            "error_code": "invalid_amazon_task_payload",
+            "message": (
+                "Amazon product row business payload accepts only table_ref and "
+                "source_record_id."
+            ),
+            "unexpected_business_fields": unexpected,
+        }
+    if not str(
+        os.environ.get("AMAZON_US_BROWSER_PROFILE_REF")
+        or os.environ.get("DEFAULT_PROFILE_REF")
+        or ""
+    ).strip():
+        return {
+            "error_type": "configuration",
+            "error_code": "amazon_browser_profile_missing",
+            "message": (
+                "Configure AMAZON_US_BROWSER_PROFILE_REF or DEFAULT_PROFILE_REF before "
+                "submitting an Amazon product row."
+            ),
+        }
+    return {}
 
 
 def _enrich_influencer_outreach_payload(payload: dict[str, Any]) -> None:
@@ -808,6 +938,7 @@ __all__ = [
     "run_executor_daemon",
     "run_outbox_dispatcher",
     "run_refresh_current_competitor_table_request",
+    "run_refresh_amazon_product_row_by_asin_request",
     "run_search_keyword_competitor_products_request",
     "run_sync_tk_influencer_pool_request",
     "run_task_request",

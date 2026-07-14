@@ -312,6 +312,12 @@ stateDiagram-v2
 | `persist_amazon_product_detail` | API worker job | `amazon_product_row_persist` | 媒体、事实和飞书写回收敛 |
 | `ready_for_summary` | summary | `task_completed_notification` | summary 与 outbox 已持久化 |
 
+`invalid_asin`、`unsupported_marketplace`、`identity_mismatch`、`blocked/captcha`
+等已定位到来源行的终态错误，在当前 read 或 browser stage 结束前复用
+`feishu_table_write` 执行一次 status-only projection，只写 `采集状态`、`上次采集时间`
+和脱敏 `采集错误`。该写回不新增第五个 stage，不进入媒体或 Fact persistence，也不得携带
+页面商品字段；写回完成或重试耗尽后才允许父任务失败收敛。来源行不存在时不执行写回。
+
 ```mermaid
 sequenceDiagram
     participant User as CLI / Skill
@@ -406,13 +412,14 @@ flowchart LR
 
 ### 8.3 Payload 边界
 
-正式 task payload 允许:
+正式 task 的业务 payload 只允许:
 
-- `control_action`。
-- `table_ref` 或配置 table alias。
-- 单行模式的 `source_record_id`。
-- `force_refresh` 等业务开关。
-- `reply_target`。
+- `table_ref`，首期使用配置别名 `AMAZON_PRODUCTS`。
+- `source_record_id`。
+
+`control_action`、`requested_by`、`reply_target` 和幂等键属于 Task 调用/通知信封，
+不写入正式业务 payload。首期不接受 `force_refresh` 或其他扩展业务字段；需要新增时先修改
+workflow machine contract。
 
 正式 task payload 禁止:
 

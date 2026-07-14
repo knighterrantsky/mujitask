@@ -4,6 +4,10 @@ from typing import Any
 
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.capabilities.input_sources.feishu.table_common import (
+    resolve_read_target,
+    resolve_write_target,
+)
 from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
 from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
@@ -44,6 +48,69 @@ def test_bound_api_registry_includes_feishu_common_handlers() -> None:
 
     assert registry.get("feishu_table_read").is_bound
     assert registry.get("feishu_table_write").is_bound
+
+
+def test_feishu_table_target_resolves_configured_alias_from_project_env(monkeypatch) -> None:
+    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-amazon")
+
+    target = resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
+
+    assert target.app_token == "app-amazon"
+    assert target.table_id == "tbl-amazon"
+    assert target.view_id == "vew-amazon"
+    assert target.access_token == "access-amazon"
+
+
+def test_explicit_table_identity_keeps_alias_credential_reference(monkeypatch) -> None:
+    monkeypatch.setenv("AMAZON_FEISHU_TOKEN", "access-from-alias")
+
+    target = resolve_write_target(
+        {
+            "target_table_ref": "AMAZON_PRODUCTS",
+            "feishu_table": {"app_token": "app-exact", "table_id": "tbl-exact"},
+            "request_payload": {
+                "table_refs": {
+                    "AMAZON_PRODUCTS": {"access_token_env": "AMAZON_FEISHU_TOKEN"}
+                }
+            },
+        }
+    )
+
+    assert target.app_token == "app-exact"
+    assert target.table_id == "tbl-exact"
+    assert target.access_token == "access-from-alias"
+
+
+def test_feishu_table_read_returns_resolved_source_table_identity() -> None:
+    result = build_bound_api_handler_registry().dispatch(
+        "feishu_table_read",
+        _context(
+            "feishu_table_read",
+            {
+                **_table_payload(
+                    source_table_ref="AMAZON_PRODUCTS",
+                    source_record_id="rec-amazon",
+                    adapter_code="amazon_product_table_source_adapter",
+                    field_names=["ASIN", "商品链接", "强制刷新", "采集状态"],
+                    raw_rows=[
+                        {
+                            "record_id": "rec-amazon",
+                            "fields": {"ASIN": "B0ABC12345"},
+                        }
+                    ],
+                ),
+            },
+        ),
+    )
+
+    assert result.status == "success"
+    assert result.result["source_table_identity"] == {
+        "base_id": "app-token",
+        "table_id": "tbl-token",
+    }
 
 
 def test_feishu_business_components_have_named_registries() -> None:
