@@ -1132,11 +1132,9 @@ features:
       - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
       - src/automation_business_scaffold/contracts/handler/**
       - tests/test_amazon_product_contracts.py
-      - tests/test_amazon_fact_schema_contract.py
+      - tests/test_amazon_fact_schema.py
       - tests/test_amazon_fact_store.py
       - tests/test_amazon_product_fact_upsert_handler.py
-      - tests/test_harness_code_roadmap.py
-      - tests/test_architecture_ownership.py
     forbidden_paths:
       - .platform/**
       - AGENTS.md
@@ -1147,14 +1145,11 @@ features:
     done_gate:
       tests:
         - tests/test_amazon_product_contracts.py
-        - tests/test_amazon_fact_schema_contract.py
+        - tests/test_amazon_fact_schema.py
         - tests/test_amazon_fact_store.py
         - tests/test_amazon_product_fact_upsert_handler.py
-        - tests/test_harness_code_roadmap.py
-        - tests/test_architecture_ownership.py
       commands:
-        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_fact_schema_contract.py tests/test_amazon_fact_store.py tests/test_amazon_product_fact_upsert_handler.py
-        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_ownership.py
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_fact_schema.py tests/test_amazon_fact_store.py tests/test_amazon_product_fact_upsert_handler.py
     completion_rules:
       - Migration creates only the nine governed amazon_* tables and indexes under the migration user path; production workers do not execute DDL.
       - Amazon identity is unique by marketplace_code plus asin and does not add cross-platform foreign keys.
@@ -1203,23 +1198,20 @@ features:
       - src/automation_business_scaffold/capabilities/browser/amazon/product_page.py
       - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
       - src/automation_business_scaffold/capabilities/fact_sources/amazon/mappers/**
-      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
       - src/automation_business_scaffold/domains/amazon/**
       - src/automation_business_scaffold/domains/amazon/tasks/refresh_amazon_product_row_by_asin.py
       - src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py
       - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
-      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
-      - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
       - src/automation_business_scaffold/infrastructure/artifacts/**
       - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
       - src/automation_business_scaffold/control_plane/runtime_config/settings.py
       - tests/test_amazon_product_contracts.py
-      - tests/test_amazon_product_page_parser.py
+      - tests/test_amazon_product_page.py
       - tests/test_amazon_product_browser_fetch_handler.py
-      - tests/test_amazon_product_source_mapper.py
-      - tests/test_amazon_product_projection.py
+      - tests/test_feishu_amazon_product_mapping.py
       - tests/test_amazon_product_row_persist.py
-      - tests/test_runtime_amazon_product_workflow.py
+      - tests/test_refresh_amazon_product_row_by_asin.py
+      - tests/test_runtime_amazon_product_ingest.py
       - tests/test_runtime_amazon_product_business_e2e.py
       - tests/test_handler_registry_contract.py
       - tests/test_workflow_architecture_manifests.py
@@ -1236,20 +1228,20 @@ features:
     done_gate:
       tests:
         - tests/test_amazon_product_contracts.py
-        - tests/test_amazon_product_page_parser.py
+        - tests/test_amazon_product_page.py
         - tests/test_amazon_product_browser_fetch_handler.py
-        - tests/test_amazon_product_source_mapper.py
-        - tests/test_amazon_product_projection.py
+        - tests/test_feishu_amazon_product_mapping.py
         - tests/test_amazon_product_row_persist.py
-        - tests/test_runtime_amazon_product_workflow.py
+        - tests/test_refresh_amazon_product_row_by_asin.py
+        - tests/test_runtime_amazon_product_ingest.py
         - tests/test_runtime_amazon_product_business_e2e.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
         - tests/test_harness_code_roadmap.py
         - tests/test_architecture_ownership.py
       commands:
-        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page_parser.py tests/test_amazon_product_browser_fetch_handler.py tests/test_amazon_product_source_mapper.py tests/test_amazon_product_projection.py tests/test_amazon_product_row_persist.py
-        - uv run --extra dev pytest tests/test_runtime_amazon_product_workflow.py tests/test_runtime_amazon_product_business_e2e.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_amazon_product_row_persist.py
+        - uv run --extra dev pytest tests/test_refresh_amazon_product_row_by_asin.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_ownership.py
     completion_rules:
       - Formal payload carries only table_ref and source_record_id; runtime config resolves browser profile, Runtime DB, Fact DB, and object storage.

@@ -17,6 +17,10 @@ payload:
   required:
     - table_ref
     - source_record_id
+  allowed:
+    - table_ref
+    - source_record_id
+  additional_properties: false
   forbidden:
     - run_mode
     - db_url

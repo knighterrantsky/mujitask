@@ -81,6 +81,8 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
     }
     assert contract["payload"]["business_inputs_only"] is True
     assert contract["payload"]["required"] == ["table_ref", "source_record_id"]
+    assert contract["payload"]["allowed"] == ["table_ref", "source_record_id"]
+    assert contract["payload"]["additional_properties"] is False
 
 
 def test_feishu_field_and_state_ownership_is_explicit() -> None:
@@ -142,6 +144,11 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
         "failed",
     }
     assert states_contract["runtime_boundary"]["blocked_is_runtime_status"] is False
+    assert states_contract["transitions"] == {
+        "pending": ["collecting", "failed"],
+        "collecting": ["persisting", "blocked", "failed"],
+        "persisting": ["success", "partial_success", "unavailable", "failed"],
+    }
 
 
 def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
@@ -215,6 +222,14 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
         "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
     } <= set(schema["allowed_paths"])
+    fact_owned_paths = {
+        "alembic/versions/20260714_0007_amazon_product_facts.py",
+        "src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py",
+        "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
+        "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
+    }
+    assert fact_owned_paths.isdisjoint(ingest["allowed_paths"])
+    assert "contracts/facts/product-fact-collection.yaml" in ingest["source_contracts"]
     assert {
         "src/automation_business_scaffold/capabilities/browser/amazon/product_page.py",
         "src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py",
@@ -222,6 +237,42 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         "src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py",
         "tests/test_runtime_amazon_product_business_e2e.py",
     } <= set(ingest["allowed_paths"])
+
+    schema_tests = [
+        "tests/test_amazon_product_contracts.py",
+        "tests/test_amazon_fact_schema.py",
+        "tests/test_amazon_fact_store.py",
+        "tests/test_amazon_product_fact_upsert_handler.py",
+    ]
+    assert schema["done_gate"]["tests"] == schema_tests
+    assert {
+        token
+        for command in schema["done_gate"]["commands"]
+        for token in command.split()
+        if token.startswith("tests/")
+    } == set(schema_tests)
+
+    ingest_tests = [
+        "tests/test_amazon_product_contracts.py",
+        "tests/test_amazon_product_page.py",
+        "tests/test_amazon_product_browser_fetch_handler.py",
+        "tests/test_feishu_amazon_product_mapping.py",
+        "tests/test_amazon_product_row_persist.py",
+        "tests/test_refresh_amazon_product_row_by_asin.py",
+        "tests/test_runtime_amazon_product_ingest.py",
+        "tests/test_runtime_amazon_product_business_e2e.py",
+        "tests/test_handler_registry_contract.py",
+        "tests/test_workflow_architecture_manifests.py",
+        "tests/test_harness_code_roadmap.py",
+        "tests/test_architecture_ownership.py",
+    ]
+    assert ingest["done_gate"]["tests"] == ingest_tests
+    assert {
+        token
+        for command in ingest["done_gate"]["commands"]
+        for token in command.split()
+        if token.startswith("tests/")
+    } == set(ingest_tests)
 
 
 def test_contract_index_and_design_status_match_implementation_phase() -> None:

@@ -55,7 +55,6 @@ transitions:
   collecting:
     - persisting
     - blocked
-    - unavailable
     - failed
   persisting:
     - success
