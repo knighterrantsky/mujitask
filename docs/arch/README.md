@@ -1,6 +1,6 @@
 # Arch 文档索引
 
-日期: 2026-05-22
+日期: 2026-07-14
 
 本目录维护当前系统架构和核心业务 workflow 的设计文档。
 
@@ -63,6 +63,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [Amazon 商品详情采集 Workflow 与事实存储设计](./workflow-amazon-product-detail-design.md) | 待用户审阅、尚未实现的 Amazon 美国站单商品、批量和搜索采集目标设计 |
 | [数据采集策略与频率设计](./data-collection-strategy-design.md) | 采集频率、窗口数据和事实沉淀策略 |
 | [Interactive Staged Workflow Runtime 设计草案](./interactive-staged-workflow-runtime-design.md) | 节点化、标准输入输出、Agent Catalog 编排和交互式 Runtime 的目标设计 |
 | [TK 综合数据表设计](./future-tk-comprehensive-table-design.md) | 未来飞书业务数据模型草案，不替代当前飞书表事实或 Fact DB schema |
