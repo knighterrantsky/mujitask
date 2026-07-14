@@ -73,6 +73,16 @@ class MinioArtifactStore:
     def build_uri(self, *, bucket: str, object_key: str) -> str:
         return f"s3://{bucket}/{object_key}"
 
+    def read_bytes(self, *, bucket: str, object_key: str) -> bytes:
+        response = self._client.get_object(bucket, object_key)
+        try:
+            return bytes(response.read())
+        finally:
+            try:
+                response.close()
+            finally:
+                response.release_conn()
+
     def upload_file(
         self,
         *,

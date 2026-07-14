@@ -34,6 +34,7 @@ ALLOWLIST_BY_WORKER = {
         "influencer_creator_sync",
         "media_asset_sync",
         "fact_bundle_upsert",
+        "amazon_product_fact_upsert",
     },
     "browser": {"fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"},
     "outbox": {"outbox_dispatch"},

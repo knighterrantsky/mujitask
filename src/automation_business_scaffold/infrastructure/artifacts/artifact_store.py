@@ -19,6 +19,8 @@ class StoredArtifact:
 class ArtifactStore(Protocol):
     provider_code: str
 
+    def read_bytes(self, *, bucket: str, object_key: str) -> bytes: ...
+
     def upload_file(
         self,
         *,
