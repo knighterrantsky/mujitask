@@ -219,8 +219,10 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
     assert {
         "alembic/versions/20260714_0007_amazon_product_facts.py",
         "src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py",
+        "src/automation_business_scaffold/infrastructure/schemas/__init__.py",
         "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
         "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
+        "tests/conftest.py",
     } <= set(schema["allowed_paths"])
     fact_owned_paths = {
         "alembic/versions/20260714_0007_amazon_product_facts.py",

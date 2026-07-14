@@ -5,6 +5,9 @@ import uuid
 
 import pytest
 from automation_business_scaffold.project_env import bootstrap_project_env
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    ensure_amazon_fact_schema,
+)
 from automation_business_scaffold.infrastructure.schemas.fact_schema import ensure_tk_fact_schema
 from automation_business_scaffold.infrastructure.schemas.runtime_schema import ensure_runtime_schema
 
@@ -75,6 +78,7 @@ def _isolated_runtime_db_url(monkeypatch, *, bootstrap_schema: bool):
             ensure_runtime_schema(schema_engine)
             with schema_engine.begin() as connection:
                 ensure_tk_fact_schema(connection)
+                ensure_amazon_fact_schema(connection)
         finally:
             schema_engine.dispose()
 

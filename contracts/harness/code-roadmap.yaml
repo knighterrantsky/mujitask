@@ -1128,11 +1128,13 @@ features:
       - contracts/harness/code-roadmap.yaml
       - alembic/versions/20260714_0007_amazon_product_facts.py
       - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
+      - src/automation_business_scaffold/infrastructure/schemas/__init__.py
       - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
       - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
       - src/automation_business_scaffold/contracts/handler/**
       - tests/test_amazon_product_contracts.py
       - tests/test_amazon_fact_schema.py
+      - tests/conftest.py
       - tests/test_amazon_fact_store.py
       - tests/test_amazon_product_fact_upsert_handler.py
     forbidden_paths:
