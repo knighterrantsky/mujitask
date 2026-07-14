@@ -98,6 +98,10 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
         outcome=outcome,
         retry_delay_seconds=settings.retry_delay_seconds,
     )
+    parent_updates = _release_request_after_child_completion(
+        store=store,
+        request_id=str(job["request_id"]),
+    )
 
     payload = build_runtime_request_payload(
         store=store,
@@ -116,6 +120,8 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
             "supervisor": outcome.to_dict(),
         }
     )
+    if parent_updates:
+        payload["parent_updates"] = parent_updates
     if outcome.error is not None:
         payload.update(supervisor_error_payload(outcome))
     return payload
@@ -199,7 +205,7 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         outcome=outcome,
         retry_delay_seconds=settings.retry_delay_seconds,
     )
-    parent_updates = _release_request_after_browser_child_completion(
+    parent_updates = _release_request_after_child_completion(
         store=store,
         request_id=execution.request_id,
     )
@@ -325,7 +331,7 @@ def _dispatch_browser_runtime_handler(context: HandlerContext) -> Any:
     return _build_bound_browser_handler_registry().dispatch(context.handler_code, context)
 
 
-def _release_request_after_browser_child_completion(
+def _release_request_after_child_completion(
     *,
     store: RuntimeStore,
     request_id: str,
