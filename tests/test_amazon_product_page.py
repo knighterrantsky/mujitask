@@ -12,6 +12,7 @@ from automation_business_scaffold.capabilities.browser.amazon.product_page impor
     InvalidASINError,
     UnsupportedMarketplaceError,
     canonical_amazon_url,
+    extract_amazon_network_product_data,
     extract_amazon_product_capture,
     extract_asin_from_url,
     normalize_asin,
@@ -155,12 +156,8 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v1_fields() -> Non
     evidence = capture["field_evidence"]
     assert evidence["product.title"]["source_kind"] == "structured_data"
     assert evidence["product.bullet_points"]["source_kind"] == "embedded_state"
-    assert evidence["commerce.featured_offer.price_amount"]["source_kind"] == (
-        "structured_data"
-    )
-    assert evidence["commerce.featured_offer.coupon_text"]["source_kind"] == (
-        "embedded_state"
-    )
+    assert evidence["commerce.featured_offer.price_amount"]["source_kind"] == ("structured_data")
+    assert evidence["commerce.featured_offer.coupon_text"]["source_kind"] == ("embedded_state")
     assert all(
         set(item) == {"value", "status", "source_kind", "source_locator", "confidence"}
         for item in evidence.values()
@@ -193,11 +190,317 @@ def test_dom_is_used_when_structured_layers_are_absent() -> None:
     assert capture["commerce"]["featured_offer"]["price_amount"] == 32.5
     assert capture["commerce"]["featured_offer"]["seller_id"] == "DOMSELLER"
     assert capture["variants"]["parent_asin"] == "B0PARENT01"
-    assert capture["media"]["main_image"] == {
-        "url": "https://images.example.test/dom-main.jpg"
-    }
+    assert capture["media"]["main_image"] == {"url": "https://images.example.test/dom-main.jpg"}
     assert capture["field_evidence"]["product.title"]["source_kind"] == "stable_dom"
     assert capture["field_evidence"]["variants.parent_asin"]["source_kind"] == "stable_dom"
+
+
+def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -> None:
+    observations = [
+        {
+            "source_path": "/gp/aod/ajax?asin=B0WRONG001&token=secret",
+            "payload": {
+                "asin": "B0WRONG001",
+                "product": {"title": "Wrong product"},
+            },
+        },
+        {
+            "source_path": "/gp/aod/ajax?asin=B0CHILD001&token=secret",
+            "payload": {
+                "asin": "B0CHILD001",
+                "product": {
+                    "title": "Network product title",
+                    "brand": "Network Brand",
+                    "technicalDetails": {
+                        "Material": "Oak",
+                        "Authorization": "Bearer nested-secret",
+                        "Email": "alice@example.com",
+                        "Session ID": "session-123",
+                        "Access Key": "access-key-123",
+                        "Customer Name": "Alice",
+                        "Recipient Name": "Alice",
+                        "Shipping Location": "Private location",
+                        "Postal Code": "10001",
+                        "Owner": "Alice",
+                    },
+                },
+                "commerce": {
+                    "featuredOffer": {
+                        "priceAmount": "$28.50",
+                        "couponText": "Network coupon",
+                        "deliveryText": "Deliver to Alice, 123 Main Street",
+                    }
+                },
+                "authorization": "Bearer secret",
+                "cookie": "session=secret",
+                "recommendations": [{"asin": "B0WRONG001"}],
+                "variants": {
+                    "currentAttributes": {
+                        "Color": "Blue",
+                        "cookie": "nested-secret",
+                        "Recipient Name": "Alice",
+                        "Shipping Location": "Private location",
+                        "Postal Code": "10001",
+                        "Owner": "Alice",
+                    }
+                },
+                "media": {
+                    "images": [
+                        "http://127.0.0.1:8000/private.jpg",
+                        "https://user:pass@m.media-amazon.com/private.jpg",
+                        "https://m.media-amazon.com/images/I/safe.jpg?token=media-secret#frag",
+                    ]
+                },
+            },
+        },
+    ]
+    network_data = extract_amazon_network_product_data(
+        observations,
+        expected_asin="B0CHILD001",
+    )
+
+    serialized_network = json.dumps(network_data, sort_keys=True)
+    assert network_data["product"]["title"] == "Network product title"
+    assert network_data["commerce"]["featured_offer"]["price_amount"] == 28.5
+    assert network_data["product"]["technical_details"] == {"Material": "Oak"}
+    assert network_data["variants"]["current_attributes"] == {"Color": "Blue"}
+    assert network_data["media"]["gallery_images"] == [
+        {"url": "https://m.media-amazon.com/images/I/safe.jpg"}
+    ]
+    assert "delivery_text" not in network_data["commerce"]["featured_offer"]
+    assert network_data["source_locator"].startswith("/gp/aod/ajax#sha256=")
+    assert "?" not in network_data["source_locator"]
+    assert "secret" not in serialized_network
+    assert "Wrong product" not in serialized_network
+
+    latest_network_data = extract_amazon_network_product_data(
+        [
+            {
+                "source_path": "/initial.json",
+                "payload": {
+                    "asin": "B0CHILD001",
+                    "product": {
+                        "title": "Initial network title",
+                        "technicalDetails": {"Material": "Oak"},
+                    },
+                    "commerce": {
+                        "featuredOffer": {"promotions": ["Initial promotion"]}
+                    },
+                    "variants": {
+                        "childAsins": ["B0CHILD002"],
+                        "currentAttributes": {"Color": "Blue"},
+                    },
+                },
+            },
+            {
+                "source_path": "/updated.json",
+                "payload": {
+                    "asin": "B0CHILD001",
+                    "product": {
+                        "title": "Updated network title",
+                        "technicalDetails": {},
+                    },
+                    "commerce": {"featuredOffer": {"promotions": []}},
+                    "variants": {"childAsins": [], "currentAttributes": {}},
+                },
+            },
+        ],
+        expected_asin="B0CHILD001",
+    )
+    assert latest_network_data["product"]["title"] == "Updated network title"
+    assert latest_network_data["product"]["technical_details"] == {}
+    assert latest_network_data["commerce"]["featured_offer"]["promotions"] == []
+    assert latest_network_data["variants"]["child_asins"] == []
+    assert latest_network_data["variants"]["current_attributes"] == {}
+    assert latest_network_data["source_locator"].startswith("/page-data#sha256=")
+
+    for collided_identity in (
+        {"ASIN": "B0WRONG001", "asin": "B0CHILD001"},
+        {"asin": "B0CHILD001", "ASIN": "B0WRONG001"},
+    ):
+        collided_identity["product"] = {"title": "Collided identity product"}
+        assert (
+            extract_amazon_network_product_data(
+                [{"source_path": "/collision.json", "payload": collided_identity}],
+                expected_asin="B0CHILD001",
+            )
+            == {}
+        )
+
+    for conflicting_aliases in (
+        {
+            "asin": "B0CHILD001",
+            "productAsin": "B0WRONG001",
+            "product": {
+                "asin": "B0CHILD001",
+                "title": "Conflicting product alias",
+            },
+        },
+        {
+            "identity": {
+                "asin": "B0CHILD001",
+                "productAsin": "B0WRONG001",
+            },
+            "product": {"title": "Conflicting identity alias"},
+        },
+    ):
+        assert (
+            extract_amazon_network_product_data(
+                [{"source_path": "/alias-conflict.json", "payload": conflicting_aliases}],
+                expected_asin="B0CHILD001",
+            )
+            == {}
+        )
+
+    for conflicting_product in (
+        {"asin": "B0WRONG001", "title": "Nested wrong product"},
+        {
+            "identity": {"asin": "B0WRONG001"},
+            "title": "Nested identity wrong product",
+        },
+        {"productAsin": "invalid!", "title": "Invalid identity product"},
+    ):
+        conflicting_identity = extract_amazon_network_product_data(
+            [
+                {
+                    "source_path": "/conflict.json",
+                    "payload": {
+                        "asin": "B0CHILD001",
+                        "product": conflicting_product,
+                    },
+                }
+            ],
+            expected_asin="B0CHILD001",
+        )
+        assert conflicting_identity == {}
+
+    non_finite = extract_amazon_network_product_data(
+        [
+            {
+                "source_path": "/invalid-number.json",
+                "payload": {
+                    "asin": "B0CHILD001",
+                    "commerce": {"rating": float("nan")},
+                },
+            }
+        ],
+        expected_asin="B0CHILD001",
+    )
+    assert non_finite == {}
+
+    embedded_capture = extract_amazon_product_capture(
+        _fixture("product_detail_child.html"),
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+        network_product_data=network_data,
+    )
+    assert embedded_capture["product"]["title"] == "Structured product title"
+    assert embedded_capture["commerce"]["featured_offer"]["coupon_text"] == ("Save 10% with coupon")
+
+    dom_html = (
+        _fixture("product_detail_child.html")
+        .replace(
+            '<script type="application/ld+json">',
+            '<script type="application/ignored+json">',
+        )
+        .replace(
+            '<script id="amazon-product-state" type="application/json">',
+            '<script id="ignored-state" type="application/json">',
+        )
+    )
+    explicit_empty_capture = extract_amazon_product_capture(
+        dom_html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+        network_product_data=latest_network_data,
+    )
+    assert explicit_empty_capture["product"]["technical_details"] == {}
+    assert explicit_empty_capture["commerce"]["featured_offer"]["promotions"] == []
+    assert explicit_empty_capture["variants"]["child_asins"] == []
+    assert explicit_empty_capture["variants"]["current_attributes"] == {}
+    for field_path in (
+        "product.technical_details",
+        "commerce.featured_offer.promotions",
+        "variants.child_asins",
+        "variants.current_attributes",
+    ):
+        assert explicit_empty_capture["field_evidence"][field_path]["source_kind"] == (
+            "same_origin_response"
+        )
+        assert explicit_empty_capture["field_evidence"][field_path]["status"] == "observed"
+
+    network_capture = extract_amazon_product_capture(
+        dom_html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+        network_product_data=network_data,
+    )
+
+    assert network_capture["product"]["title"] == "Network product title"
+    assert network_capture["product"]["brand"] == "Network Brand"
+    assert network_capture["commerce"]["featured_offer"]["price_amount"] == 28.5
+    evidence = network_capture["field_evidence"]["product.title"]
+    assert evidence["source_kind"] == "same_origin_response"
+    assert evidence["source_locator"].startswith("/gp/aod/ajax#sha256=")
+    assert evidence["confidence"] == 0.88
+
+
+@pytest.mark.parametrize(
+    "delivery_text",
+    [
+        "Delivery to Alice, 10001",
+        "Delivering to Alice, 10001",
+        "Ships to Alice, 10001",
+        "Shipping to Alice, 10001",
+    ],
+)
+def test_network_delivery_text_drops_personalized_destination(delivery_text: str) -> None:
+    network_data = extract_amazon_network_product_data(
+        [
+            {
+                "source_path": "/offer.json",
+                "payload": {
+                    "asin": "B0CHILD001",
+                    "commerce": {"featuredOffer": {"deliveryText": delivery_text}},
+                },
+            }
+        ],
+        expected_asin="B0CHILD001",
+    )
+
+    assert network_data == {}
+
+
+def test_stable_dom_precedes_controlled_text_and_controlled_text_is_final_fallback() -> None:
+    dom_capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="availability">In Stock</div>
+          <div id="outOfStock">Currently unavailable</div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+    assert dom_capture["commerce"]["availability_status"] == "in_stock"
+    assert dom_capture["field_evidence"]["commerce.availability_status"][
+        "source_kind"
+    ] == "stable_dom"
+
+    controlled_capture = extract_amazon_product_capture(
+        '<html><body><div id="outOfStock">Currently unavailable</div></body></html>',
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+    assert controlled_capture["commerce"]["availability_status"] == "unavailable"
+    assert controlled_capture["field_evidence"]["commerce.availability_status"][
+        "source_kind"
+    ] == "controlled_text"
 
 
 def test_embedded_state_scalar_values_are_normalized() -> None:
@@ -356,10 +659,7 @@ def test_parent_redirect_to_child_is_partial_and_does_not_expose_child_offer() -
         "coupon_text": None,
         "promotions": [],
     }
-    assert (
-        capture["field_evidence"]["commerce.featured_offer.price_amount"]["status"]
-        == "missing"
-    )
+    assert capture["field_evidence"]["commerce.featured_offer.price_amount"]["status"] == "missing"
 
 
 def test_unrelated_resolved_asin_is_rejected() -> None:
@@ -375,10 +675,14 @@ def test_unrelated_resolved_asin_is_rejected() -> None:
 
 
 def test_jsonld_identity_must_match_the_resolved_url() -> None:
-    html = _fixture("product_detail_child.html").replace(
-        '<script id="amazon-product-state" type="application/json">',
-        '<script id="ignored-state" type="application/json">',
-    ).replace('"sku": "B0CHILD001"', '"sku": "B0OTHER001"')
+    html = (
+        _fixture("product_detail_child.html")
+        .replace(
+            '<script id="amazon-product-state" type="application/json">',
+            '<script id="ignored-state" type="application/json">',
+        )
+        .replace('"sku": "B0CHILD001"', '"sku": "B0OTHER001"')
+    )
 
     with pytest.raises(AmazonIdentityMismatchError) as error:
         extract_amazon_product_capture(
@@ -436,8 +740,7 @@ def test_explicit_empty_embedded_collections_remain_observed() -> None:
         "media.gallery_images",
     }
     assert all(
-        capture["field_evidence"][path]["status"] == "observed"
-        for path in observed_empty_paths
+        capture["field_evidence"][path]["status"] == "observed" for path in observed_empty_paths
     )
 
 

@@ -88,6 +88,7 @@ stages:
 protected_invariants:
   - Browser 是 Amazon 正常采集阶段，不使用 fallback_required 表示正常流程。
   - 完整 capture、HTML 和媒体正文不得进入 Runtime DB；Runtime 只保存紧凑对象引用。
+  - 网络层只观察页面自然加载的 exact same-origin fetch/xhr JSON；按 resolved ASIN 和字段 allowlist 净化后才能持久化。
   - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
   - 飞书投影只更新 source_record_id；missing 字段必须保留已有值。
   - blocked/captcha 保存证据并失败收敛，不新增绕过路径。

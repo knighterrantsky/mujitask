@@ -8,15 +8,19 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
+from urllib.parse import urlparse
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     AmazonAccessBlockedError,
     AmazonIdentityMismatchError,
     AmazonProductExtractionError,
     InvalidASINError,
+    amazon_network_product_data_asin,
     canonical_amazon_url,
+    extract_amazon_network_product_data,
     extract_amazon_product_capture,
+    extract_asin_from_url,
     normalize_asin,
 )
 from automation_business_scaffold.config import get_execution_control_defaults
@@ -69,6 +73,10 @@ _SENSITIVE_JSON_KEYS = {
     "token",
     "workspace",
 }
+_MAX_NETWORK_RESPONSE_COUNT = 8
+_MAX_NETWORK_RESPONSE_BYTES = 256 * 1024
+_MAX_NETWORK_TOTAL_BYTES = 512 * 1024
+_NETWORK_SETTLE_MS = 750
 
 
 def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResult:
@@ -209,6 +217,18 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             browser_target_digest=browser_target_digest,
         )
     capture["profile_context"] = _profile_context(browser_target_digest)
+    try:
+        network_data = extract_amazon_network_product_data(
+            [
+                {
+                    "source_path": "/page-data",
+                    "payload": collection.get("network_data"),
+                }
+            ],
+            expected_asin=capture.get("resolved_asin"),
+        )
+    except InvalidASINError:
+        network_data = {}
     capture_bytes = json.dumps(
         capture,
         ensure_ascii=False,
@@ -220,7 +240,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         _clean_text(collection.get("html"), strip=False)
     )
     try:
-        normalized_ref, html_ref = _write_success_artifacts(
+        normalized_ref, html_ref, network_ref = _write_success_artifacts(
             context=context,
             artifact_policy=artifact_policy,
             requested_asin=requested_asin,
@@ -228,6 +248,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             observed_at=observed_at,
             capture_bytes=capture_bytes,
             sanitized_html=sanitized_html,
+            network_data=network_data,
         )
     except Exception as exc:
         return _failure(
@@ -239,6 +260,9 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             browser_target_digest=browser_target_digest,
         )
 
+    artifact_refs = [normalized_ref, html_ref]
+    if network_ref:
+        artifact_refs.append(network_ref)
     coverage = _field_coverage(capture.get("field_evidence"))
     collection_status = _clean_text(capture.get("collection_status"))
     variants = capture.get("variants")
@@ -251,8 +275,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "collection_status": collection_status,
         "field_coverage": coverage,
         "normalized_capture_ref": normalized_ref,
-        "raw_capture_refs": [normalized_ref, html_ref],
-        "artifact_refs": [normalized_ref, html_ref],
+        "raw_capture_refs": artifact_refs,
+        "artifact_refs": artifact_refs,
         "media_source_refs": _media_source_refs(capture),
         "browser_target_digest": browser_target_digest,
     }
@@ -265,7 +289,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "source_record_id": source_record_id,
         "collection_status": collection_status,
         "coverage_percent": coverage["percentage"],
-        "artifact_count": 2,
+        "artifact_count": len(artifact_refs),
         "browser_target_digest": browser_target_digest,
     }
     if collection_status == "partial_success":
@@ -346,61 +370,237 @@ def _collect_browser_page(
     timeout_ms: int,
 ) -> dict[str, Any]:
     with open_automation_page(profile_ref=profile_ref) as browser_session:
-        page = browser_session.page
+        automation_page = browser_session.page
+        page = getattr(browser_session, "raw_page", None) or automation_page
+        network_observations: list[dict[str, Any]] = []
+        stop_observing = _observe_same_origin_product_responses(
+            page,
+            canonical_url=canonical_url,
+            observations=network_observations,
+        )
         target_digest = hashlib.sha256(
             browser_session.target_key.encode("utf-8")
         ).hexdigest()
         try:
-            _navigate(page, canonical_url, timeout_ms=timeout_ms)
-            _wait_for_amazon_page(page, timeout_ms=timeout_ms)
-            html = _page_content(page)
-            if not html.strip():
-                raise RuntimeError("Amazon browser page content is empty or unreadable.")
-            resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
-            capture = extract_amazon_product_capture(
-                html,
-                requested_asin=requested_asin,
-                resolved_url=resolved_url,
-                observed_at=observed_at,
+            try:
+                _navigate(automation_page, canonical_url, timeout_ms=timeout_ms)
+                _wait_for_amazon_page(page, timeout_ms=timeout_ms)
+                _settle_network_responses(page)
+                html = _page_content(page)
+                if not html.strip():
+                    raise RuntimeError("Amazon browser page content is empty or unreadable.")
+                resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
+                try:
+                    resolved_asin = extract_asin_from_url(resolved_url)
+                except AmazonProductExtractionError:
+                    network_data = {}
+                else:
+                    try:
+                        network_data = extract_amazon_network_product_data(
+                            network_observations,
+                            expected_asin=resolved_asin,
+                        )
+                    except (AmazonProductExtractionError, TypeError, ValueError, OverflowError):
+                        network_data = {}
+                capture = extract_amazon_product_capture(
+                    html,
+                    requested_asin=requested_asin,
+                    resolved_url=resolved_url,
+                    observed_at=observed_at,
+                    network_product_data=network_data,
+                )
+                return {
+                    "capture": capture,
+                    "html": html,
+                    "network_data": network_data,
+                    "resolved_url": resolved_url,
+                    "browser_target_digest": target_digest,
+                    "screenshot_bytes": b"",
+                }
+            except AmazonProductExtractionError as exc:
+                return {
+                    "capture": None,
+                    "html": _page_content(page),
+                    "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
+                    "browser_target_digest": target_digest,
+                    "screenshot_bytes": _page_screenshot(page),
+                    "error": exc,
+                }
+            except Exception as exc:  # browser/provider error boundary
+                error_code = (
+                    "navigation_timeout"
+                    if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower()
+                    else "transient_page_failure"
+                )
+                return {
+                    "capture": None,
+                    "html": _page_content(page),
+                    "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
+                    "browser_target_digest": target_digest,
+                    "screenshot_bytes": _page_screenshot(page),
+                    "error": {
+                        "error_code": error_code,
+                        "message": str(exc),
+                        "retryable": True,
+                        "collection_status": "failed",
+                    },
+                }
+        finally:
+            stop_observing()
+
+
+def _observe_same_origin_product_responses(
+    page: Any,
+    *,
+    canonical_url: str,
+    observations: list[dict[str, Any]],
+) -> Callable[[], None]:
+    on = getattr(page, "on", None)
+    if not callable(on):
+        return lambda: None
+
+    total_bytes = 0
+    observation_sizes: list[int] = []
+
+    def observe(response: Any) -> None:
+        nonlocal total_bytes
+        try:
+            response_url = _clean_text(getattr(response, "url", ""))
+            if not _is_exact_same_origin(response_url, canonical_url):
+                return
+            request = getattr(response, "request", None)
+            resource_type = _clean_text(getattr(request, "resource_type", "")).lower()
+            if resource_type not in {"fetch", "xhr"}:
+                return
+            headers = _response_headers(response)
+            content_type = _clean_text(headers.get("content-type")).lower()
+            media_type = content_type.split(";", 1)[0].strip()
+            if media_type != "application/json" and not media_type.endswith("+json"):
+                return
+            content_length = _response_content_length(headers)
+            if content_length > _MAX_NETWORK_RESPONSE_BYTES:
+                return
+            body = _response_body(response)
+            if not body or len(body) > _MAX_NETWORK_RESPONSE_BYTES:
+                return
+            payload = json.loads(body, parse_constant=_reject_json_constant)
+            if not isinstance(payload, Mapping):
+                return
+            payload_asin = amazon_network_product_data_asin(payload)
+            allowed_asins = {extract_asin_from_url(canonical_url)}
+            current_url = _clean_text(getattr(page, "url", ""))
+            if current_url:
+                try:
+                    allowed_asins.add(extract_asin_from_url(current_url))
+                except AmazonProductExtractionError:
+                    pass
+            if payload_asin not in allowed_asins:
+                return
+
+            body_size = len(body)
+            while observation_sizes and (
+                len(observations) >= _MAX_NETWORK_RESPONSE_COUNT
+                or total_bytes + body_size > _MAX_NETWORK_TOTAL_BYTES
+            ):
+                observations.pop(0)
+                total_bytes -= observation_sizes.pop(0)
+            if (
+                len(observations) >= _MAX_NETWORK_RESPONSE_COUNT
+                or total_bytes + body_size > _MAX_NETWORK_TOTAL_BYTES
+            ):
+                return
+            total_bytes += body_size
+            observation_sizes.append(body_size)
+            observations.append(
+                {
+                    "source_path": urlparse(response_url).path or "/",
+                    "payload": payload,
+                }
             )
-            return {
-                "capture": capture,
-                "html": html,
-                "resolved_url": resolved_url,
-                "browser_target_digest": target_digest,
-                "screenshot_bytes": b"",
-            }
-        except AmazonProductExtractionError as exc:
-            return {
-                "capture": None,
-                "html": _page_content(page),
-                "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
-                "browser_target_digest": target_digest,
-                "screenshot_bytes": _page_screenshot(page),
-                "error": exc,
-            }
-        except Exception as exc:  # browser/provider error boundary
-            error_code = (
-                "navigation_timeout"
-                if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower()
-                else "transient_page_failure"
-            )
-            return {
-                "capture": None,
-                "html": _page_content(page),
-                "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
-                "browser_target_digest": target_digest,
-                "screenshot_bytes": _page_screenshot(page),
-                "error": {
-                    "error_code": error_code,
-                    "message": str(exc),
-                    "retryable": True,
-                    "collection_status": "failed",
-                },
-            }
+        except (TypeError, ValueError, UnicodeError):
+            return
+        except Exception:
+            return
+
+    try:
+        on("response", observe)
+    except Exception:
+        return lambda: None
+
+    def stop() -> None:
+        for method_name in ("remove_listener", "off"):
+            method = getattr(page, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method("response", observe)
+            except Exception:
+                continue
+            return
+
+    return stop
+
+
+def _is_exact_same_origin(candidate: str, expected: str) -> bool:
+    def origin(value: str) -> tuple[str, str, int | None]:
+        parsed = urlparse(value)
+        port = parsed.port
+        if port is None:
+            port = 443 if parsed.scheme.lower() == "https" else 80
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+    candidate_origin = origin(candidate)
+    return bool(candidate_origin[1]) and candidate_origin == origin(expected)
+
+
+def _response_headers(response: Any) -> dict[str, Any]:
+    value = getattr(response, "headers", {})
+    if callable(value):
+        value = value()
+    if not isinstance(value, Mapping):
+        all_headers = getattr(response, "all_headers", None)
+        value = all_headers() if callable(all_headers) else {}
+    return {str(key).lower(): item for key, item in value.items()}
+
+
+def _response_content_length(headers: Mapping[str, Any]) -> int:
+    raw = _clean_text(headers.get("content-length"))
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _MAX_NETWORK_RESPONSE_BYTES + 1
+
+
+def _response_body(response: Any) -> bytes:
+    body = getattr(response, "body", None)
+    if not callable(body):
+        return b""
+    value = body()
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return b""
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Non-finite JSON number is not allowed: {value}")
 
 
 def _navigate(page: Any, url: str, *, timeout_ms: int) -> None:
+    navigate = getattr(page, "navigate", None)
+    if callable(navigate):
+        try:
+            navigate(url, wait_until="domcontentloaded", timeout_ms=timeout_ms)
+            return
+        except TypeError:
+            navigate(url)
+            return
+
     goto = getattr(page, "goto", None)
     if not callable(goto):
         raise RuntimeError("Browser page does not support navigation.")
@@ -408,6 +608,16 @@ def _navigate(page: Any, url: str, *, timeout_ms: int) -> None:
         goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
     except TypeError:
         goto(url)
+
+
+def _settle_network_responses(page: Any) -> None:
+    wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    if not callable(wait_for_timeout):
+        return
+    try:
+        wait_for_timeout(_NETWORK_SETTLE_MS)
+    except Exception:
+        pass
 
 
 def _wait_for_amazon_page(page: Any, *, timeout_ms: int) -> None:
@@ -477,7 +687,8 @@ def _write_success_artifacts(
     observed_at: datetime,
     capture_bytes: bytes,
     sanitized_html: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    network_data: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     base_key = _raw_capture_base_key(
         artifact_policy,
         requested_asin=requested_asin,
@@ -505,7 +716,25 @@ def _write_success_artifacts(
         observed_at=observed_at,
         content_encoding="gzip",
     )
-    return normalized_ref, html_ref
+    network_ref = None
+    if network_data:
+        network_ref = _upload_bytes(
+            context=context,
+            artifact_policy=artifact_policy,
+            object_key=f"{base_key}/page-data.json",
+            payload=json.dumps(
+                network_data,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8"),
+            capture_kind="network_data",
+            content_type="application/json",
+            sanitization_status="allowlisted",
+            observed_at=observed_at,
+        )
+    return normalized_ref, html_ref, network_ref
 
 
 def _write_failure_artifacts(

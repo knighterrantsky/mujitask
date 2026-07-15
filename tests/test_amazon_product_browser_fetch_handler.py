@@ -11,7 +11,9 @@ from types import SimpleNamespace
 import pytest
 
 import automation_business_scaffold.infrastructure.browser.browser_bridge as browser_bridge
-from automation_business_scaffold.capabilities.browser import amazon_product_fetch_handler as handler_module
+from automation_business_scaffold.capabilities.browser import (
+    amazon_product_fetch_handler as handler_module,
+)
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     AmazonAccessBlockedError,
     AmazonIdentityMismatchError,
@@ -147,9 +149,11 @@ def test_handler_is_allowlisted_bound_and_has_compact_job_contract() -> None:
     )
     assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.worker_type == "browser_worker"
     assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.runtime_table == "task_execution"
-    assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.payload_contract.field_names(
-        required_only=True
-    ) == ("requested_asin", "source_record_id", "run_id")
+    assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.payload_contract.field_names(required_only=True) == (
+        "requested_asin",
+        "source_record_id",
+        "run_id",
+    )
     assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.business_key_template == (
         "{source_record_id}:{requested_asin}"
     )
@@ -170,9 +174,7 @@ def test_amazon_resource_lane_digest_uses_resolved_browser_target_key(monkeypatc
         lambda resolved: "roxy:workspace:profile" if resolved is target else "",
     )
 
-    digest = browser_bridge.resolve_automation_browser_target_digest(
-        profile_ref="amazon-us"
-    )
+    digest = browser_bridge.resolve_automation_browser_target_digest(profile_ref="amazon-us")
 
     assert digest == hashlib.sha256(b"roxy:workspace:profile").hexdigest()
 
@@ -239,8 +241,9 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
     assert normalized["profile_context"]["locale"] == "en_US"
     assert normalized["profile_context"]["currency"] == "USD"
     assert normalized["profile_context"]["profile_context_digest"]
-    assert hashlib.sha256(normalized_bytes).hexdigest() == (
-        result.result["normalized_capture_ref"]["content_digest"]
+    assert (
+        hashlib.sha256(normalized_bytes).hexdigest()
+        == (result.result["normalized_capture_ref"]["content_digest"])
     )
     sanitized_html = gzip.decompress(store.uploads[("artifacts", html_key)]).decode()
     assert "Structured product title" in sanitized_html
@@ -337,11 +340,26 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
             return b"unexpected"
 
     page = Page()
+    navigate_calls: list[tuple[str, str, int]] = []
+
+    class AutomationPage:
+        def navigate(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout_ms: int,
+        ) -> None:
+            navigate_calls.append((url, wait_until, timeout_ms))
 
     @contextmanager
     def open_page(*, profile_ref: str):
         assert profile_ref == "amazon-us-profile"
-        yield SimpleNamespace(page=page, target_key="private-target-key")
+        yield SimpleNamespace(
+            page=AutomationPage(),
+            raw_page=page,
+            target_key="private-target-key",
+        )
 
     monkeypatch.setattr(handler_module, "open_automation_page", open_page)
 
@@ -354,11 +372,416 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
     )
 
     assert collection["capture"]["resolved_asin"] == "B0CHILD001"
-    assert collection["browser_target_digest"] == hashlib.sha256(
-        b"private-target-key"
-    ).hexdigest()
+    assert navigate_calls == [
+        ("https://www.amazon.com/dp/B0CHILD001", "domcontentloaded", 5000)
+    ]
+    assert page.goto_calls == []
+    assert collection["browser_target_digest"] == hashlib.sha256(b"private-target-key").hexdigest()
     assert "target_key" not in collection
     assert page.screenshot_calls == 0
+
+
+def test_natural_same_origin_json_response_is_allowlisted_and_persisted_as_ref(
+    monkeypatch,
+) -> None:
+    class Response:
+        def __init__(
+            self,
+            *,
+            url: str,
+            payload: dict[str, object],
+            content_type: str = "application/json",
+            resource_type: str = "xhr",
+            content_length: int | None = None,
+        ) -> None:
+            self.url = url
+            self.request = SimpleNamespace(resource_type=resource_type)
+            self._body = json.dumps(payload).encode()
+            self.headers = {
+                "content-type": content_type,
+                "content-length": str(
+                    len(self._body) if content_length is None else content_length
+                ),
+                "set-cookie": "must-not-be-persisted",
+            }
+
+        def body(self) -> bytes:
+            return self._body
+
+    class Page:
+        url = "https://www.amazon.com/dp/B0CHILD001"
+
+        def __init__(self) -> None:
+            self.events: list[str] = []
+            self.response_listener = None
+
+        def on(self, event: str, listener) -> None:
+            assert event == "response"
+            self.events.append("listener:on")
+            self.response_listener = listener
+
+        def remove_listener(self, event: str, listener) -> None:
+            assert event == "response"
+            assert listener is self.response_listener
+            self.events.append("listener:off")
+            self.response_listener = None
+
+        def goto(self, *args, **kwargs) -> None:
+            self.events.append("goto")
+            assert self.response_listener is not None
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            assert timeout_ms == handler_module._NETWORK_SETTLE_MS
+            self.events.append("network:settle")
+            for response in (
+                Response(
+                    url="https://evil.example/product.json",
+                    payload={
+                        "asin": "B0CHILD001",
+                        "product": {"title": "Cross-origin title"},
+                    },
+                ),
+                Response(
+                    url="https://www.amazon.com/product.txt",
+                    content_type="application/notjson",
+                    payload={
+                        "asin": "B0CHILD001",
+                        "product": {"title": "Non-JSON title"},
+                    },
+                ),
+                Response(
+                    url="https://www.amazon.com/too-large.json",
+                    content_length=handler_module._MAX_NETWORK_RESPONSE_BYTES + 1,
+                    payload={
+                        "asin": "B0CHILD001",
+                        "product": {"title": "Oversized title"},
+                    },
+                ),
+                Response(
+                    url="https://www.amazon.com/wrong.json",
+                    payload={
+                        "asin": "B0WRONG001",
+                        "product": {"title": "Wrong-ASIN title"},
+                    },
+                ),
+                Response(
+                    url="https://www.amazon.com/non-finite.json",
+                    payload={
+                        "asin": "B0CHILD001",
+                        "commerce": {"rating": float("nan")},
+                    },
+                ),
+                Response(
+                    url="https://www.amazon.com/gp/aod/ajax?token=secret",
+                    payload={
+                        "asin": "B0CHILD001",
+                        "product": {"title": "Network response title"},
+                        "commerce": {"featuredOffer": {"priceAmount": "$28.50"}},
+                        "media": {
+                            "images": [
+                                "https://m.media-amazon.com/images/I/network.jpg"
+                                "?token=media-query-secret#fragment"
+                            ]
+                        },
+                        "cookie": "secret-cookie",
+                        "authorization": "Bearer secret-token",
+                    },
+                ),
+            ):
+                self.response_listener(response)
+
+        def content(self) -> str:
+            return (
+                _fixture("product_detail_child.html")
+                .replace(
+                    '<script type="application/ld+json">',
+                    '<script type="application/ignored+json">',
+                )
+                .replace(
+                    '<script id="amazon-product-state" type="application/json">',
+                    '<script id="ignored-state" type="application/json">',
+                )
+            )
+
+        def screenshot(self, *, full_page: bool) -> bytes:
+            raise AssertionError("successful collection must not take a screenshot")
+
+    page = Page()
+
+    @contextmanager
+    def open_page(*, profile_ref: str):
+        assert profile_ref == "amazon-us-profile"
+        yield SimpleNamespace(
+            page=page,
+            raw_page=page,
+            target_key="target-key",
+        )
+
+    store = FakeArtifactStore()
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(handler_module, "open_automation_page", open_page)
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "success"
+    assert page.events == ["listener:on", "goto", "network:settle", "listener:off"]
+    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == [
+        "normalized_capture",
+        "html",
+        "network_data",
+    ]
+    network_ref = result.result["artifact_refs"][2]
+    assert network_ref["content_type"] == "application/json"
+    assert network_ref["sanitization_status"] == "allowlisted"
+    assert result.summary["artifact_count"] == 3
+    serialized_result = json.dumps(result.result, sort_keys=True)
+    assert "Network response title" not in serialized_result
+    assert "secret" not in serialized_result
+    assert "media-query-secret" not in serialized_result
+
+    base = "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1"
+    normalized = json.loads(store.uploads[("artifacts", f"{base}/normalized.json")])
+    page_data = json.loads(store.uploads[("artifacts", f"{base}/page-data.json")])
+    assert normalized["product"]["title"] == "Network response title"
+    assert normalized["commerce"]["featured_offer"]["price_amount"] == 28.5
+    assert normalized["media"]["gallery_images"] == [
+        {"url": "https://m.media-amazon.com/images/I/network.jpg"}
+    ]
+    evidence = normalized["field_evidence"]["product.title"]
+    assert evidence["source_kind"] == "same_origin_response"
+    assert evidence["source_locator"].startswith("/gp/aod/ajax#sha256=")
+    serialized_page_data = json.dumps(page_data, sort_keys=True)
+    assert page_data["product"]["title"] == "Network response title"
+    assert "secret" not in serialized_page_data
+    assert "set-cookie" not in serialized_page_data
+    assert "must-not-be-persisted" not in serialized_page_data
+    assert "media-query-secret" not in serialized_page_data
+    assert "Cross-origin title" not in serialized_page_data
+    assert "Non-JSON title" not in serialized_page_data
+    assert "Oversized title" not in serialized_page_data
+    assert "Wrong-ASIN title" not in serialized_page_data
+
+
+def test_response_observer_accepts_only_exact_origin_fetch_or_xhr_json() -> None:
+    class Response:
+        def __init__(
+            self,
+            *,
+            url: str,
+            resource_type: str = "xhr",
+            content_type: str = "application/json",
+        ) -> None:
+            self.url = url
+            self.request = SimpleNamespace(resource_type=resource_type)
+            self.headers = {"content-type": content_type}
+
+        def body(self) -> bytes:
+            return b'{"asin":"B0CHILD001","product":{"title":"Accepted"}}'
+
+    class Page:
+        def __init__(self) -> None:
+            self.listener = None
+
+        def on(self, event: str, listener) -> None:
+            assert event == "response"
+            self.listener = listener
+
+        def remove_listener(self, event: str, listener) -> None:
+            assert event == "response"
+            assert listener is self.listener
+            self.listener = None
+
+    page = Page()
+    observations: list[dict[str, object]] = []
+    stop = handler_module._observe_same_origin_product_responses(
+        page,
+        canonical_url="https://www.amazon.com/dp/B0CHILD001",
+        observations=observations,
+    )
+    assert page.listener is not None
+
+    for response in (
+        Response(
+            url="https://www.amazon.com:443/fetch.json?token=discarded",
+            resource_type="fetch",
+            content_type="application/vnd.amazon+json; charset=utf-8",
+        ),
+        Response(url="http://www.amazon.com/wrong-scheme.json"),
+        Response(url="https://www.amazon.com:444/wrong-port.json"),
+        Response(url="https://api.amazon.com/wrong-subdomain.json"),
+        Response(url="https://www.amazon.com/document.json", resource_type="document"),
+        Response(url="https://www.amazon.com/script.json", resource_type="script"),
+        Response(url="https://www.amazon.com/not-json", content_type="text/plain"),
+    ):
+        page.listener(response)
+
+    assert observations == [
+        {
+            "source_path": "/fetch.json",
+            "payload": {"asin": "B0CHILD001", "product": {"title": "Accepted"}},
+        }
+    ]
+    stop()
+    assert page.listener is None
+
+
+def test_response_observer_enforces_count_and_byte_limits() -> None:
+    class Response:
+        def __init__(
+            self,
+            *,
+            index: int,
+            padding_bytes: int = 0,
+            content_length: int | None = None,
+            payload: dict[str, object] | None = None,
+        ) -> None:
+            self.url = f"https://www.amazon.com/response-{index}.json"
+            self.request = SimpleNamespace(resource_type="xhr")
+            self._body = json.dumps(
+                payload
+                if payload is not None
+                else {
+                    "asin": "B0CHILD001",
+                    "product": {"title": f"Response {index}"},
+                    "padding": "x" * padding_bytes,
+                }
+            ).encode()
+            self.headers = {"content-type": "application/json"}
+            if content_length is not None:
+                self.headers["content-length"] = str(content_length)
+
+        def body(self) -> bytes:
+            return self._body
+
+    class Page:
+        def __init__(self) -> None:
+            self.listener = None
+
+        def on(self, event: str, listener) -> None:
+            assert event == "response"
+            self.listener = listener
+
+        def remove_listener(self, event: str, listener) -> None:
+            assert event == "response"
+            assert listener is self.listener
+            self.listener = None
+
+    def listen(
+        canonical_url: str = "https://www.amazon.com/dp/B0CHILD001",
+    ) -> tuple[Page, list[dict[str, object]], object]:
+        page = Page()
+        observations: list[dict[str, object]] = []
+        stop = handler_module._observe_same_origin_product_responses(
+            page,
+            canonical_url=canonical_url,
+            observations=observations,
+        )
+        return page, observations, stop
+
+    count_page, count_observations, count_stop = listen()
+    assert count_page.listener is not None
+    for index in range(handler_module._MAX_NETWORK_RESPONSE_COUNT + 1):
+        count_page.listener(Response(index=index))
+    assert len(count_observations) == handler_module._MAX_NETWORK_RESPONSE_COUNT
+    assert count_observations[0]["source_path"] == "/response-1.json"
+    assert count_observations[-1]["source_path"] == "/response-8.json"
+    count_stop()
+
+    total_page, total_observations, total_stop = listen()
+    assert total_page.listener is not None
+    for index in range(3):
+        total_page.listener(Response(index=index, padding_bytes=200 * 1024))
+    assert len(total_observations) == 2
+    assert [item["source_path"] for item in total_observations] == [
+        "/response-1.json",
+        "/response-2.json",
+    ]
+    total_stop()
+
+    starvation_page, starvation_observations, starvation_stop = listen()
+    assert starvation_page.listener is not None
+    for index in range(handler_module._MAX_NETWORK_RESPONSE_COUNT):
+        starvation_page.listener(
+            Response(
+                index=index,
+                payload={
+                    "asin": f"B0WRONG00{index}",
+                    "product": {"title": f"Wrong product {index}"},
+                },
+            )
+        )
+    starvation_page.listener(
+        Response(
+            index=99,
+            payload={
+                "asin": "B0CHILD001",
+                "product": {"title": "Latest real product response"},
+            },
+        )
+    )
+    assert len(starvation_observations) == 1
+    assert handler_module.extract_amazon_network_product_data(
+        starvation_observations,
+        expected_asin="B0CHILD001",
+    )["product"]["title"] == "Latest real product response"
+    starvation_stop()
+
+    reverse_page, reverse_observations, reverse_stop = listen()
+    assert reverse_page.listener is not None
+    reverse_page.listener(
+        Response(
+            index=99,
+            payload={
+                "asin": "B0CHILD001",
+                "product": {"title": "Early real product response"},
+            },
+        )
+    )
+    for index in range(handler_module._MAX_NETWORK_RESPONSE_COUNT):
+        reverse_page.listener(
+            Response(
+                index=index,
+                payload={
+                    "asin": f"B0WRONG00{index}",
+                    "product": {"title": f"Wrong product {index}"},
+                },
+            )
+        )
+    assert len(reverse_observations) == 1
+    assert handler_module.extract_amazon_network_product_data(
+        reverse_observations,
+        expected_asin="B0CHILD001",
+    )["product"]["title"] == "Early real product response"
+    reverse_stop()
+
+    parent_page, parent_observations, parent_stop = listen(
+        "https://www.amazon.com/dp/B0PARENT01"
+    )
+    parent_page.url = "https://www.amazon.com/dp/B0CHILD001"
+    assert parent_page.listener is not None
+    parent_page.listener(
+        Response(
+            index=100,
+            payload={
+                "asin": "B0CHILD001",
+                "product": {"title": "Resolved child response"},
+            },
+        )
+    )
+    assert len(parent_observations) == 1
+    parent_stop()
+
+    body_page, body_observations, body_stop = listen()
+    assert body_page.listener is not None
+    body_page.listener(
+        Response(
+            index=0,
+            padding_bytes=handler_module._MAX_NETWORK_RESPONSE_BYTES,
+            content_length=1,
+        )
+    )
+    assert body_observations == []
+    body_stop()
 
 
 def test_real_page_collection_screenshots_blocked_redirect(monkeypatch) -> None:
@@ -437,9 +860,7 @@ def test_empty_or_unreadable_page_content_is_a_retryable_technical_failure(
     assert result.error.error_code == "transient_page_failure"
     assert result.error.retryable is True
     assert "normalized_capture_ref" not in result.result
-    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == [
-        "screenshot"
-    ]
+    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == ["screenshot"]
 
 
 def test_default_profile_is_used_and_payload_profile_is_ignored(monkeypatch) -> None:
@@ -474,9 +895,7 @@ def test_missing_profile_or_object_storage_fails_before_opening_browser(monkeypa
         lambda **kwargs: opened.append(True) or _success_collection(),
     )
 
-    missing_profile = amazon_product_browser_fetch_handler(
-        _context(store=FakeArtifactStore())
-    )
+    missing_profile = amazon_product_browser_fetch_handler(_context(store=FakeArtifactStore()))
 
     assert missing_profile.status == "failed"
     assert missing_profile.error is not None
@@ -550,9 +969,7 @@ def test_terminal_page_errors_upload_sanitized_html_and_screenshot(
         },
     )
 
-    result = amazon_product_browser_fetch_handler(
-        _context(asin="B0BLOCK001", store=store)
-    )
+    result = amazon_product_browser_fetch_handler(_context(asin="B0BLOCK001", store=store))
 
     assert result.status == "failed"
     assert result.error is not None
@@ -592,9 +1009,7 @@ def test_terminal_page_error_without_required_screenshot_is_retryable(
         },
     )
 
-    result = amazon_product_browser_fetch_handler(
-        _context(asin="B0BLOCK001", store=store)
-    )
+    result = amazon_product_browser_fetch_handler(_context(asin="B0BLOCK001", store=store))
 
     assert result.status == "failed"
     assert result.error is not None
@@ -634,9 +1049,7 @@ def test_unavailable_is_success_and_parent_redirect_is_partial(monkeypatch) -> N
         "_collect_browser_page",
         lambda **kwargs: _success_collection(parent_capture),
     )
-    parent_result = amazon_product_browser_fetch_handler(
-        _context(asin="B0PARENT01", store=store)
-    )
+    parent_result = amazon_product_browser_fetch_handler(_context(asin="B0PARENT01", store=store))
 
     assert parent_result.status == "partial_success"
     assert parent_result.result["resolved_asin"] == "B0CHILD001"
@@ -842,7 +1255,9 @@ def test_artifact_retry_uses_stable_capture_run_id_across_claim_attempts() -> No
         )
 
     first_new = next(record for record in first_store.replaced if record.artifact_id != "existing")
-    second_new = next(record for record in second_store.replaced if record.artifact_id != "existing")
+    second_new = next(
+        record for record in second_store.replaced if record.artifact_id != "existing"
+    )
     assert first_new.artifact_id == second_new.artifact_id
     assert first_new.run_id == second_new.run_id == "run-1"
 

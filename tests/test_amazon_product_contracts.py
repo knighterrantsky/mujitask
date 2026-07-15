@@ -78,6 +78,16 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
         "requires_fact_db": True,
         "requires_object_storage": True,
         "runtime_result_policy": "compact_references_only",
+        "runtime_context": {
+            "location": "task_request.stage_cursor.runtime_context",
+            "allowed": ["browser_target_digest", "browser_resource_code"],
+            "forbidden": [
+                "browser_profile_ref",
+                "browser_provider_token",
+                "browser_workspace_id",
+                "browser_profile_id",
+            ],
+        },
     }
     assert contract["payload"]["business_inputs_only"] is True
     assert contract["payload"]["required"] == ["table_ref", "source_record_id"]

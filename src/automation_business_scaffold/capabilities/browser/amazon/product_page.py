@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -43,6 +44,41 @@ _OFFER_FIELD_DEFAULTS: Mapping[str, Any] = {
     "coupon_text": None,
     "promotions": [],
 }
+_NETWORK_MAX_TEXT_LENGTH = 20_000
+_NETWORK_MAX_LIST_ITEMS = 100
+_NETWORK_MAX_MAPPING_ITEMS = 200
+_NETWORK_EXPLICIT_EMPTY_LIST = object()
+_NETWORK_EXPLICIT_EMPTY_MAPPING = object()
+_NETWORK_SENSITIVE_KEY_MARKERS = (
+    "accesskey",
+    "account",
+    "address",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "customer",
+    "deliverylocation",
+    "email",
+    "localstorage",
+    "password",
+    "phone",
+    "postal",
+    "profile",
+    "recipient",
+    "requestheader",
+    "secret",
+    "session",
+    "shippinglocation",
+    "token",
+    "owner",
+    "user",
+    "workspace",
+)
+_NETWORK_MEDIA_HOST_SUFFIXES = (
+    ".media-amazon.com",
+    ".ssl-images-amazon.com",
+)
 
 
 class AmazonProductExtractionError(RuntimeError):
@@ -162,6 +198,8 @@ def extract_amazon_product_capture(
     requested_asin: object,
     resolved_url: object,
     observed_at: datetime | str,
+    *,
+    network_product_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     requested = normalize_asin(requested_asin)
     if not isinstance(html, str):
@@ -173,6 +211,10 @@ def extract_amazon_product_capture(
     structured = _extract_structured_product(document)
     state = _extract_embedded_state(document)
     dom = _extract_dom_values(document)
+    network = _validated_network_product_data(
+        network_product_data,
+        expected_asin=resolved_from_url,
+    )
 
     state_asin = _optional_asin(state.get("asin"))
     structured_asin = _optional_asin(structured.get("asin"))
@@ -187,10 +229,17 @@ def extract_amazon_product_capture(
     resolved = state_asin or resolved_from_url
 
     state_variants = _mapping(state.get("variants"))
+    network_variants = _mapping(network.get("variants"))
     state_parent = _optional_asin(state.get("parent_asin"))
     state_variant_parent = _optional_asin(state_variants.get("parent_asin"))
+    network_parent = _optional_asin(network_variants.get("parent_asin"))
     dom_parent = _optional_asin(dom.get("parent_asin"))
-    parent = _first_asin(state_parent, state_variant_parent, dom_parent)
+    parent = _first_asin(
+        state_parent,
+        state_variant_parent,
+        network_parent,
+        dom_parent,
+    )
     parent_redirect = requested != resolved and requested == parent
     if requested != resolved and not parent_redirect:
         raise AmazonIdentityMismatchError(
@@ -199,9 +248,13 @@ def extract_amazon_product_capture(
 
     evidence: dict[str, dict[str, Any]] = {}
     product_state = _mapping(state.get("product"))
+    network_product = _mapping(network.get("product"))
     commerce_state = _mapping(state.get("commerce"))
+    network_commerce = _mapping(network.get("commerce"))
     offer_state = _mapping(commerce_state.get("featured_offer"))
+    network_offer = _mapping(network_commerce.get("featured_offer"))
     media_state = _mapping(state.get("media"))
+    network_media = _mapping(network.get("media"))
     structured_offer = _mapping(structured.get("featured_offer"))
 
     product = {
@@ -216,6 +269,11 @@ def extract_amazon_product_capture(
                 "state.product.title",
                 0.95,
             ),
+            _network_candidate(
+                network,
+                "product.title",
+                _clean_text(network_product.get("title")),
+            ),
             _candidate(dom.get("title"), "stable_dom", "#productTitle", 0.82),
         ),
         "brand": _choose(
@@ -228,6 +286,11 @@ def extract_amazon_product_capture(
                 "embedded_state",
                 "state.product.brand",
                 0.95,
+            ),
+            _network_candidate(
+                network,
+                "product.brand",
+                _clean_text(network_product.get("brand")),
             ),
             _candidate(dom.get("brand"), "stable_dom", "#bylineInfo", 0.8),
         ),
@@ -247,6 +310,12 @@ def extract_amazon_product_capture(
                 "state.product.category_path",
                 0.95,
                 accept_empty=_explicit_empty_list(product_state, "category_path"),
+            ),
+            _network_candidate(
+                network,
+                "product.category_path",
+                _category_path(network_product.get("category_path")),
+                accept_empty="category_path" in network_product,
             ),
             _candidate(
                 dom.get("category_path"),
@@ -272,6 +341,12 @@ def extract_amazon_product_capture(
                 0.95,
                 accept_empty=_explicit_empty_list(product_state, "bullet_points"),
             ),
+            _network_candidate(
+                network,
+                "product.bullet_points",
+                _text_list(network_product.get("bullet_points")),
+                accept_empty="bullet_points" in network_product,
+            ),
             _candidate(dom.get("bullet_points"), "stable_dom", "#feature-bullets", 0.82),
         ),
         "description": _choose(
@@ -290,6 +365,11 @@ def extract_amazon_product_capture(
                 "state.product.description",
                 0.95,
             ),
+            _network_candidate(
+                network,
+                "product.description",
+                _clean_text(network_product.get("description")),
+            ),
             _candidate(dom.get("description"), "stable_dom", "#productDescription", 0.8),
         ),
         "technical_details": _choose(
@@ -302,6 +382,12 @@ def extract_amazon_product_capture(
                 "state.product.technical_details",
                 0.95,
                 accept_empty=_explicit_empty_mapping(product_state, "technical_details"),
+            ),
+            _network_candidate(
+                network,
+                "product.technical_details",
+                _string_mapping(network_product.get("technical_details")),
+                accept_empty="technical_details" in network_product,
             ),
             _candidate(
                 dom.get("technical_details"),
@@ -330,6 +416,12 @@ def extract_amazon_product_capture(
             0.95,
             _availability_evidence_status(commerce_state.get("availability_status")),
         ),
+        _network_candidate(
+            network,
+            "commerce.availability_status",
+            _normalize_availability(network_commerce.get("availability_status")),
+            status=_availability_evidence_status(network_commerce.get("availability_status")),
+        ),
         _candidate(
             dom.get("availability_status"),
             "stable_dom",
@@ -348,34 +440,46 @@ def extract_amazon_product_capture(
 
     featured_offer = {
         "seller_id": _choose_offer_field(
-            "seller_id", evidence, structured_offer, offer_state, dom
+            "seller_id", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "seller_name": _choose_offer_field(
-            "seller_name", evidence, structured_offer, offer_state, dom
+            "seller_name", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "is_buy_box": _choose_offer_field(
-            "is_buy_box", evidence, structured_offer, offer_state, dom
+            "is_buy_box", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "price_amount": _choose_offer_field(
-            "price_amount", evidence, structured_offer, offer_state, dom
+            "price_amount", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "list_price_amount": _choose_offer_field(
-            "list_price_amount", evidence, structured_offer, offer_state, dom
+            "list_price_amount",
+            evidence,
+            structured_offer,
+            offer_state,
+            network_offer,
+            network,
+            dom,
         ),
         "currency": _choose_offer_field(
-            "currency", evidence, structured_offer, offer_state, dom
+            "currency", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "fulfillment_channel": _choose_offer_field(
-            "fulfillment_channel", evidence, structured_offer, offer_state, dom
+            "fulfillment_channel",
+            evidence,
+            structured_offer,
+            offer_state,
+            network_offer,
+            network,
+            dom,
         ),
         "delivery_text": _choose_offer_field(
-            "delivery_text", evidence, structured_offer, offer_state, dom
+            "delivery_text", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "coupon_text": _choose_offer_field(
-            "coupon_text", evidence, structured_offer, offer_state, dom
+            "coupon_text", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
         "promotions": _choose_offer_field(
-            "promotions", evidence, structured_offer, offer_state, dom
+            "promotions", evidence, structured_offer, offer_state, network_offer, network, dom
         ),
     }
     commerce = {
@@ -390,6 +494,11 @@ def extract_amazon_product_capture(
                 "embedded_state",
                 "state.commerce.rating",
                 0.95,
+            ),
+            _network_candidate(
+                network,
+                "commerce.rating",
+                _as_float(network_commerce.get("rating")),
             ),
             _candidate(dom.get("rating"), "stable_dom", "#acrPopover", 0.82),
         ),
@@ -408,6 +517,11 @@ def extract_amazon_product_capture(
                 "embedded_state",
                 "state.commerce.review_count",
                 0.95,
+            ),
+            _network_candidate(
+                network,
+                "commerce.review_count",
+                _as_int(network_commerce.get("review_count")),
             ),
             _candidate(dom.get("review_count"), "stable_dom", "#acrCustomerReviewText", 0.82),
         ),
@@ -431,6 +545,11 @@ def extract_amazon_product_capture(
                 "state.variants.parent_asin",
                 0.95,
             ),
+            _network_candidate(
+                network,
+                "variants.parent_asin",
+                network_parent,
+            ),
             _candidate(dom_parent, "stable_dom", "#twister[data-parent-asin]", 0.8),
         ),
         "child_asins": _choose(
@@ -444,6 +563,12 @@ def extract_amazon_product_capture(
                 0.95,
                 accept_empty=_explicit_empty_list(state_variants, "child_asins"),
             ),
+            _network_candidate(
+                network,
+                "variants.child_asins",
+                _normalize_asin_list(network_variants.get("child_asins")),
+                accept_empty="child_asins" in network_variants,
+            ),
             _candidate(dom.get("child_asins"), "stable_dom", "#twister [data-asin]", 0.8),
         ),
         "current_attributes": _choose(
@@ -456,6 +581,12 @@ def extract_amazon_product_capture(
                 "state.variants.current_attributes",
                 0.95,
                 accept_empty=_explicit_empty_mapping(state_variants, "current_attributes"),
+            ),
+            _network_candidate(
+                network,
+                "variants.current_attributes",
+                _string_mapping(network_variants.get("current_attributes")),
+                accept_empty="current_attributes" in network_variants,
             ),
             _candidate(
                 dom.get("current_attributes"),
@@ -474,6 +605,12 @@ def extract_amazon_product_capture(
                 "state.variants.dimensions",
                 0.95,
                 accept_empty=_explicit_empty_mapping(state_variants, "dimensions"),
+            ),
+            _network_candidate(
+                network,
+                "variants.dimensions",
+                _dimension_mapping(network_variants.get("dimensions")),
+                accept_empty="dimensions" in network_variants,
             ),
             _candidate(
                 dom.get("dimensions"),
@@ -494,6 +631,12 @@ def extract_amazon_product_capture(
             "state.rankings",
             0.95,
             accept_empty=_explicit_empty_list(state, "rankings"),
+        ),
+        _network_candidate(
+            network,
+            "rankings",
+            _normalize_rankings(network.get("rankings")),
+            accept_empty="rankings" in network,
         ),
         _candidate(
             dom.get("rankings"),
@@ -522,6 +665,11 @@ def extract_amazon_product_capture(
                 "state.media.main_image",
                 0.95,
             ),
+            _network_candidate(
+                network,
+                "media.main_image",
+                _normalize_media_item(network_media.get("main_image")),
+            ),
             _candidate(dom.get("main_image"), "stable_dom", "#landingImage", 0.85),
         ),
         "gallery_images": _choose(
@@ -540,6 +688,12 @@ def extract_amazon_product_capture(
                 "state.media.gallery_images",
                 0.95,
                 accept_empty=_explicit_empty_list(media_state, "gallery_images"),
+            ),
+            _network_candidate(
+                network,
+                "media.gallery_images",
+                _normalize_media_list(network_media.get("gallery_images")),
+                accept_empty="gallery_images" in network_media,
             ),
             _candidate(dom.get("gallery_images"), "stable_dom", "#altImages img", 0.82),
         ),
@@ -646,6 +800,522 @@ def extract_amazon_product_capture(
     }
     json.dumps(capture, allow_nan=False)
     return capture
+
+
+def extract_amazon_network_product_data(
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    expected_asin: object,
+) -> dict[str, Any]:
+    """Return only contract fields anchored to the resolved product identity."""
+
+    expected = normalize_asin(expected_asin)
+    merged: dict[str, Any] = {}
+    source_paths: list[str] = []
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        payload = observation.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if amazon_network_product_data_asin(payload) != expected:
+            continue
+        source_path = _network_source_path(observation.get("source_path"))
+        for product_object in _network_product_objects(payload):
+            if _network_object_asin(product_object) != expected:
+                continue
+            normalized = _normalize_network_product_object(product_object)
+            if not normalized:
+                continue
+            _merge_network_fields(merged, normalized)
+            if source_path not in source_paths:
+                source_paths.append(source_path)
+
+    if not merged:
+        return {}
+    result = {"asin": expected, **merged}
+    try:
+        serialized = json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    digest = hashlib.sha256(serialized).hexdigest()
+    source_path = source_paths[0] if len(source_paths) == 1 else "/page-data"
+    result["source_locator"] = f"{source_path}#sha256={digest}"
+    return result
+
+
+def amazon_network_product_data_asin(payload: Mapping[str, Any]) -> str | None:
+    """Return the one unambiguous ASIN carried by allowlisted product data."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    product_objects = tuple(_network_product_objects(payload))
+    observed: set[str] = set()
+    for product_object in product_objects:
+        for raw in _network_direct_identity_values(product_object):
+            if raw in (None, ""):
+                continue
+            try:
+                observed.add(normalize_asin(raw))
+            except InvalidASINError:
+                return None
+    if len(observed) != 1:
+        return None
+    asin = next(iter(observed))
+    if not any(
+        _network_object_asin(product_object) == asin
+        and bool(_normalize_network_product_object(product_object))
+        for product_object in product_objects
+    ):
+        return None
+    return asin
+
+
+def _validated_network_product_data(
+    value: Mapping[str, Any] | None,
+    *,
+    expected_asin: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    try:
+        observed_asin = normalize_asin(value.get("asin"))
+    except InvalidASINError:
+        return {}
+    return dict(value) if observed_asin == expected_asin else {}
+
+
+def _network_product_objects(payload: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+    containers = [payload]
+    data = _network_field_map(payload).get("data")
+    if isinstance(data, Mapping):
+        containers.append(data)
+    for container in containers:
+        yield container
+        product = _network_pick(
+            _network_field_map(container),
+            "product",
+            "product_data",
+        )
+        if isinstance(product, Mapping):
+            yield product
+
+
+def _network_direct_identity_values(value: Mapping[str, Any]) -> Iterable[Any]:
+    for raw_key, raw_value in value.items():
+        if _network_field_name(raw_key) in {"asin", "product_asin"}:
+            yield raw_value
+    identity = _network_field_map(value).get("identity")
+    if isinstance(identity, Mapping):
+        for raw_key, raw_value in identity.items():
+            if _network_field_name(raw_key) in {"asin", "product_asin"}:
+                yield raw_value
+
+
+def _network_object_asin(value: Mapping[str, Any]) -> str | None:
+    source = _network_field_map(value)
+    identity = _network_field_map(source.get("identity"))
+    product = _network_field_map(_network_pick(source, "product", "product_data"))
+    product_identity = _network_field_map(product.get("identity"))
+    observed: set[str] = set()
+    for identity_source in (source, identity, product, product_identity):
+        for key in ("asin", "product_asin"):
+            raw = identity_source.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                observed.add(normalize_asin(raw))
+            except InvalidASINError:
+                return None
+    return next(iter(observed)) if len(observed) == 1 else None
+
+
+def _normalize_network_product_object(value: Mapping[str, Any]) -> dict[str, Any]:
+    source = _network_field_map(value)
+    product_source = _network_field_map(_network_pick(source, "product", "product_data")) or source
+    commerce_source = _network_field_map(source.get("commerce")) or source
+    offer_source = _network_field_map(
+        _network_pick(commerce_source, "featured_offer", "buy_box")
+    ) or _network_field_map(_network_pick(source, "featured_offer", "buy_box"))
+    variants_source = (
+        _network_field_map(_network_pick(source, "variants", "variation_data")) or source
+    )
+    media_source = _network_field_map(source.get("media")) or source
+
+    brand_value = _network_pick(product_source, "brand", "brand_name")
+    if isinstance(brand_value, Mapping):
+        brand_value = _network_pick(_network_field_map(brand_value), "name", "value")
+
+    category_path_value = _network_pick(
+        product_source,
+        "category_path",
+        "categories",
+    )
+    bullet_points_value = _network_pick(
+        product_source,
+        "bullet_points",
+        "features",
+    )
+    technical_details_value = _network_pick(
+        product_source,
+        "technical_details",
+        "specifications",
+    )
+
+    product = _compact_network_mapping(
+        {
+            "title": _network_text(
+                _network_pick(product_source, "title", "product_title")
+            ),
+            "brand": _network_text(brand_value),
+            "category_path": _network_collection_value(
+                category_path_value,
+                _network_text_list(category_path_value),
+            ),
+            "bullet_points": _network_collection_value(
+                bullet_points_value,
+                _network_text_list(bullet_points_value),
+            ),
+            "description": _network_text(
+                _network_pick(product_source, "description", "product_description")
+            ),
+            "technical_details": _network_collection_value(
+                technical_details_value,
+                _network_string_mapping(technical_details_value),
+            ),
+        }
+    )
+    availability = _network_scalar(
+        _network_pick(commerce_source, "availability_status", "availability")
+    )
+    commerce = _compact_network_mapping(
+        {
+            "availability_status": _normalize_availability(availability),
+            "rating": _as_float(
+                _network_scalar(
+                    _network_pick(commerce_source, "rating", "rating_value", "average_rating")
+                )
+            ),
+            "review_count": _as_int(
+                _network_scalar(_network_pick(commerce_source, "review_count", "rating_count"))
+            ),
+            "featured_offer": _compact_network_mapping(
+                {
+                    field_name: _network_offer_value(offer_source, field_name)
+                    for field_name in _OFFER_FIELD_DEFAULTS
+                }
+            ),
+        }
+    )
+    child_asins_value = _network_pick(variants_source, "child_asins")
+    current_attributes_value = _network_pick(
+        variants_source,
+        "current_attributes",
+        "selected_attributes",
+    )
+    dimensions_value = _network_pick(
+        variants_source,
+        "dimensions",
+        "variation_dimensions",
+    )
+    variants = _compact_network_mapping(
+        {
+            "parent_asin": _optional_asin(_network_pick(variants_source, "parent_asin")),
+            "child_asins": _network_collection_value(
+                child_asins_value,
+                _normalize_asin_list(
+                    child_asins_value[:_NETWORK_MAX_LIST_ITEMS]
+                    if isinstance(child_asins_value, list)
+                    else []
+                ),
+            ),
+            "current_attributes": _network_collection_value(
+                current_attributes_value,
+                _network_string_mapping(current_attributes_value),
+            ),
+            "dimensions": _network_collection_value(
+                dimensions_value,
+                _network_dimension_mapping(dimensions_value),
+            ),
+        }
+    )
+    gallery_images_value = _network_pick(media_source, "gallery_images", "images")
+    rankings_value = _network_pick(source, "rankings", "best_seller_ranks", "bsr")
+    media = _compact_network_mapping(
+        {
+            "main_image": _normalize_network_media_item(
+                _network_pick(media_source, "main_image", "primary_image")
+            ),
+            "gallery_images": _network_collection_value(
+                gallery_images_value,
+                _normalize_network_media_list(gallery_images_value),
+            ),
+        }
+    )
+    return _compact_network_mapping(
+        {
+            "product": product,
+            "commerce": commerce,
+            "variants": variants,
+            "rankings": _network_collection_value(
+                rankings_value,
+                _normalize_network_rankings(rankings_value),
+            ),
+            "media": media,
+        }
+    )
+
+
+def _network_offer_value(source: Mapping[str, Any], field_name: str) -> Any:
+    aliases = {
+        "seller_id": ("seller_id",),
+        "seller_name": ("seller_name",),
+        "is_buy_box": ("is_buy_box", "buy_box_winner"),
+        "price_amount": ("price_amount", "price_to_pay", "price"),
+        "list_price_amount": ("list_price_amount", "list_price"),
+        "currency": ("currency", "currency_code"),
+        "fulfillment_channel": ("fulfillment_channel", "fulfillment"),
+        "delivery_text": ("delivery_text",),
+        "coupon_text": ("coupon_text",),
+        "promotions": ("promotions", "promotion_messages"),
+    }
+    raw = _network_pick(source, *aliases[field_name])
+    value = _network_scalar(raw)
+    if field_name == "promotions":
+        return _network_collection_value(raw, _network_text_list(value))
+    if field_name in {
+        "seller_id",
+        "seller_name",
+        "currency",
+        "fulfillment_channel",
+        "delivery_text",
+        "coupon_text",
+    }:
+        if field_name == "delivery_text":
+            return _network_delivery_text(value)
+        return _network_text(value, max_length=4_000)
+    return _normalize_offer_value(field_name, value)
+
+
+def _network_pick(source: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in source:
+            return source[key]
+    return None
+
+
+def _network_field_map(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    collisions: set[str] = set()
+    for key, item in value.items():
+        normalized = _network_field_name(key)
+        if normalized in result or normalized in collisions:
+            result.pop(normalized, None)
+            collisions.add(normalized)
+            continue
+        result[normalized] = item
+    return result
+
+
+def _network_field_name(value: Any) -> str:
+    text = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", str(value))
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text).lower()
+
+
+def _network_scalar(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _network_pick(
+            _network_field_map(value),
+            "amount",
+            "value",
+            "display_value",
+            "name",
+        )
+    return value
+
+
+def _network_text(value: Any, *, max_length: int = _NETWORK_MAX_TEXT_LENGTH) -> str | None:
+    text = _clean_text(value)
+    if not text or len(text) > max_length:
+        return None
+    if re.search(r"\bBearer\s+\S+", text, flags=re.IGNORECASE):
+        return None
+    if re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.IGNORECASE):
+        return None
+    if re.search(
+        r"\b(?:authorization|cookie|session(?:\s*id)?|token|access\s*key|api\s*key|"
+        r"password|secret|email)\s*[:=]\s*\S+",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    return text
+
+
+def _network_delivery_text(value: Any) -> str | None:
+    text = _network_text(value, max_length=4_000)
+    if not text:
+        return None
+    if re.search(
+        r"\b(?:deliver(?:y|ing)?|ship(?:ping|s)?)\s+to\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    if re.search(
+        r"\b\d{1,6}\s+[A-Za-z0-9.' -]+\s(?:street|st|road|rd|avenue|ave|lane|ln|"
+        r"drive|dr|boulevard|blvd)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    return text
+
+
+def _network_text_list(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    for raw in values[:_NETWORK_MAX_LIST_ITEMS]:
+        text = _network_text(raw, max_length=4_000)
+        if text:
+            result.append(text)
+    return result
+
+
+def _network_string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for raw_key, raw_value in list(value.items())[:_NETWORK_MAX_MAPPING_ITEMS]:
+        key = _network_text(raw_key, max_length=200)
+        item = _network_text(raw_value, max_length=4_000)
+        if key and item and not _network_sensitive_key(key):
+            result[key] = item
+    return result
+
+
+def _network_dimension_mapping(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, list[str]] = {}
+    for raw_key, raw_values in list(value.items())[:_NETWORK_MAX_MAPPING_ITEMS]:
+        key = _network_text(raw_key, max_length=200)
+        values = _network_text_list(raw_values)
+        if key and values and not _network_sensitive_key(key):
+            result[key] = values
+    return result
+
+
+def _network_sensitive_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", value.lower())
+    words = set(re.findall(r"[a-z0-9]+", _network_field_name(value)))
+    return normalized in _NETWORK_SENSITIVE_KEY_MARKERS or bool(
+        words & set(_NETWORK_SENSITIVE_KEY_MARKERS)
+    )
+
+
+def _normalize_network_media_item(value: Any) -> dict[str, str] | None:
+    item = _normalize_media_item(value)
+    if not item:
+        return None
+    parsed = urlparse(item["url"])
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username
+        or parsed.password
+        or port not in {None, 443}
+        or not any(
+            host == suffix.removeprefix(".") or host.endswith(suffix)
+            for suffix in _NETWORK_MEDIA_HOST_SUFFIXES
+        )
+    ):
+        return None
+    return {"url": parsed._replace(query="", fragment="").geturl()}
+
+
+def _normalize_network_media_list(value: Any) -> list[dict[str, str]]:
+    values = value if isinstance(value, list) else [value]
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in values[:_NETWORK_MAX_LIST_ITEMS]:
+        item = _normalize_network_media_item(raw)
+        if item and item["url"] not in seen:
+            seen.add(item["url"])
+            result.append(item)
+    return result
+
+
+def _normalize_network_rankings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for raw in value[:_NETWORK_MAX_LIST_ITEMS]:
+        source = _network_field_map(raw)
+        name = _network_text(source.get("category_name"), max_length=500)
+        rank = _as_int(source.get("rank"))
+        if name and rank is not None:
+            result.append(
+                {
+                    "category_name": name,
+                    "category_path": _network_text_list(source.get("category_path"))
+                    or [name],
+                    "rank": rank,
+                }
+            )
+    return result
+
+
+def _compact_network_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if item is _NETWORK_EXPLICIT_EMPTY_LIST:
+            result[key] = []
+        elif item is _NETWORK_EXPLICIT_EMPTY_MAPPING:
+            result[key] = {}
+        elif _is_present(item):
+            result[key] = item
+    return result
+
+
+def _network_collection_value(raw: Any, normalized: Any) -> Any:
+    if _is_present(normalized):
+        return normalized
+    if isinstance(raw, list) and not raw:
+        return _NETWORK_EXPLICIT_EMPTY_LIST
+    if isinstance(raw, Mapping) and not raw:
+        return _NETWORK_EXPLICIT_EMPTY_MAPPING
+    return None
+
+
+def _merge_network_fields(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    for key, value in source.items():
+        if isinstance(value, Mapping):
+            if not value:
+                target[key] = {}
+                continue
+            child = target.setdefault(key, {})
+            if isinstance(child, dict):
+                _merge_network_fields(child, value)
+            continue
+        target[key] = value
+
+
+def _network_source_path(value: Any) -> str:
+    path = urlparse(_clean_text(value) or "").path
+    return path if path.startswith("/") else "/page-data"
 
 
 def _parse_document(html: str) -> _DocumentParser:
@@ -946,6 +1616,8 @@ def _choose_offer_field(
     evidence: dict[str, dict[str, Any]],
     structured: Mapping[str, Any],
     state: Mapping[str, Any],
+    network_offer: Mapping[str, Any],
+    network: Mapping[str, Any],
     dom: Mapping[str, Any],
 ) -> Any:
     default = _OFFER_FIELD_DEFAULTS[field_name]
@@ -968,12 +1640,38 @@ def _choose_offer_field(
                 field_name == "promotions" and _explicit_empty_list(state, field_name)
             ),
         ),
+        _network_candidate(
+            network,
+            f"commerce.featured_offer.{field_name}",
+            _normalize_offer_value(field_name, network_offer.get(field_name)),
+            accept_empty=field_name == "promotions" and field_name in network_offer,
+        ),
         _candidate(
             _normalize_offer_value(field_name, dom.get(field_name)),
             "stable_dom",
             f"dom.featured_offer.{field_name}",
             0.8,
         ),
+    )
+
+
+def _network_candidate(
+    network: Mapping[str, Any],
+    field_path: str,
+    value: Any,
+    *,
+    status: str = "observed",
+    accept_empty: bool = False,
+) -> _Candidate:
+    source_locator = _clean_text(network.get("source_locator"))
+    locator = f"{source_locator}:{field_path}" if source_locator else field_path
+    return _candidate(
+        value,
+        "same_origin_response",
+        locator,
+        0.88,
+        status,
+        accept_empty=accept_empty,
     )
 
 

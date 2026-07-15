@@ -90,6 +90,18 @@ platform_contracts:
       - normalized_capture_ref
       - raw_capture_ref
       - field_coverage
+    raw_capture_kinds:
+      required_on_success:
+        - normalized_capture
+        - html
+      optional:
+        - network_data
+        - screenshot
+    network_data_policy:
+      source: exact_same_origin_page_fetch_or_xhr
+      identity_binding: resolved_asin
+      persisted_body: capture_field_allowlist_only
+      runtime_body: forbidden
     prohibited_fact_targets:
       - tk_*
     media_coverage_policy:
