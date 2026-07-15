@@ -84,11 +84,34 @@ platform_contracts:
     cross_platform_foreign_keys: false
     fact_database_policy: same_fact_database_instance_with_isolated_amazon_tables
     object_storage_policy: reuse_configured_bucket_with_isolated_amazon_prefixes
+    raw_capture_object_key:
+      template: <env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/<filename>
+      content_address: sha256_of_stored_bytes
+      exact_retry: reuse_same_coordinate
+      changed_bytes: preserve_new_coordinate_without_overwriting_old_object
+      same_run_normalized_capture: reject_divergent_digest
     persistence_handler: amazon_product_fact_upsert
+    fact_bundle_transaction:
+      database_scope: one_capture_database_transaction
+      includes:
+        - product_identity_and_master
+        - product_snapshot
+        - raw_capture_indexes
+        - featured_offer
+        - variants
+        - bsr
+        - media_assets_and_relations
+        - feishu_binding
+        - latest_snapshot_pointer
+      commit_visibility: all_or_nothing
+      latest_snapshot_publish: final_database_write
+      excludes:
+        - object_storage_objects
+        - feishu_projection_write
     runtime_result_policy: compact_references_only
     required_evidence:
       - normalized_capture_ref
-      - raw_capture_ref
+      - raw_capture_refs
       - field_coverage
     raw_capture_kinds:
       required_on_success:
@@ -97,14 +120,80 @@ platform_contracts:
       optional:
         - network_data
         - screenshot
+    raw_capture_metadata:
+      normalized_capture:
+        content_type: application/json
+        sanitization_status: normalized
+      html:
+        content_type: application/gzip
+        sanitization_status: sanitized
+      network_data:
+        content_type: application/json
+        sanitization_status: allowlisted
+      screenshot:
+        content_type: image/png
+        sanitization_status: not_applicable
+    raw_capture_provenance:
+      required_fields:
+        - request_id
+        - execution_id
+        - run_id
+      request_binding: active_runtime_request
+      execution_binding: one_origin_browser_execution
+      run_binding: active_collection_run
+      persisted_execution_id: origin_browser_execution_id
+      stored_byte_digest_verification: required_before_fact_write
+      html_payload_validation:
+        encoding: valid_gzip_utf8
+        sanitization_revalidation: required_after_decompression
+        sensitive_element_detection: independent_html_parser
+        screenshot_masking_failure: fail_closed_without_screenshot_upload
+      size_limits:
+        normalized_capture_bytes: 2097152
+        compressed_html_bytes: 2097152
+        decompressed_html_bytes: 8388608
+        network_data_bytes: 524288
+        screenshot_bytes: 10485760
+        materialized_media_bytes: 26214400
+    raw_capture_key_collision: reject_changed_immutable_evidence
+    field_evidence_policy:
+      contract_revision: 1
+      coverage: exact_target_field_set
+      required_keys:
+        - value
+        - status
+        - source_kind
+        - source_locator
+        - confidence
+      value_binding: exact_normalized_capture_field_value
+      missing_requires_empty_capture_value: true
+      success_allows_missing: false
+      partial_success_requires_missing: false
     network_data_policy:
       source: exact_same_origin_page_fetch_or_xhr
       identity_binding: resolved_asin
       persisted_body: capture_field_allowlist_only
       runtime_body: forbidden
+    media_source_url_policy:
+      scheme: https
+      allowed_host_suffixes:
+        - media-amazon.com
+        - ssl-images-amazon.com
+      allowed_ports:
+        - default
+        - 443
+      userinfo: forbidden
+      query_and_fragment: strip_before_persistence
+      invalid_observed_media: remove_and_mark_partial_success
     prohibited_fact_targets:
       - tk_*
     media_coverage_policy:
+      stored_object_verification:
+        existence: required_before_fact_write
+        content_digest: sha256_of_stored_bytes
+        size_bytes: exact_match
+        mime_type: allowlisted_image_signature_match
+        object_key: content_addressed_by_digest
       validated_subset_may_persist: true
       unexpected_assets: reject
       duplicate_role_position_mapping: reject

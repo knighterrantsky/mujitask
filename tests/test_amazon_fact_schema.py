@@ -75,6 +75,10 @@ def test_amazon_schema_freezes_business_and_dedupe_keys() -> None:
         "amazon_feishu_bindings": "unique(base_id, table_id, record_id)",
     }
     assert all(fragment in schema_sql for fragment in required_fragments.values())
+    assert "latest_snapshot_id text not null default ''" in schema_sql
+    assert "last_bound_at double precision not null" in schema_sql
+    assert "last_synced_snapshot_id" not in schema_sql
+    assert "last_synced_at" not in schema_sql
 
 
 def test_local_bootstrap_executes_only_the_declared_additive_statements() -> None:
@@ -94,11 +98,11 @@ def test_local_bootstrap_executes_only_the_declared_additive_statements() -> Non
 
 
 def test_migration_revision_is_additive_and_reversible() -> None:
-    migration_path = REPO_ROOT / "alembic/versions/20260714_0007_amazon_product_facts.py"
+    migration_path = REPO_ROOT / "alembic_fact/versions/20260714_0007_amazon_product_facts.py"
     migration = migration_path.read_text(encoding="utf-8")
 
     assert 'revision = "20260714_0007"' in migration
-    assert 'down_revision = "20260528_0006"' in migration
+    assert "down_revision = None" in migration
     assert "AMAZON_FACT_SCHEMA_STATEMENTS" in migration
     assert "AMAZON_FACT_INDEX_NAMES" in migration
     assert "AMAZON_FACT_TABLES" in migration
@@ -125,23 +129,31 @@ def test_standard_test_bootstrap_includes_amazon_schema(runtime_db_url) -> None:
     assert EXPECTED_TABLES <= _list_tables(runtime_db_url)
 
 
-def test_alembic_upgrade_and_targeted_downgrade_only_remove_amazon_tables(
+def test_fact_alembic_upgrade_and_downgrade_only_manage_amazon_tables(
     unbootstrapped_runtime_db_url,
+    monkeypatch,
 ) -> None:
-    config = Config("alembic.ini")
+    monkeypatch.setenv(
+        "BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL",
+        unbootstrapped_runtime_db_url,
+    )
+    monkeypatch.delenv("BUSINESS_EXECUTION_CONTROL_FACT_RUNTIME_ROLE", raising=False)
+    config = Config("alembic_fact.ini")
 
     command.upgrade(config, "head")
 
     upgraded_tables = _list_tables(unbootstrapped_runtime_db_url)
     assert EXPECTED_TABLES <= upgraded_tables
-    assert "tk_products" in upgraded_tables
+    assert "tk_products" not in upgraded_tables
+    assert "alembic_version" not in upgraded_tables
+    assert "fact_alembic_version" in upgraded_tables
     assert EXPECTED_INDEXES <= _list_indexes(unbootstrapped_runtime_db_url)
 
-    command.downgrade(config, "20260528_0006")
+    command.downgrade(config, "base")
 
     downgraded_tables = _list_tables(unbootstrapped_runtime_db_url)
     assert EXPECTED_TABLES.isdisjoint(downgraded_tables)
-    assert "tk_products" in downgraded_tables
+    assert "tk_products" not in downgraded_tables
 
 
 def _list_tables(db_url: str) -> set[str]:

@@ -4,8 +4,14 @@ import hashlib
 import json
 import time
 import uuid
+from contextlib import contextmanager
 from decimal import Decimal
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
+
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
+    AMAZON_FACT_VERSION_TABLE,
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -17,6 +23,17 @@ def _required_text(value: Any, field_name: str) -> str:
     if not cleaned:
         raise ValueError(f"{field_name} is required")
     return cleaned
+
+
+def _required_sha256_digest(value: Any, field_name: str) -> str:
+    digest = _required_text(value, field_name).lower()
+    if len(digest) != 64:
+        raise ValueError(f"{field_name} must be a SHA-256 hex digest")
+    try:
+        bytes.fromhex(digest)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a SHA-256 hex digest") from exc
+    return digest
 
 
 def _canonical_json(value: Any, *, default: Any) -> str:
@@ -61,10 +78,27 @@ def _timestamp(value: Any) -> float:
     return float(value) if value not in (None, "") else time.time()
 
 
+class AmazonFactCollisionError(ValueError):
+    """Raised when an immutable Amazon fact key is replayed with different evidence."""
+
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class AmazonFactSchemaVersionError(RuntimeError):
+    """Raised when the isolated Amazon Fact migration is not at the required revision."""
+
+
+class AmazonFactSchemaUnavailableError(RuntimeError):
+    """Raised when the Fact schema revision cannot be queried temporarily."""
+
+
 class AmazonFactStore:
     """Explicit PostgreSQL persistence for the isolated Amazon Fact tables."""
 
     def __init__(self, *, runtime_store: Any | None = None, db_url: str = "") -> None:
+        self._connection: Any | None = None
         if runtime_store is not None:
             self._engine = runtime_store._engine  # noqa: SLF001
             self._text = runtime_store._text  # noqa: SLF001
@@ -90,6 +124,40 @@ class AmazonFactStore:
             pool_recycle=1800,
             pool_pre_ping=True,
         )
+
+    def require_schema_revision(self) -> str:
+        try:
+            with self._engine.connect() as connection:
+                revision = connection.execute(
+                    self._text(f"SELECT version_num FROM {AMAZON_FACT_VERSION_TABLE} LIMIT 1")
+                ).scalar_one_or_none()
+        except Exception as exc:
+            raise AmazonFactSchemaUnavailableError(
+                "Amazon Fact schema revision is unavailable."
+            ) from exc
+        actual = _clean_text(revision)
+        if actual != AMAZON_FACT_SCHEMA_REVISION:
+            raise AmazonFactSchemaVersionError(
+                "Amazon Fact schema revision does not match the required revision."
+            )
+        return actual
+
+    def close(self) -> None:
+        self._engine.dispose()
+
+    @contextmanager
+    def transaction(self) -> Iterator[AmazonFactStore]:
+        """Bind all Fact operations in the context to one database transaction."""
+        if self._connection is not None:
+            yield self
+            return
+
+        with self._engine.begin() as connection:
+            transaction_store = object.__new__(type(self))
+            transaction_store._engine = self._engine
+            transaction_store._text = self._text
+            transaction_store._connection = connection
+            yield transaction_store
 
     def upsert_product(
         self,
@@ -177,6 +245,51 @@ class AmazonFactStore:
         """
         return self._execute_returning(sql, values)
 
+    def ensure_product_identity(
+        self,
+        *,
+        marketplace_code: str,
+        asin: str,
+        canonical_url: str,
+        observed_at: Any = None,
+    ) -> dict[str, Any]:
+        observed = _timestamp(observed_at)
+        now = time.time()
+        values = {
+            "id": uuid.uuid4().hex,
+            "marketplace_code": _required_text(
+                marketplace_code,
+                "marketplace_code",
+            ).upper(),
+            "asin": _required_text(asin, "asin").upper(),
+            "canonical_url": _required_text(canonical_url, "canonical_url"),
+            "first_seen_at": observed,
+            "last_seen_at": observed,
+            "created_at": now,
+            "updated_at": now,
+        }
+        return self._insert_or_select(
+            """
+            INSERT INTO amazon_products (
+                id, marketplace_code, asin, canonical_url, parent_asin, title, brand,
+                category_path_json, status, latest_snapshot_id, facts_json,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES (
+                :id, :marketplace_code, :asin, :canonical_url, '', '', '',
+                '[]', 'active', '', '{}',
+                :first_seen_at, :last_seen_at, :created_at, :updated_at
+            )
+            ON CONFLICT (marketplace_code, asin) DO NOTHING
+            RETURNING *
+            """,
+            values,
+            """
+            SELECT * FROM amazon_products
+            WHERE marketplace_code = :marketplace_code AND asin = :asin
+            LIMIT 1
+            """,
+        )
+
     def set_latest_snapshot(
         self,
         *,
@@ -250,7 +363,7 @@ class AmazonFactStore:
         child_asins: Sequence[Any] | None = None,
         field_coverage: Mapping[str, Any] | None = None,
         payload: Mapping[str, Any] | None = None,
-        content_digest: str = "",
+        content_digest: str,
         collected_at: Any = None,
     ) -> dict[str, Any]:
         collected = _timestamp(collected_at)
@@ -277,7 +390,7 @@ class AmazonFactStore:
             "child_asins_json": _canonical_json(child_asins, default=[]),
             "field_coverage_json": _canonical_json(field_coverage, default={}),
             "payload_json": _canonical_json(payload, default={}),
-            "content_digest": _clean_text(content_digest),
+            "content_digest": _required_sha256_digest(content_digest, "content_digest"),
             "collected_at": collected,
             "created_at": time.time(),
         }
@@ -298,7 +411,7 @@ class AmazonFactStore:
             ON CONFLICT (marketplace_code, asin, run_id) DO NOTHING
             RETURNING *
         """
-        return self._insert_or_select(
+        row = self._insert_or_select(
             sql,
             values,
             """
@@ -307,6 +420,24 @@ class AmazonFactStore:
             LIMIT 1
             """,
         )
+        conflicting_fields = [
+            field
+            for field in (
+                "product_id",
+                "content_digest",
+                "request_id",
+                "execution_id",
+            )
+            if _clean_text(values.get(field))
+            and _clean_text(row.get(field)) != _clean_text(values.get(field))
+        ]
+        if conflicting_fields:
+            raise AmazonFactCollisionError(
+                "Amazon product snapshot run_id was replayed with different immutable "
+                f"evidence: fields={conflicting_fields}.",
+                error_code="same_run_capture_conflict",
+            )
+        return row
 
     def record_featured_offer(
         self,
@@ -635,34 +766,45 @@ class AmazonFactStore:
         self,
         *,
         product_id: str,
-        snapshot_id: str = "",
+        snapshot_id: str,
         capture_kind: str,
         bucket: str,
         object_key: str,
-        content_digest: str = "",
-        content_type: str = "",
+        content_digest: str,
+        content_type: str,
         request_id: str = "",
         execution_id: str = "",
-        run_id: str = "",
-        sanitization_status: str = "unknown",
+        run_id: str,
+        sanitization_status: str,
         collected_at: Any = None,
     ) -> dict[str, Any]:
         values = {
             "raw_capture_id": uuid.uuid4().hex,
             "product_id": _required_text(product_id, "product_id"),
-            "snapshot_id": _clean_text(snapshot_id),
+            "snapshot_id": _required_text(snapshot_id, "snapshot_id"),
             "capture_kind": _required_text(capture_kind, "capture_kind"),
             "bucket": _required_text(bucket, "bucket"),
             "object_key": _required_text(object_key, "object_key"),
-            "content_digest": _clean_text(content_digest),
-            "content_type": _clean_text(content_type),
+            "content_digest": _required_sha256_digest(content_digest, "content_digest"),
+            "content_type": _required_text(content_type, "content_type"),
             "request_id": _clean_text(request_id),
             "execution_id": _clean_text(execution_id),
-            "run_id": _clean_text(run_id),
-            "sanitization_status": _clean_text(sanitization_status) or "unknown",
+            "run_id": _required_text(run_id, "run_id"),
+            "sanitization_status": _required_text(
+                sanitization_status,
+                "sanitization_status",
+            ),
             "collected_at": _timestamp(collected_at),
             "created_at": time.time(),
         }
+        object_key_parts = values["object_key"].split("/")
+        if (
+            len(object_key_parts) < 2
+            or object_key_parts[-2] != values["content_digest"]
+        ):
+            raise ValueError(
+                "Raw capture object_key must contain its content digest before the filename"
+            )
         sql = """
             INSERT INTO amazon_raw_captures (
                 raw_capture_id, product_id, snapshot_id, capture_kind, bucket, object_key,
@@ -676,7 +818,7 @@ class AmazonFactStore:
             ON CONFLICT (bucket, object_key) DO NOTHING
             RETURNING *
         """
-        return self._insert_or_select(
+        row = self._insert_or_select(
             sql,
             values,
             """
@@ -685,6 +827,29 @@ class AmazonFactStore:
             LIMIT 1
             """,
         )
+        immutable_fields = (
+            "product_id",
+            "snapshot_id",
+            "capture_kind",
+            "content_digest",
+            "content_type",
+            "request_id",
+            "execution_id",
+            "run_id",
+            "sanitization_status",
+        )
+        conflicting_fields = [
+            field
+            for field in immutable_fields
+            if _clean_text(row.get(field)) != _clean_text(values.get(field))
+        ]
+        if conflicting_fields:
+            raise AmazonFactCollisionError(
+                "Raw capture object key already belongs to different immutable evidence: "
+                f"fields={conflicting_fields}.",
+                error_code="raw_capture_identity_collision",
+            )
+        return row
 
     def upsert_feishu_binding(
         self,
@@ -695,7 +860,7 @@ class AmazonFactStore:
         record_id: str,
         source_asin: str = "",
         status: str | None = None,
-        last_synced_snapshot_id: str = "",
+        latest_snapshot_id: str = "",
         observed_at: Any = None,
     ) -> dict[str, Any]:
         observed = _timestamp(observed_at)
@@ -708,9 +873,9 @@ class AmazonFactStore:
             "source_asin": _clean_text(source_asin).upper(),
             "status": _clean_text(status) or "active",
             "status_provided": bool(_clean_text(status)),
-            "last_synced_snapshot_id": _clean_text(last_synced_snapshot_id),
+            "latest_snapshot_id": _clean_text(latest_snapshot_id),
             "first_bound_at": observed,
-            "last_synced_at": observed,
+            "last_bound_at": observed,
             "created_at": time.time(),
             "updated_at": time.time(),
         }
@@ -718,32 +883,32 @@ class AmazonFactStore:
             """
             INSERT INTO amazon_feishu_bindings (
                 binding_id, product_id, base_id, table_id, record_id, source_asin, status,
-                last_synced_snapshot_id, first_bound_at, last_synced_at, created_at, updated_at
+                latest_snapshot_id, first_bound_at, last_bound_at, created_at, updated_at
             ) VALUES (
                 :binding_id, :product_id, :base_id, :table_id, :record_id, :source_asin, :status,
-                :last_synced_snapshot_id, :first_bound_at, :last_synced_at, :created_at, :updated_at
+                :latest_snapshot_id, :first_bound_at, :last_bound_at, :created_at, :updated_at
             )
             ON CONFLICT (base_id, table_id, record_id) DO UPDATE SET
                 product_id = CASE
-                    WHEN EXCLUDED.last_synced_at >= amazon_feishu_bindings.last_synced_at
+                    WHEN EXCLUDED.last_bound_at >= amazon_feishu_bindings.last_bound_at
                     THEN EXCLUDED.product_id ELSE amazon_feishu_bindings.product_id END,
                 source_asin = CASE WHEN EXCLUDED.source_asin <> ''
-                    AND EXCLUDED.last_synced_at >= amazon_feishu_bindings.last_synced_at
+                    AND EXCLUDED.last_bound_at >= amazon_feishu_bindings.last_bound_at
                     THEN EXCLUDED.source_asin ELSE amazon_feishu_bindings.source_asin END,
                 status = CASE WHEN :status_provided
-                    AND EXCLUDED.last_synced_at >= amazon_feishu_bindings.last_synced_at
+                    AND EXCLUDED.last_bound_at >= amazon_feishu_bindings.last_bound_at
                     THEN EXCLUDED.status ELSE amazon_feishu_bindings.status END,
-                last_synced_snapshot_id = CASE WHEN EXCLUDED.last_synced_snapshot_id <> ''
-                    AND EXCLUDED.last_synced_at >= amazon_feishu_bindings.last_synced_at
-                    THEN EXCLUDED.last_synced_snapshot_id
-                    ELSE amazon_feishu_bindings.last_synced_snapshot_id END,
+                latest_snapshot_id = CASE WHEN EXCLUDED.latest_snapshot_id <> ''
+                    AND EXCLUDED.last_bound_at >= amazon_feishu_bindings.last_bound_at
+                    THEN EXCLUDED.latest_snapshot_id
+                    ELSE amazon_feishu_bindings.latest_snapshot_id END,
                 first_bound_at = LEAST(
                     amazon_feishu_bindings.first_bound_at,
                     EXCLUDED.first_bound_at
                 ),
-                last_synced_at = GREATEST(
-                    amazon_feishu_bindings.last_synced_at,
-                    EXCLUDED.last_synced_at
+                last_bound_at = GREATEST(
+                    amazon_feishu_bindings.last_bound_at,
+                    EXCLUDED.last_bound_at
                 ),
                 updated_at = EXCLUDED.updated_at
             RETURNING *
@@ -752,11 +917,17 @@ class AmazonFactStore:
         )
 
     def _execute_returning(self, sql: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        if self._connection is not None:
+            row = self._connection.execute(self._text(sql), dict(values)).mappings().first()
+            return self._row_to_dict(row)
         with self._engine.begin() as connection:
             row = connection.execute(self._text(sql), dict(values)).mappings().first()
         return self._row_to_dict(row)
 
     def _select_one(self, sql: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        if self._connection is not None:
+            row = self._connection.execute(self._text(sql), dict(values)).mappings().first()
+            return self._row_to_dict(row)
         with self._engine.connect() as connection:
             row = connection.execute(self._text(sql), dict(values)).mappings().first()
         return self._row_to_dict(row)
@@ -767,6 +938,15 @@ class AmazonFactStore:
         values: Mapping[str, Any],
         select_sql: str,
     ) -> dict[str, Any]:
+        if self._connection is not None:
+            row = self._connection.execute(
+                self._text(insert_sql), dict(values)
+            ).mappings().first()
+            if row is None:
+                row = self._connection.execute(
+                    self._text(select_sql), dict(values)
+                ).mappings().first()
+            return self._row_to_dict(row)
         with self._engine.begin() as connection:
             row = connection.execute(self._text(insert_sql), dict(values)).mappings().first()
             if row is None:

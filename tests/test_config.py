@@ -91,7 +91,23 @@ def test_executor_local_env_example_declares_fact_db_url():
     values = parse_env_file(REPO_ROOT / "scripts/execution_control/executor.local.env.example")
 
     assert values["BUSINESS_EXECUTION_CONTROL_DB_URL"].strip()
-    assert values["TK_FACT_DB_URL"].strip()
+    assert values["BUSINESS_EXECUTION_CONTROL_FACT_DB_URL"].strip()
+    assert "TK_FACT_DB_URL" not in values
+
+
+def test_execution_control_defaults_prefers_canonical_fact_db_url(monkeypatch):
+    monkeypatch.setenv(
+        "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL",
+        "postgresql+psycopg://canonical@/facts?host=/tmp",
+    )
+    monkeypatch.setenv(
+        "TK_FACT_DB_URL",
+        "postgresql+psycopg://legacy@/facts?host=/tmp",
+    )
+
+    defaults = get_execution_control_defaults()
+
+    assert defaults.fact_db_url == "postgresql+psycopg://canonical@/facts?host=/tmp"
 
 
 def test_load_project_env_files_uses_executor_then_skill_then_root_precedence(monkeypatch, tmp_path: Path):

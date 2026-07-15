@@ -133,11 +133,33 @@ def _context(
 
 
 def _success_collection(capture: dict[str, object] | None = None) -> dict[str, object]:
+    capture = json.loads(json.dumps(capture or _capture()))
+    media = capture.get("media", {})
+    if isinstance(media, dict):
+        media_items = [media.get("main_image"), *(media.get("gallery_images") or [])]
+        for item in media_items:
+            if not isinstance(item, dict):
+                continue
+            source_url = str(item.get("url") or "")
+            if source_url.startswith("https://images.example.test/"):
+                item["url"] = source_url.replace(
+                    "https://images.example.test/",
+                    "https://m.media-amazon.com/images/I/",
+                    1,
+                )
+        evidence = capture.get("field_evidence", {})
+        if isinstance(evidence, dict):
+            if isinstance(evidence.get("media.main_image"), dict):
+                evidence["media.main_image"]["value"] = media.get("main_image")
+            if isinstance(evidence.get("media.gallery_images"), dict):
+                evidence["media.gallery_images"]["value"] = media.get("gallery_images")
     return {
-        "capture": capture or _capture(),
+        "capture": capture,
         "html": _fixture("product_detail_child.html"),
         "resolved_url": "https://www.amazon.com/dp/B0CHILD001",
         "browser_target_digest": "target-digest",
+        "browser_provider_name": "roxy",
+        "stage_durations_ms": {"navigation": 12.5, "parse": 3.25},
         "screenshot_bytes": b"",
     }
 
@@ -198,6 +220,8 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
             store=store,
             payload_overrides={
                 "browser_profile_ref": "payload-must-be-ignored",
+                "browser_workspace_id": "workspace-must-be-ignored",
+                "browser_provider_token": "provider-token-must-be-ignored",
                 "artifact_bucket": "payload-bucket-must-be-ignored",
                 "minio_secret_key": "payload-secret-must-be-ignored",
             },
@@ -222,16 +246,32 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
         "artifact_refs",
         "media_source_refs",
         "browser_target_digest",
+        "browser_provider_name",
+        "stage_durations_ms",
     }
+    assert result.result["browser_provider_name"] == "roxy"
+    assert result.result["stage_durations_ms"]["navigation"] == 12.5
+    assert result.result["stage_durations_ms"]["parse"] == 3.25
+    assert result.result["stage_durations_ms"]["artifact"] >= 0
     serialized_result = json.dumps(result.result, sort_keys=True)
     assert "field_evidence" not in serialized_result
     assert "secret-cookie-must-not-leak" not in serialized_result
     assert "payload-must-be-ignored" not in serialized_result
+    assert "workspace-must-be-ignored" not in serialized_result
+    assert "provider-token-must-be-ignored" not in serialized_result
     assert "payload-secret-must-be-ignored" not in serialized_result
 
     base = "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1"
-    normalized_key = f"{base}/normalized.json"
-    html_key = f"{base}/page.html.gz"
+    normalized_ref = result.result["normalized_capture_ref"]
+    html_ref = result.result["raw_capture_refs"][1]
+    for artifact_ref in result.result["raw_capture_refs"]:
+        assert artifact_ref["request_id"] == "request-1"
+        assert artifact_ref["execution_id"] == "execution-1"
+        assert artifact_ref["run_id"] == "run-1"
+    normalized_key = normalized_ref["object_key"]
+    html_key = html_ref["object_key"]
+    assert normalized_key == (f"{base}/{normalized_ref['content_digest']}/normalized.json")
+    assert html_key == f"{base}/{html_ref['content_digest']}/page.html.gz"
     assert set(store.uploads) == {
         ("artifacts", normalized_key),
         ("artifacts", html_key),
@@ -255,7 +295,7 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
     assert result.result["field_coverage"]["percentage"] == 100.0
     assert result.result["media_source_refs"] == [
         {
-            "source_url": "https://images.example.test/structured-main.jpg",
+            "source_url": "https://m.media-amazon.com/images/I/structured-main.jpg",
             "source_platform": "amazon",
             "marketplace_code": "US",
             "product_id": "B0CHILD001",
@@ -263,7 +303,7 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
             "position": 0,
         },
         {
-            "source_url": "https://images.example.test/structured-gallery-1.jpg",
+            "source_url": "https://m.media-amazon.com/images/I/structured-gallery-1.jpg",
             "source_platform": "amazon",
             "marketplace_code": "US",
             "product_id": "B0CHILD001",
@@ -271,7 +311,7 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
             "position": 1,
         },
         {
-            "source_url": "https://images.example.test/structured-gallery-2.jpg",
+            "source_url": "https://m.media-amazon.com/images/I/structured-gallery-2.jpg",
             "source_platform": "amazon",
             "marketplace_code": "US",
             "product_id": "B0CHILD001",
@@ -281,11 +321,166 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
     ]
 
 
+def test_raw_capture_uploads_are_content_addressed_across_same_run_retries(
+    monkeypatch,
+) -> None:
+    store = FakeArtifactStore()
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module, "_collect_browser_page", lambda **kwargs: _success_collection()
+    )
+
+    first = amazon_product_browser_fetch_handler(_context(store=store))
+    exact_retry = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert first.status == "success"
+    assert exact_retry.status == "success"
+    first_refs = {ref["capture_kind"]: ref for ref in first.result["raw_capture_refs"]}
+    retry_refs = {ref["capture_kind"]: ref for ref in exact_retry.result["raw_capture_refs"]}
+    assert {kind: ref["object_key"] for kind, ref in first_refs.items()} == {
+        kind: ref["object_key"] for kind, ref in retry_refs.items()
+    }
+    first_normalized_key = first_refs["normalized_capture"]["object_key"]
+    first_normalized_bytes = store.uploads[("artifacts", first_normalized_key)]
+
+    changed_capture = _capture()
+    changed_capture["product"]["title"] = "Changed title in the same run"
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: _success_collection(changed_capture),
+    )
+    changed = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert changed.status == "success"
+    changed_refs = {ref["capture_kind"]: ref for ref in changed.result["raw_capture_refs"]}
+    changed_normalized_key = changed_refs["normalized_capture"]["object_key"]
+    assert changed_normalized_key != first_normalized_key
+    assert changed_refs["html"]["object_key"] == first_refs["html"]["object_key"]
+    assert store.uploads[("artifacts", first_normalized_key)] == first_normalized_bytes
+    assert (
+        json.loads(store.uploads[("artifacts", changed_normalized_key)])["product"]["title"]
+        == "Changed title in the same run"
+    )
+
+
+def test_media_source_refs_strip_query_fragment_and_normalize_capture(monkeypatch) -> None:
+    store = FakeArtifactStore()
+    capture = _success_collection()["capture"]
+    source_url = (
+        "https://M.MEDIA-AMAZON.COM:443/images/I/main.jpg?tracking=must-not-cross-boundary#fragment"
+    )
+    capture["media"]["main_image"] = {"url": source_url}
+    capture["media"]["gallery_images"] = []
+    capture["field_evidence"]["media.main_image"]["value"] = {"url": source_url}
+    capture["field_evidence"]["media.gallery_images"]["value"] = []
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: _success_collection(capture),
+    )
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    expected_url = "https://m.media-amazon.com/images/I/main.jpg"
+    assert result.status == "success"
+    assert result.result["media_source_refs"] == [
+        {
+            "source_url": expected_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "main_image",
+            "position": 0,
+        }
+    ]
+    normalized_ref = result.result["normalized_capture_ref"]
+    normalized = json.loads(store.uploads[("artifacts", normalized_ref["object_key"])])
+    assert normalized["media"]["main_image"]["url"] == expected_url
+    assert normalized["field_evidence"]["media.main_image"]["value"]["url"] == expected_url
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://images.example.test/image.jpg",
+        "https://localhost/image.jpg",
+        "http://m.media-amazon.com/image.jpg",
+        "https://user@m.media-amazon.com/image.jpg",
+        "https://m.media-amazon.com:444/image.jpg",
+        "https://media-amazon.com.evil.example/image.jpg",
+    ],
+)
+def test_media_source_refs_reject_ungoverned_or_local_urls(source_url: str) -> None:
+    capture = _success_collection()["capture"]
+    capture["media"]["main_image"] = {"url": source_url}
+    capture["media"]["gallery_images"] = []
+    capture["field_evidence"]["media.main_image"]["value"] = {"url": source_url}
+    capture["field_evidence"]["media.gallery_images"]["value"] = []
+
+    assert handler_module._media_source_refs(capture) == []
+
+
+def test_browser_capture_drops_ungoverned_media_and_marks_partial(monkeypatch) -> None:
+    store = FakeArtifactStore()
+    capture = _success_collection()["capture"]
+    source_url = "https://localhost/private-image.jpg"
+    valid_gallery_url = "https://m.media-amazon.com/images/I/valid-gallery.jpg"
+    capture["media"]["main_image"] = {"url": source_url}
+    capture["media"]["gallery_images"] = [
+        {"url": valid_gallery_url},
+        {"url": source_url},
+    ]
+    capture["field_evidence"]["media.main_image"]["value"] = {"url": source_url}
+    capture["field_evidence"]["media.gallery_images"]["value"] = [
+        {"url": valid_gallery_url},
+        {"url": source_url},
+    ]
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: _success_collection(capture),
+    )
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "partial_success"
+    assert result.result["collection_status"] == "partial_success"
+    assert result.result["media_source_refs"] == [
+        {
+            "source_url": valid_gallery_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "gallery_image",
+            "position": 0,
+        }
+    ]
+    normalized_ref = result.result["normalized_capture_ref"]
+    normalized = json.loads(store.uploads[("artifacts", normalized_ref["object_key"])])
+    assert normalized["media"]["main_image"] is None
+    assert normalized["field_evidence"]["media.main_image"] == {
+        "value": None,
+        "status": "missing",
+        "source_kind": None,
+        "source_locator": None,
+        "confidence": 0.0,
+    }
+    assert normalized["media"]["gallery_images"] == [{"url": valid_gallery_url}]
+    assert normalized["field_evidence"]["media.gallery_images"]["value"] == [
+        {"url": valid_gallery_url}
+    ]
+    assert normalized["field_evidence"]["media.gallery_images"]["status"] == "observed"
+
+
 def test_html_sanitizer_removes_state_and_account_secrets_but_keeps_product_evidence() -> None:
     html = """
     <html><body>
       <div id="nav-link-accountList">Private Customer Name</div>
       <span id="glow-ingress-line2">Private Street Address</span>
+      <p id="shippingAddress">Jane Doe, 123 Main St</p>
       <h1 id="productTitle">Safe Product Title</h1>
       <script id="amazon-product-state" type="application/json">
         {
@@ -304,6 +499,7 @@ def test_html_sanitizer_removes_state_and_account_secrets_but_keeps_product_evid
     assert "B0CHILD001" in sanitized
     assert "Private Customer Name" not in sanitized
     assert "Private Street Address" not in sanitized
+    assert "Jane Doe, 123 Main St" not in sanitized
     assert "private-access-token" not in sanitized
     assert "private-cookie" not in sanitized
 
@@ -359,6 +555,7 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
             page=AutomationPage(),
             raw_page=page,
             target_key="private-target-key",
+            provider_name="chrome",
         )
 
     monkeypatch.setattr(handler_module, "open_automation_page", open_page)
@@ -372,12 +569,30 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
     )
 
     assert collection["capture"]["resolved_asin"] == "B0CHILD001"
-    assert navigate_calls == [
-        ("https://www.amazon.com/dp/B0CHILD001", "domcontentloaded", 5000)
-    ]
+    assert navigate_calls == [("https://www.amazon.com/dp/B0CHILD001", "domcontentloaded", 5000)]
     assert page.goto_calls == []
     assert collection["browser_target_digest"] == hashlib.sha256(b"private-target-key").hexdigest()
+    assert collection["browser_provider_name"] == "chrome"
+    assert set(collection["stage_durations_ms"]) == {"navigation", "parse"}
+    assert all(value >= 0 for value in collection["stage_durations_ms"].values())
     assert "target_key" not in collection
+    assert page.screenshot_calls == 0
+
+
+def test_screenshot_capture_fails_closed_when_sensitive_masking_fails() -> None:
+    class Page:
+        screenshot_calls = 0
+
+        def evaluate(self, script: str) -> None:
+            raise RuntimeError("page is no longer scriptable")
+
+        def screenshot(self, *, full_page: bool) -> bytes:
+            self.screenshot_calls += 1
+            return b"unsafe-full-page"
+
+    page = Page()
+
+    assert handler_module._page_screenshot(page) == b""
     assert page.screenshot_calls == 0
 
 
@@ -494,6 +709,10 @@ def test_natural_same_origin_json_response_is_allowlisted_and_persisted_as_ref(
             return (
                 _fixture("product_detail_child.html")
                 .replace(
+                    "https://images.example.test/",
+                    "https://m.media-amazon.com/images/I/",
+                )
+                .replace(
                     '<script type="application/ld+json">',
                     '<script type="application/ignored+json">',
                 )
@@ -539,9 +758,9 @@ def test_natural_same_origin_json_response_is_allowlisted_and_persisted_as_ref(
     assert "secret" not in serialized_result
     assert "media-query-secret" not in serialized_result
 
-    base = "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1"
-    normalized = json.loads(store.uploads[("artifacts", f"{base}/normalized.json")])
-    page_data = json.loads(store.uploads[("artifacts", f"{base}/page-data.json")])
+    normalized_ref = result.result["artifact_refs"][0]
+    normalized = json.loads(store.uploads[("artifacts", normalized_ref["object_key"])])
+    page_data = json.loads(store.uploads[("artifacts", network_ref["object_key"])])
     assert normalized["product"]["title"] == "Network response title"
     assert normalized["commerce"]["featured_offer"]["price_amount"] == 28.5
     assert normalized["media"]["gallery_images"] == [
@@ -720,10 +939,13 @@ def test_response_observer_enforces_count_and_byte_limits() -> None:
         )
     )
     assert len(starvation_observations) == 1
-    assert handler_module.extract_amazon_network_product_data(
-        starvation_observations,
-        expected_asin="B0CHILD001",
-    )["product"]["title"] == "Latest real product response"
+    assert (
+        handler_module.extract_amazon_network_product_data(
+            starvation_observations,
+            expected_asin="B0CHILD001",
+        )["product"]["title"]
+        == "Latest real product response"
+    )
     starvation_stop()
 
     reverse_page, reverse_observations, reverse_stop = listen()
@@ -748,15 +970,16 @@ def test_response_observer_enforces_count_and_byte_limits() -> None:
             )
         )
     assert len(reverse_observations) == 1
-    assert handler_module.extract_amazon_network_product_data(
-        reverse_observations,
-        expected_asin="B0CHILD001",
-    )["product"]["title"] == "Early real product response"
+    assert (
+        handler_module.extract_amazon_network_product_data(
+            reverse_observations,
+            expected_asin="B0CHILD001",
+        )["product"]["title"]
+        == "Early real product response"
+    )
     reverse_stop()
 
-    parent_page, parent_observations, parent_stop = listen(
-        "https://www.amazon.com/dp/B0PARENT01"
-    )
+    parent_page, parent_observations, parent_stop = listen("https://www.amazon.com/dp/B0PARENT01")
     parent_page.url = "https://www.amazon.com/dp/B0CHILD001"
     assert parent_page.listener is not None
     parent_page.listener(
@@ -826,6 +1049,52 @@ def test_real_page_collection_screenshots_blocked_redirect(monkeypatch) -> None:
     assert any("nav-link-accountList" in script for script in page.scripts)
 
 
+@pytest.mark.parametrize(
+    ("http_status", "expected_error_code"),
+    [(429, "rate_limited"), (503, "transient_page_failure")],
+)
+def test_navigation_http_failures_are_retryable_and_keep_required_evidence(
+    monkeypatch,
+    http_status: int,
+    expected_error_code: str,
+) -> None:
+    class Page:
+        url = "https://www.amazon.com/dp/B0CHILD001"
+
+        def goto(self, *args, **kwargs):
+            return SimpleNamespace(status=http_status)
+
+        def content(self) -> str:
+            return "<html><body><h1>Temporary Amazon response</h1></body></html>"
+
+        def evaluate(self, script: str) -> None:
+            assert "visibility = 'hidden'" in script
+
+        def screenshot(self, *, full_page: bool) -> bytes:
+            assert full_page is True
+            return b"temporary-response-screenshot"
+
+    @contextmanager
+    def open_page(*, profile_ref: str):
+        assert profile_ref == "amazon-us-profile"
+        yield SimpleNamespace(page=Page(), target_key="target-key")
+
+    store = FakeArtifactStore()
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(handler_module, "open_automation_page", open_page)
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == expected_error_code
+    assert result.error.retryable is True
+    assert {ref["capture_kind"] for ref in result.result["artifact_refs"]} == {
+        "html",
+        "screenshot",
+    }
+
+
 @pytest.mark.parametrize("content_mode", ["empty", "error"])
 def test_empty_or_unreadable_page_content_is_a_retryable_technical_failure(
     monkeypatch,
@@ -841,6 +1110,9 @@ def test_empty_or_unreadable_page_content_is_a_retryable_technical_failure(
             if content_mode == "error":
                 raise RuntimeError("content channel closed")
             return ""
+
+        def evaluate(self, script: str) -> None:
+            assert "visibility = 'hidden'" in script
 
         def screenshot(self, *, full_page: bool) -> bytes:
             return b"page-read-failure"
@@ -981,6 +1253,11 @@ def test_terminal_page_errors_upload_sanitized_html_and_screenshot(
         "html",
         "screenshot",
     }
+    for ref in result.result["artifact_refs"]:
+        assert ref["object_key"].split("/")[-2] == ref["content_digest"]
+        assert ref["request_id"] == "request-1"
+        assert ref["execution_id"] == "execution-1"
+        assert ref["run_id"] == "run-1"
     uploaded_html = next(
         payload for (_, key), payload in store.uploads.items() if key.endswith("page.html.gz")
     )
@@ -1075,6 +1352,36 @@ def test_artifact_upload_failure_is_retryable(monkeypatch) -> None:
     assert result.error.retryable is True
 
 
+def test_partial_artifact_upload_failure_returns_refs_for_already_stored_objects(
+    monkeypatch,
+) -> None:
+    class FailSecondUploadStore(FakeArtifactStore):
+        upload_count = 0
+
+        def upload_file(self, **kwargs):
+            self.upload_count += 1
+            if self.upload_count == 2:
+                raise RuntimeError("second object upload failed")
+            return super().upload_file(**kwargs)
+
+    store = FailSecondUploadStore()
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: _success_collection(),
+    )
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "artifact_write_failed"
+    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == [
+        "normalized_capture"
+    ]
+
+
 def test_browser_worker_claims_the_controlled_handler_allowlist(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -1143,14 +1450,17 @@ class ArtifactIndexStore:
 
 def _artifact_outcome(*, failed: bool = False) -> ExecutionSupervisorOutcome:
     context = _context(store=FakeArtifactStore())
+    content_digest = "a" * 64
     artifact_ref = {
         "capture_kind": "html",
         "bucket": "artifacts",
-        "object_key": "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/page.html.gz",
+        "object_key": (
+            f"dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{content_digest}/page.html.gz"
+        ),
         "etag": "etag-new",
         "size": 123,
         "content_type": "application/gzip",
-        "content_digest": "digest",
+        "content_digest": content_digest,
         "sanitization_status": "sanitized",
         "created_at_epoch": 2.0,
         "remote_uri": "s3://artifacts/dev/raw/page.html.gz",
@@ -1207,7 +1517,10 @@ def test_browser_outcome_indexes_amazon_artifacts_without_deleting_existing_reco
     assert {record.artifact_id for record in store.replaced} == {
         "existing",
         hashlib.sha256(
-            b"run-1:artifacts:dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/page.html.gz"
+            (
+                "run-1:artifacts:dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/"
+                f"run-1/{'a' * 64}/page.html.gz"
+            ).encode("utf-8")
         ).hexdigest(),
     }
     new_record = next(record for record in store.replaced if record.artifact_id != "existing")

@@ -61,13 +61,16 @@ def test_amazon_single_product_workflow_has_exact_four_stage_contract() -> None:
 
     read_stage, browser_stage, persist_stage, summary_stage = definition.stages
     assert read_stage.execution_mode == "worker_jobs"
-    assert read_stage.job_codes == ("feishu_table_read",)
+    assert read_stage.job_codes == ("feishu_table_read", "feishu_table_write")
     assert read_stage.job_bindings[0].adapter_code == "amazon_product_table_source_adapter"
+    assert read_stage.job_bindings[1].optional is True
     assert browser_stage.execution_mode == "worker_jobs"
-    assert browser_stage.job_codes == ("amazon_product_browser_fetch",)
+    assert browser_stage.job_codes == ("feishu_table_write", "amazon_product_browser_fetch")
+    assert browser_stage.job_bindings[0].optional is True
     assert "fallback" not in browser_stage.stage_code
     assert persist_stage.execution_mode == "worker_jobs"
-    assert persist_stage.job_codes == ("amazon_product_row_persist",)
+    assert persist_stage.job_codes == ("feishu_table_write", "amazon_product_row_persist")
+    assert persist_stage.job_bindings[0].optional is True
     assert summary_stage.execution_mode == "summary"
     assert summary_stage.job_codes == ("task_completed_notification",)
 

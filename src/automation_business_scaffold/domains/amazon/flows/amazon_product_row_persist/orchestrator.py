@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Mapping
+from time import perf_counter
 from typing import Any
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
@@ -26,6 +29,8 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _COLLECTION_STATUSES = {"success", "partial_success", "unavailable"}
+_BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_BROWSER_STAGE_NAMES = ("navigation", "parse", "artifact")
 
 
 def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResult:
@@ -65,6 +70,7 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                 "require_materialized_assets": True,
             },
         )
+        media_started_at = perf_counter()
         try:
             media_result = api_handler_callable("media_asset_sync")(media_context)
         except Exception:  # noqa: BLE001 - preserve product facts across media transport failures.
@@ -77,8 +83,10 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                     retryable=True,
                 ),
             )
+        inputs["stage_durations_ms"]["media"] = _elapsed_ms(media_started_at)
         step_statuses["media_asset_sync"] = media_result.status
         materialized_assets = _materialized_assets(media_result.result.get("synced_assets"))
+        inputs["media_materialized_count"] = len(materialized_assets)
         if media_result.status == "failed":
             if not _is_partial_media_failure(media_result.error):
                 return _failed_child_result(
@@ -116,7 +124,9 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
         },
         metadata={"include_transient_projection_facts": True},
     )
+    fact_started_at = perf_counter()
     fact_result = api_handler_callable("amazon_product_fact_upsert")(fact_context)
+    inputs["stage_durations_ms"]["fact"] = _elapsed_ms(fact_started_at)
     step_statuses["amazon_product_fact_upsert"] = fact_result.status
     if fact_result.status == "failed":
         return _failed_child_result(
@@ -151,13 +161,20 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                 message="Amazon fact persistence did not return transient projection facts.",
                 retryable=False,
             ),
-            summary=_summary(inputs, "failed", step_statuses, media_coverage),
+            summary=_summary(
+                inputs,
+                "failed",
+                step_statuses,
+                media_coverage,
+                error_code="amazon_projection_facts_missing",
+            ),
             result=_compact_result(
                 inputs,
                 row_status="failed",
                 step_statuses=step_statuses,
                 fact_refs=fact_refs,
                 media_coverage=media_coverage,
+                error_code="amazon_projection_facts_missing",
             ),
         )
     if (
@@ -172,13 +189,20 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                 message="Amazon projection facts do not match the source row identity.",
                 retryable=False,
             ),
-            summary=_summary(inputs, "failed", step_statuses, media_coverage),
+            summary=_summary(
+                inputs,
+                "failed",
+                step_statuses,
+                media_coverage,
+                error_code="amazon_projection_identity_mismatch",
+            ),
             result=_compact_result(
                 inputs,
                 row_status="failed",
                 step_statuses=step_statuses,
                 fact_refs=fact_refs,
                 media_coverage=media_coverage,
+                error_code="amazon_projection_identity_mismatch",
             ),
         )
 
@@ -192,13 +216,20 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                 retryable=True,
                 details={"media_coverage": media_coverage},
             ),
-            summary=_summary(inputs, "failed", step_statuses, media_coverage),
+            summary=_summary(
+                inputs,
+                "failed",
+                step_statuses,
+                media_coverage,
+                error_code="media_sync_failed",
+            ),
             result=_compact_result(
                 inputs,
                 row_status="failed",
                 step_statuses=step_statuses,
                 fact_refs=fact_refs,
                 media_coverage=media_coverage,
+                error_code="media_sync_failed",
             ),
             warnings=warnings,
         )
@@ -240,7 +271,9 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
         step_code="feishu_table_write",
         payload=write_payload,
     )
+    feishu_started_at = perf_counter()
     write_result = api_handler_callable("feishu_table_write")(write_context)
+    inputs["stage_durations_ms"]["feishu"] = _elapsed_ms(feishu_started_at)
     step_statuses["feishu_table_write"] = write_result.status
     if write_result.status == "failed":
         return _failed_child_result(
@@ -267,6 +300,27 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
         warnings.append("Feishu writeback completed only partially.")
 
     writeback = _writeback_summary(write_result)
+    if (
+        writeback["written_count"] != 1
+        or writeback["skipped_count"] != 0
+        or writeback["failed_count"] != 0
+        or writeback["target_record_ids"] != [inputs["source_record_id"]]
+    ):
+        step_statuses["feishu_table_write"] = "failed"
+        return _failed_child_result(
+            context,
+            inputs=inputs,
+            step_statuses=step_statuses,
+            failed_step="feishu_table_write",
+            child_error=build_error(
+                error_type="contract_error",
+                error_code="feishu_writeback_not_converged",
+                message="Feishu writeback did not update exactly the requested source record.",
+                retryable=False,
+            ),
+            fact_refs=fact_refs,
+            media_coverage=media_coverage,
+        )
     result = _compact_result(
         inputs,
         row_status=row_status,
@@ -336,6 +390,7 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
         for key in ("table_ref", "source_record_id")
         if key in raw_request_payload
     }
+    browser_provider_name = _optional_browser_provider_name(payload.get("browser_provider_name"))
     return {
         "table_ref": table_ref,
         "source_record_id": source_record_id,
@@ -348,7 +403,13 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
         "normalized_capture_ref": normalized_capture_ref,
         "raw_capture_refs": raw_capture_refs,
         "media_source_refs": media_source_refs,
-        "field_coverage": _mapping(payload.get("field_coverage")),
+        "field_coverage": _field_coverage(payload.get("field_coverage")),
+        "browser_provider_name": browser_provider_name,
+        "stage_durations_ms": _stage_durations(
+            payload.get("stage_durations_ms"),
+            allowed_stages=_BROWSER_STAGE_NAMES,
+        ),
+        "media_materialized_count": 0,
         "request_payload": request_payload,
     }
 
@@ -364,9 +425,7 @@ def _feishu_credential_refs(
     refs: dict[str, str] = {}
     for key in ("access_token_env", "access_token_ref"):
         value = _text(
-            source_table_identity.get(key)
-            or configured_table.get(key)
-            or request_payload.get(key)
+            source_table_identity.get(key) or configured_table.get(key) or request_payload.get(key)
         )
         if value:
             refs[key] = value
@@ -430,12 +489,19 @@ def _failed_child_result(
         step_statuses=step_statuses,
         fact_refs=fact_refs,
         media_coverage=media_coverage,
+        error_code=error.error_code,
     )
     result["failed_step"] = failed_step
     return failed_result(
         context,
         error=error,
-        summary=_summary(inputs, "failed", step_statuses, media_coverage),
+        summary=_summary(
+            inputs,
+            "failed",
+            step_statuses,
+            media_coverage,
+            error_code=error.error_code,
+        ),
         result=result,
     )
 
@@ -475,14 +541,18 @@ def _has_retry_remaining(context: HandlerContext) -> bool:
 
 
 def _materialized_assets(raw_assets: Any) -> list[dict[str, Any]]:
-    return [
-        dict(item)
-        for item in raw_assets
-        if isinstance(item, Mapping)
-        and item.get("sync_state") in _MATERIALIZED_MEDIA_STATES
-        and _text(item.get("bucket"))
-        and _text(item.get("object_key"))
-    ] if isinstance(raw_assets, list) else []
+    return (
+        [
+            dict(item)
+            for item in raw_assets
+            if isinstance(item, Mapping)
+            and item.get("sync_state") in _MATERIALIZED_MEDIA_STATES
+            and _text(item.get("bucket"))
+            and _text(item.get("object_key"))
+        ]
+        if isinstance(raw_assets, list)
+        else []
+    )
 
 
 def _fact_refs(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -543,14 +613,18 @@ def _row_status(
 def _writeback_summary(result: HandlerResult) -> dict[str, Any]:
     payload = result.result
     return {
-        "written_count": int(payload.get("written_count") or result.summary.get("written_count") or 0),
-        "skipped_count": int(payload.get("skipped_count") or result.summary.get("skipped_count") or 0),
+        "written_count": int(
+            payload.get("written_count") or result.summary.get("written_count") or 0
+        ),
+        "skipped_count": int(
+            payload.get("skipped_count") or result.summary.get("skipped_count") or 0
+        ),
         "failed_count": int(payload.get("failed_count") or result.summary.get("failed_count") or 0),
         "target_record_ids": [
-            _text(item)
-            for item in payload.get("target_record_ids", [])
-            if _text(item)
-        ] if isinstance(payload.get("target_record_ids"), list) else [],
+            _text(item) for item in payload.get("target_record_ids", []) if _text(item)
+        ]
+        if isinstance(payload.get("target_record_ids"), list)
+        else [],
     }
 
 
@@ -562,6 +636,7 @@ def _compact_result(
     fact_refs: Mapping[str, Any] | None = None,
     media_coverage: Mapping[str, Any] | None = None,
     writeback: Mapping[str, Any] | None = None,
+    error_code: str = "",
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "row_status": row_status,
@@ -569,6 +644,12 @@ def _compact_result(
         "requested_asin": inputs["requested_asin"],
         "run_id": inputs["run_id"],
         "step_statuses": dict(step_statuses),
+        "observability": _row_observability(
+            inputs,
+            final_status=row_status,
+            media_coverage=media_coverage,
+            error_code=error_code,
+        ),
     }
     if inputs.get("resolved_asin"):
         result["resolved_asin"] = inputs["resolved_asin"]
@@ -586,6 +667,8 @@ def _summary(
     row_status: str,
     step_statuses: Mapping[str, str],
     media_coverage: Mapping[str, Any] | None = None,
+    *,
+    error_code: str = "",
 ) -> dict[str, Any]:
     return {
         "row_status": row_status,
@@ -594,10 +677,103 @@ def _summary(
         "run_id": inputs["run_id"],
         "step_statuses": dict(step_statuses),
         "media_expected_count": int((media_coverage or {}).get("expected") or 0),
-        "media_materialized_count": int(
-            (media_coverage or {}).get("materialized") or 0
+        "media_materialized_count": int((media_coverage or {}).get("materialized") or 0),
+        "observability": _row_observability(
+            inputs,
+            final_status=row_status,
+            media_coverage=media_coverage,
+            error_code=error_code,
         ),
     }
+
+
+def _row_observability(
+    inputs: Mapping[str, Any],
+    *,
+    final_status: str,
+    media_coverage: Mapping[str, Any] | None,
+    error_code: str,
+) -> dict[str, Any]:
+    coverage = _field_coverage(inputs.get("field_coverage"))
+    stage_durations = _stage_durations(
+        inputs.get("stage_durations_ms"),
+        allowed_stages=(
+            "navigation",
+            "parse",
+            "artifact",
+            "media",
+            "fact",
+            "feishu",
+        ),
+    )
+    materialized_count = int(
+        (media_coverage or {}).get("materialized") or inputs.get("media_materialized_count") or 0
+    )
+    observation: dict[str, Any] = {
+        "stage_durations_ms": stage_durations,
+        "field_coverage": coverage,
+        "artifact_count": len(_mapping_list(inputs.get("raw_capture_refs"))),
+        "media_observed_count": len(_mapping_list(inputs.get("media_source_refs"))),
+        "media_materialized_count": materialized_count,
+        "final_status": final_status,
+        "error_code": _safe_error_code(error_code),
+    }
+    provider_name = _optional_browser_provider_name(inputs.get("browser_provider_name"))
+    if provider_name:
+        observation["browser_provider_name"] = provider_name
+    return observation
+
+
+def _optional_browser_provider_name(value: Any) -> str:
+    provider_name = _text(value)
+    if provider_name and not _BROWSER_PROVIDER_NAME.fullmatch(provider_name):
+        raise ValueError("browser_provider_name must be a non-sensitive provider code.")
+    return provider_name
+
+
+def _field_coverage(value: Any) -> dict[str, int | float]:
+    raw = _mapping(value)
+    coverage: dict[str, int | float] = {}
+    for key in ("total", "observed", "explicitly_unavailable", "missing"):
+        item = raw.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            continue
+        coverage[key] = item
+    percentage = raw.get("percentage")
+    if (
+        not isinstance(percentage, bool)
+        and isinstance(percentage, (int, float))
+        and math.isfinite(float(percentage))
+        and 0 <= float(percentage) <= 100
+    ):
+        coverage["percentage"] = round(float(percentage), 2)
+    return coverage
+
+
+def _stage_durations(
+    value: Any,
+    *,
+    allowed_stages: tuple[str, ...],
+) -> dict[str, float]:
+    raw = _mapping(value)
+    durations: dict[str, float] = {}
+    for stage_name in allowed_stages:
+        duration = raw.get(stage_name)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        normalized = float(duration)
+        if math.isfinite(normalized) and normalized >= 0:
+            durations[stage_name] = round(normalized, 3)
+    return durations
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round(max(perf_counter() - started_at, 0.0) * 1_000.0, 3)
+
+
+def _safe_error_code(value: Any) -> str:
+    error_code = _text(value)
+    return error_code if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", error_code) else ""
 
 
 def _mapping(value: Any) -> dict[str, Any]:

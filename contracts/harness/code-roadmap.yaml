@@ -1099,7 +1099,7 @@ features:
       - No local cursor table is introduced.
 
   - feature_code: amazon_product_fact_schema
-    status: in_progress
+    status: complete
     feature_type: schema_contract
     requires_architecture_delta_gate: true
     default_context:
@@ -1107,13 +1107,22 @@ features:
       - docs/arch/workflow-amazon-product-detail-design.md
       - docs/arch/fact-db-schema-design.md
       - docs/arch/storage-architecture-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/entry-output-contract-design.md
+      - docs/ops/deployment.md
       - contracts/facts/product-fact-collection.yaml
       - contracts/harness/architecture-ownership.yaml
       - contracts/harness/code-roadmap.yaml
+      - alembic_fact.ini
+      - alembic_fact/versions/20260714_0007_amazon_product_facts.py
+      - scripts/execution_control/run_alembic_upgrade.sh
       - tests/test_amazon_product_contracts.py
+      - tests/test_amazon_fact_migration_routing.py
     source_contracts:
       - docs/business/requirements/amazon-product-detail-collection.md
       - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/entry-output-contract-design.md
       - contracts/facts/product-fact-collection.yaml
       - contracts/harness/architecture-ownership.yaml
     allowed_paths:
@@ -1121,22 +1130,36 @@ features:
       - docs/arch/workflow-amazon-product-detail-design.md
       - docs/arch/fact-db-schema-design.md
       - docs/arch/storage-architecture-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/entry-output-contract-design.md
+      - docs/ops/deployment.md
       - docs/domains/amazon-product-detail/**
       - contracts/README.md
       - contracts/facts/product-fact-collection.yaml
       - contracts/harness/architecture-ownership.yaml
       - contracts/harness/code-roadmap.yaml
+      - alembic_fact.ini
+      - alembic_fact/**
       - alembic/versions/20260714_0007_amazon_product_facts.py
+      - scripts/deploy/macos/deploy.local.env.example
+      - scripts/deploy/macos/deploy.sh
+      - scripts/deploy/macos/preflight.sh
+      - scripts/execution_control/run_alembic_upgrade.sh
+      - scripts/execution_control/run_fact_alembic_upgrade.sh
+      - scripts/execution_control/executor.local.env.example
+      - skills/mujitask-tiktok-feishu-sync/skill.local.env.example
       - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
       - src/automation_business_scaffold/infrastructure/schemas/__init__.py
       - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
       - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
       - src/automation_business_scaffold/contracts/handler/**
       - tests/test_amazon_product_contracts.py
+      - tests/test_amazon_fact_migration_routing.py
       - tests/test_amazon_fact_schema.py
       - tests/conftest.py
       - tests/test_amazon_fact_store.py
       - tests/test_amazon_product_fact_upsert_handler.py
+      - tests/test_macos_fact_migration_deployment.py
     forbidden_paths:
       - .platform/**
       - AGENTS.md
@@ -1147,15 +1170,19 @@ features:
     done_gate:
       tests:
         - tests/test_amazon_product_contracts.py
+        - tests/test_amazon_fact_migration_routing.py
         - tests/test_amazon_fact_schema.py
         - tests/test_amazon_fact_store.py
         - tests/test_amazon_product_fact_upsert_handler.py
+        - tests/test_macos_fact_migration_deployment.py
       commands:
-        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_fact_schema.py tests/test_amazon_fact_store.py tests/test_amazon_product_fact_upsert_handler.py
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_fact_migration_routing.py tests/test_amazon_fact_schema.py tests/test_amazon_fact_store.py tests/test_amazon_product_fact_upsert_handler.py tests/test_macos_fact_migration_deployment.py
     completion_rules:
-      - Migration creates only the nine governed amazon_* tables and indexes under the migration user path; production workers do not execute DDL.
+      - Fact migration requires an explicit migration-user URL, owns an isolated fact_alembic_version graph, and creates only the nine governed amazon_* tables and indexes; production workers do not execute DDL.
+      - The validated shared Fact runtime role receives only schema usage, governed TikTok and Amazon Fact table DML, and Fact version-table SELECT privileges; it receives no Runtime table privileges.
       - Amazon identity is unique by marketplace_code plus asin and does not add cross-platform foreign keys.
       - Product, snapshot, offer, variant, BSR, media, raw capture, and Feishu binding upserts are independently idempotent.
+      - Snapshot and raw-capture replays reject divergent immutable evidence for the same run or object coordinate before mutable facts can drift.
       - Amazon artifacts reuse the configured bucket with governed Amazon prefixes; Runtime DB schema remains unchanged.
       - Fact persistence accepts a validated subset of observed Amazon media, reports compact coverage, and remains idempotent when the same run retries from partial to complete media.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
@@ -1173,6 +1200,7 @@ features:
       - contracts/workflow/refresh_amazon_product_row_by_asin.yaml
       - contracts/facts/product-fact-collection.yaml
       - contracts/harness/architecture-ownership.yaml
+      - scripts/execution_control/run_alembic_upgrade.sh
       - tests/test_amazon_product_contracts.py
     source_contracts:
       - docs/business/requirements/amazon-product-detail-collection.md
@@ -1187,6 +1215,7 @@ features:
       - docs/arch/workflow-amazon-product-detail-design.md
       - docs/domains/amazon-product-detail/**
       - docs/dev/project-configuration.md
+      - docs/dev/local-development.md
       - docs/ops/**
       - contracts/README.md
       - contracts/fields/feishu-amazon-products.yaml
@@ -1220,7 +1249,14 @@ features:
       - src/automation_business_scaffold/control_plane/executor/request_dispatch.py
       - src/automation_business_scaffold/control_plane/executor/runner.py
       - src/automation_business_scaffold/control_plane/runtime_config/settings.py
+      - scripts/deploy/macos/deploy.local.env.example
+      - scripts/deploy/macos/deploy.sh
+      - scripts/deploy/macos/preflight.sh
+      - scripts/execution_control/run_alembic_upgrade.sh
+      - scripts/execution_control/executor.local.env.example
+      - skills/mujitask-tiktok-feishu-sync/skill.local.env.example
       - tests/test_amazon_product_contracts.py
+      - tests/test_config.py
       - tests/test_amazon_product_page.py
       - tests/test_amazon_product_browser_fetch_handler.py
       - tests/test_feishu_amazon_product_mapping.py
@@ -1235,6 +1271,7 @@ features:
       - tests/test_workflow_architecture_manifests.py
       - tests/test_harness_code_roadmap.py
       - tests/test_architecture_ownership.py
+      - tests/test_macos_fact_migration_deployment.py
     forbidden_paths:
       - .platform/**
       - AGENTS.md
@@ -1246,6 +1283,7 @@ features:
     done_gate:
       tests:
         - tests/test_amazon_product_contracts.py
+        - tests/test_config.py
         - tests/test_amazon_product_page.py
         - tests/test_amazon_product_browser_fetch_handler.py
         - tests/test_feishu_amazon_product_mapping.py
@@ -1260,14 +1298,16 @@ features:
         - tests/test_workflow_architecture_manifests.py
         - tests/test_harness_code_roadmap.py
         - tests/test_architecture_ownership.py
+        - tests/test_macos_fact_migration_deployment.py
       commands:
-        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_media_asset_sync_handler.py tests/test_amazon_product_row_persist.py
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_config.py tests/test_amazon_product_page.py tests/test_amazon_product_browser_fetch_handler.py tests/test_feishu_amazon_product_mapping.py tests/test_media_asset_sync_handler.py tests/test_amazon_product_row_persist.py tests/test_macos_fact_migration_deployment.py
         - uv run --extra dev pytest tests/test_refresh_amazon_product_row_by_asin.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py tests/test_feishu_common_handlers.py tests/test_runtime_workflow_registry.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_ownership.py
     completion_rules:
       - Formal payload carries only table_ref and source_record_id; runtime config resolves browser profile, Runtime DB, Fact DB, and object storage.
       - Workflow uses exactly four stable stages and treats Amazon browser collection as a primary browser task rather than fallback_required.
       - Browser results contain compact identity, status, coverage, and artifact references; full capture and HTML remain in object storage.
+      - Raw capture objects are content-addressed by their stored-byte SHA-256 so changed retry bytes never overwrite prior evidence.
       - Row persistence serially converges media, Amazon facts, projection, and writeback to the same source_record_id.
       - Missing projection values preserve existing Feishu values; blocked and identity mismatch do not write incorrect product fields.
       - Batch and keyword search entrypoints remain outside this feature.

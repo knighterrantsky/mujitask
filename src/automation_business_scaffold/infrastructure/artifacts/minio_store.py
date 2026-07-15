@@ -73,10 +73,23 @@ class MinioArtifactStore:
     def build_uri(self, *, bucket: str, object_key: str) -> str:
         return f"s3://{bucket}/{object_key}"
 
-    def read_bytes(self, *, bucket: str, object_key: str) -> bytes:
+    def read_bytes(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        max_bytes: int | None = None,
+    ) -> bytes:
         response = self._client.get_object(bucket, object_key)
         try:
-            return bytes(response.read())
+            if max_bytes is None:
+                return bytes(response.read())
+            if max_bytes < 0:
+                raise ValueError("max_bytes must be non-negative.")
+            payload = bytes(response.read(max_bytes + 1))
+            if len(payload) > max_bytes:
+                raise ValueError("Artifact object exceeds the governed size limit.")
+            return payload
         finally:
             try:
                 response.close()

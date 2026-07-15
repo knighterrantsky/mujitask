@@ -33,7 +33,7 @@
 应该放：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
-- `TK_FACT_DB_URL` 或 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`（规范键；旧 `TK_FACT_DB_URL` 仅作兼容回退）
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
@@ -137,7 +137,7 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 填写：
 
 - Runtime DB 连接串
-- Fact DB 连接串；本地共库时也要显式填写 `TK_FACT_DB_URL`
+- Fact DB 连接串；本地共库时也要显式填写 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
 - MinIO endpoint / access key / secret key
 - artifact bucket / object prefix
 

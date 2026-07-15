@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 
+AMAZON_FACT_SCHEMA_REVISION = "20260714_0007"
+AMAZON_FACT_VERSION_TABLE = "fact_alembic_version"
+
 AMAZON_FACT_TABLES = [
     "amazon_feishu_bindings",
     "amazon_raw_captures",
@@ -247,9 +250,9 @@ AMAZON_FACT_SCHEMA_STATEMENTS = [
         record_id TEXT NOT NULL,
         source_asin TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
-        last_synced_snapshot_id TEXT NOT NULL DEFAULT '',
+        latest_snapshot_id TEXT NOT NULL DEFAULT '',
         first_bound_at DOUBLE PRECISION NOT NULL,
-        last_synced_at DOUBLE PRECISION NOT NULL,
+        last_bound_at DOUBLE PRECISION NOT NULL,
         created_at DOUBLE PRECISION NOT NULL,
         updated_at DOUBLE PRECISION NOT NULL,
         UNIQUE(base_id, table_id, record_id)

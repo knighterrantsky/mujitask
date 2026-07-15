@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 import math
+import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Any, Mapping
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     AmazonProductExtractionError,
+    extract_amazon_network_product_data,
     normalize_asin,
 )
 from automation_business_scaffold.config import get_execution_control_defaults
@@ -27,7 +32,15 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_store import
     join_object_key,
     normalize_artifact_store_provider,
 )
-from automation_business_scaffold.infrastructure.facts.amazon_fact_store import AmazonFactStore
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import (
+    AmazonFactCollisionError,
+    AmazonFactSchemaUnavailableError,
+    AmazonFactSchemaVersionError,
+    AmazonFactStore,
+)
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
+)
 
 
 HANDLER_CODE = "amazon_product_fact_upsert"
@@ -38,6 +51,102 @@ _AVAILABILITY_STATUSES = {"in_stock", "out_of_stock", "unavailable", "unknown"}
 _FULFILLMENT_CHANNELS = {"amazon", "merchant", "unknown"}
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _MATERIALIZED_MEDIA_ROLES = {"main_image", "gallery_image"}
+_MATERIALIZED_MEDIA_MIME_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+_MAX_MATERIALIZED_MEDIA_BYTES = 25 * 1024 * 1024
+_MAX_NORMALIZED_CAPTURE_BYTES = 2 * 1024 * 1024
+_MAX_SANITIZED_HTML_BYTES = 8 * 1024 * 1024
+_RAW_CAPTURE_MAX_BYTES = {
+    "normalized_capture": _MAX_NORMALIZED_CAPTURE_BYTES,
+    "html": 2 * 1024 * 1024,
+    "network_data": 512 * 1024,
+    "screenshot": 10 * 1024 * 1024,
+}
+_HTML_SCRIPT_PATTERN = re.compile(
+    r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_SENSITIVE_ATTRIBUTE_PATTERN = re.compile(
+    r"\s+(?:data-)?(?:cookie|authorization|auth-token|access-token|refresh-token|token|"
+    r"localstorage|workspace|profile|account|address|request-headers?)\s*=",
+    re.IGNORECASE,
+)
+_HTML_SENSITIVE_MARKERS = (
+    "accountname",
+    "addressbook",
+    "customername",
+    "deliveryaddress",
+    "glowingress",
+    "navgloballocation",
+    "navlinkaccountlist",
+    "shippingaddress",
+)
+_HTML_FORBIDDEN_TAGS = {
+    "button",
+    "form",
+    "iframe",
+    "input",
+    "meta",
+    "noscript",
+    "option",
+    "select",
+    "style",
+    "textarea",
+}
+_HTML_SENSITIVE_JSON_KEYS = {
+    "account",
+    "address",
+    "authorization",
+    "cookie",
+    "cookies",
+    "headers",
+    "localstorage",
+    "profile",
+    "refreshtoken",
+    "requestheaders",
+    "token",
+    "workspace",
+}
+_RAW_CAPTURE_POLICIES = {
+    "normalized_capture": ("application/json", "normalized"),
+    "html": ("application/gzip", "sanitized"),
+    "network_data": ("application/json", "allowlisted"),
+    "screenshot": ("image/png", "not_applicable"),
+}
+_REQUIRED_FIELD_EVIDENCE_PATHS = frozenset(
+    {
+        "product.title",
+        "product.brand",
+        "product.category_path",
+        "product.bullet_points",
+        "product.description",
+        "product.technical_details",
+        "commerce.availability_status",
+        "commerce.rating",
+        "commerce.review_count",
+        "commerce.featured_offer.seller_id",
+        "commerce.featured_offer.seller_name",
+        "commerce.featured_offer.is_buy_box",
+        "commerce.featured_offer.price_amount",
+        "commerce.featured_offer.list_price_amount",
+        "commerce.featured_offer.currency",
+        "commerce.featured_offer.fulfillment_channel",
+        "commerce.featured_offer.delivery_text",
+        "commerce.featured_offer.coupon_text",
+        "commerce.featured_offer.promotions",
+        "variants.parent_asin",
+        "variants.child_asins",
+        "variants.current_attributes",
+        "variants.dimensions",
+        "rankings",
+        "media.main_image",
+        "media.gallery_images",
+    }
+)
 
 
 class _InvalidCapture(ValueError):
@@ -56,6 +165,65 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
                 "configuration was provided."
             ),
         )
+
+    owns_fact_store = context.metadata.get("fact_store") is None
+    try:
+        return _amazon_product_fact_upsert_with_store(
+            context,
+            payload=payload,
+            fact_store=fact_store,
+        )
+    finally:
+        if owns_fact_store:
+            close = getattr(fact_store, "close", None)
+            if callable(close):
+                close()
+
+
+def _amazon_product_fact_upsert_with_store(
+    context: HandlerContext,
+    *,
+    payload: dict[str, Any],
+    fact_store: Any,
+) -> HandlerResult:
+    require_schema_revision = getattr(fact_store, "require_schema_revision", None)
+    if callable(require_schema_revision):
+        try:
+            require_schema_revision()
+        except AmazonFactSchemaUnavailableError as exc:
+            return failed_result(
+                context,
+                error=build_error(
+                    error_type="infrastructure",
+                    error_code="amazon_fact_schema_check_failed",
+                    message=str(exc),
+                    retryable=True,
+                    details={
+                        "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+                    },
+                ),
+                summary={"persistence_mode": "schema_check_failed"},
+                result={
+                    "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+                },
+            )
+        except AmazonFactSchemaVersionError as exc:
+            return failed_result(
+                context,
+                error=build_error(
+                    error_type="infrastructure",
+                    error_code="amazon_fact_schema_not_ready",
+                    message=str(exc),
+                    retryable=False,
+                    details={
+                        "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+                    },
+                ),
+                summary={"persistence_mode": "schema_not_ready"},
+                result={
+                    "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+                },
+            )
 
     artifact_store = _resolve_artifact_store(context, payload)
     if artifact_store is None:
@@ -87,9 +255,11 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
         )
 
     try:
-        capture_bytes = artifact_store.read_bytes(
+        capture_bytes = _read_artifact_bytes(
+            artifact_store,
             bucket=normalized_ref["bucket"],
             object_key=normalized_ref["object_key"],
+            max_bytes=_MAX_NORMALIZED_CAPTURE_BYTES,
         )
         _verify_content_digest(capture_bytes, normalized_ref)
     except ValueError as exc:
@@ -126,7 +296,13 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
         source_table_ref = _validate_source_binding(payload)
         run_id = _required_text(payload.get("run_id"), "run_id")
         source_record_id = _required_text(payload.get("source_record_id"), "source_record_id")
-        _validate_raw_capture_identity(raw_capture_refs, capture, artifact_policy)
+        _validate_raw_capture_identity(
+            raw_capture_refs,
+            capture,
+            artifact_policy,
+            request_id=context.request_id,
+            run_id=run_id,
+        )
         materialized_media_assets, media_coverage = _validate_materialized_media_assets(
             payload,
             capture,
@@ -135,6 +311,7 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
         payload["materialized_media_assets"] = materialized_media_assets
     except (
         AmazonProductExtractionError,
+        RecursionError,
         TypeError,
         UnicodeDecodeError,
         ValueError,
@@ -147,17 +324,76 @@ def amazon_product_fact_upsert_handler(context: HandlerContext) -> HandlerResult
         )
 
     try:
-        persisted = _persist_capture(
-            context=context,
-            payload=payload,
+        _verify_raw_capture_objects(
+            artifact_store,
+            raw_capture_refs,
             capture=capture,
-            capture_bytes=capture_bytes,
             normalized_ref=normalized_ref,
-            raw_capture_refs=raw_capture_refs,
-            source_table_ref=source_table_ref,
-            source_record_id=source_record_id,
-            run_id=run_id,
-            fact_store=fact_store,
+            normalized_bytes=capture_bytes,
+        )
+    except ValueError as exc:
+        return _validation_failure(
+            context,
+            error_code="raw_capture_digest_mismatch",
+            message=str(exc),
+        )
+    except Exception as exc:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="artifact_read_failure",
+                error_code="raw_capture_read_failed",
+                message=str(exc),
+                retryable=True,
+            ),
+            summary={"persistence_mode": "object_storage_read_failed"},
+        )
+
+    try:
+        _verify_materialized_media_objects(
+            artifact_store,
+            materialized_media_assets,
+        )
+    except ValueError as exc:
+        return _validation_failure(
+            context,
+            error_code="materialized_media_digest_mismatch",
+            message=str(exc),
+        )
+    except Exception as exc:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="artifact_read_failure",
+                error_code="materialized_media_read_failed",
+                message=str(exc),
+                retryable=True,
+            ),
+            summary={"persistence_mode": "object_storage_read_failed"},
+        )
+
+    try:
+        transaction = getattr(fact_store, "transaction", None)
+        if not callable(transaction):
+            raise RuntimeError("Amazon Fact store must provide transactional bundle writes.")
+        with transaction() as transaction_store:
+            persisted = _persist_capture(
+                context=context,
+                payload=payload,
+                capture=capture,
+                capture_bytes=capture_bytes,
+                normalized_ref=normalized_ref,
+                raw_capture_refs=raw_capture_refs,
+                source_table_ref=source_table_ref,
+                source_record_id=source_record_id,
+                run_id=run_id,
+                fact_store=transaction_store,
+            )
+    except AmazonFactCollisionError as exc:
+        return _validation_failure(
+            context,
+            error_code=exc.error_code,
+            message=str(exc),
         )
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         return failed_result(
@@ -385,12 +621,20 @@ def _validate_raw_capture_evidence(
     normalized_raw: dict[str, Any] | None = None
     html_raw: dict[str, Any] | None = None
     validated_refs: list[dict[str, Any]] = []
+    seen_kinds: set[str] = set()
     for raw_ref in raw_refs:
         capture_kind = _required_text(raw_ref.get("capture_kind"), "capture_kind")
+        policy = _RAW_CAPTURE_POLICIES.get(capture_kind)
+        if policy is None:
+            raise ValueError(f"Raw capture kind is not allowed: {capture_kind}.")
+        if capture_kind in seen_kinds:
+            raise ValueError(f"Raw capture kind must be unique: {capture_kind}.")
+        seen_kinds.add(capture_kind)
         validated = _validate_artifact_ref(
             raw_ref,
             expected_kind=capture_kind,
-            require_sanitized=capture_kind == "html",
+            expected_content_type=policy[0],
+            expected_sanitization_status=policy[1],
         )
         _validate_governed_artifact_ref(
             validated,
@@ -407,7 +651,13 @@ def _validate_raw_capture_evidence(
         raise ValueError(
             "raw_capture_refs must contain normalized_capture and sanitized html evidence."
         )
-    normalized = _validate_artifact_ref(normalized_ref, expected_kind="normalized_capture")
+    normalized_policy = _RAW_CAPTURE_POLICIES["normalized_capture"]
+    normalized = _validate_artifact_ref(
+        normalized_ref,
+        expected_kind="normalized_capture",
+        expected_content_type=normalized_policy[0],
+        expected_sanitization_status=normalized_policy[1],
+    )
     _validate_governed_artifact_ref(
         normalized,
         artifact_policy=artifact_policy,
@@ -416,16 +666,22 @@ def _validate_raw_capture_evidence(
     normalized_raw = _validate_artifact_ref(
         normalized_raw,
         expected_kind="normalized_capture",
+        expected_content_type=normalized_policy[0],
+        expected_sanitization_status=normalized_policy[1],
     )
-    if (
-        normalized["bucket"],
-        normalized["object_key"],
-    ) != (
-        normalized_raw["bucket"],
-        normalized_raw["object_key"],
-    ):
+    identity_fields = (
+        "bucket",
+        "object_key",
+        "content_digest",
+        "content_type",
+        "sanitization_status",
+        "request_id",
+        "execution_id",
+        "run_id",
+    )
+    if any(normalized[field] != normalized_raw[field] for field in identity_fields):
         raise ValueError(
-            "normalized_capture_ref must identify the normalized_capture raw evidence object."
+            "normalized_capture_ref must exactly match the normalized_capture raw evidence."
         )
     return normalized, validated_refs
 
@@ -434,13 +690,226 @@ def _validate_raw_capture_identity(
     raw_capture_refs: list[dict[str, Any]],
     capture: Mapping[str, Any],
     artifact_policy: Mapping[str, str],
+    *,
+    request_id: str,
+    run_id: str,
 ) -> None:
-    relative_prefix = f"raw-captures/amazon/us/{capture['requested_asin']}"
+    captured_at = datetime.fromtimestamp(capture["captured_at_epoch"], tz=timezone.utc)
+    relative_prefix = (
+        f"raw-captures/amazon/us/{capture['requested_asin']}/{captured_at:%Y/%m/%d}/{run_id}"
+    )
+    expected_filenames = {
+        "normalized_capture": "normalized.json",
+        "html": "page.html.gz",
+        "network_data": "page-data.json",
+        "screenshot": "page.png",
+    }
+    normalized_ref = next(
+        ref for ref in raw_capture_refs if ref["capture_kind"] == "normalized_capture"
+    )
+    origin_execution_id = normalized_ref["execution_id"]
     for raw_ref in raw_capture_refs:
+        if raw_ref["request_id"] != request_id:
+            raise ValueError("Raw capture request_id must match the active Runtime request.")
+        if raw_ref["execution_id"] != origin_execution_id:
+            raise ValueError("Raw capture refs must share one browser execution_id.")
+        if raw_ref["run_id"] != run_id:
+            raise ValueError("Raw capture run_id must match the persist job run_id.")
         _validate_governed_artifact_ref(
             raw_ref,
             artifact_policy=artifact_policy,
             relative_prefix=relative_prefix,
+        )
+        expected_key = join_object_key(
+            artifact_policy.get("object_prefix", ""),
+            (
+                f"{relative_prefix}/{raw_ref['content_digest']}/"
+                f"{expected_filenames[raw_ref['capture_kind']]}"
+            ),
+        )
+        if raw_ref["object_key"] != expected_key:
+            raise ValueError(
+                "Raw capture object_key must match its ASIN, capture date, run_id, "
+                "content digest, and governed filename."
+            )
+
+
+def _verify_raw_capture_objects(
+    artifact_store: Any,
+    raw_capture_refs: list[dict[str, Any]],
+    *,
+    capture: Mapping[str, Any],
+    normalized_ref: Mapping[str, Any],
+    normalized_bytes: bytes,
+) -> None:
+    normalized_coordinate = (
+        normalized_ref["bucket"],
+        normalized_ref["object_key"],
+    )
+    for raw_ref in raw_capture_refs:
+        coordinate = (raw_ref["bucket"], raw_ref["object_key"])
+        if coordinate == normalized_coordinate:
+            payload = normalized_bytes
+        else:
+            payload = _read_artifact_bytes(
+                artifact_store,
+                bucket=raw_ref["bucket"],
+                object_key=raw_ref["object_key"],
+                max_bytes=_RAW_CAPTURE_MAX_BYTES[raw_ref["capture_kind"]],
+            )
+        if not isinstance(payload, (bytes, bytearray)):
+            raise ValueError("Raw capture object storage must return bytes.")
+        actual_digest = hashlib.sha256(bytes(payload)).hexdigest()
+        if actual_digest != raw_ref["content_digest"]:
+            raise ValueError(
+                f"{raw_ref['capture_kind']} raw capture digest does not match stored bytes."
+            )
+        if raw_ref["capture_kind"] == "network_data":
+            _validate_network_capture(bytes(payload), capture)
+        elif raw_ref["capture_kind"] == "html":
+            _validate_html_capture(bytes(payload))
+
+
+class _SanitizedHTMLPolicyValidator(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.violation = False
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag in _HTML_FORBIDDEN_TAGS:
+            self.violation = True
+            return
+        for name, value in attrs:
+            normalized_name = re.sub(r"[^a-z0-9]", "", str(name).lower())
+            normalized_value = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+            if (
+                normalized_name.startswith("on")
+                or any(
+                    marker in normalized_name
+                    for marker in _HTML_SENSITIVE_JSON_KEYS
+                )
+                or any(marker in normalized_value for marker in _HTML_SENSITIVE_MARKERS)
+            ):
+                self.violation = True
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_comment(self, data: str) -> None:
+        del data
+        self.violation = True
+
+
+def _html_violates_sanitization_policy(html: str) -> bool:
+    validator = _SanitizedHTMLPolicyValidator()
+    validator.feed(html)
+    validator.close()
+    return validator.violation
+
+
+def _validate_html_capture(payload: bytes) -> None:
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as compressed:
+            decompressed = compressed.read(_MAX_SANITIZED_HTML_BYTES + 1)
+        if len(decompressed) > _MAX_SANITIZED_HTML_BYTES:
+            raise ValueError("html raw capture exceeds the decompressed size limit.")
+        html = decompressed.decode("utf-8")
+    except (EOFError, OSError, UnicodeDecodeError) as exc:
+        raise ValueError("html raw capture must contain valid gzip-compressed UTF-8.") from exc
+    if not html.strip():
+        raise ValueError("html raw capture must contain sanitized page evidence.")
+    if _html_violates_sanitization_policy(html):
+        raise ValueError("html raw capture contains content removed by sanitization policy.")
+    if _HTML_SENSITIVE_ATTRIBUTE_PATTERN.search(html):
+        raise ValueError("html raw capture contains sensitive attributes.")
+    if re.search(
+        r"<meta\b[^>]*(?:http-equiv|authorization|cookie|token)[^>]*>",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        raise ValueError("html raw capture contains sensitive metadata.")
+    if re.search(
+        r"\bBearer\s+(?!\[REDACTED\])[^\s<]+",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        raise ValueError("html raw capture contains an unredacted bearer credential.")
+    script_matches = list(_HTML_SCRIPT_PATTERN.finditer(html))
+    for match in script_matches:
+        attrs = match.group("attrs").strip().lower()
+        if attrs not in {
+            'type="application/ld+json"',
+            'id="amazon-product-state" type="application/json"',
+        }:
+            raise ValueError("html raw capture contains a non-allowlisted script.")
+        try:
+            script_value = json.loads(match.group("body"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("html raw capture contains invalid allowlisted JSON.") from exc
+        if _contains_sensitive_json_key(script_value):
+            raise ValueError("html raw capture contains sensitive structured-data fields.")
+    if re.search(
+        r"</?script\b",
+        _HTML_SCRIPT_PATTERN.sub("", html),
+        flags=re.IGNORECASE,
+    ):
+        raise ValueError("html raw capture contains an incomplete script element.")
+
+
+def _contains_sensitive_json_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in _HTML_SENSITIVE_JSON_KEYS or normalized.endswith("token") or any(
+                marker in normalized
+                for marker in (
+                    "authorization",
+                    "cookie",
+                    "localstorage",
+                    "requestheader",
+                )
+            ):
+                return True
+            if _contains_sensitive_json_key(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_sensitive_json_key(item) for item in value)
+    return False
+
+
+def _validate_network_capture(payload: bytes, capture: Mapping[str, Any]) -> None:
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("network_data raw capture must contain valid UTF-8 JSON.") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("network_data raw capture must contain a JSON object.")
+
+    source_locator = _required_text(
+        decoded.get("source_locator"),
+        "network_data source_locator",
+    )
+    source_path, separator, _ = source_locator.partition("#sha256=")
+    if not separator or not source_path.startswith("/"):
+        raise ValueError("network_data source_locator must use the governed digest form.")
+    canonical = extract_amazon_network_product_data(
+        [{"source_path": source_path, "payload": decoded}],
+        expected_asin=capture["resolved_asin"],
+    )
+    if canonical != decoded:
+        raise ValueError(
+            "network_data raw capture must contain only canonical allowlisted fields "
+            "for the resolved ASIN."
         )
 
 
@@ -466,7 +935,8 @@ def _validate_artifact_ref(
     value: Mapping[str, Any],
     *,
     expected_kind: str,
-    require_sanitized: bool = False,
+    expected_content_type: str,
+    expected_sanitization_status: str,
 ) -> dict[str, Any]:
     ref = {
         key: value[key]
@@ -477,6 +947,9 @@ def _validate_artifact_ref(
             "content_digest",
             "content_type",
             "sanitization_status",
+            "request_id",
+            "execution_id",
+            "run_id",
             "collected_at",
             "created_at",
         )
@@ -486,8 +959,33 @@ def _validate_artifact_ref(
         raise ValueError(f"Artifact evidence must use capture_kind={expected_kind}.")
     ref["bucket"] = _required_text(ref.get("bucket"), "artifact bucket")
     ref["object_key"] = _required_text(ref.get("object_key"), "artifact object_key")
-    if require_sanitized and _clean_text(ref.get("sanitization_status")) != "sanitized":
-        raise ValueError("HTML raw capture evidence must be sanitized.")
+    ref["content_digest"] = _required_sha256_digest(
+        ref.get("content_digest"),
+        "artifact content_digest",
+    )
+    object_key_parts = ref["object_key"].split("/")
+    if len(object_key_parts) < 2 or object_key_parts[-2] != ref["content_digest"]:
+        raise ValueError(f"{expected_kind} raw capture object_key must contain its content digest.")
+    ref["content_type"] = _required_text(ref.get("content_type"), "artifact content_type")
+    if ref["content_type"] != expected_content_type:
+        raise ValueError(
+            f"{expected_kind} raw capture must use content_type={expected_content_type}."
+        )
+    ref["sanitization_status"] = _required_text(
+        ref.get("sanitization_status"),
+        "artifact sanitization_status",
+    )
+    if ref["sanitization_status"] != expected_sanitization_status:
+        raise ValueError(
+            f"{expected_kind} raw capture must use "
+            f"sanitization_status={expected_sanitization_status}."
+        )
+    ref["request_id"] = _required_text(ref.get("request_id"), "artifact request_id")
+    ref["execution_id"] = _required_text(
+        ref.get("execution_id"),
+        "artifact execution_id",
+    )
+    ref["run_id"] = _required_text(ref.get("run_id"), "artifact run_id")
     return ref
 
 
@@ -535,13 +1033,97 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
     ):
         raise _InvalidCapture("Normalized capture profile_context must be an object.")
 
-    for path, item in capture["field_evidence"].items():
+    evidence = capture["field_evidence"]
+    evidence_paths = set(evidence)
+    if evidence_paths != _REQUIRED_FIELD_EVIDENCE_PATHS:
+        missing = sorted(_REQUIRED_FIELD_EVIDENCE_PATHS - evidence_paths)
+        unexpected = sorted(evidence_paths - _REQUIRED_FIELD_EVIDENCE_PATHS)
+        raise _InvalidCapture(
+            "Normalized capture field_evidence must exactly cover contract revision 1; "
+            f"missing={missing}, unexpected={unexpected}."
+        )
+    for path, item in evidence.items():
         if not isinstance(path, str) or not isinstance(item, dict):
             raise _InvalidCapture("Every field_evidence entry must be an object keyed by path.")
-        if item.get("status") not in _EVIDENCE_STATUSES:
-            raise _InvalidCapture(f"field_evidence status is invalid for {path}.")
+        _validate_field_evidence_item(capture, path, item)
+    missing_evidence = any(item["status"] == "missing" for item in evidence.values())
+    if collection_status == "success" and missing_evidence:
+        raise _InvalidCapture("collection_status=success cannot contain missing field evidence.")
     _validate_capture_sections(capture)
     return capture
+
+
+def _validate_field_evidence_item(
+    capture: Mapping[str, Any],
+    path: str,
+    item: Mapping[str, Any],
+) -> None:
+    required_keys = {"value", "status", "source_kind", "source_locator", "confidence"}
+    missing_keys = sorted(required_keys - set(item))
+    if missing_keys:
+        raise _InvalidCapture(
+            f"field_evidence metadata is incomplete for {path}: missing={missing_keys}."
+        )
+    status = item.get("status")
+    if status not in _EVIDENCE_STATUSES:
+        raise _InvalidCapture(f"field_evidence status is invalid for {path}.")
+    actual_value = _capture_value_at_path(capture, path)
+    if not _json_values_equal(item.get("value"), actual_value):
+        raise _InvalidCapture(f"field_evidence value does not match capture field {path}.")
+    if status == "missing" and not _is_missing_capture_value(path, actual_value):
+        raise _InvalidCapture(f"field_evidence missing status contradicts capture field {path}.")
+
+    source_kind = item.get("source_kind")
+    source_locator = item.get("source_locator")
+    confidence = item.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise _InvalidCapture(f"field_evidence confidence is invalid for {path}.")
+    normalized_confidence = float(confidence)
+    if not math.isfinite(normalized_confidence) or not 0 <= normalized_confidence <= 1:
+        raise _InvalidCapture(f"field_evidence confidence is invalid for {path}.")
+
+    has_source_kind = isinstance(source_kind, str) and bool(source_kind.strip())
+    has_source_locator = isinstance(source_locator, str) and bool(source_locator.strip())
+    if source_kind is None and source_locator is None:
+        if status != "missing" or normalized_confidence != 0:
+            raise _InvalidCapture(f"field_evidence source metadata is invalid for {path}.")
+        return
+    if not has_source_kind or not has_source_locator or normalized_confidence <= 0:
+        raise _InvalidCapture(f"field_evidence source metadata is invalid for {path}.")
+
+
+def _capture_value_at_path(capture: Mapping[str, Any], path: str) -> Any:
+    value: Any = capture
+    for segment in path.split("."):
+        if not isinstance(value, Mapping) or segment not in value:
+            raise _InvalidCapture(f"field_evidence path does not resolve in capture: {path}.")
+        value = value[segment]
+    return value
+
+
+def _json_values_equal(left: Any, right: Any) -> bool:
+    try:
+        return json.dumps(
+            left,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) == json.dumps(
+            right,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_missing_capture_value(path: str, value: Any) -> bool:
+    if value is None or value == "" or value == [] or value == {}:
+        return True
+    return path == "commerce.availability_status" and value == "unknown"
 
 
 def _validate_capture_sections(capture: dict[str, Any]) -> None:
@@ -669,16 +1251,41 @@ def _validate_materialized_media_assets(
             raise ValueError("Materialized media role is not allowed for Amazon product facts.")
         if asset.get("sync_state") not in _MATERIALIZED_MEDIA_STATES:
             raise ValueError("Materialized media must come from a successful object-store sync.")
+        content_digest = _required_text(
+            asset.get("content_digest"),
+            "materialized media content_digest",
+        ).lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", content_digest):
+            raise ValueError("Materialized media content_digest must be a SHA-256 digest.")
+        object_file_name = object_key.rsplit("/", 1)[-1]
+        object_digest = object_file_name.rsplit(".", 1)[0].lower()
+        if object_digest != content_digest:
+            raise ValueError(
+                "Materialized media object_key must be addressed by its content digest."
+            )
+        mime_type = _required_text(
+            asset.get("mime_type"),
+            "materialized media mime_type",
+        ).lower()
+        if mime_type not in _MATERIALIZED_MEDIA_MIME_TYPES:
+            raise ValueError("Materialized media MIME type is not an allowed image type.")
+        size_bytes = _validate_required_integer(
+            asset.get("size_bytes"),
+            "materialized media size_bytes",
+            minimum=1,
+        )
+        if size_bytes > _MAX_MATERIALIZED_MEDIA_BYTES:
+            raise ValueError("Materialized media exceeds the governed size limit.")
+        asset["content_digest"] = content_digest
+        asset["mime_type"] = mime_type
+        asset["size_bytes"] = size_bytes
+        asset_key = _clean_text(asset.get("asset_key"))
+        if asset_key and asset_key != f"content_sha256:{content_digest}":
+            raise ValueError("Materialized media asset_key does not match content_digest.")
         media_key = (source_url, media_role, position)
         if media_key in provided_media:
             raise ValueError("Materialized media contains a duplicate role/position mapping.")
         provided_media.add(media_key)
-        if asset.get("size_bytes") is not None:
-            _validate_optional_integer(
-                asset.get("size_bytes"),
-                "materialized media size_bytes",
-                minimum=0,
-            )
         if asset.get("metadata") is not None and not isinstance(asset.get("metadata"), dict):
             raise ValueError("Materialized media metadata must be an object.")
         if not any(
@@ -700,6 +1307,67 @@ def _validate_materialized_media_assets(
         "missing": missing_count,
         "complete": missing_count == 0,
     }
+
+
+def _verify_materialized_media_objects(
+    artifact_store: Any,
+    assets: list[dict[str, Any]],
+) -> None:
+    for asset in assets:
+        payload = _read_artifact_bytes(
+            artifact_store,
+            bucket=asset["bucket"],
+            object_key=asset["object_key"],
+            max_bytes=_MAX_MATERIALIZED_MEDIA_BYTES,
+        )
+        if not isinstance(payload, (bytes, bytearray)):
+            raise ValueError("Materialized media object storage must return bytes.")
+        media_bytes = bytes(payload)
+        if len(media_bytes) > _MAX_MATERIALIZED_MEDIA_BYTES:
+            raise ValueError("Materialized media exceeds the governed size limit.")
+        if len(media_bytes) != asset["size_bytes"]:
+            raise ValueError("Materialized media size does not match stored bytes.")
+        if hashlib.sha256(media_bytes).hexdigest() != asset["content_digest"]:
+            raise ValueError("Materialized media digest does not match stored bytes.")
+        if not _matches_image_mime(media_bytes, asset["mime_type"]):
+            raise ValueError("Materialized media bytes do not match the declared MIME type.")
+
+
+def _matches_image_mime(payload: bytes, mime_type: str) -> bool:
+    if mime_type == "image/jpeg":
+        return payload.startswith(b"\xff\xd8\xff")
+    if mime_type == "image/png":
+        return payload.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type == "image/gif":
+        return payload.startswith((b"GIF87a", b"GIF89a"))
+    if mime_type == "image/webp":
+        return len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP"
+    return False
+
+
+def _read_artifact_bytes(
+    artifact_store: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    max_bytes: int,
+) -> bytes:
+    try:
+        payload = artifact_store.read_bytes(
+            bucket=bucket,
+            object_key=object_key,
+            max_bytes=max_bytes,
+        )
+    except TypeError as exc:
+        if "max_bytes" not in str(exc):
+            raise
+        payload = artifact_store.read_bytes(bucket=bucket, object_key=object_key)
+    if not isinstance(payload, (bytes, bytearray)):
+        raise ValueError("Artifact object storage must return bytes.")
+    result = bytes(payload)
+    if len(result) > max_bytes:
+        raise ValueError("Artifact object exceeds the governed size limit.")
+    return result
 
 
 def _required_materialized_media(capture: Mapping[str, Any]) -> set[tuple[str, str, int]]:
@@ -797,6 +1465,65 @@ def _persist_capture(
     parent_asin = _optional_asin(variants.get("parent_asin"))
     master_parent_asin = parent_asin if parent_asin and parent_asin != requested_asin else None
 
+    capture_digest = hashlib.sha256(capture_bytes).hexdigest()
+    origin_request_id = normalized_ref["request_id"]
+    origin_execution_id = normalized_ref["execution_id"]
+    identity_row = fact_store.ensure_product_identity(
+        marketplace_code="US",
+        asin=requested_asin,
+        canonical_url=capture["canonical_url"],
+        observed_at=observed_at,
+    )
+    product_id = identity_row["id"]
+    field_coverage = _field_coverage(evidence)
+    snapshot = fact_store.record_product_snapshot(
+        product_id=product_id,
+        marketplace_code="US",
+        asin=requested_asin,
+        run_id=run_id,
+        request_id=origin_request_id,
+        execution_id=origin_execution_id,
+        resolved_asin=resolved_asin,
+        parent_asin=parent_asin or "",
+        availability_status=_clean_text(commerce.get("availability_status")) or "unknown",
+        title=product.get("title") or "",
+        brand=product.get("brand") or "",
+        category_path=_list_value(product.get("category_path")),
+        bullet_points=_list_value(product.get("bullet_points")),
+        description=product.get("description") or "",
+        technical_details=_mapping_value(product.get("technical_details")),
+        rating=commerce.get("rating"),
+        review_count=commerce.get("review_count"),
+        variant_attributes=_mapping_value(variants.get("current_attributes")),
+        child_asins=_asin_list(variants.get("child_asins")),
+        field_coverage=field_coverage,
+        payload={
+            "collection_status": capture["collection_status"],
+            "profile_context": _safe_profile_context(capture.get("profile_context")),
+        },
+        content_digest=capture_digest,
+        collected_at=observed_at,
+    )
+    snapshot_id = snapshot["snapshot_id"]
+
+    raw_capture_ids: list[str] = []
+    for raw_ref in raw_capture_refs:
+        raw_row = fact_store.record_raw_capture(
+            product_id=product_id,
+            snapshot_id=snapshot_id,
+            capture_kind=raw_ref["capture_kind"],
+            bucket=raw_ref["bucket"],
+            object_key=raw_ref["object_key"],
+            content_digest=raw_ref["content_digest"],
+            content_type=raw_ref["content_type"],
+            request_id=raw_ref["request_id"],
+            execution_id=raw_ref["execution_id"],
+            run_id=run_id,
+            sanitization_status=raw_ref["sanitization_status"],
+            collected_at=observed_at,
+        )
+        raw_capture_ids.append(raw_row["raw_capture_id"])
+
     product_row = fact_store.upsert_product(
         marketplace_code="US",
         asin=requested_asin,
@@ -818,43 +1545,11 @@ def _persist_capture(
         },
         observed_at=observed_at,
     )
-    product_id = product_row["id"]
-    field_coverage = _field_coverage(evidence)
-    snapshot = fact_store.record_product_snapshot(
-        product_id=product_id,
-        marketplace_code="US",
-        asin=requested_asin,
-        run_id=run_id,
-        request_id=context.request_id,
-        execution_id=context.job_id,
-        resolved_asin=resolved_asin,
-        parent_asin=parent_asin or "",
-        availability_status=_clean_text(commerce.get("availability_status")) or "unknown",
-        title=product.get("title") or "",
-        brand=product.get("brand") or "",
-        category_path=_list_value(product.get("category_path")),
-        bullet_points=_list_value(product.get("bullet_points")),
-        description=product.get("description") or "",
-        technical_details=_mapping_value(product.get("technical_details")),
-        rating=commerce.get("rating"),
-        review_count=commerce.get("review_count"),
-        variant_attributes=_mapping_value(variants.get("current_attributes")),
-        child_asins=_asin_list(variants.get("child_asins")),
-        field_coverage=field_coverage,
-        payload={
-            "collection_status": capture["collection_status"],
-            "profile_context": _safe_profile_context(capture.get("profile_context")),
-        },
-        content_digest=hashlib.sha256(capture_bytes).hexdigest(),
-        collected_at=observed_at,
-    )
-    snapshot_id = snapshot["snapshot_id"]
-    fact_store.set_latest_snapshot(
-        product_id=product_id,
-        snapshot_id=snapshot_id,
-        observed_at=observed_at,
-    )
-
+    if product_row["id"] != product_id:
+        raise AmazonFactCollisionError(
+            "Amazon product identity resolved to a different product row.",
+            error_code="amazon_product_identity_collision",
+        )
     offer_count = 0
     featured_offer = _mapping_value(commerce.get("featured_offer"))
     if _has_observed_offer(evidence):
@@ -948,24 +1643,6 @@ def _persist_capture(
         media_asset_count += 1
         media_relation_count += 1
 
-    raw_capture_ids: list[str] = []
-    for raw_ref in raw_capture_refs:
-        raw_row = fact_store.record_raw_capture(
-            product_id=product_id,
-            snapshot_id=snapshot_id,
-            capture_kind=_required_text(raw_ref.get("capture_kind"), "capture_kind"),
-            bucket=_required_text(raw_ref.get("bucket"), "raw capture bucket"),
-            object_key=_required_text(raw_ref.get("object_key"), "raw capture object_key"),
-            content_digest=raw_ref.get("content_digest") or "",
-            content_type=raw_ref.get("content_type") or "",
-            request_id=context.request_id,
-            execution_id=context.job_id,
-            run_id=run_id,
-            sanitization_status=raw_ref.get("sanitization_status") or "unknown",
-            collected_at=observed_at,
-        )
-        raw_capture_ids.append(raw_row["raw_capture_id"])
-
     binding = fact_store.upsert_feishu_binding(
         product_id=product_id,
         base_id=source_table_ref["base_id"],
@@ -973,7 +1650,12 @@ def _persist_capture(
         record_id=source_record_id,
         source_asin=requested_asin,
         status="facts_persisted",
-        last_synced_snapshot_id=snapshot_id,
+        latest_snapshot_id=snapshot_id,
+        observed_at=observed_at,
+    )
+    fact_store.set_latest_snapshot(
+        product_id=product_id,
+        snapshot_id=snapshot_id,
         observed_at=observed_at,
     )
 
@@ -1271,6 +1953,13 @@ def _validation_failure(
         ),
         summary={"persistence_mode": "rejected"},
     )
+
+
+def _required_sha256_digest(value: Any, field_name: str) -> str:
+    digest = _required_text(value, field_name).lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError(f"{field_name} must be a 64-character SHA-256 hex digest.")
+    return digest
 
 
 def _required_text(value: Any, field_name: str) -> str:

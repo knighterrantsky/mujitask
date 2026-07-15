@@ -3,10 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import create_engine, text
 
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.control_plane.executor.runner import (
     run_task_request,
+)
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import (
+    AmazonFactSchemaUnavailableError,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
@@ -110,6 +114,46 @@ def _mark_api_success(
     )
 
 
+def _mark_status_writeback_success(
+    store: RuntimeStore,
+    *,
+    request_id: str,
+    stage_code: str,
+    row_status: str,
+) -> dict[str, Any]:
+    jobs = [
+        job
+        for job in _stage_jobs(
+            store,
+            request_id=request_id,
+            stage_code=stage_code,
+            job_code="feishu_table_write",
+        )
+        if str((job.get("payload") or {}).get("writeback_kind") or "")
+        == "amazon_stage_status"
+        and str((job.get("payload") or {}).get("row_status") or "") == row_status
+    ]
+    assert len(jobs) == 1
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code="feishu_table_write",
+    )
+    assert claimed is not None
+    assert claimed["job_id"] == jobs[0]["job_id"]
+    store.mark_api_worker_job_success(
+        job_id=str(claimed["job_id"]),
+        run_id=str(claimed["run_id"]),
+        summary={"stage_code": stage_code},
+        result={
+            "written_count": 1,
+            "target_record_ids": [SOURCE_RECORD_ID],
+        },
+    )
+    return jobs[0]
+
+
 def _read_result(*, lookup_status: str = "matched") -> dict[str, Any]:
     source_rows = []
     if lookup_status == "matched":
@@ -165,12 +209,23 @@ def _browser_result(
         "resolved_asin": resolved_asin,
         "canonical_url": f"https://www.amazon.com/dp/{requested_asin}",
         "collection_status": collection_status,
-        "field_coverage": {"total": 20, "observed": 20, "missing": 0},
+        "field_coverage": {
+            "total": 20,
+            "observed": 20,
+            "missing": 0,
+            "percentage": 100.0,
+        },
         "normalized_capture_ref": normalized_ref,
         "raw_capture_refs": [normalized_ref, html_ref],
         "artifact_refs": [normalized_ref, html_ref],
         "media_source_refs": [],
         "browser_target_digest": "digest-only",
+        "browser_provider_name": "roxy",
+        "stage_durations_ms": {
+            "navigation": 12.5,
+            "parse": 3.25,
+            "artifact": 8.75,
+        },
         **({"parent_asin": parent_asin} if parent_asin else {}),
     }
 
@@ -189,6 +244,30 @@ def _persist_result(*, run_id: str, row_status: str = "success") -> dict[str, An
         },
         "fact_refs": {"marketplace_code": "US", "asin": ASIN},
         "writeback": {"written_count": 1, "record_ids": [SOURCE_RECORD_ID]},
+        "observability": {
+            "browser_provider_name": "roxy",
+            "stage_durations_ms": {
+                "navigation": 12.5,
+                "parse": 3.25,
+                "artifact": 8.75,
+                "fact": 4.5,
+                "feishu": 6.5,
+            },
+            "field_coverage": {
+                "total": 20,
+                "observed": 20,
+                "missing": 0,
+                "percentage": 100.0,
+            },
+            "artifact_count": 2,
+            "media_observed_count": 0,
+            "media_materialized_count": 0,
+            "final_status": row_status,
+            "error_code": "",
+            "browser_profile_id": "must-not-cross-summary-boundary",
+            "browser_workspace_id": "must-not-cross-summary-boundary",
+            "browser_provider_token": "must-not-cross-summary-boundary",
+        },
     }
 
 
@@ -227,14 +306,17 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
         "field_names": ["ASIN", "商品链接", "强制刷新", "采集状态"],
     }
     assert _executor(runtime_db_url)["daemon_status"] == "idle"
-    assert len(
-        _stage_jobs(
-            store,
-            request_id=request_id,
-            stage_code="read_amazon_product_row",
-            job_code="feishu_table_read",
+    assert (
+        len(
+            _stage_jobs(
+                store,
+                request_id=request_id,
+                stage_code="read_amazon_product_row",
+                job_code="feishu_table_read",
+            )
         )
-    ) == 1
+        == 1
+    )
 
     _mark_api_success(
         store,
@@ -243,6 +325,23 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
         job_code="feishu_table_read",
         result=_read_result(),
     )
+    collecting_dispatch = _executor(runtime_db_url)
+    assert collecting_dispatch["current_stage"] == "collect_amazon_product_detail"
+    collecting_job = _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="collect_amazon_product_detail",
+        row_status="collecting",
+    )
+    assert collecting_job["payload"]["records"] == [
+        {
+            "source_record_id": SOURCE_RECORD_ID,
+            "requested_asin": ASIN,
+            "collection_status": "collecting",
+        }
+    ]
+    assert "collected_at" not in collecting_job["payload"]["records"][0]
+
     browser_dispatch = _executor(runtime_db_url)
     assert browser_dispatch["current_stage"] == "collect_amazon_product_detail"
     executions = store.list_task_executions(request_id=request_id)
@@ -278,6 +377,23 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
         result=_browser_result(),
     )
 
+    persisting_dispatch = _executor(runtime_db_url)
+    assert persisting_dispatch["current_stage"] == "persist_amazon_product_detail"
+    persisting_job = _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="persist_amazon_product_detail",
+        row_status="persisting",
+    )
+    assert persisting_job["payload"]["records"] == [
+        {
+            "source_record_id": SOURCE_RECORD_ID,
+            "requested_asin": ASIN,
+            "collection_status": "persisting",
+        }
+    ]
+    assert "collected_at" not in persisting_job["payload"]["records"][0]
+
     persist_dispatch = _executor(runtime_db_url)
     assert persist_dispatch["current_stage"] == "persist_amazon_product_detail"
     persist_jobs = _stage_jobs(
@@ -295,18 +411,25 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     assert persist_payload["source_record_id"] == SOURCE_RECORD_ID
     assert persist_payload["requested_asin"] == ASIN
     assert persist_payload["run_id"] == browser_execution.payload["run_id"]
-    assert not {"capture", "html", "artifact_refs", "browser_target_digest"} & set(
-        persist_payload
-    )
+    assert persist_payload["browser_provider_name"] == "roxy"
+    assert persist_payload["stage_durations_ms"] == {
+        "navigation": 12.5,
+        "parse": 3.25,
+        "artifact": 8.75,
+    }
+    assert not {"capture", "html", "artifact_refs", "browser_target_digest"} & set(persist_payload)
     assert _executor(runtime_db_url)["daemon_status"] == "idle"
-    assert len(
-        _stage_jobs(
-            store,
-            request_id=request_id,
-            stage_code="persist_amazon_product_detail",
-            job_code="amazon_product_row_persist",
+    assert (
+        len(
+            _stage_jobs(
+                store,
+                request_id=request_id,
+                stage_code="persist_amazon_product_detail",
+                job_code="amazon_product_row_persist",
+            )
         )
-    ) == 1
+        == 1
+    )
 
     _mark_api_success(
         store,
@@ -321,6 +444,32 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     assert finalized["current_stage"] == "ready_for_summary"
     assert finalized["summary"]["row_status_counts"] == {"success": 1}
     assert finalized["result"]["row_results"][0]["source_record_id"] == SOURCE_RECORD_ID
+    assert finalized["summary"]["row_summary"] == {
+        "source_record_id": SOURCE_RECORD_ID,
+        "requested_asin": ASIN,
+        "resolved_asin": ASIN,
+        "browser_provider_name": "roxy",
+        "stage_durations_ms": {
+            "navigation": 12.5,
+            "parse": 3.25,
+            "artifact": 8.75,
+            "fact": 4.5,
+            "feishu": 6.5,
+        },
+        "field_coverage": {
+            "total": 20,
+            "observed": 20,
+            "missing": 0,
+            "percentage": 100.0,
+        },
+        "artifact_count": 2,
+        "media_observed_count": 0,
+        "media_materialized_count": 0,
+        "final_status": "success",
+        "error_code": "",
+    }
+    serialized_summary = repr(finalized["summary"])
+    assert "must-not-cross-summary-boundary" not in serialized_summary
     assert len(finalized["outbox"]) == 1
 
 
@@ -339,6 +488,13 @@ def test_summary_gate_does_not_finalize_while_persist_job_is_active(
         result=_read_result(),
     )
     _executor(runtime_db_url)
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="collect_amazon_product_detail",
+        row_status="collecting",
+    )
+    _executor(runtime_db_url)
     execution = store.claim_next_browser_execution(
         worker_id="pytest-browser",
         lease_seconds=30.0,
@@ -351,6 +507,13 @@ def test_summary_gate_does_not_finalize_while_persist_job_is_active(
         run_id=execution.run_id,
         summary={"collection_status": "success"},
         result=_browser_result(),
+    )
+    _executor(runtime_db_url)
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="persist_amazon_product_detail",
+        row_status="persisting",
     )
     _executor(runtime_db_url)
     store.update_task_request(
@@ -381,6 +544,13 @@ def test_declared_parent_redirect_to_child_enters_persist_stage(
         result=_read_result(),
     )
     _executor(runtime_db_url)
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="collect_amazon_product_detail",
+        row_status="collecting",
+    )
+    _executor(runtime_db_url)
     execution = store.claim_next_browser_execution(
         worker_id="pytest-browser",
         lease_seconds=30.0,
@@ -400,6 +570,14 @@ def test_declared_parent_redirect_to_child_enters_persist_stage(
         ),
     )
 
+    status_dispatched = _executor(runtime_db_url)
+    assert status_dispatched["current_stage"] == "persist_amazon_product_detail"
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="persist_amazon_product_detail",
+        row_status="persisting",
+    )
     dispatched = _executor(runtime_db_url)
 
     assert dispatched["current_stage"] == "persist_amazon_product_detail"
@@ -470,21 +648,27 @@ def test_invalid_source_asin_writes_status_then_fails_without_browser_or_persist
     }
     assert writeback_payload["records"][0]["collected_at"].endswith("Z")
     assert _executor(runtime_db_url)["daemon_status"] == "idle"
-    assert len(
+    assert (
+        len(
+            _stage_jobs(
+                store,
+                request_id=request_id,
+                stage_code="read_amazon_product_row",
+                job_code="feishu_table_write",
+            )
+        )
+        == 1
+    )
+    assert store.list_task_executions(request_id=request_id) == []
+    assert (
         _stage_jobs(
             store,
             request_id=request_id,
-            stage_code="read_amazon_product_row",
-            job_code="feishu_table_write",
+            stage_code="persist_amazon_product_detail",
+            job_code="amazon_product_row_persist",
         )
-    ) == 1
-    assert store.list_task_executions(request_id=request_id) == []
-    assert _stage_jobs(
-        store,
-        request_id=request_id,
-        stage_code="persist_amazon_product_detail",
-        job_code="amazon_product_row_persist",
-    ) == []
+        == []
+    )
 
     _mark_api_success(
         store,
@@ -506,12 +690,15 @@ def test_invalid_source_asin_writes_status_then_fails_without_browser_or_persist
         "target_record_ids": [SOURCE_RECORD_ID],
     }
     assert store.list_task_executions(request_id=request_id) == []
-    assert _stage_jobs(
-        store,
-        request_id=request_id,
-        stage_code="persist_amazon_product_detail",
-        job_code="amazon_product_row_persist",
-    ) == []
+    assert (
+        _stage_jobs(
+            store,
+            request_id=request_id,
+            stage_code="persist_amazon_product_detail",
+            job_code="amazon_product_row_persist",
+        )
+        == []
+    )
 
 
 def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
@@ -567,3 +754,97 @@ def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
     )
     assert unresolved_profile["request_status"] == "rejected"
     assert unresolved_profile["error_code"] == "amazon_browser_profile_unavailable"
+
+
+def test_amazon_submit_rejects_arbitrary_table_reference(
+    runtime_db_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+
+    rejected = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref="https://muji.feishu.cn/base/other?table=tblOther",
+            source_record_id=SOURCE_RECORD_ID,
+        ),
+    )
+
+    assert rejected["request_status"] == "rejected"
+    assert rejected["error_code"] == "unsupported_amazon_table_ref"
+    assert rejected["required_table_ref"] == TABLE_REF
+
+
+def test_amazon_submit_rejects_fact_schema_revision_mismatch_before_task_creation(
+    runtime_db_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+    engine = create_engine(runtime_db_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE fact_alembic_version SET version_num = 'outdated_revision'")
+            )
+    finally:
+        engine.dispose()
+
+    rejected = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            source_record_id="rec-schema-mismatch",
+        ),
+    )
+
+    assert rejected["request_status"] == "rejected"
+    assert rejected["error_code"] == "amazon_fact_schema_not_ready"
+    assert rejected["required_fact_schema_revision"] == "20260714_0007"
+    engine = create_engine(runtime_db_url, future=True)
+    try:
+        with engine.connect() as connection:
+            task_count = connection.execute(
+                text("SELECT COUNT(*) FROM task_request WHERE task_code = :task_code"),
+                {"task_code": TASK_CODE},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert task_count == 0
+
+
+def test_amazon_submit_marks_fact_schema_connectivity_failure_retryable(
+    runtime_db_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+
+    class UnavailableFactStore:
+        def __init__(self, *, db_url: str) -> None:
+            assert db_url == runtime_db_url
+
+        def require_schema_revision(self) -> str:
+            raise AmazonFactSchemaUnavailableError("temporary database failure")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_orchestrator, "AmazonFactStore", UnavailableFactStore)
+
+    rejected = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            source_record_id="rec-schema-unavailable",
+        ),
+    )
+
+    assert rejected["request_status"] == "rejected"
+    assert rejected["error_code"] == "amazon_fact_schema_check_failed"
+    assert rejected["retryable"] is True
+    assert rejected["required_fact_schema_revision"] == "20260714_0007"

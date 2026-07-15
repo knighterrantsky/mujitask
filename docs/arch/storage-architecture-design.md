@@ -223,6 +223,42 @@ Fact DB 保留:
 - `bucket`
 - `object_key`
 
+### 5.5 Amazon 商品详情 Prefix
+
+Amazon 商品详情首期复用当前配置的 `artifact_bucket`，不新建专用 bucket，也不允许生产
+browser/API job 在运行路径中创建 bucket。平台与对象类型通过受控 prefix 隔离:
+
+| 内容 | Object key |
+| --- | --- |
+| Runtime 证据 | `<env>/runs/<run_id>/amazon/<asin>/<kind>.<ext>` |
+| 标准化 capture | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/normalized.json` |
+| sanitized HTML | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page.html.gz` |
+| allowlisted page data | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page-data.json` |
+| screenshot | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page.png` |
+| 商品媒体 | `<env>/product-media/amazon/us/<asin>/<media_role>/<sha256>.<ext>` |
+
+Amazon raw ref 必须绑定当前 request、同一来源 Browser execution 和 run；Fact 写入前读取
+实际对象字节复算 SHA-256。`page.html.gz` 还要解压为 UTF-8 并重新执行脱敏校验。Amazon
+商品图片源只接受 `media-amazon.com` / `ssl-images-amazon.com` 的 HTTPS 地址，去除 query
+和 fragment 后才能进入媒体物化流程。
+
+索引归属保持分层:
+
+- `artifact_object` 只记录运行证据和 raw capture 的 Runtime 索引。
+- `amazon_raw_captures` 记录 raw capture 的事实索引和 digest；HTML、JSON、截图 body
+  不进入 Runtime DB 或 Fact DB。
+- `amazon_media_assets` 与 `amazon_product_media_assets` 记录长期业务媒体及商品关系。
+- Amazon 首期不修改 Runtime DB schema；Fact DB 使用独立 `amazon_*` 表，不复用
+  `tk_media_assets` 或 `tk_raw_api_responses`。
+
+Raw capture 使用实际存储字节的 SHA-256 内容寻址。相同内容重试复用同一 coordinate；
+内容变化写入新 coordinate，不能覆盖旧证据。Fact 写入还会拒绝同一 run 的 divergent
+normalized capture，以及同一 `(bucket, object_key)` 的 digest 或归属冲突。
+
+对象 key 只包含环境、运行标识、美国站 ASIN、日期和受控文件名，不包含 URL query、
+cookie、用户信息、浏览器 profile id 或飞书账号信息。只有需要独立 IAM、地域、合规保留
+或成本核算时，才通过新的 Storage contract 与 migration 拆分 Amazon bucket。
+
 ## 6. Artifact 生命周期
 
 ### 6.1 生成流程
@@ -287,6 +323,10 @@ sequenceDiagram
 | referenced downloads | 30-90 天 | 视业务复用价值决定 |
 | product media | 365 天或业务存续期 | 业务资产，不应跟 runtime 一起短期删除 |
 | raw API response | 180-365 天 | 审计/回放价值高，可归档到冷层 |
+| Amazon normalized capture | 365 天 | 标准化事实回放依据 |
+| Amazon 成功 HTML / page data | 90 天 | sanitized / allowlisted 页面证据 |
+| Amazon blocked/失败 HTML / page data / screenshot | 180 天 | 排障与合规审计证据 |
+| Amazon 商品媒体 | 365 天或业务存续期 | 业务资产，独立于 Runtime 清理 |
 | temp files | 1-7 天 | 可随时重建 |
 
 具体生产建议:
@@ -432,4 +472,3 @@ flowchart TD
 - 引入签名 URL 查询接口。
 - 支持 artifact 冷归档和按需恢复。
 - 在 Watchdog/排障页面中直接展示 run artifact、state dump、stdout、截图。
-

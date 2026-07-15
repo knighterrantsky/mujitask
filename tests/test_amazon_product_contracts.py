@@ -24,9 +24,7 @@ def _read(relative_path: str) -> str:
 
 
 def test_formal_requirement_and_domain_route_are_declared() -> None:
-    requirement = _read(
-        "docs/business/requirements/amazon-product-detail-collection.md"
-    )
+    requirement = _read("docs/business/requirements/amazon-product-detail-collection.md")
     domain_route = _read("docs/domains/amazon-product-detail/README.md")
 
     required_requirement_tokens = (
@@ -50,9 +48,7 @@ def test_formal_requirement_and_domain_route_are_declared() -> None:
 
 
 def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
-    contract = _load_yaml(
-        "contracts/workflow/refresh_amazon_product_row_by_asin.yaml"
-    )
+    contract = _load_yaml("contracts/workflow/refresh_amazon_product_row_by_asin.yaml")
 
     assert contract["task_code"] == "refresh_amazon_product_row_by_asin"
     assert contract["workflow_code"] == "refresh_amazon_product_row_by_asin"
@@ -92,14 +88,15 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
     assert contract["payload"]["business_inputs_only"] is True
     assert contract["payload"]["required"] == ["table_ref", "source_record_id"]
     assert contract["payload"]["allowed"] == ["table_ref", "source_record_id"]
+    assert contract["payload"]["value_constraints"] == {
+        "table_ref": {"const": "AMAZON_PRODUCTS"}
+    }
     assert contract["payload"]["additional_properties"] is False
 
 
 def test_feishu_field_and_state_ownership_is_explicit() -> None:
     fields_contract = _load_yaml("contracts/fields/feishu-amazon-products.yaml")
-    states_contract = _load_yaml(
-        "contracts/states/amazon-product-collection-status.yaml"
-    )
+    states_contract = _load_yaml("contracts/states/amazon-product-collection-status.yaml")
 
     assert fields_contract["table_alias"] == "AMAZON_PRODUCTS"
     assert fields_contract["identity"] == {
@@ -131,9 +128,7 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     }
     assert all(fields[name]["owner"] == "amazon_projection" for name in projection_fields)
     assert fields_contract["writeback_rules"]["missing"] == "preserve_existing"
-    assert fields_contract["writeback_rules"]["record_target"] == (
-        "source_record_id"
-    )
+    assert fields_contract["writeback_rules"]["record_target"] == ("source_record_id")
 
     states = {state["code"]: state for state in states_contract["states"]}
     assert set(states) == {
@@ -185,15 +180,115 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
     }
     assert amazon["runtime_db_schema_change"] is False
     assert amazon["cross_platform_foreign_keys"] is False
+    assert amazon["fact_bundle_transaction"] == {
+        "database_scope": "one_capture_database_transaction",
+        "includes": [
+            "product_identity_and_master",
+            "product_snapshot",
+            "raw_capture_indexes",
+            "featured_offer",
+            "variants",
+            "bsr",
+            "media_assets_and_relations",
+            "feishu_binding",
+            "latest_snapshot_pointer",
+        ],
+        "commit_visibility": "all_or_nothing",
+        "latest_snapshot_publish": "final_database_write",
+        "excludes": ["object_storage_objects", "feishu_projection_write"],
+    }
+    assert amazon["raw_capture_object_key"] == {
+        "template": (
+            "<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/<filename>"
+        ),
+        "content_address": "sha256_of_stored_bytes",
+        "exact_retry": "reuse_same_coordinate",
+        "changed_bytes": "preserve_new_coordinate_without_overwriting_old_object",
+        "same_run_normalized_capture": "reject_divergent_digest",
+    }
+    assert amazon["required_evidence"] == [
+        "normalized_capture_ref",
+        "raw_capture_refs",
+        "field_coverage",
+    ]
+    assert amazon["raw_capture_kinds"] == {
+        "required_on_success": ["normalized_capture", "html"],
+        "optional": ["network_data", "screenshot"],
+    }
+    assert amazon["raw_capture_metadata"] == {
+        "normalized_capture": {
+            "content_type": "application/json",
+            "sanitization_status": "normalized",
+        },
+        "html": {
+            "content_type": "application/gzip",
+            "sanitization_status": "sanitized",
+        },
+        "network_data": {
+            "content_type": "application/json",
+            "sanitization_status": "allowlisted",
+        },
+        "screenshot": {
+            "content_type": "image/png",
+            "sanitization_status": "not_applicable",
+        },
+    }
+    assert amazon["raw_capture_key_collision"] == "reject_changed_immutable_evidence"
+    assert amazon["field_evidence_policy"] == {
+        "contract_revision": 1,
+        "coverage": "exact_target_field_set",
+        "required_keys": [
+            "value",
+            "status",
+            "source_kind",
+            "source_locator",
+            "confidence",
+        ],
+        "value_binding": "exact_normalized_capture_field_value",
+        "missing_requires_empty_capture_value": True,
+        "success_allows_missing": False,
+        "partial_success_requires_missing": False,
+    }
+    assert amazon["raw_capture_provenance"] == {
+        "required_fields": ["request_id", "execution_id", "run_id"],
+        "request_binding": "active_runtime_request",
+        "execution_binding": "one_origin_browser_execution",
+        "run_binding": "active_collection_run",
+        "persisted_execution_id": "origin_browser_execution_id",
+        "stored_byte_digest_verification": "required_before_fact_write",
+        "html_payload_validation": {
+            "encoding": "valid_gzip_utf8",
+            "sanitization_revalidation": "required_after_decompression",
+            "sensitive_element_detection": "independent_html_parser",
+            "screenshot_masking_failure": "fail_closed_without_screenshot_upload",
+        },
+        "size_limits": {
+            "normalized_capture_bytes": 2097152,
+            "compressed_html_bytes": 2097152,
+            "decompressed_html_bytes": 8388608,
+            "network_data_bytes": 524288,
+            "screenshot_bytes": 10485760,
+            "materialized_media_bytes": 26214400,
+        },
+    }
+    assert amazon["media_source_url_policy"] == {
+        "scheme": "https",
+        "allowed_host_suffixes": [
+            "media-amazon.com",
+            "ssl-images-amazon.com",
+        ],
+        "allowed_ports": ["default", 443],
+        "userinfo": "forbidden",
+        "query_and_fragment": "strip_before_persistence",
+        "invalid_observed_media": "remove_and_mark_partial_success",
+    }
 
 
 def test_amazon_owner_boundaries_are_registered() -> None:
     contract = _load_yaml("contracts/harness/architecture-ownership.yaml")
     owners = contract["owners"]
 
-    helper_paths = {
-        entry["path"] for entry in owners["business_flow"]["allowed_helper_like_paths"]
-    }
+    helper_paths = {entry["path"] for entry in owners["business_flow"]["allowed_helper_like_paths"]}
     assert {
         "src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py",
         "src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py",
@@ -205,6 +300,10 @@ def test_amazon_owner_boundaries_are_registered() -> None:
     ]
     assert "write Fact DB" in owners["amazon_browser_capture"]["forbidden"]
     assert owners["amazon_fact_persistence"]["paths"] == [
+        "alembic_fact.ini",
+        "alembic_fact/**",
+        "alembic/versions/20260714_0007_amazon_product_facts.py",
+        "scripts/execution_control/run_fact_alembic_upgrade.sh",
         "src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py",
         "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
         "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
@@ -212,14 +311,15 @@ def test_amazon_owner_boundaries_are_registered() -> None:
     assert "decide Feishu fields" in owners["amazon_fact_persistence"]["forbidden"]
 
 
-def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
+def test_amazon_roadmap_features_have_expected_status_and_gates() -> None:
     roadmap = _load_yaml("contracts/harness/code-roadmap.yaml")
     features = {feature["feature_code"]: feature for feature in roadmap["features"]}
 
     schema = features["amazon_product_fact_schema"]
     ingest = features["amazon_single_product_ingest"]
+    assert schema["status"] == "complete"
+    assert ingest["status"] == "in_progress"
     for feature in (schema, ingest):
-        assert feature["status"] == "in_progress"
         assert feature["requires_architecture_delta_gate"] is True
         assert feature["source_contracts"]
         assert feature["allowed_paths"]
@@ -227,14 +327,27 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         assert feature["done_gate"]["commands"]
 
     assert {
+        "alembic_fact.ini",
+        "alembic_fact/**",
+        "scripts/execution_control/run_fact_alembic_upgrade.sh",
         "alembic/versions/20260714_0007_amazon_product_facts.py",
         "src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py",
         "src/automation_business_scaffold/infrastructure/schemas/__init__.py",
         "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
         "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
         "tests/conftest.py",
+        "scripts/deploy/macos/deploy.local.env.example",
+        "scripts/deploy/macos/deploy.sh",
+        "scripts/deploy/macos/preflight.sh",
+        "scripts/execution_control/executor.local.env.example",
+        "skills/mujitask-tiktok-feishu-sync/skill.local.env.example",
+        "docs/ops/deployment.md",
+        "tests/test_macos_fact_migration_deployment.py",
     } <= set(schema["allowed_paths"])
     fact_owned_paths = {
+        "alembic_fact.ini",
+        "alembic_fact/**",
+        "scripts/execution_control/run_fact_alembic_upgrade.sh",
         "alembic/versions/20260714_0007_amazon_product_facts.py",
         "src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py",
         "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
@@ -248,13 +361,21 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         "src/automation_business_scaffold/domains/amazon/tasks/refresh_amazon_product_row_by_asin.py",
         "src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py",
         "tests/test_runtime_amazon_product_business_e2e.py",
+        "scripts/deploy/macos/deploy.local.env.example",
+        "scripts/deploy/macos/deploy.sh",
+        "scripts/deploy/macos/preflight.sh",
+        "scripts/execution_control/executor.local.env.example",
+        "skills/mujitask-tiktok-feishu-sync/skill.local.env.example",
+        "tests/test_macos_fact_migration_deployment.py",
     } <= set(ingest["allowed_paths"])
 
     schema_tests = [
         "tests/test_amazon_product_contracts.py",
+        "tests/test_amazon_fact_migration_routing.py",
         "tests/test_amazon_fact_schema.py",
         "tests/test_amazon_fact_store.py",
         "tests/test_amazon_product_fact_upsert_handler.py",
+        "tests/test_macos_fact_migration_deployment.py",
     ]
     assert schema["done_gate"]["tests"] == schema_tests
     assert {
@@ -266,6 +387,7 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
 
     ingest_tests = [
         "tests/test_amazon_product_contracts.py",
+        "tests/test_config.py",
         "tests/test_amazon_product_page.py",
         "tests/test_amazon_product_browser_fetch_handler.py",
         "tests/test_feishu_amazon_product_mapping.py",
@@ -280,6 +402,7 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         "tests/test_workflow_architecture_manifests.py",
         "tests/test_harness_code_roadmap.py",
         "tests/test_architecture_ownership.py",
+        "tests/test_macos_fact_migration_deployment.py",
     ]
     assert ingest["done_gate"]["tests"] == ingest_tests
     assert {
@@ -288,6 +411,29 @@ def test_both_amazon_roadmap_features_are_in_progress_and_gated() -> None:
         for token in command.split()
         if token.startswith("tests/")
     } == set(ingest_tests)
+
+
+def test_amazon_handler_entry_and_fact_migration_docs_freeze_runtime_boundaries() -> None:
+    handler_doc = (REPO_ROOT / "docs/arch/handler-contract-design.md").read_text(encoding="utf-8")
+    entry_doc = (REPO_ROOT / "docs/arch/entry-output-contract-design.md").read_text(
+        encoding="utf-8"
+    )
+    fact_doc = (REPO_ROOT / "docs/arch/fact-db-schema-design.md").read_text(encoding="utf-8")
+
+    assert "### 6.8 Amazon 单商品采集 Handler" in handler_doc
+    assert "`amazon_product_browser_fetch`" in handler_doc
+    assert "`amazon_product_fact_upsert`" in handler_doc
+    assert "`amazon_product_row_persist`" in handler_doc
+    assert "Runtime payload/result 不内联完整 normalized capture" in handler_doc
+
+    assert "### 2.2 Amazon 单商品入口" in entry_doc
+    assert '"table_ref": "AMAZON_PRODUCTS"' in entry_doc
+    assert '"source_record_id": "recxxxxxxxx"' in entry_doc
+    assert "正式入口不得直接传 ASIN" in entry_doc
+
+    assert "`BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL`" in fact_doc
+    assert "`fact_alembic_version`" in fact_doc
+    assert "Fact migration 图 downgrade 到 `base`" in fact_doc
 
 
 def test_contract_index_and_design_status_match_implementation_phase() -> None:

@@ -20,6 +20,9 @@ payload:
   allowed:
     - table_ref
     - source_record_id
+  value_constraints:
+    table_ref:
+      const: AMAZON_PRODUCTS
   additional_properties: false
   forbidden:
     - run_mode
@@ -71,6 +74,13 @@ stages:
     execution_mode: browser_task_execution
     handler_code: amazon_product_browser_fetch
     terminal_failure_writeback_handler_code: feishu_table_write
+    enter_status_writeback:
+      handler_code: feishu_table_write
+      mapper_code: amazon_product_projection_mapper
+      collection_status: collecting
+      record_target: source_record_id
+      last_collected_at: forbidden
+      completion_gate: required_before_browser_dispatch
     exit_condition: normalized capture 引用或受控终态错误已持久化
   - stage_code: persist_amazon_product_detail
     execution_mode: api_worker_job
@@ -79,11 +89,51 @@ stages:
       - media_asset_sync
       - amazon_product_fact_upsert
       - feishu_table_write
+    enter_status_writeback:
+      handler_code: feishu_table_write
+      mapper_code: amazon_product_projection_mapper
+      collection_status: persisting
+      record_target: source_record_id
+      last_collected_at: forbidden
+      completion_gate: required_before_persist_dispatch
     exit_condition: 媒体、Amazon 事实和来源行投影均已收敛
   - stage_code: ready_for_summary
     execution_mode: summary
     handler_code: task_completed_notification
     exit_condition: 行结果、summary 和 outbox 已持久化
+
+observability:
+  row_summary:
+    required_identity:
+      - requested_asin
+      - source_record_id
+    optional_identity:
+      - resolved_asin
+    browser_provider_name: non_sensitive_provider_code_only
+    measured_stage_durations_ms:
+      - navigation
+      - parse
+      - artifact
+      - media
+      - fact
+      - feishu
+    counts:
+      - field_coverage
+      - artifact_count
+      - media_observed_count
+      - media_materialized_count
+    terminal_fields:
+      - final_status
+      - error_code
+    forbidden:
+      - browser_profile_ref
+      - browser_profile_id
+      - browser_workspace_id
+      - browser_provider_token
+      - token
+      - cookie
+      - object_storage_credential
+  runtime_policy: compact_sanitized_observation_only
 
 protected_invariants:
   - Browser 是 Amazon 正常采集阶段，不使用 fallback_required 表示正常流程。
@@ -91,6 +141,10 @@ protected_invariants:
   - 网络层只观察页面自然加载的 exact same-origin fetch/xhr JSON；按 resolved ASIN 和字段 allowlist 净化后才能持久化。
   - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
   - 飞书投影只更新 source_record_id；missing 字段必须保留已有值。
+  - 最终投影只有在 written_count=1、failed_count=0、skipped_count=0 且 target_record_ids 精确等于 source_record_id 时才算收敛。
   - blocked/captcha 保存证据并失败收敛，不新增绕过路径。
   - 已定位来源行的 blocked/failed 只通过 status-only projection 写回，不进入商品 Fact persistence。
   - 单行重复执行必须按来源行、ASIN、run 和事实唯一键保持幂等。
+  - collecting 与 persisting 必须在对应副作用派发前写回同一 source_record_id，且非终态写回不得更新上次采集时间。
+  - persist stage 的终态失败必须通过 status-only projection 写回 failed 后再收敛。
+  - 行级观测只保存非敏感 provider code、实测阶段耗时、覆盖率、数量、终态和脱敏错误码；不得保存 profile/workspace/token/cookie 或对象存储 credential。

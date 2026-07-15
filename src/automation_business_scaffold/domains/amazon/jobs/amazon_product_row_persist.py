@@ -56,6 +56,16 @@ AMAZON_PRODUCT_ROW_PERSIST_JOB = JobDefinition(
             "Compact browser field coverage summary.",
             type_hint="dict[str, Any]",
         ),
+        optional_field(
+            "browser_provider_name",
+            "Non-sensitive browser provider code.",
+            type_hint="str",
+        ),
+        optional_field(
+            "stage_durations_ms",
+            "Measured browser-stage durations awaiting row convergence timings.",
+            type_hint="dict[str, float]",
+        ),
     ),
     result_contract=contract(
         "amazon_product_row_persist_result",
@@ -83,11 +93,14 @@ AMAZON_PRODUCT_ROW_PERSIST_JOB = JobDefinition(
             "Compact Feishu write counts and target record ids.",
             type_hint="dict[str, Any]",
         ),
+        optional_field(
+            "observability",
+            "Sanitized row timings, coverage, counts, final status, and error code.",
+            type_hint="dict[str, Any]",
+        ),
     ),
     business_key_template="{source_record_id}:{requested_asin}",
-    dedupe_key_template=(
-        "{request_id}:amazon_persist:{source_record_id}:{requested_asin}"
-    ),
+    dedupe_key_template=("{request_id}:amazon_persist:{source_record_id}:{requested_asin}"),
     side_effects=("object_store", "fact_db", "feishu.write"),
 )
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -48,6 +50,15 @@ READ_FAILURE_WRITEBACK_CODES = {
     "unsupported_marketplace",
 }
 FAILURE_ROW_STATUSES = {"blocked", "failed"}
+OBSERVABLE_ROW_STATUSES = {
+    "success",
+    "partial_success",
+    "unavailable",
+    "blocked",
+    "failed",
+    "skipped",
+}
+_BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def advance_stage(
@@ -273,6 +284,16 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             requested_asin=row["requested_asin"],
             collection_status="failed",
         )
+    stage_status = _ensure_stage_status_writeback(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=BROWSER_STAGE_CODE,
+        row=row,
+        row_status="collecting",
+    )
+    if stage_status is not None:
+        return stage_status
     executions = browser_executions_for_stage(
         store,
         request_id=request.request_id,
@@ -348,14 +369,17 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             requested_asin=row["requested_asin"],
             collection_status=collection_status,
             evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
+            observability=_browser_failure_observability(
+                browser_result,
+                final_status=("blocked" if collection_status == "blocked" else "failed"),
+                error_code=error_code,
+            ),
         )
     try:
         _validate_browser_result(
             row=row,
             result=browser_result,
-            expected_browser_target_digest=browser_runtime_context[
-                "browser_target_digest"
-            ],
+            expected_browser_target_digest=browser_runtime_context["browser_target_digest"],
         )
     except ValueError as exc:
         return _terminal_failure_with_writeback(
@@ -369,6 +393,11 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             requested_asin=row["requested_asin"],
             collection_status="failed",
             evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
+            observability=_browser_failure_observability(
+                browser_result,
+                final_status="failed",
+                error_code=str(exc) or "invalid_amazon_browser_result",
+            ),
         )
     return _advance(PERSIST_STAGE_CODE, reason="amazon_capture_ready")
 
@@ -376,6 +405,13 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
 def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:
     try:
         row = _read_context(store=store, request=request)
+    except ValueError as exc:
+        return _failure(
+            stage_code=PERSIST_STAGE_CODE,
+            error_code=str(exc) or "amazon_source_context_missing",
+            message="Validated Amazon source context is unavailable for persistence.",
+        )
+    try:
         browser_runtime_context = _browser_runtime_context(request)
         if not browser_runtime_context:
             raise ValueError("amazon_browser_resource_context_missing")
@@ -383,16 +419,30 @@ def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             store=store,
             request_id=request.request_id,
             row=row,
-            expected_browser_target_digest=browser_runtime_context[
-                "browser_target_digest"
-            ],
+            expected_browser_target_digest=browser_runtime_context["browser_target_digest"],
         )
     except ValueError as exc:
-        return _failure(
+        return _terminal_failure_with_writeback(
+            store=store,
+            request=request,
+            workflow=workflow,
             stage_code=PERSIST_STAGE_CODE,
+            row_status="failed",
             error_code=str(exc) or "amazon_capture_context_missing",
             message="Persistable Amazon capture context is unavailable.",
+            requested_asin=row["requested_asin"],
+            collection_status="failed",
         )
+    stage_status = _ensure_stage_status_writeback(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=PERSIST_STAGE_CODE,
+        row=row,
+        row_status="persisting",
+    )
+    if stage_status is not None:
+        return stage_status
     jobs = _jobs_for_stage(
         store=store,
         request_id=request.request_id,
@@ -419,6 +469,11 @@ def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             "raw_capture_refs": _mapping_list(browser_result["raw_capture_refs"]),
             "media_source_refs": _mapping_list(browser_result.get("media_source_refs")),
             "field_coverage": _mapping(browser_result.get("field_coverage")),
+            "browser_provider_name": str(browser_result.get("browser_provider_name") or "").strip(),
+            "stage_durations_ms": _compact_stage_durations(
+                browser_result.get("stage_durations_ms"),
+                allowed_stages=("navigation", "parse", "artifact"),
+            ),
         }
         job_def = workflow.require_job("amazon_product_row_persist")
         keys = render_job_keys(
@@ -454,11 +509,20 @@ def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, An
         return _waiting(PERSIST_STAGE_CODE, "Amazon row persistence is still running.")
     persist_job = jobs[-1]
     if extract_handler_result_status(persist_job) not in {"success", "partial_success"}:
-        return _failure(
+        error_code = _record_error_code(persist_job) or "amazon_product_row_persist_failed"
+        persist_result = extract_effective_result_payload(persist_job)
+        return _terminal_failure_with_writeback(
+            store=store,
+            request=request,
+            workflow=workflow,
             stage_code=PERSIST_STAGE_CODE,
-            error_code=_record_error_code(persist_job) or "amazon_product_row_persist_failed",
+            row_status="failed",
+            error_code=error_code,
             message="Amazon row persistence failed.",
-            result=_compact_persist_result(extract_effective_result_payload(persist_job)),
+            requested_asin=row["requested_asin"],
+            collection_status="failed",
+            evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
+            observability=_mapping(persist_result.get("observability")),
         )
     persist_result = extract_effective_result_payload(persist_job)
     expected_run_id = _stable_run_id(
@@ -471,18 +535,141 @@ def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, An
         or str(persist_result.get("requested_asin") or "") != row["requested_asin"]
         or str(persist_result.get("run_id") or "") != expected_run_id
     ):
-        return _failure(
+        return _terminal_failure_with_writeback(
+            store=store,
+            request=request,
+            workflow=workflow,
             stage_code=PERSIST_STAGE_CODE,
+            row_status="failed",
             error_code="amazon_persist_result_identity_mismatch",
             message="Amazon row persistence result does not match the requested source identity.",
+            requested_asin=row["requested_asin"],
+            collection_status="failed",
+            evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
+            observability=_mapping(persist_result.get("observability")),
         )
     if str(persist_result.get("row_status") or "") not in TERMINAL_ROW_STATUSES:
-        return _failure(
+        return _terminal_failure_with_writeback(
+            store=store,
+            request=request,
+            workflow=workflow,
             stage_code=PERSIST_STAGE_CODE,
+            row_status="failed",
             error_code="invalid_amazon_row_status",
             message="Amazon row persistence returned an invalid terminal status.",
+            requested_asin=row["requested_asin"],
+            collection_status="failed",
+            evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
+            observability=_mapping(persist_result.get("observability")),
         )
     return _advance(SUMMARY_STAGE_CODE, reason="amazon_row_persisted")
+
+
+def _ensure_stage_status_writeback(
+    *,
+    store: Any,
+    request: Any,
+    workflow: Any,
+    stage_code: str,
+    row: Mapping[str, Any],
+    row_status: str,
+) -> dict[str, Any] | None:
+    if row_status not in {"collecting", "persisting"}:
+        raise ValueError("Amazon stage status must be collecting or persisting.")
+    writeback_kind = "amazon_stage_status"
+    jobs = [
+        job
+        for job in _jobs_for_stage(
+            store=store,
+            request_id=request.request_id,
+            stage_code=stage_code,
+            job_code="feishu_table_write",
+        )
+        if str((job.get("payload") or {}).get("writeback_kind") or "")
+        == writeback_kind
+        and str((job.get("payload") or {}).get("row_status") or "") == row_status
+    ]
+    if not jobs:
+        source_table_identity = _mapping(row.get("source_table_identity"))
+        payload = {
+            "request_id": request.request_id,
+            "workflow_code": workflow.workflow_code,
+            "stage_code": stage_code,
+            "target_table_ref": str(request.payload.get("table_ref") or "").strip(),
+            "source_record_id": str(row.get("source_record_id") or "").strip(),
+            "row_status": row_status,
+            "error_code": "",
+            "feishu_table": {
+                "app_token": str(source_table_identity.get("base_id") or "").strip(),
+                "table_id": str(source_table_identity.get("table_id") or "").strip(),
+            },
+            "records": [
+                {
+                    "source_record_id": str(row.get("source_record_id") or "").strip(),
+                    "requested_asin": str(row.get("requested_asin") or "").strip(),
+                    "collection_status": row_status,
+                }
+            ],
+            "mapper_code": "amazon_product_projection_mapper",
+            "write_mode": "update_existing",
+            "writeback_kind": writeback_kind,
+        }
+        job_def = workflow.require_job("feishu_table_write")
+        keys = render_job_keys(
+            job_def,
+            payload,
+            request_id=request.request_id,
+            task_code=TASK_CODE,
+            workflow_code=workflow.workflow_code,
+            stage_code=stage_code,
+        )
+        dispatch = store.enqueue_api_worker_jobs(
+            request_id=request.request_id,
+            task_code=TASK_CODE,
+            job_code=job_def.job_code,
+            jobs=[
+                {
+                    "business_key": keys["business_key"],
+                    "dedupe_key": keys["dedupe_key"],
+                    "payload": payload,
+                    "max_attempts": 3,
+                    "max_execution_seconds": timeout_seconds_for_workflow(
+                        workflow, job_def.job_code
+                    ),
+                }
+            ],
+        )
+        return _waiting(
+            stage_code,
+            f"Executor dispatched the Amazon {row_status} status writeback.",
+            dispatch=dispatch,
+        )
+    if _has_active(jobs):
+        return _waiting(
+            stage_code,
+            f"Amazon {row_status} status writeback is still running.",
+        )
+
+    write_job = jobs[-1]
+    write_result = extract_effective_result_payload(write_job)
+    if (
+        extract_handler_result_status(write_job) not in {"success", "partial_success"}
+        or int(write_result.get("written_count") or 0) != 1
+    ):
+        error_code = _record_error_code(write_job) or f"amazon_{row_status}_status_writeback_failed"
+        return _failure(
+            stage_code=stage_code,
+            error_code=error_code,
+            message=f"Amazon {row_status} status could not be written to the source row.",
+            result={
+                "source_record_id": str(row.get("source_record_id") or "").strip(),
+                "requested_asin": str(row.get("requested_asin") or "").strip(),
+                "row_status": "failed",
+                "collection_status": "failed",
+                "writeback": _compact_status_writeback(write_result),
+            },
+        )
+    return None
 
 
 def _terminal_failure_with_writeback(
@@ -497,6 +684,7 @@ def _terminal_failure_with_writeback(
     requested_asin: str = "",
     collection_status: str = "",
     evidence_refs: list[dict[str, Any]] | None = None,
+    observability: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     failure_result = {
         "source_record_id": str(request.payload.get("source_record_id") or "").strip(),
@@ -505,6 +693,13 @@ def _terminal_failure_with_writeback(
         "collection_status": collection_status or row_status,
         "evidence_refs": list(evidence_refs or []),
     }
+    compact_observability = _compact_observability(
+        observability,
+        final_status=failure_result["row_status"],
+        error_code=error_code,
+    )
+    if compact_observability:
+        failure_result["observability"] = compact_observability
     source_table_identity = _source_table_identity(store=store, request_id=request.request_id)
     if not source_table_identity:
         return _failure(
@@ -522,8 +717,7 @@ def _terminal_failure_with_writeback(
             stage_code=stage_code,
             job_code="feishu_table_write",
         )
-        if str((job.get("payload") or {}).get("writeback_kind") or "")
-        == "amazon_terminal_status"
+        if str((job.get("payload") or {}).get("writeback_kind") or "") == "amazon_terminal_status"
     ]
     if not jobs:
         source_record_id = failure_result["source_record_id"]
@@ -589,9 +783,10 @@ def _terminal_failure_with_writeback(
     write_job = jobs[-1]
     write_status = extract_handler_result_status(write_job)
     write_result = extract_effective_result_payload(write_job)
-    if write_status not in {"success", "partial_success"} or int(
-        write_result.get("written_count") or 0
-    ) != 1:
+    if (
+        write_status not in {"success", "partial_success"}
+        or int(write_result.get("written_count") or 0) != 1
+    ):
         writeback_error = _record_error_code(write_job) or "amazon_terminal_status_writeback_failed"
         return _failure(
             stage_code=stage_code,
@@ -635,9 +830,7 @@ def _compact_status_writeback(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "written_count": int(value.get("written_count") or 0),
         "target_record_ids": [
-            str(item)
-            for item in value.get("target_record_ids", [])
-            if str(item).strip()
+            str(item) for item in value.get("target_record_ids", []) if str(item).strip()
         ]
         if isinstance(value.get("target_record_ids"), list)
         else [],
@@ -723,10 +916,7 @@ def _validate_browser_result(
         raise ValueError("unsupported_marketplace")
     if str(result.get("requested_asin") or "") != row["requested_asin"]:
         raise ValueError("identity_mismatch")
-    if (
-        str(result.get("browser_target_digest") or "")
-        != expected_browser_target_digest
-    ):
+    if str(result.get("browser_target_digest") or "") != expected_browser_target_digest:
         raise ValueError("browser_target_identity_mismatch")
     try:
         resolved_asin = normalize_asin(result.get("resolved_asin"))
@@ -755,12 +945,8 @@ def _validate_browser_result(
 def _browser_runtime_context(request: Any) -> dict[str, str]:
     stage_cursor = _mapping(getattr(request, "stage_cursor", {}))
     runtime_context = _mapping(stage_cursor.get("runtime_context"))
-    browser_target_digest = str(
-        runtime_context.get("browser_target_digest") or ""
-    ).strip()
-    browser_resource_code = str(
-        runtime_context.get("browser_resource_code") or ""
-    ).strip()
+    browser_target_digest = str(runtime_context.get("browser_target_digest") or "").strip()
+    browser_resource_code = str(runtime_context.get("browser_resource_code") or "").strip()
     if (
         not browser_target_digest
         or browser_resource_code != f"browser:amazon:{browser_target_digest}"
@@ -800,6 +986,7 @@ def _final_payload(
             "row_status_counts": {row_status: 1},
             "failed_stage": str(force_result.get("failed_stage") or ""),
             "error_code": error_code,
+            "row_summary": _row_summary(row_result, error_code=error_code),
         }
         result = {
             "workflow_code": TASK_CODE,
@@ -807,11 +994,16 @@ def _final_payload(
             "row_results": [row_result],
             "error_code": error_code,
         }
-        return summary, result, "failed", {
-            "error_type": "business_workflow_failure",
-            "error_code": error_code,
-            "message": "Amazon product row workflow failed.",
-        }
+        return (
+            summary,
+            result,
+            "failed",
+            {
+                "error_type": "business_workflow_failure",
+                "error_code": error_code,
+                "message": "Amazon product row workflow failed.",
+            },
+        )
 
     jobs = _jobs_for_stage(
         store=store,
@@ -833,17 +1025,26 @@ def _final_payload(
         "final_status": final_status,
         "row_total_count": 1,
         "row_status_counts": {row_status: 1},
+        "row_summary": _row_summary(
+            row_result,
+            error_code=("amazon_product_row_persist_failed" if final_status == "failed" else ""),
+        ),
     }
     result = {
         "workflow_code": TASK_CODE,
         "row_total_count": 1,
         "row_results": [row_result],
     }
-    return summary, result, final_status, {
-        "error_type": "persistence_failure" if final_status == "failed" else "",
-        "error_code": "amazon_product_row_persist_failed" if final_status == "failed" else "",
-        "message": "Amazon product row persistence failed." if final_status == "failed" else "",
-    }
+    return (
+        summary,
+        result,
+        final_status,
+        {
+            "error_type": "persistence_failure" if final_status == "failed" else "",
+            "error_code": "amazon_product_row_persist_failed" if final_status == "failed" else "",
+            "message": "Amazon product row persistence failed." if final_status == "failed" else "",
+        },
+    )
 
 
 def _compact_persist_result(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -859,18 +1060,158 @@ def _compact_persist_result(value: Mapping[str, Any]) -> dict[str, Any]:
         "writeback",
         "failed_step",
     )
-    return {key: value[key] for key in allowed if value.get(key) not in (None, "", [], {})}
+    result = {key: value[key] for key in allowed if value.get(key) not in (None, "", [], {})}
+    row_status = str(result.get("row_status") or "failed")
+    observability = _compact_observability(
+        value.get("observability"),
+        final_status=row_status,
+        error_code=str(_mapping(value.get("observability")).get("error_code") or ""),
+    )
+    if observability:
+        result["observability"] = observability
+    return result
 
 
 def _compact_failure_result(value: Mapping[str, Any]) -> dict[str, Any]:
     allowed = (
         "requested_asin",
+        "resolved_asin",
         "collection_status",
         "evidence_refs",
         "original_error_code",
         "writeback",
     )
-    return {key: value[key] for key in allowed if value.get(key) not in (None, "", [], {})}
+    result = {key: value[key] for key in allowed if value.get(key) not in (None, "", [], {})}
+    observability = _compact_observability(
+        value.get("observability"),
+        final_status=str(value.get("row_status") or "failed"),
+        error_code=str(
+            value.get("error_code") or _mapping(value.get("observability")).get("error_code") or ""
+        ),
+    )
+    if observability:
+        result["observability"] = observability
+    return result
+
+
+def _browser_failure_observability(
+    browser_result: Mapping[str, Any],
+    *,
+    final_status: str,
+    error_code: str,
+) -> dict[str, Any]:
+    return _compact_observability(
+        {
+            "browser_provider_name": browser_result.get("browser_provider_name"),
+            "stage_durations_ms": browser_result.get("stage_durations_ms"),
+            "field_coverage": browser_result.get("field_coverage"),
+            "artifact_count": len(_mapping_list(browser_result.get("artifact_refs"))),
+            "media_observed_count": len(_mapping_list(browser_result.get("media_source_refs"))),
+            "media_materialized_count": 0,
+        },
+        final_status=final_status,
+        error_code=error_code,
+    )
+
+
+def _row_summary(
+    row_result: Mapping[str, Any],
+    *,
+    error_code: str,
+) -> dict[str, Any]:
+    final_status = str(row_result.get("row_status") or "failed")
+    observability = _compact_observability(
+        row_result.get("observability"),
+        final_status=final_status,
+        error_code=error_code,
+    )
+    summary = {
+        "source_record_id": str(row_result.get("source_record_id") or ""),
+        "requested_asin": str(row_result.get("requested_asin") or ""),
+        **observability,
+    }
+    resolved_asin = str(row_result.get("resolved_asin") or "")
+    if resolved_asin:
+        summary["resolved_asin"] = resolved_asin
+    return summary
+
+
+def _compact_observability(
+    value: Any,
+    *,
+    final_status: str,
+    error_code: str,
+) -> dict[str, Any]:
+    raw = _mapping(value)
+    status = final_status if final_status in OBSERVABLE_ROW_STATUSES else "failed"
+    observation: dict[str, Any] = {
+        "stage_durations_ms": _compact_stage_durations(
+            raw.get("stage_durations_ms"),
+            allowed_stages=(
+                "navigation",
+                "parse",
+                "artifact",
+                "media",
+                "fact",
+                "feishu",
+            ),
+        ),
+        "field_coverage": _compact_field_coverage(raw.get("field_coverage")),
+        "artifact_count": _nonnegative_int(raw.get("artifact_count")),
+        "media_observed_count": _nonnegative_int(raw.get("media_observed_count")),
+        "media_materialized_count": _nonnegative_int(raw.get("media_materialized_count")),
+        "final_status": status,
+        "error_code": _safe_error_code(error_code),
+    }
+    provider_name = str(raw.get("browser_provider_name") or "").strip()
+    if _BROWSER_PROVIDER_NAME.fullmatch(provider_name):
+        observation["browser_provider_name"] = provider_name
+    return observation
+
+
+def _compact_stage_durations(
+    value: Any,
+    *,
+    allowed_stages: tuple[str, ...],
+) -> dict[str, float]:
+    raw = _mapping(value)
+    durations: dict[str, float] = {}
+    for stage_name in allowed_stages:
+        duration = raw.get(stage_name)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        normalized = float(duration)
+        if math.isfinite(normalized) and normalized >= 0:
+            durations[stage_name] = round(normalized, 3)
+    return durations
+
+
+def _compact_field_coverage(value: Any) -> dict[str, int | float]:
+    raw = _mapping(value)
+    coverage: dict[str, int | float] = {}
+    for key in ("total", "observed", "explicitly_unavailable", "missing"):
+        item = raw.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            continue
+        coverage[key] = item
+    percentage = raw.get("percentage")
+    if (
+        not isinstance(percentage, bool)
+        and isinstance(percentage, (int, float))
+        and math.isfinite(float(percentage))
+        and 0 <= float(percentage) <= 100
+    ):
+        coverage["percentage"] = round(float(percentage), 2)
+    return coverage
+
+
+def _nonnegative_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _safe_error_code(value: Any) -> str:
+    error_code = str(value or "").strip()
+    return error_code if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", error_code) else ""
 
 
 def _has_active_amazon_children(*, store: Any, request_id: str) -> bool:

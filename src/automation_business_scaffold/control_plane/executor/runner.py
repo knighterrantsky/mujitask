@@ -31,6 +31,13 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_store import
 from automation_business_scaffold.infrastructure.browser.browser_bridge import (
     resolve_automation_browser_target_digest,
 )
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import (
+    AmazonFactSchemaVersionError,
+    AmazonFactStore,
+)
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running"}
@@ -166,6 +173,20 @@ def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any
             message=persistence_preflight["message"],
             retryable=False,
             result=persistence_preflight,
+        )
+    fact_schema_preflight = _amazon_fact_schema_submit_preflight(
+        task_code=normalized_task_code,
+        params=params,
+        settings=settings,
+    )
+    if fact_schema_preflight:
+        return _rejected_submit_payload(
+            task_code=normalized_task_code,
+            error_type="infrastructure",
+            error_code=str(fact_schema_preflight["error_code"]),
+            message=fact_schema_preflight["message"],
+            retryable=bool(fact_schema_preflight["retryable"]),
+            result=fact_schema_preflight,
         )
     store = create_runtime_store(settings)
     preflight = _runtime_db_health_preflight(store=store, settings=settings)
@@ -447,6 +468,16 @@ def _amazon_product_submit_preflight(
             "message": "Amazon product row submit requires table_ref and source_record_id.",
             "missing_business_fields": missing,
         }
+    if str(params.get("table_ref") or "").strip() != "AMAZON_PRODUCTS":
+        return {
+            "error_type": "invalid_input",
+            "error_code": "unsupported_amazon_table_ref",
+            "message": (
+                "Amazon product row submit requires the configured "
+                "AMAZON_PRODUCTS table alias."
+            ),
+            "required_table_ref": "AMAZON_PRODUCTS",
+        }
     forbidden_browser_fields = sorted(
         field
         for field in AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS
@@ -627,6 +658,50 @@ def _strict_persistence_submit_preflight(
             "minio_secret_key_configured": bool(resolved["minio_secret_key"]),
         },
     }
+
+
+def _amazon_fact_schema_submit_preflight(
+    *,
+    task_code: str,
+    params: Mapping[str, Any],
+    settings: Any,
+) -> dict[str, Any]:
+    if task_code != AMAZON_PRODUCT_ROW_TASK_CODE:
+        return {}
+    resolved = _resolve_submit_persistence_config(
+        params,
+        settings=settings,
+        allow_test_overrides=_test_persistence_overrides_allowed(params),
+    )
+    fact_store: AmazonFactStore | None = None
+    try:
+        fact_store = AmazonFactStore(db_url=str(resolved["fact_db_url"]))
+        fact_store.require_schema_revision()
+    except AmazonFactSchemaVersionError:
+        return {
+            "error_code": "amazon_fact_schema_not_ready",
+            "retryable": False,
+            "message": (
+                "Amazon Fact DB is not migrated to the required schema revision; "
+                "submit was rejected before creating a Runtime task."
+            ),
+            "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+        }
+    except Exception:
+        return {
+            "error_code": "amazon_fact_schema_check_failed",
+            "retryable": True,
+            "message": (
+                "Amazon Fact DB schema revision could not be checked; "
+                "submit was rejected before creating a Runtime task."
+            ),
+            "required_fact_schema_revision": AMAZON_FACT_SCHEMA_REVISION,
+        }
+    finally:
+        if fact_store is not None:
+            fact_store.close()
+    return {}
+
 
 def _resolve_submit_persistence_config(
     params: Mapping[str, Any],

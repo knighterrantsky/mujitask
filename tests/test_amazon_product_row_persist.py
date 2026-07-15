@@ -65,6 +65,12 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
         "run_id": "run-amazon-1",
         "collection_status": collection_status,
         "field_coverage": {"total": 20, "observed": 20, "missing": 0, "percentage": 100.0},
+        "browser_provider_name": "roxy",
+        "stage_durations_ms": {
+            "navigation": 12.5,
+            "parse": 3.25,
+            "artifact": 8.75,
+        },
         "normalized_capture_ref": normalized_ref,
         "raw_capture_refs": [normalized_ref, html_ref],
         "media_source_refs": [
@@ -105,8 +111,7 @@ def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]
             "bucket": "test-artifacts",
             "object_key": f"test/product-media/amazon/us/{ASIN}/main_image/{'1' * 64}.jpg",
             "remote_uri": (
-                f"s3://test-artifacts/test/product-media/amazon/us/{ASIN}/"
-                f"main_image/{'1' * 64}.jpg"
+                f"s3://test-artifacts/test/product-media/amazon/us/{ASIN}/main_image/{'1' * 64}.jpg"
             ),
             "content_digest": "1" * 64,
             "size_bytes": 10,
@@ -123,9 +128,7 @@ def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]
                 "position": 1,
                 "sync_state": "uploaded",
                 "bucket": "test-artifacts",
-                "object_key": (
-                    f"test/product-media/amazon/us/{ASIN}/gallery_image/{'2' * 64}.jpg"
-                ),
+                "object_key": (f"test/product-media/amazon/us/{ASIN}/gallery_image/{'2' * 64}.jpg"),
                 "remote_uri": (
                     f"s3://test-artifacts/test/product-media/amazon/us/{ASIN}/"
                     f"gallery_image/{'2' * 64}.jpg"
@@ -246,6 +249,7 @@ def test_job_contract_declares_compact_serial_row_persistence() -> None:
     assert JOB_DEFINITION.dedupe_key_template == (
         "{request_id}:amazon_persist:{source_record_id}:{requested_asin}"
     )
+    assert "observability" in JOB_DEFINITION.result_contract.field_names()
 
 
 def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
@@ -256,6 +260,13 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
     )
 
     payload = _payload()
+    payload.update(
+        {
+            "browser_profile_id": "profile-must-not-be-returned",
+            "browser_workspace_id": "workspace-must-not-be-returned",
+            "browser_provider_token": "token-must-not-be-returned",
+        }
+    )
     payload["request_payload"]["table_refs"] = {
         "AMAZON_PRODUCTS": {
             "app_token": "must-not-override-resolved-identity",
@@ -265,6 +276,12 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
             "access_token_ref": "secret://feishu/amazon-token",
         }
     }
+    from automation_business_scaffold.domains.amazon.flows.amazon_product_row_persist import (
+        orchestrator,
+    )
+
+    ticks = iter((1.0, 1.012, 2.0, 2.02, 3.0, 3.03))
+    monkeypatch.setattr(orchestrator, "perf_counter", lambda: next(ticks))
     calls = _fake_dispatch(monkeypatch, _success_outcomes())
     result = amazon_product_row_persist_handler(_context(payload))
 
@@ -328,6 +345,79 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
         "raw_capture_ids": ["raw-1", "raw-2"],
         "normalized_capture_ref": _payload()["normalized_capture_ref"],
     }
+    assert result.result["observability"] == {
+        "stage_durations_ms": {
+            "navigation": 12.5,
+            "parse": 3.25,
+            "artifact": 8.75,
+            "media": 12.0,
+            "fact": 20.0,
+            "feishu": 30.0,
+        },
+        "field_coverage": {
+            "total": 20,
+            "observed": 20,
+            "missing": 0,
+            "percentage": 100.0,
+        },
+        "artifact_count": 2,
+        "media_observed_count": 2,
+        "media_materialized_count": 2,
+        "final_status": "success",
+        "error_code": "",
+        "browser_provider_name": "roxy",
+    }
+    serialized_result = repr(result.result)
+    assert "profile-must-not-be-returned" not in serialized_result
+    assert "workspace-must-not-be-returned" not in serialized_result
+    assert "token-must-not-be-returned" not in serialized_result
+
+
+@pytest.mark.parametrize(
+    ("written_count", "target_record_ids"),
+    (
+        (0, []),
+        (1, ["rec-other"]),
+    ),
+)
+def test_row_persist_rejects_writeback_that_does_not_update_the_source_record(
+    monkeypatch: pytest.MonkeyPatch,
+    written_count: int,
+    target_record_ids: list[str],
+) -> None:
+    from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
+        amazon_product_row_persist_handler,
+    )
+
+    outcomes = _success_outcomes()
+
+    def invalid_writeback(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            summary={
+                "written_count": written_count,
+                "skipped_count": 0,
+                "failed_count": 0,
+            },
+            result={
+                "written_count": written_count,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "target_record_ids": target_record_ids,
+            },
+        )
+
+    outcomes["feishu_table_write"] = invalid_writeback
+    _fake_dispatch(monkeypatch, outcomes)
+
+    result = amazon_product_row_persist_handler(_context(_payload()))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "feishu_writeback_not_converged"
+    assert result.error.retryable is False
+    assert result.result["failed_step"] == "feishu_table_write"
+    assert result.result["step_statuses"]["feishu_table_write"] == "failed"
 
 
 def test_retryable_media_failure_persists_fact_before_retry_and_skips_writeback(
@@ -354,9 +444,7 @@ def test_retryable_media_failure_persists_fact_before_retry_and_skips_writeback(
     outcomes["media_asset_sync"] = media_failed
     calls = _fake_dispatch(monkeypatch, outcomes)
 
-    result = amazon_product_row_persist_handler(
-        _context(attempt_count=1, max_attempts=3)
-    )
+    result = amazon_product_row_persist_handler(_context(attempt_count=1, max_attempts=3))
 
     assert result.status == "failed"
     assert result.error is not None
@@ -445,9 +533,7 @@ def test_unexpected_media_exception_still_persists_facts_before_retry(
     outcomes["media_asset_sync"] = media_raises
     calls = _fake_dispatch(monkeypatch, outcomes)
 
-    result = amazon_product_row_persist_handler(
-        _context(attempt_count=1, max_attempts=3)
-    )
+    result = amazon_product_row_persist_handler(_context(attempt_count=1, max_attempts=3))
 
     assert result.status == "failed"
     assert result.error is not None
@@ -489,6 +575,13 @@ def test_fact_failure_stops_before_feishu_and_propagates_retryability(
     assert result.error is not None
     assert result.error.error_code == "amazon_product_fact_upsert_failed"
     assert result.error.retryable is True
+    assert result.result["observability"]["final_status"] == "failed"
+    assert (
+        result.result["observability"]["error_code"]
+        == "amazon_product_fact_upsert_failed"
+    )
+    assert "fact" in result.result["observability"]["stage_durations_ms"]
+    assert "feishu" not in result.result["observability"]["stage_durations_ms"]
     assert [call.handler_code for call in calls] == [
         "media_asset_sync",
         "amazon_product_fact_upsert",

@@ -3,11 +3,15 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
 from datetime import datetime, timezone
+from html import escape
+from html.parser import HTMLParser
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
@@ -47,18 +51,64 @@ _SCRIPT_PATTERN = re.compile(
     r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-_SENSITIVE_ATTRIBUTE_PATTERN = re.compile(
-    r"\s+(?:data-)?(?:cookie|authorization|auth-token|access-token|refresh-token|token|"
-    r"localstorage|workspace|profile|account|address|request-headers?)\s*=\s*"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
-    re.IGNORECASE,
+_SENSITIVE_HTML_MARKERS = (
+    "accountname",
+    "addressbook",
+    "customername",
+    "deliveryaddress",
+    "glowingress",
+    "navgloballocation",
+    "navlinkaccountlist",
+    "shippingaddress",
 )
-_SENSITIVE_ELEMENT_PATTERN = re.compile(
-    r"<(?P<tag>div|span|a|section|li)\b[^>]*(?:nav-link-accountlist|"
-    r"nav-global-location|glow-ingress|account-name|address-book)[^>]*>.*?"
-    r"</(?P=tag)\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
+_SENSITIVE_HTML_ATTRIBUTE_NAMES = {
+    "account",
+    "address",
+    "authorization",
+    "cookie",
+    "localstorage",
+    "profile",
+    "token",
+    "workspace",
+}
+_DROPPED_HTML_TAGS = {
+    "button",
+    "form",
+    "iframe",
+    "input",
+    "meta",
+    "noscript",
+    "option",
+    "select",
+    "style",
+    "textarea",
+}
+_VOID_HTML_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
+_SAFE_HTML_ATTRIBUTES = {
+    "class",
+    "data-asin",
+    "data-feature-name",
+    "id",
+    "itemprop",
+    "itemscope",
+    "itemtype",
+    "type",
+}
 _SENSITIVE_JSON_KEYS = {
     "account",
     "address",
@@ -77,6 +127,14 @@ _MAX_NETWORK_RESPONSE_COUNT = 8
 _MAX_NETWORK_RESPONSE_BYTES = 256 * 1024
 _MAX_NETWORK_TOTAL_BYTES = 512 * 1024
 _NETWORK_SETTLE_MS = 750
+_BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_BROWSER_STAGE_NAMES = ("navigation", "parse", "artifact")
+
+
+class _ArtifactWriteError(RuntimeError):
+    def __init__(self, message: str, *, artifact_refs: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.artifact_refs = list(artifact_refs)
 
 
 def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResult:
@@ -109,9 +167,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         return _failure(
             context,
             error_code="object_storage_required",
-            message=(
-                "amazon_product_browser_fetch requires configured non-local object storage."
-            ),
+            message=("amazon_product_browser_fetch requires configured non-local object storage."),
             retryable=False,
             collection_status="failed",
         )
@@ -149,10 +205,13 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         )
 
     browser_target_digest = _clean_text(collection.get("browser_target_digest"))
+    browser_provider_name = _browser_provider_name(collection.get("browser_provider_name"))
+    stage_durations_ms = _browser_stage_durations(collection.get("stage_durations_ms"))
     error = collection.get("error")
     if error is not None:
         error_code, message, retryable, collection_status = _page_error(error)
         screenshot_bytes = _bytes_value(collection.get("screenshot_bytes"))
+        artifact_started_at = perf_counter()
         try:
             artifact_refs = _write_failure_artifacts(
                 context=context,
@@ -164,6 +223,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                 screenshot_bytes=screenshot_bytes,
             )
         except Exception as exc:
+            stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
             return _failure(
                 context,
                 error_code="artifact_write_failed",
@@ -171,7 +231,13 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                 retryable=True,
                 collection_status="failed",
                 browser_target_digest=browser_target_digest,
+                artifact_refs=(
+                    exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []
+                ),
+                browser_provider_name=browser_provider_name,
+                stage_durations_ms=stage_durations_ms,
             )
+        stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
         if not screenshot_bytes:
             return _failure(
                 context,
@@ -183,6 +249,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                 artifact_refs=artifact_refs,
                 requested_asin=requested_asin,
                 canonical_url=canonical_url,
+                browser_provider_name=browser_provider_name,
+                stage_durations_ms=stage_durations_ms,
             )
         return _failure(
             context,
@@ -194,6 +262,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             artifact_refs=artifact_refs,
             requested_asin=requested_asin,
             canonical_url=canonical_url,
+            browser_provider_name=browser_provider_name,
+            stage_durations_ms=stage_durations_ms,
         )
 
     capture = collection.get("capture")
@@ -205,6 +275,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             retryable=False,
             collection_status="failed",
             browser_target_digest=browser_target_digest,
+            browser_provider_name=browser_provider_name,
+            stage_durations_ms=stage_durations_ms,
         )
     capture = dict(capture)
     if capture.get("requested_asin") != requested_asin:
@@ -215,8 +287,11 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             retryable=False,
             collection_status="failed",
             browser_target_digest=browser_target_digest,
+            browser_provider_name=browser_provider_name,
+            stage_durations_ms=stage_durations_ms,
         )
     capture["profile_context"] = _profile_context(browser_target_digest)
+    _normalize_capture_media_urls(capture)
     try:
         network_data = extract_amazon_network_product_data(
             [
@@ -236,9 +311,8 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    sanitized_html = _sanitize_amazon_html(
-        _clean_text(collection.get("html"), strip=False)
-    )
+    sanitized_html = _sanitize_amazon_html(_clean_text(collection.get("html"), strip=False))
+    artifact_started_at = perf_counter()
     try:
         normalized_ref, html_ref, network_ref = _write_success_artifacts(
             context=context,
@@ -251,6 +325,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             network_data=network_data,
         )
     except Exception as exc:
+        stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
         return _failure(
             context,
             error_code="artifact_write_failed",
@@ -258,7 +333,13 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             retryable=True,
             collection_status="failed",
             browser_target_digest=browser_target_digest,
+            artifact_refs=(
+                exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []
+            ),
+            browser_provider_name=browser_provider_name,
+            stage_durations_ms=stage_durations_ms,
         )
+    stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
 
     artifact_refs = [normalized_ref, html_ref]
     if network_ref:
@@ -267,6 +348,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
     collection_status = _clean_text(capture.get("collection_status"))
     variants = capture.get("variants")
     parent_asin = _clean_text(variants.get("parent_asin")) if isinstance(variants, Mapping) else ""
+    media_source_refs = _media_source_refs(capture)
     result = {
         "marketplace_code": "US",
         "requested_asin": requested_asin,
@@ -277,9 +359,13 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "normalized_capture_ref": normalized_ref,
         "raw_capture_refs": artifact_refs,
         "artifact_refs": artifact_refs,
-        "media_source_refs": _media_source_refs(capture),
+        "media_source_refs": media_source_refs,
         "browser_target_digest": browser_target_digest,
     }
+    if browser_provider_name:
+        result["browser_provider_name"] = browser_provider_name
+    if stage_durations_ms:
+        result["stage_durations_ms"] = stage_durations_ms
     if parent_asin and result["resolved_asin"] != requested_asin:
         result["parent_asin"] = parent_asin
     summary = {
@@ -290,8 +376,13 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "collection_status": collection_status,
         "coverage_percent": coverage["percentage"],
         "artifact_count": len(artifact_refs),
+        "media_observed_count": len(media_source_refs),
         "browser_target_digest": browser_target_digest,
     }
+    if browser_provider_name:
+        summary["browser_provider_name"] = browser_provider_name
+    if stage_durations_ms:
+        summary["stage_durations_ms"] = stage_durations_ms
     if collection_status == "partial_success":
         return partial_success_result(
             context,
@@ -344,8 +435,7 @@ def _resolve_artifact_policy(context: HandlerContext) -> dict[str, Any] | None:
 
 def _profile_ref() -> str:
     return _clean_text(
-        os.environ.get("AMAZON_US_BROWSER_PROFILE_REF")
-        or os.environ.get("DEFAULT_PROFILE_REF")
+        os.environ.get("AMAZON_US_BROWSER_PROFILE_REF") or os.environ.get("DEFAULT_PROFILE_REF")
     )
 
 
@@ -378,43 +468,78 @@ def _collect_browser_page(
             canonical_url=canonical_url,
             observations=network_observations,
         )
-        target_digest = hashlib.sha256(
-            browser_session.target_key.encode("utf-8")
-        ).hexdigest()
+        target_digest = hashlib.sha256(browser_session.target_key.encode("utf-8")).hexdigest()
+        browser_provider_name = _browser_provider_name(
+            getattr(browser_session, "provider_name", "")
+        )
+        stage_durations_ms: dict[str, float] = {}
         try:
             try:
-                _navigate(automation_page, canonical_url, timeout_ms=timeout_ms)
-                _wait_for_amazon_page(page, timeout_ms=timeout_ms)
-                _settle_network_responses(page)
-                html = _page_content(page)
-                if not html.strip():
-                    raise RuntimeError("Amazon browser page content is empty or unreadable.")
-                resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
+                navigation_started_at = perf_counter()
                 try:
-                    resolved_asin = extract_asin_from_url(resolved_url)
-                except AmazonProductExtractionError:
-                    network_data = {}
-                else:
+                    navigation_response = _navigate(
+                        automation_page,
+                        canonical_url,
+                        timeout_ms=timeout_ms,
+                    )
+                    navigation_error = _navigation_response_error(navigation_response)
+                    if navigation_error:
+                        return {
+                            "capture": None,
+                            "html": _page_content(page),
+                            "resolved_url": (
+                                _clean_text(getattr(page, "url", "")) or canonical_url
+                            ),
+                            "browser_target_digest": target_digest,
+                            "browser_provider_name": browser_provider_name,
+                            "stage_durations_ms": stage_durations_ms,
+                            "screenshot_bytes": _page_screenshot(page),
+                            "error": navigation_error,
+                        }
+                    _wait_for_amazon_page(page, timeout_ms=timeout_ms)
+                    _settle_network_responses(page)
+                finally:
+                    stage_durations_ms["navigation"] = _elapsed_ms(navigation_started_at)
+                parse_started_at = perf_counter()
+                try:
+                    html = _page_content(page)
+                    if not html.strip():
+                        raise RuntimeError("Amazon browser page content is empty or unreadable.")
+                    resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
                     try:
-                        network_data = extract_amazon_network_product_data(
-                            network_observations,
-                            expected_asin=resolved_asin,
-                        )
-                    except (AmazonProductExtractionError, TypeError, ValueError, OverflowError):
+                        resolved_asin = extract_asin_from_url(resolved_url)
+                    except AmazonProductExtractionError:
                         network_data = {}
-                capture = extract_amazon_product_capture(
-                    html,
-                    requested_asin=requested_asin,
-                    resolved_url=resolved_url,
-                    observed_at=observed_at,
-                    network_product_data=network_data,
-                )
+                    else:
+                        try:
+                            network_data = extract_amazon_network_product_data(
+                                network_observations,
+                                expected_asin=resolved_asin,
+                            )
+                        except (
+                            AmazonProductExtractionError,
+                            TypeError,
+                            ValueError,
+                            OverflowError,
+                        ):
+                            network_data = {}
+                    capture = extract_amazon_product_capture(
+                        html,
+                        requested_asin=requested_asin,
+                        resolved_url=resolved_url,
+                        observed_at=observed_at,
+                        network_product_data=network_data,
+                    )
+                finally:
+                    stage_durations_ms["parse"] = _elapsed_ms(parse_started_at)
                 return {
                     "capture": capture,
                     "html": html,
                     "network_data": network_data,
                     "resolved_url": resolved_url,
                     "browser_target_digest": target_digest,
+                    "browser_provider_name": browser_provider_name,
+                    "stage_durations_ms": stage_durations_ms,
                     "screenshot_bytes": b"",
                 }
             except AmazonProductExtractionError as exc:
@@ -423,6 +548,8 @@ def _collect_browser_page(
                     "html": _page_content(page),
                     "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
                     "browser_target_digest": target_digest,
+                    "browser_provider_name": browser_provider_name,
+                    "stage_durations_ms": stage_durations_ms,
                     "screenshot_bytes": _page_screenshot(page),
                     "error": exc,
                 }
@@ -437,6 +564,8 @@ def _collect_browser_page(
                     "html": _page_content(page),
                     "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
                     "browser_target_digest": target_digest,
+                    "browser_provider_name": browser_provider_name,
+                    "stage_durations_ms": stage_durations_ms,
                     "screenshot_bytes": _page_screenshot(page),
                     "error": {
                         "error_code": error_code,
@@ -591,23 +720,51 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Non-finite JSON number is not allowed: {value}")
 
 
-def _navigate(page: Any, url: str, *, timeout_ms: int) -> None:
+def _navigate(page: Any, url: str, *, timeout_ms: int) -> Any:
     navigate = getattr(page, "navigate", None)
     if callable(navigate):
         try:
-            navigate(url, wait_until="domcontentloaded", timeout_ms=timeout_ms)
-            return
+            return navigate(url, wait_until="domcontentloaded", timeout_ms=timeout_ms)
         except TypeError:
-            navigate(url)
-            return
+            return navigate(url)
 
     goto = getattr(page, "goto", None)
     if not callable(goto):
         raise RuntimeError("Browser page does not support navigation.")
     try:
-        goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        return goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
     except TypeError:
-        goto(url)
+        return goto(url)
+
+
+def _navigation_response_error(response: Any) -> dict[str, Any]:
+    if isinstance(response, Mapping):
+        raw_status = response.get("status")
+    else:
+        raw_status = getattr(response, "status", None)
+        if callable(raw_status):
+            raw_status = raw_status()
+    if isinstance(raw_status, bool):
+        return {}
+    try:
+        status = int(raw_status)
+    except (TypeError, ValueError):
+        return {}
+    if status == 429:
+        return {
+            "error_code": "rate_limited",
+            "message": "Amazon navigation returned HTTP 429.",
+            "retryable": True,
+            "collection_status": "failed",
+        }
+    if 500 <= status <= 599:
+        return {
+            "error_code": "transient_page_failure",
+            "message": f"Amazon navigation returned HTTP {status}.",
+            "retryable": True,
+            "collection_status": "failed",
+        }
+    return {}
 
 
 def _settle_network_responses(page: Any) -> None:
@@ -658,21 +815,21 @@ def _page_screenshot(page: Any) -> bytes:
     screenshot = getattr(page, "screenshot", None)
     if not callable(screenshot):
         return b""
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return b""
     try:
-        evaluate = getattr(page, "evaluate", None)
-        if callable(evaluate):
-            try:
-                evaluate(
-                    """
-                    document.querySelectorAll(
-                      '#nav-link-accountList, #nav-global-location-slot, '
-                      + '#glow-ingress-block, [data-nav-role="signin"], '
-                      + '[id*="address-book"], [class*="account-name"]'
-                    ).forEach((node) => { node.style.visibility = 'hidden'; });
-                    """
-                )
-            except Exception:
-                pass
+        evaluate(
+            """
+            document.querySelectorAll(
+              '#nav-link-accountList, #nav-global-location-slot, '
+              + '#glow-ingress-block, [data-nav-role="signin"], '
+              + '[id*="address" i], [class*="address" i], '
+              + '[id*="account" i], [class*="account" i], '
+              + '[id*="location" i], [class*="location" i]'
+            ).forEach((node) => { node.style.visibility = 'hidden'; });
+            """
+        )
         return _bytes_value(screenshot(full_page=True))
     except Exception:
         return b""
@@ -695,45 +852,55 @@ def _write_success_artifacts(
         run_id=run_id,
         observed_at=observed_at,
     )
-    normalized_ref = _upload_bytes(
-        context=context,
-        artifact_policy=artifact_policy,
-        object_key=f"{base_key}/normalized.json",
-        payload=capture_bytes,
-        capture_kind="normalized_capture",
-        content_type="application/json",
-        sanitization_status="normalized",
-        observed_at=observed_at,
-    )
-    html_ref = _upload_bytes(
-        context=context,
-        artifact_policy=artifact_policy,
-        object_key=f"{base_key}/page.html.gz",
-        payload=gzip.compress(sanitized_html.encode("utf-8"), mtime=0),
-        capture_kind="html",
-        content_type="application/gzip",
-        sanitization_status="sanitized",
-        observed_at=observed_at,
-        content_encoding="gzip",
-    )
-    network_ref = None
-    if network_data:
-        network_ref = _upload_bytes(
+    refs: list[dict[str, Any]] = []
+    try:
+        normalized_ref = _upload_bytes(
             context=context,
             artifact_policy=artifact_policy,
-            object_key=f"{base_key}/page-data.json",
-            payload=json.dumps(
-                network_data,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8"),
-            capture_kind="network_data",
+            object_key=f"{base_key}/normalized.json",
+            payload=capture_bytes,
+            capture_kind="normalized_capture",
             content_type="application/json",
-            sanitization_status="allowlisted",
+            sanitization_status="normalized",
+            run_id=run_id,
             observed_at=observed_at,
         )
+        refs.append(normalized_ref)
+        html_ref = _upload_bytes(
+            context=context,
+            artifact_policy=artifact_policy,
+            object_key=f"{base_key}/page.html.gz",
+            payload=gzip.compress(sanitized_html.encode("utf-8"), mtime=0),
+            capture_kind="html",
+            content_type="application/gzip",
+            sanitization_status="sanitized",
+            run_id=run_id,
+            observed_at=observed_at,
+            content_encoding="gzip",
+        )
+        refs.append(html_ref)
+        network_ref = None
+        if network_data:
+            network_ref = _upload_bytes(
+                context=context,
+                artifact_policy=artifact_policy,
+                object_key=f"{base_key}/page-data.json",
+                payload=json.dumps(
+                    network_data,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8"),
+                capture_kind="network_data",
+                content_type="application/json",
+                sanitization_status="allowlisted",
+                run_id=run_id,
+                observed_at=observed_at,
+            )
+            refs.append(network_ref)
+    except Exception as exc:
+        raise _ArtifactWriteError(str(exc), artifact_refs=refs) from exc
     return normalized_ref, html_ref, network_ref
 
 
@@ -754,33 +921,41 @@ def _write_failure_artifacts(
         observed_at=observed_at,
     )
     refs: list[dict[str, Any]] = []
-    if html:
-        refs.append(
-            _upload_bytes(
-                context=context,
-                artifact_policy=artifact_policy,
-                object_key=f"{base_key}/page.html.gz",
-                payload=gzip.compress(_sanitize_amazon_html(html).encode("utf-8"), mtime=0),
-                capture_kind="html",
-                content_type="application/gzip",
-                sanitization_status="sanitized",
-                observed_at=observed_at,
-                content_encoding="gzip",
+    try:
+        if html:
+            refs.append(
+                _upload_bytes(
+                    context=context,
+                    artifact_policy=artifact_policy,
+                    object_key=f"{base_key}/page.html.gz",
+                    payload=gzip.compress(
+                        _sanitize_amazon_html(html).encode("utf-8"),
+                        mtime=0,
+                    ),
+                    capture_kind="html",
+                    content_type="application/gzip",
+                    sanitization_status="sanitized",
+                    run_id=run_id,
+                    observed_at=observed_at,
+                    content_encoding="gzip",
+                )
             )
-        )
-    if screenshot_bytes:
-        refs.append(
-            _upload_bytes(
-                context=context,
-                artifact_policy=artifact_policy,
-                object_key=f"{base_key}/page.png",
-                payload=screenshot_bytes,
-                capture_kind="screenshot",
-                content_type="image/png",
-                sanitization_status="not_applicable",
-                observed_at=observed_at,
+        if screenshot_bytes:
+            refs.append(
+                _upload_bytes(
+                    context=context,
+                    artifact_policy=artifact_policy,
+                    object_key=f"{base_key}/page.png",
+                    payload=screenshot_bytes,
+                    capture_kind="screenshot",
+                    content_type="image/png",
+                    sanitization_status="not_applicable",
+                    run_id=run_id,
+                    observed_at=observed_at,
+                )
             )
-        )
+    except Exception as exc:
+        raise _ArtifactWriteError(str(exc), artifact_refs=refs) from exc
     return refs
 
 
@@ -791,10 +966,7 @@ def _raw_capture_base_key(
     run_id: str,
     observed_at: datetime,
 ) -> str:
-    relative = (
-        f"raw-captures/amazon/us/{requested_asin}/"
-        f"{observed_at:%Y/%m/%d}/{run_id}"
-    )
+    relative = f"raw-captures/amazon/us/{requested_asin}/{observed_at:%Y/%m/%d}/{run_id}"
     return join_object_key(_clean_text(artifact_policy.get("object_prefix")), relative)
 
 
@@ -807,13 +979,19 @@ def _upload_bytes(
     capture_kind: str,
     content_type: str,
     sanitization_status: str,
+    run_id: str,
     observed_at: datetime,
     content_encoding: str = "",
 ) -> dict[str, Any]:
     store = artifact_policy["store"]
     bucket = _required_text(artifact_policy.get("bucket"), "artifact bucket")
+    content_digest = hashlib.sha256(payload).hexdigest()
+    key_prefix, separator, file_name = object_key.rpartition("/")
+    if not separator or not key_prefix or not file_name:
+        raise ValueError("Amazon raw capture object_key must include a governed prefix and file.")
+    object_key = f"{key_prefix}/{content_digest}/{file_name}"
     with tempfile.TemporaryDirectory(prefix="mujitask-amazon-") as temp_dir:
-        local_path = Path(temp_dir) / Path(object_key).name
+        local_path = Path(temp_dir) / file_name
         local_path.write_bytes(payload)
         stored = store.upload_file(
             bucket=bucket,
@@ -826,6 +1004,7 @@ def _upload_bytes(
                 "capture_kind": capture_kind,
                 "source_platform": "amazon",
                 "marketplace_code": "US",
+                "run_id": run_id,
             },
         )
     if stored.bucket != bucket or stored.object_key != object_key:
@@ -834,9 +1013,12 @@ def _upload_bytes(
         "capture_kind": capture_kind,
         "bucket": stored.bucket,
         "object_key": stored.object_key,
-        "content_digest": hashlib.sha256(payload).hexdigest(),
+        "content_digest": content_digest,
         "content_type": content_type,
         "sanitization_status": sanitization_status,
+        "request_id": context.request_id,
+        "execution_id": context.job_id,
+        "run_id": run_id,
         "collected_at": _iso_timestamp(observed_at),
         "created_at": _iso_timestamp(observed_at),
         "created_at_epoch": observed_at.timestamp(),
@@ -847,6 +1029,103 @@ def _upload_bytes(
     if content_encoding:
         ref["content_encoding"] = content_encoding
     return ref
+
+
+class _AmazonHTMLSanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skip_depth = 0
+        self.script_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        normalized_tag = tag.lower()
+        if self.skip_depth:
+            if normalized_tag not in _VOID_HTML_TAGS:
+                self.skip_depth += 1
+            return
+        if normalized_tag in _DROPPED_HTML_TAGS or _has_sensitive_html_identity(attrs):
+            if normalized_tag not in _VOID_HTML_TAGS:
+                self.skip_depth = 1
+            return
+        safe_attrs = _safe_html_attributes(attrs)
+        rendered_attrs = "".join(
+            f' {name}="{escape(value, quote=True)}"' if value is not None else f" {name}"
+            for name, value in safe_attrs
+        )
+        self.parts.append(f"<{normalized_tag}{rendered_attrs}>")
+        if normalized_tag == "script":
+            self.script_depth += 1
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if self.skip_depth:
+            return
+        normalized_tag = tag.lower()
+        if normalized_tag in _DROPPED_HTML_TAGS or _has_sensitive_html_identity(attrs):
+            return
+        safe_attrs = _safe_html_attributes(attrs)
+        rendered_attrs = "".join(
+            f' {name}="{escape(value, quote=True)}"' if value is not None else f" {name}"
+            for name, value in safe_attrs
+        )
+        self.parts.append(f"<{normalized_tag}{rendered_attrs}/>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if self.skip_depth:
+            self.skip_depth -= 1
+            return
+        self.parts.append(f"</{normalized_tag}>")
+        if normalized_tag == "script" and self.script_depth:
+            self.script_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        self.parts.append(data if self.script_depth else escape(data, quote=False))
+
+    def handle_decl(self, decl: str) -> None:
+        if not self.skip_depth and decl.strip().lower() == "doctype html":
+            self.parts.append("<!DOCTYPE html>")
+
+
+def _has_sensitive_html_identity(attrs: list[tuple[str, str | None]]) -> bool:
+    for name, value in attrs:
+        normalized_name = re.sub(r"[^a-z0-9]", "", str(name).lower())
+        normalized_value = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+        if (
+            normalized_name.startswith("on")
+            or normalized_name in _SENSITIVE_HTML_ATTRIBUTE_NAMES
+            or any(marker in normalized_name for marker in _SENSITIVE_HTML_ATTRIBUTE_NAMES)
+            or any(marker in normalized_value for marker in _SENSITIVE_HTML_MARKERS)
+        ):
+            return True
+    return False
+
+
+def _safe_html_attributes(
+    attrs: list[tuple[str, str | None]],
+) -> list[tuple[str, str | None]]:
+    return [
+        (name.lower(), value)
+        for name, value in attrs
+        if name.lower() in _SAFE_HTML_ATTRIBUTES
+    ]
+
+
+def _sanitize_html_structure(html: str) -> str:
+    parser = _AmazonHTMLSanitizer()
+    parser.feed(html)
+    parser.close()
+    return "".join(parser.parts)
 
 
 def _sanitize_amazon_html(html: str) -> str:
@@ -877,17 +1156,7 @@ def _sanitize_amazon_html(html: str) -> str:
         )
 
     sanitized = _SCRIPT_PATTERN.sub(sanitize_script, html)
-    sanitized = re.sub(r"<!--.*?-->", "", sanitized, flags=re.DOTALL)
-    for _ in range(3):
-        sanitized = _SENSITIVE_ELEMENT_PATTERN.sub("", sanitized)
-    sanitized = re.sub(r"<input\b[^>]*>", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(
-        r"<meta\b[^>]*(?:http-equiv|authorization|cookie|token)[^>]*>",
-        "",
-        sanitized,
-        flags=re.IGNORECASE,
-    )
-    sanitized = _SENSITIVE_ATTRIBUTE_PATTERN.sub("", sanitized)
+    sanitized = _sanitize_html_structure(sanitized)
     sanitized = re.sub(
         r"\bBearer\s+[A-Za-z0-9._~+/-]+=*",
         "Bearer [REDACTED]",
@@ -902,13 +1171,17 @@ def _sanitize_json_value(value: Any) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _SENSITIVE_JSON_KEYS or normalized.endswith("token") or any(
-                marker in normalized
-                for marker in (
-                    "authorization",
-                    "cookie",
-                    "localstorage",
-                    "requestheader",
+            if (
+                normalized in _SENSITIVE_JSON_KEYS
+                or normalized.endswith("token")
+                or any(
+                    marker in normalized
+                    for marker in (
+                        "authorization",
+                        "cookie",
+                        "localstorage",
+                        "requestheader",
+                    )
                 )
             ):
                 continue
@@ -921,11 +1194,7 @@ def _sanitize_json_value(value: Any) -> Any:
 
 def _field_coverage(value: Any) -> dict[str, int | float]:
     evidence = value if isinstance(value, dict) else {}
-    statuses = [
-        item.get("status")
-        for item in evidence.values()
-        if isinstance(item, dict)
-    ]
+    statuses = [item.get("status") for item in evidence.values() if isinstance(item, dict)]
     observed = statuses.count("observed")
     explicitly_unavailable = statuses.count("explicitly_unavailable")
     missing = statuses.count("missing")
@@ -950,7 +1219,7 @@ def _media_source_refs(capture: Mapping[str, Any]) -> list[dict[str, Any]]:
     seen: set[str] = set()
 
     def append(item: Any, *, role: str, position: int) -> None:
-        source_url = _media_url(item)
+        source_url = _governed_media_url(_media_url(item))
         if not source_url or source_url in seen:
             return
         seen.add(source_url)
@@ -981,6 +1250,91 @@ def _media_url(value: Any) -> str:
     return ""
 
 
+def _normalize_capture_media_urls(capture: dict[str, Any]) -> None:
+    media_value = capture.get("media")
+    if not isinstance(media_value, Mapping):
+        return
+    media = dict(media_value)
+    raw_main_image = media.get("main_image")
+    main_image = _normalize_capture_media_item(raw_main_image)
+    gallery_value = media.get("gallery_images")
+    gallery_images = []
+    if isinstance(gallery_value, list):
+        for item in gallery_value:
+            normalized_item = _normalize_capture_media_item(item)
+            if normalized_item is not None:
+                gallery_images.append(normalized_item)
+    media["main_image"] = main_image
+    media["gallery_images"] = gallery_images
+    capture["media"] = media
+
+    evidence_value = capture.get("field_evidence")
+    if not isinstance(evidence_value, Mapping):
+        return
+    evidence = dict(evidence_value)
+    for path, raw_value, value in (
+        ("media.main_image", raw_main_image, main_image),
+        ("media.gallery_images", gallery_value, gallery_images),
+    ):
+        item = evidence.get(path)
+        if not isinstance(item, Mapping):
+            continue
+        normalized_item = dict(item)
+        normalized_item["value"] = value
+        rejected = bool(raw_value) and not value
+        if isinstance(raw_value, list):
+            rejected = len(value) != len(raw_value)
+        if rejected and capture.get("collection_status") == "success":
+            capture["collection_status"] = "partial_success"
+        if bool(raw_value) and not value:
+            normalized_item.update(
+                {
+                    "status": "missing",
+                    "source_kind": None,
+                    "source_locator": None,
+                    "confidence": 0.0,
+                }
+            )
+        evidence[path] = normalized_item
+    capture["field_evidence"] = evidence
+
+
+def _normalize_capture_media_item(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, Mapping):
+        return None
+    source_url = _governed_media_url(_clean_text(value.get("url")))
+    return {"url": source_url} if source_url else None
+
+
+def _governed_media_url(value: str) -> str:
+    if not value or any(character.isspace() for character in value):
+        return ""
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    allowed_host = any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in ("media-amazon.com", "ssl-images-amazon.com")
+    )
+    if (
+        parsed.scheme.lower() != "https"
+        or not allowed_host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        return ""
+    return parsed._replace(
+        scheme="https",
+        netloc=hostname,
+        query="",
+        fragment="",
+    ).geturl()
+
+
 def _evidence_status(evidence: Mapping[str, Any], path: str) -> str:
     item = evidence.get(path)
     return _clean_text(item.get("status")) if isinstance(item, dict) else ""
@@ -1003,6 +1357,28 @@ def _page_error(error: Any) -> tuple[str, str, bool, str]:
     return "transient_page_failure", str(error), True, "failed"
 
 
+def _browser_provider_name(value: Any) -> str:
+    provider_name = _clean_text(value)
+    return provider_name if _BROWSER_PROVIDER_NAME.fullmatch(provider_name) else ""
+
+
+def _browser_stage_durations(value: Any) -> dict[str, float]:
+    raw = value if isinstance(value, Mapping) else {}
+    durations: dict[str, float] = {}
+    for stage_name in _BROWSER_STAGE_NAMES:
+        duration = raw.get(stage_name)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        normalized = float(duration)
+        if math.isfinite(normalized) and normalized >= 0:
+            durations[stage_name] = round(normalized, 3)
+    return durations
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round(max(perf_counter() - started_at, 0.0) * 1_000.0, 3)
+
+
 def _failure(
     context: HandlerContext,
     *,
@@ -1014,8 +1390,12 @@ def _failure(
     artifact_refs: list[dict[str, Any]] | None = None,
     requested_asin: str = "",
     canonical_url: str = "",
+    browser_provider_name: str = "",
+    stage_durations_ms: Mapping[str, Any] | None = None,
 ) -> HandlerResult:
     refs = list(artifact_refs or [])
+    provider_name = _browser_provider_name(browser_provider_name)
+    stage_durations = _browser_stage_durations(stage_durations_ms)
     result: dict[str, Any] = {
         "collection_status": collection_status,
         "artifact_refs": refs,
@@ -1028,6 +1408,22 @@ def _failure(
         result["canonical_url"] = canonical_url
     if browser_target_digest:
         result["browser_target_digest"] = browser_target_digest
+    if provider_name:
+        result["browser_provider_name"] = provider_name
+    if stage_durations:
+        result["stage_durations_ms"] = stage_durations
+    summary = {
+        "marketplace_code": "US",
+        "requested_asin": requested_asin,
+        "collection_status": collection_status,
+        "artifact_count": len(refs),
+        "browser_target_digest": browser_target_digest,
+        "error_code": error_code,
+    }
+    if provider_name:
+        summary["browser_provider_name"] = provider_name
+    if stage_durations:
+        summary["stage_durations_ms"] = stage_durations
     return failed_result(
         context,
         error=build_error(
@@ -1040,13 +1436,7 @@ def _failure(
                 "artifact_count": len(refs),
             },
         ),
-        summary={
-            "marketplace_code": "US",
-            "requested_asin": requested_asin,
-            "collection_status": collection_status,
-            "artifact_count": len(refs),
-            "browser_target_digest": browser_target_digest,
-        },
+        summary=summary,
         result=result,
     )
 

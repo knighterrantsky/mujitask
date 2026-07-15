@@ -129,10 +129,16 @@ owners:
 
   amazon_fact_persistence:
     paths:
+      - alembic_fact.ini
+      - alembic_fact/**
+      - alembic/versions/20260714_0007_amazon_product_facts.py
+      - scripts/execution_control/run_fact_alembic_upgrade.sh
       - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
       - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
       - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
     responsibilities:
+      - route Amazon Fact DDL through the explicit Fact migration database URL and isolated fact_alembic_version table
+      - grant the configured shared Fact runtime role only schema usage, governed TikTok and Amazon Fact table DML, and Fact version reads; Runtime tables remain outside this role
       - define Amazon fact tables for migration and test bootstrap consumers
       - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
       - enforce marketplace plus ASIN identity and per-run idempotency keys

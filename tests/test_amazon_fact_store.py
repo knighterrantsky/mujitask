@@ -2,9 +2,21 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine, text
 
-from automation_business_scaffold.infrastructure.facts.amazon_fact_store import AmazonFactStore
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import (
+    AmazonFactCollisionError,
+    AmazonFactStore,
+)
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
+)
+
+
+DIGEST_A = "a" * 64
+DIGEST_B = "b" * 64
+DIGEST_C = "c" * 64
 
 
 def test_store_constructor_does_not_bootstrap_or_touch_the_database() -> None:
@@ -14,6 +26,56 @@ def test_store_constructor_does_not_bootstrap_or_touch_the_database() -> None:
     store = AmazonFactStore(runtime_store=runtime_store)
 
     assert store._engine is engine  # noqa: SLF001
+
+
+def test_store_transaction_commits_or_rolls_back_the_entire_bundle(runtime_db_url) -> None:
+    store = AmazonFactStore(db_url=runtime_db_url)
+    try:
+        with pytest.raises(RuntimeError, match="injected transaction failure"):
+            with store.transaction() as transaction_store:
+                product = transaction_store.upsert_product(
+                    marketplace_code="US",
+                    asin="B0ROLLBACK",
+                    observed_at=1000.0,
+                )
+                transaction_store.record_product_snapshot(
+                    product_id=product["id"],
+                    marketplace_code="US",
+                    asin="B0ROLLBACK",
+                    run_id="rollback-run",
+                    content_digest=DIGEST_A,
+                    collected_at=1000.0,
+                )
+                raise RuntimeError("injected transaction failure")
+
+        assert _count_for_asin(runtime_db_url, "B0ROLLBACK") == 0
+
+        with store.transaction() as transaction_store:
+            product = transaction_store.upsert_product(
+                marketplace_code="US",
+                asin="B0COMMIT01",
+                observed_at=2000.0,
+            )
+            transaction_store.record_product_snapshot(
+                product_id=product["id"],
+                marketplace_code="US",
+                asin="B0COMMIT01",
+                run_id="commit-run",
+                content_digest=DIGEST_B,
+                collected_at=2000.0,
+            )
+
+        assert _count_for_asin(runtime_db_url, "B0COMMIT01") == 1
+    finally:
+        store.close()
+
+
+def test_store_requires_the_isolated_fact_migration_revision(runtime_db_url) -> None:
+    store = AmazonFactStore(db_url=runtime_db_url)
+    try:
+        assert store.require_schema_revision() == AMAZON_FACT_SCHEMA_REVISION
+    finally:
+        store.close()
 
 
 def test_product_master_upsert_is_idempotent_and_missing_values_do_not_erase(
@@ -79,7 +141,7 @@ def test_product_snapshot_is_immutable_per_run_and_new_runs_append(runtime_db_ur
         child_asins=["B0CHILD001", "B0CHILD002"],
         field_coverage={"percent": 100.0},
         payload={"collection_status": "success"},
-        content_digest="digest-1",
+        content_digest=DIGEST_A,
         collected_at=1000.0,
     )
     repeated = store.record_product_snapshot(
@@ -88,14 +150,25 @@ def test_product_snapshot_is_immutable_per_run_and_new_runs_append(runtime_db_ur
         asin="B0CHILD001",
         run_id="run-1",
         title="Must not replace immutable snapshot",
+        content_digest=DIGEST_A,
         collected_at=2000.0,
     )
+    with pytest.raises(AmazonFactCollisionError, match="different immutable evidence"):
+        store.record_product_snapshot(
+            product_id=product["id"],
+            marketplace_code="US",
+            asin="B0CHILD001",
+            run_id="run-1",
+            content_digest=DIGEST_B,
+            collected_at=2000.0,
+        )
     second_run = store.record_product_snapshot(
         product_id=product["id"],
         marketplace_code="US",
         asin="B0CHILD001",
         run_id="run-2",
         title="Second observation",
+        content_digest=DIGEST_C,
         collected_at=3000.0,
     )
     latest = store.set_latest_snapshot(
@@ -127,6 +200,7 @@ def test_stale_product_replay_cannot_regress_master_or_latest_snapshot(runtime_d
         asin="B0CHILD001",
         run_id="run-1",
         title="Old title",
+        content_digest=DIGEST_A,
         collected_at=1000.0,
     )
     store.set_latest_snapshot(
@@ -147,6 +221,7 @@ def test_stale_product_replay_cannot_regress_master_or_latest_snapshot(runtime_d
         asin="B0CHILD001",
         run_id="run-2",
         title="New unavailable title",
+        content_digest=DIGEST_B,
         collected_at=2000.0,
     )
     store.set_latest_snapshot(
@@ -183,6 +258,7 @@ def test_stale_product_replay_cannot_regress_master_or_latest_snapshot(runtime_d
         marketplace_code="US",
         asin="B0CHILD002",
         run_id="other-run",
+        content_digest=DIGEST_C,
         collected_at=3000.0,
     )
     after_foreign_pointer = store.set_latest_snapshot(
@@ -206,6 +282,7 @@ def test_offer_variant_and_bsr_writes_are_independently_idempotent(runtime_db_ur
         marketplace_code="US",
         asin="B0CHILD001",
         run_id="run-1",
+        content_digest=DIGEST_A,
         collected_at=1000.0,
     )
 
@@ -298,6 +375,7 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         marketplace_code="US",
         asin="B0CHILD001",
         run_id="run-1",
+        content_digest=DIGEST_A,
         collected_at=1000.0,
     )
 
@@ -339,13 +417,15 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         snapshot_id=snapshot["snapshot_id"],
         capture_kind="normalized_capture",
         bucket="artifacts",
-        object_key="raw-captures/amazon/us/B0CHILD001/run-1/normalized.json",
-        content_digest="capture-sha256",
+        object_key=(
+            f"raw-captures/amazon/us/B0CHILD001/run-1/{DIGEST_A}/normalized.json"
+        ),
+        content_digest=DIGEST_A,
         content_type="application/json",
         request_id="request-1",
         execution_id="execution-1",
         run_id="run-1",
-        sanitization_status="sanitized",
+        sanitization_status="normalized",
         collected_at=1000.0,
     )
     repeated_raw = store.record_raw_capture(
@@ -353,7 +433,15 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         snapshot_id=snapshot["snapshot_id"],
         capture_kind="normalized_capture",
         bucket="artifacts",
-        object_key="raw-captures/amazon/us/B0CHILD001/run-1/normalized.json",
+        object_key=(
+            f"raw-captures/amazon/us/B0CHILD001/run-1/{DIGEST_A}/normalized.json"
+        ),
+        content_digest=DIGEST_A,
+        content_type="application/json",
+        request_id="request-1",
+        execution_id="execution-1",
+        run_id="run-1",
+        sanitization_status="normalized",
         collected_at=2000.0,
     )
     binding = store.upsert_feishu_binding(
@@ -363,7 +451,7 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         record_id="record-1",
         source_asin="B0CHILD001",
         status="pending",
-        last_synced_snapshot_id="",
+        latest_snapshot_id="",
         observed_at=1000.0,
     )
     repeated_binding = store.upsert_feishu_binding(
@@ -373,7 +461,7 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         record_id="record-1",
         source_asin="B0CHILD001",
         status="facts_persisted",
-        last_synced_snapshot_id=snapshot["snapshot_id"],
+        latest_snapshot_id=snapshot["snapshot_id"],
         observed_at=2000.0,
     )
 
@@ -383,11 +471,53 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
     assert raw["raw_capture_id"] == repeated_raw["raw_capture_id"]
     assert binding["binding_id"] == repeated_binding["binding_id"]
     assert repeated_binding["status"] == "facts_persisted"
-    assert repeated_binding["last_synced_snapshot_id"] == snapshot["snapshot_id"]
+    assert repeated_binding["latest_snapshot_id"] == snapshot["snapshot_id"]
     assert _count(runtime_db_url, "amazon_media_assets") == 1
     assert _count(runtime_db_url, "amazon_product_media_assets") == 1
     assert _count(runtime_db_url, "amazon_raw_captures") == 1
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
+
+
+def test_raw_capture_object_key_collision_rejects_changed_immutable_evidence(
+    runtime_db_url,
+) -> None:
+    store = AmazonFactStore(db_url=runtime_db_url)
+    product = store.upsert_product(
+        marketplace_code="US",
+        asin="B0CHILD001",
+        observed_at=1000.0,
+    )
+    snapshot = store.record_product_snapshot(
+        product_id=product["id"],
+        marketplace_code="US",
+        asin="B0CHILD001",
+        run_id="run-1",
+        content_digest=DIGEST_A,
+        collected_at=1000.0,
+    )
+    values = {
+        "product_id": product["id"],
+        "snapshot_id": snapshot["snapshot_id"],
+        "capture_kind": "normalized_capture",
+        "bucket": "artifacts",
+        "object_key": (
+            f"raw-captures/amazon/us/B0CHILD001/run-1/{DIGEST_A}/normalized.json"
+        ),
+        "content_digest": "a" * 64,
+        "content_type": "application/json",
+        "run_id": "run-1",
+        "sanitization_status": "normalized",
+        "collected_at": 1000.0,
+    }
+    stored = store.record_raw_capture(**values)
+
+    with pytest.raises(ValueError, match="different immutable evidence"):
+        store.record_raw_capture(**{**values, "run_id": "run-2"})
+
+    unchanged = store.record_raw_capture(**values)
+    assert stored["content_digest"] == "a" * 64
+    assert unchanged["content_digest"] == "a" * 64
+    assert _count(runtime_db_url, "amazon_raw_captures") == 1
 
 
 def test_stale_mutable_replays_do_not_overwrite_newer_facts(runtime_db_url) -> None:
@@ -402,6 +532,7 @@ def test_stale_mutable_replays_do_not_overwrite_newer_facts(runtime_db_url) -> N
         marketplace_code="US",
         asin="B0CHILD001",
         run_id="run-2",
+        content_digest=DIGEST_B,
         collected_at=2000.0,
     )
     variant = store.upsert_variant(
@@ -435,7 +566,7 @@ def test_stale_mutable_replays_do_not_overwrite_newer_facts(runtime_db_url) -> N
         record_id="record-1",
         source_asin="B0CHILD001",
         status="facts_persisted",
-        last_synced_snapshot_id=snapshot["snapshot_id"],
+        latest_snapshot_id=snapshot["snapshot_id"],
         observed_at=2000.0,
     )
 
@@ -470,7 +601,7 @@ def test_stale_mutable_replays_do_not_overwrite_newer_facts(runtime_db_url) -> N
         record_id="record-1",
         source_asin="B0CHILD001",
         status="active",
-        last_synced_snapshot_id="old-snapshot",
+        latest_snapshot_id="old-snapshot",
         observed_at=1000.0,
     )
     omitted_status = store.upsert_feishu_binding(
@@ -495,10 +626,10 @@ def test_stale_mutable_replays_do_not_overwrite_newer_facts(runtime_db_url) -> N
     assert stale_relation["last_seen_at"] == 2000.0
     assert binding["binding_id"] == stale_binding["binding_id"]
     assert stale_binding["status"] == "facts_persisted"
-    assert stale_binding["last_synced_snapshot_id"] == snapshot["snapshot_id"]
+    assert stale_binding["latest_snapshot_id"] == snapshot["snapshot_id"]
     assert omitted_status["status"] == "facts_persisted"
-    assert omitted_status["last_synced_snapshot_id"] == snapshot["snapshot_id"]
-    assert omitted_status["last_synced_at"] == 3000.0
+    assert omitted_status["latest_snapshot_id"] == snapshot["snapshot_id"]
+    assert omitted_status["last_bound_at"] == 3000.0
 
 
 def _count(db_url: str, table_name: str) -> int:
@@ -506,5 +637,19 @@ def _count(db_url: str, table_name: str) -> int:
     try:
         with engine.connect() as connection:
             return int(connection.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar_one())
+    finally:
+        engine.dispose()
+
+
+def _count_for_asin(db_url: str, asin: str) -> int:
+    engine = create_engine(db_url, future=True)
+    try:
+        with engine.connect() as connection:
+            return int(
+                connection.execute(
+                    text("SELECT COUNT(*) FROM amazon_products WHERE asin = :asin"),
+                    {"asin": asin},
+                ).scalar_one()
+            )
     finally:
         engine.dispose()

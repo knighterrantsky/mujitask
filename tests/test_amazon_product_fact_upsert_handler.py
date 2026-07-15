@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, text
 
+import automation_business_scaffold.capabilities.persistence.database.amazon_product_fact_upsert_handler as fact_handler_module
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
+    extract_amazon_network_product_data,
     extract_amazon_product_capture,
 )
 from automation_business_scaffold.capabilities.persistence.database.amazon_product_fact_upsert_handler import (
@@ -26,7 +30,9 @@ from automation_business_scaffold.domains.amazon.projections.feishu_product_proj
     amazon_product_projection_mapper,
 )
 from automation_business_scaffold.infrastructure.artifacts.minio_store import MinioArtifactStore
-from automation_business_scaffold.infrastructure.facts.amazon_fact_store import AmazonFactStore
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import (
+    AmazonFactStore,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "amazon"
@@ -46,6 +52,11 @@ ARTIFACT_ENV_KEYS = (
     "BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY",
     "EXECUTION_CONTROL_MINIO_SECRET_KEY",
 )
+SANITIZED_HTML_BYTES = gzip.compress(
+    b"<html><body><h1>Sanitized Amazon product evidence</h1></body></html>",
+    mtime=0,
+)
+MATERIALIZED_MEDIA_BLOBS: dict[tuple[str, str], bytes] = {}
 
 
 class FakeArtifactStore:
@@ -53,13 +64,26 @@ class FakeArtifactStore:
     artifact_bucket = "artifacts"
     artifact_object_prefix = ""
 
-    def __init__(self, blobs: dict[tuple[str, str], bytes]) -> None:
+    def __init__(
+        self,
+        blobs: dict[tuple[str, str], bytes],
+        *,
+        default_html_bytes: bytes | None = SANITIZED_HTML_BYTES,
+    ) -> None:
         self.blobs = blobs
+        self.default_html_bytes = default_html_bytes
         self.read_calls: list[tuple[str, str]] = []
 
     def read_bytes(self, *, bucket: str, object_key: str) -> bytes:
         self.read_calls.append((bucket, object_key))
-        return self.blobs[(bucket, object_key)]
+        if (bucket, object_key) in self.blobs:
+            return self.blobs[(bucket, object_key)]
+        if object_key.endswith("/page.html.gz"):
+            if self.default_html_bytes is not None:
+                return self.default_html_bytes
+        if (bucket, object_key) in MATERIALIZED_MEDIA_BLOBS:
+            return MATERIALIZED_MEDIA_BLOBS[(bucket, object_key)]
+        raise KeyError((bucket, object_key))
 
 
 def _capture_bytes(name: str, *, asin: str, resolved_url: str) -> bytes:
@@ -79,16 +103,39 @@ def _capture_bytes(name: str, *, asin: str, resolved_url: str) -> bytes:
     return json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _network_capture_bytes(asin: str = "B0CHILD001") -> bytes:
+    network_capture = extract_amazon_network_product_data(
+        [
+            {
+                "source_path": "/page-data",
+                "payload": {
+                    "asin": asin,
+                    "product": {"title": "Allowlisted network title"},
+                },
+            }
+        ],
+        expected_asin=asin,
+    )
+    return json.dumps(network_capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def _payload(capture_bytes: bytes, *, asin: str = "B0CHILD001") -> dict[str, object]:
-    normalized_key = f"raw-captures/amazon/us/{asin}/run-1/normalized.json"
-    html_key = f"raw-captures/amazon/us/{asin}/run-1/page.html.gz"
+    normalized_digest = hashlib.sha256(capture_bytes).hexdigest()
+    html_digest = hashlib.sha256(SANITIZED_HTML_BYTES).hexdigest()
+    normalized_key = (
+        f"raw-captures/amazon/us/{asin}/2026/07/14/run-1/{normalized_digest}/normalized.json"
+    )
+    html_key = f"raw-captures/amazon/us/{asin}/2026/07/14/run-1/{html_digest}/page.html.gz"
     normalized_ref = {
         "capture_kind": "normalized_capture",
         "bucket": "artifacts",
         "object_key": normalized_key,
-        "content_digest": hashlib.sha256(capture_bytes).hexdigest(),
+        "content_digest": normalized_digest,
         "content_type": "application/json",
-        "sanitization_status": "sanitized",
+        "sanitization_status": "normalized",
+        "request_id": "request-1",
+        "execution_id": "browser-execution-1",
+        "run_id": "run-1",
     }
     capture = json.loads(capture_bytes)
     evidence = capture.get("field_evidence", {})
@@ -132,9 +179,12 @@ def _payload(capture_bytes: bytes, *, asin: str = "B0CHILD001") -> dict[str, obj
                 "capture_kind": "html",
                 "bucket": "artifacts",
                 "object_key": html_key,
-                "content_digest": "html-digest",
-                "content_type": "text/html",
+                "content_digest": html_digest,
+                "content_type": "application/gzip",
                 "sanitization_status": "sanitized",
+                "request_id": "request-1",
+                "execution_id": "browser-execution-1",
+                "run_id": "run-1",
             },
         ],
         "source_table_ref": {"base_id": "base-1", "table_id": "table-1"},
@@ -152,17 +202,23 @@ def _materialized_asset(
     media_role: str,
     position: int,
 ) -> dict[str, object]:
-    file_name = f"{media_role}-{position}.jpg"
+    media_bytes = b"\xff\xd8\xff\xe0" + (
+        f"amazon-media:{asin}:{media_role}:{position}:{source_url}".encode()
+    )
+    content_digest = hashlib.sha256(media_bytes).hexdigest()
+    file_name = f"{content_digest}.jpg"
     object_key = f"product-media/amazon/us/{asin}/{media_role}/{file_name}"
+    MATERIALIZED_MEDIA_BLOBS[("artifacts", object_key)] = media_bytes
     return {
         "source_url": source_url,
-        "content_digest": f"image-digest-{position}",
+        "asset_key": f"content_sha256:{content_digest}",
+        "content_digest": content_digest,
         "bucket": "artifacts",
         "object_key": object_key,
         "remote_uri": f"s3://artifacts/{object_key}",
         "file_name": file_name,
         "mime_type": "image/jpeg",
-        "size_bytes": 123 + position,
+        "size_bytes": len(media_bytes),
         "media_role": media_role,
         "position": position,
         "sync_state": "uploaded",
@@ -247,6 +303,106 @@ def test_handler_fails_when_object_storage_configuration_is_missing(monkeypatch)
     assert result.error.error_code == "object_storage_required"
 
 
+def test_handler_checks_fact_schema_before_reading_artifacts(runtime_db_url) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
+    )
+    engine = create_engine(runtime_db_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE fact_alembic_version SET version_num = 'outdated_revision'")
+            )
+    finally:
+        engine.dispose()
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "amazon_fact_schema_not_ready"
+    assert result.result["required_fact_schema_revision"] == "20260714_0007"
+    assert artifact_store.read_calls == []
+
+
+def test_handler_retries_when_fact_schema_revision_query_is_temporarily_unavailable() -> None:
+    class UnavailableFactStore:
+        def require_schema_revision(self) -> str:
+            raise fact_handler_module.AmazonFactSchemaUnavailableError(
+                "temporary database connection failure"
+            )
+
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": UnavailableFactStore(),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "amazon_fact_schema_check_failed"
+    assert result.error.retryable is True
+    assert artifact_store.read_calls == []
+
+
+def test_handler_closes_fact_store_it_constructs_on_early_failure(monkeypatch) -> None:
+    class ClosingFactStore:
+        closed = False
+
+        def require_schema_revision(self) -> str:
+            return "20260714_0007"
+
+        def close(self) -> None:
+            self.closed = True
+
+    fact_store = ClosingFactStore()
+    monkeypatch.setattr(
+        fact_handler_module,
+        "_resolve_fact_store",
+        lambda _context, _payload: fact_store,
+    )
+    monkeypatch.setattr(
+        fact_handler_module,
+        "_resolve_artifact_store",
+        lambda _context, _payload: None,
+    )
+
+    result = amazon_product_fact_upsert_handler(_context({}))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "object_storage_required"
+    assert fact_store.closed is True
+
+
 def test_handler_rejects_missing_raw_capture_evidence_before_writing(runtime_db_url) -> None:
     capture_bytes = _capture_bytes(
         "product_detail_child.html",
@@ -273,6 +429,417 @@ def test_handler_rejects_missing_raw_capture_evidence_before_writing(runtime_db_
     assert result.error is not None
     assert result.error.error_code == "raw_capture_evidence_missing"
     assert artifact_store.read_calls == []
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+@pytest.mark.parametrize(
+    ("capture_kind", "content_type", "sanitization_status"),
+    [
+        ("network_data", "application/json", "raw"),
+        ("arbitrary_secret_blob", "application/octet-stream", "unknown"),
+    ],
+)
+def test_handler_rejects_raw_capture_outside_the_governed_contract_before_reading(
+    runtime_db_url,
+    capture_kind: str,
+    content_type: str,
+    sanitization_status: str,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    extra_digest = hashlib.sha256(capture_kind.encode("utf-8")).hexdigest()
+    payload["raw_capture_refs"].append(
+        {
+            "capture_kind": capture_kind,
+            "bucket": "artifacts",
+            "object_key": (
+                "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
+                f"{extra_digest}/{capture_kind}.json"
+            ),
+            "content_digest": extra_digest,
+            "content_type": content_type,
+            "sanitization_status": sanitization_status,
+            "request_id": "request-1",
+            "execution_id": "browser-execution-1",
+            "run_id": "run-1",
+        }
+    )
+    artifact_store = FakeArtifactStore({})
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_evidence_missing"
+    assert artifact_store.read_calls == []
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_persists_allowlisted_network_data_evidence(runtime_db_url) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    network_bytes = _network_capture_bytes()
+    network_digest = hashlib.sha256(network_bytes).hexdigest()
+    payload["raw_capture_refs"].append(
+        {
+            "capture_kind": "network_data",
+            "bucket": "artifacts",
+            "object_key": (
+                "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
+                f"{network_digest}/page-data.json"
+            ),
+            "content_digest": network_digest,
+            "content_type": "application/json",
+            "sanitization_status": "allowlisted",
+            "request_id": "request-1",
+            "execution_id": "browser-execution-1",
+            "run_id": "run-1",
+        }
+    )
+    normalized_ref = payload["normalized_capture_ref"]
+    network_ref = payload["raw_capture_refs"][-1]
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", normalized_ref["object_key"]): capture_bytes,
+            ("artifacts", network_ref["object_key"]): network_bytes,
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert result.result["persisted_counts"]["raw_captures"] == 3
+    assert (
+        _scalar(
+            runtime_db_url,
+            "SELECT sanitization_status FROM amazon_raw_captures "
+            "WHERE capture_kind = 'network_data'",
+        )
+        == "allowlisted"
+    )
+
+
+def test_handler_rejects_missing_html_object_before_any_fact_write(runtime_db_url) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore(
+        {("artifacts", normalized_ref["object_key"]): capture_bytes},
+        default_html_bytes=None,
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_read_failed"
+    assert result.error.retryable is True
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_html_digest_mismatch_before_any_fact_write(runtime_db_url) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    normalized_ref = payload["normalized_capture_ref"]
+    html_ref = payload["raw_capture_refs"][1]
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", normalized_ref["object_key"]): capture_bytes,
+            ("artifacts", html_ref["object_key"]): b"tampered-html",
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_digest_mismatch"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+@pytest.mark.parametrize(
+    "html_bytes",
+    [
+        b"not-a-gzip-stream",
+        gzip.compress(
+            b'<html><body><input value="private"><h1>Product</h1></body></html>',
+            mtime=0,
+        ),
+        gzip.compress(
+            b'<html><body><div data-token="private-token">Product</div></body></html>',
+            mtime=0,
+        ),
+        gzip.compress(
+            b'<html><body><p id="shippingAddress">Jane Doe, 123 Main St</p></body></html>',
+            mtime=0,
+        ),
+        gzip.compress(
+            b'<html><body><script>window.secret="private"</script></body></html>',
+            mtime=0,
+        ),
+    ],
+)
+def test_handler_rejects_invalid_or_unsanitized_html_before_any_fact_write(
+    runtime_db_url,
+    html_bytes: bytes,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    normalized_ref = payload["normalized_capture_ref"]
+    html_ref = payload["raw_capture_refs"][1]
+    html_digest = hashlib.sha256(html_bytes).hexdigest()
+    html_ref["content_digest"] = html_digest
+    html_ref["object_key"] = (
+        "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
+        f"{html_digest}/page.html.gz"
+    )
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", normalized_ref["object_key"]): capture_bytes,
+            ("artifacts", html_ref["object_key"]): html_bytes,
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_digest_mismatch"
+    assert result.error.retryable is False
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_html_that_expands_beyond_the_decompressed_limit(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    oversized_html = gzip.compress(
+        b"<html><body>"
+        + b"A" * (fact_handler_module._MAX_SANITIZED_HTML_BYTES + 1)
+        + b"</body></html>",
+        mtime=0,
+    )
+    html_ref = payload["raw_capture_refs"][1]
+    html_digest = hashlib.sha256(oversized_html).hexdigest()
+    html_ref["content_digest"] = html_digest
+    html_ref["object_key"] = (
+        "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
+        f"{html_digest}/page.html.gz"
+    )
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", normalized_ref["object_key"]): capture_bytes,
+            ("artifacts", html_ref["object_key"]): oversized_html,
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_digest_mismatch"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_raw_object_key_from_another_run_before_fact_write(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    html_ref = payload["raw_capture_refs"][1]
+    html_ref["object_key"] = html_ref["object_key"].replace("/run-1/", "/old-run/")
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore({("artifacts", normalized_ref["object_key"]): capture_bytes})
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert artifact_store.read_calls == [
+        ("artifacts", normalized_ref["object_key"]),
+    ]
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("request_id", "another-request"),
+        ("execution_id", "another-browser-execution"),
+        ("run_id", "another-run"),
+    ],
+)
+def test_handler_rejects_inconsistent_raw_capture_provenance_before_fact_write(
+    runtime_db_url,
+    field_name: str,
+    invalid_value: str,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    payload["raw_capture_refs"][1][field_name] = invalid_value
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore(
+        {("artifacts", normalized_ref["object_key"]): capture_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert artifact_store.read_calls == [("artifacts", normalized_ref["object_key"])]
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_network_data_outside_canonical_allowlist(runtime_db_url) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    network_payload = json.loads(_network_capture_bytes())
+    network_payload["secret"] = "must-not-cross-the-boundary"
+    network_bytes = json.dumps(
+        network_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    network_digest = hashlib.sha256(network_bytes).hexdigest()
+    network_ref = {
+        "capture_kind": "network_data",
+        "bucket": "artifacts",
+        "object_key": (
+            f"raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{network_digest}/page-data.json"
+        ),
+        "content_digest": network_digest,
+        "content_type": "application/json",
+        "sanitization_status": "allowlisted",
+        "request_id": "request-1",
+        "execution_id": "browser-execution-1",
+        "run_id": "run-1",
+    }
+    payload["raw_capture_refs"].append(network_ref)
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", normalized_ref["object_key"]): capture_bytes,
+            ("artifacts", network_ref["object_key"]): network_bytes,
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "raw_capture_digest_mismatch"
     assert _count(runtime_db_url, "amazon_products") == 0
 
 
@@ -334,6 +901,138 @@ def test_handler_rejects_raw_prefix_that_only_appears_mid_path(runtime_db_url) -
 
 def test_handler_rejects_invalid_capture_payload(runtime_db_url) -> None:
     invalid_bytes = b'{"contract_revision":1}'
+    payload = _payload(invalid_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_capture_with_incomplete_field_evidence_before_any_fact_write(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    capture = json.loads(capture_bytes)
+    capture["field_evidence"] = {}
+    invalid_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = _payload(invalid_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+@pytest.mark.parametrize("metadata_key", ["source_kind", "source_locator", "confidence"])
+def test_handler_requires_complete_field_evidence_source_metadata(
+    runtime_db_url,
+    metadata_key: str,
+) -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    capture["field_evidence"]["product.title"].pop(metadata_key)
+    invalid_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = _payload(invalid_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_field_evidence_value_that_differs_from_capture(
+    runtime_db_url,
+) -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    capture["field_evidence"]["product.title"]["value"] = "Another title"
+    invalid_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = _payload(invalid_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_missing_evidence_for_a_present_capture_value(runtime_db_url) -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    title_evidence = capture["field_evidence"]["product.title"]
+    title_evidence["status"] = "missing"
+    invalid_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
     payload = _payload(invalid_bytes)
     artifact_store = FakeArtifactStore(
         {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
@@ -423,6 +1122,9 @@ def test_handler_rejects_capture_digest_mismatch_before_any_fact_write(runtime_d
     )
     payload = _payload(capture_bytes)
     payload["normalized_capture_ref"]["content_digest"] = "0" * 64
+    payload["normalized_capture_ref"]["object_key"] = (
+        f"raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{'0' * 64}/normalized.json"
+    )
     artifact_store = FakeArtifactStore(
         {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
     )
@@ -563,6 +1265,108 @@ def test_handler_persists_partial_media_and_omits_incomplete_gallery_projection(
     assert _count(runtime_db_url, "amazon_product_media_assets") == 2
 
 
+def test_handler_accepts_partial_capture_with_observed_subset_and_no_missing_evidence(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    capture = json.loads(capture_bytes)
+    assert all(
+        item["status"] != "missing"
+        for item in capture["field_evidence"].values()
+    )
+    capture["collection_status"] = "partial_success"
+    partial_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode()
+    payload = _payload(partial_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): partial_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "partial_success"
+    assert result.summary["collection_status"] == "partial_success"
+
+
+def test_handler_retries_when_materialized_media_object_is_missing(runtime_db_url) -> None:
+    class MissingMediaArtifactStore(FakeArtifactStore):
+        def read_bytes(self, *, bucket: str, object_key: str) -> bytes:
+            if "/product-media/amazon/" in f"/{object_key}":
+                raise KeyError((bucket, object_key))
+            return super().read_bytes(bucket=bucket, object_key=object_key)
+
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    artifact_store = MissingMediaArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "materialized_media_read_failed"
+    assert result.error.retryable is True
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
+def test_handler_rejects_materialized_media_bytes_that_do_not_match_digest(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    first_asset = payload["materialized_media_assets"][0]
+    artifact_store = FakeArtifactStore(
+        {
+            ("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes,
+            (first_asset["bucket"], first_asset["object_key"]): b"tampered-image-bytes",
+        }
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "materialized_media_digest_mismatch"
+    assert result.error.retryable is False
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
 def test_same_run_partial_media_retry_converges_to_full_without_duplicate_facts(
     runtime_db_url,
 ) -> None:
@@ -572,25 +1376,17 @@ def test_same_run_partial_media_retry_converges_to_full_without_duplicate_facts(
         resolved_url="https://www.amazon.com/dp/B0CHILD001",
     )
     partial_payload = _payload(capture_bytes)
-    partial_payload["materialized_media_assets"] = partial_payload[
-        "materialized_media_assets"
-    ][:-1]
+    partial_payload["materialized_media_assets"] = partial_payload["materialized_media_assets"][:-1]
     full_payload = _payload(capture_bytes)
     normalized_ref = full_payload["normalized_capture_ref"]
-    artifact_store = FakeArtifactStore(
-        {("artifacts", normalized_ref["object_key"]): capture_bytes}
-    )
+    artifact_store = FakeArtifactStore({("artifacts", normalized_ref["object_key"]): capture_bytes})
     metadata = {
         "fact_store": AmazonFactStore(db_url=runtime_db_url),
         "artifact_store": artifact_store,
     }
 
-    partial = amazon_product_fact_upsert_handler(
-        _context(partial_payload, metadata=metadata)
-    )
-    complete = amazon_product_fact_upsert_handler(
-        _context(full_payload, metadata=metadata)
-    )
+    partial = amazon_product_fact_upsert_handler(_context(partial_payload, metadata=metadata))
+    complete = amazon_product_fact_upsert_handler(_context(full_payload, metadata=metadata))
 
     assert partial.status == "partial_success"
     assert partial.summary["media_coverage"]["complete"] is False
@@ -613,6 +1409,29 @@ def test_same_run_partial_media_retry_converges_to_full_without_duplicate_facts(
     assert _count(runtime_db_url, "amazon_product_media_assets") == 3
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
+    assert (
+        _scalar(
+            runtime_db_url,
+            "SELECT request_id FROM amazon_product_snapshots WHERE asin = 'B0CHILD001'",
+        )
+        == "request-1"
+    )
+    assert (
+        _scalar(
+            runtime_db_url,
+            "SELECT execution_id FROM amazon_product_snapshots WHERE asin = 'B0CHILD001'",
+        )
+        == "browser-execution-1"
+    )
+    assert (
+        _scalar(
+            runtime_db_url,
+            "SELECT COUNT(*) FROM amazon_raw_captures "
+            "WHERE request_id = 'request-1' "
+            "AND execution_id = 'browser-execution-1' AND run_id = 'run-1'",
+        )
+        == 2
+    )
 
 
 def test_handler_rejects_materialized_media_not_observed_in_capture(runtime_db_url) -> None:
@@ -657,9 +1476,7 @@ def test_handler_rejects_duplicate_materialized_media_mapping(runtime_db_url) ->
         resolved_url="https://www.amazon.com/dp/B0CHILD001",
     )
     payload = _payload(capture_bytes)
-    payload["materialized_media_assets"].append(
-        dict(payload["materialized_media_assets"][0])
-    )
+    payload["materialized_media_assets"].append(dict(payload["materialized_media_assets"][0]))
     artifact_store = FakeArtifactStore(
         {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
     )
@@ -835,6 +1652,119 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
 
 
+def test_handler_rolls_back_the_fact_bundle_when_final_publish_fails(
+    runtime_db_url,
+    monkeypatch,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    payload = _payload(capture_bytes)
+    normalized_ref = payload["normalized_capture_ref"]
+    artifact_store = FakeArtifactStore(
+        {("artifacts", normalized_ref["object_key"]): capture_bytes}
+    )
+    fact_store = AmazonFactStore(db_url=runtime_db_url)
+
+    def fail_final_publish(*_args, **_kwargs):
+        raise RuntimeError("injected final publish failure")
+
+    monkeypatch.setattr(AmazonFactStore, "set_latest_snapshot", fail_final_publish)
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={"fact_store": fact_store, "artifact_store": artifact_store},
+        )
+    )
+    fact_store.close()
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "amazon_product_fact_upsert_failed"
+    assert result.error.retryable is True
+    for table_name in (
+        "amazon_products",
+        "amazon_product_snapshots",
+        "amazon_offer_snapshots",
+        "amazon_product_variants",
+        "amazon_bsr_snapshots",
+        "amazon_media_assets",
+        "amazon_product_media_assets",
+        "amazon_raw_captures",
+        "amazon_feishu_bindings",
+    ):
+        assert _count(runtime_db_url, table_name) == 0
+
+
+def test_handler_rejects_divergent_capture_for_the_same_run_before_mutable_fact_updates(
+    runtime_db_url,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    first_payload = _payload(capture_bytes)
+    first_ref = first_payload["normalized_capture_ref"]
+    first = amazon_product_fact_upsert_handler(
+        _context(
+            first_payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": FakeArtifactStore(
+                    {("artifacts", first_ref["object_key"]): capture_bytes}
+                ),
+            },
+        )
+    )
+    assert first.status == "success"
+
+    changed_capture = json.loads(capture_bytes)
+    changed_capture["product"]["title"] = "Divergent retry title"
+    changed_capture["field_evidence"]["product.title"]["value"] = "Divergent retry title"
+    changed_bytes = json.dumps(
+        changed_capture,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    changed_payload = _payload(changed_bytes)
+    changed_ref = changed_payload["normalized_capture_ref"]
+
+    conflict = amazon_product_fact_upsert_handler(
+        _context(
+            changed_payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": FakeArtifactStore(
+                    {("artifacts", changed_ref["object_key"]): changed_bytes}
+                ),
+            },
+        )
+    )
+
+    assert conflict.status == "failed"
+    assert conflict.error is not None
+    assert conflict.error.error_code == "same_run_capture_conflict"
+    assert conflict.error.retryable is False
+    assert (
+        _scalar(
+            runtime_db_url,
+            "SELECT title FROM amazon_products WHERE asin = 'B0CHILD001'",
+        )
+        == "Structured product title"
+    )
+    assert _count(runtime_db_url, "amazon_products") == 1
+    assert _count(runtime_db_url, "amazon_product_snapshots") == 1
+    assert _count(runtime_db_url, "amazon_offer_snapshots") == 1
+    assert _count(runtime_db_url, "amazon_product_variants") == 2
+    assert _count(runtime_db_url, "amazon_bsr_snapshots") == 2
+    assert _count(runtime_db_url, "amazon_media_assets") == 3
+    assert _count(runtime_db_url, "amazon_raw_captures") == 2
+    assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
+
+
 def test_handler_persists_unavailable_terminal_fact_without_offer_or_media(runtime_db_url) -> None:
     capture_bytes = _capture_bytes(
         "product_detail_unavailable.html",
@@ -931,10 +1861,13 @@ def test_newer_partial_capture_preserves_known_status_and_variant_values(runtime
     capture["collection_status"] = "partial_success"
     capture["commerce"]["availability_status"] = "unknown"
     capture["field_evidence"]["commerce.availability_status"]["status"] = "missing"
+    capture["field_evidence"]["commerce.availability_status"]["value"] = "unknown"
     capture["variants"]["current_attributes"] = {}
     capture["field_evidence"]["variants.current_attributes"]["status"] = "missing"
+    capture["field_evidence"]["variants.current_attributes"]["value"] = {}
     capture["variants"]["dimensions"] = {}
     capture["field_evidence"]["variants.dimensions"]["status"] = "missing"
+    capture["field_evidence"]["variants.dimensions"]["value"] = {}
     partial_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
     payload = _payload(partial_bytes)
     artifact_store = FakeArtifactStore(
@@ -1001,6 +1934,46 @@ def test_minio_read_bytes_closes_and_releases_the_response() -> None:
     store._client = client  # noqa: SLF001
 
     assert store.read_bytes(bucket="artifacts", object_key="capture.json") == b"capture"
+    assert client.response.closed is True
+    assert client.response.released is True
+
+
+def test_minio_read_bytes_enforces_limit_and_releases_response() -> None:
+    class Response:
+        def __init__(self) -> None:
+            self.closed = False
+            self.released = False
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return b"123456"
+
+        def close(self) -> None:
+            self.closed = True
+
+        def release_conn(self) -> None:
+            self.released = True
+
+    class Client:
+        def __init__(self) -> None:
+            self.response = Response()
+
+        def get_object(self, bucket: str, object_key: str) -> Response:
+            return self.response
+
+    client = Client()
+    store = object.__new__(MinioArtifactStore)
+    store._client = client  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="size limit"):
+        store.read_bytes(
+            bucket="artifacts",
+            object_key="capture.json",
+            max_bytes=5,
+        )
+
+    assert client.response.read_sizes == [6]
     assert client.response.closed is True
     assert client.response.released is True
 

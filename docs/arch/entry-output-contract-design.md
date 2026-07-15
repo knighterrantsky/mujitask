@@ -50,6 +50,27 @@
 
 测试可以直接调用 submit 入口并携带显式 test-only override，用于隔离测试数据库、MinIO/S3 或本地 fixture；这类 override 不能由正式 Skill 自动注入，也不能成为长期业务 payload 字段。
 
+### 2.2 Amazon 单商品入口
+
+Amazon 美国站单商品采集的稳定 Task 为 `refresh_amazon_product_row_by_asin`。正式提交只接收:
+
+```json
+{
+  "table_ref": "AMAZON_PRODUCTS",
+  "source_record_id": "recxxxxxxxx"
+}
+```
+
+ASIN 必须由 `source_record_id` 指向的飞书行读取；正式入口不得直接传 ASIN、商品详情、
+browser profile、cookie、Runtime/Fact DB URL、bucket 或凭据。项目运行配置解析美国站
+profile、Fact DB、对象存储和 `AMAZON_PRODUCTS` 表路由，并在创建 `task_request` 前完成
+必填配置检查。正式入口不接受任意飞书 URL 或其他表 alias。
+
+同步接收结果沿用通用 `request_id` 契约。异步终态结果只返回来源行、请求/解析 ASIN、
+`row_status`、coverage、各步骤状态和 Fact/artifact 紧凑引用；完整 capture、HTML、页面数据
+和媒体正文分别留在 Fact DB 或对象存储。`blocked` / identity mismatch 必须返回脱敏错误并
+只更新来源行状态，不得输出或写回错误商品字段。
+
 ## 3. 同步返回契约
 
 入口层同步返回必须短小、可机读、可追踪。

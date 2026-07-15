@@ -32,7 +32,9 @@ AMAZON_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
         ),
         required_field("canonical_url", "Canonical requested product URL.", type_hint="str"),
         required_field("collection_status", "Amazon row collection status.", type_hint="str"),
-        required_field("field_coverage", "Compact field coverage counts.", type_hint="dict[str, Any]"),
+        required_field(
+            "field_coverage", "Compact field coverage counts.", type_hint="dict[str, Any]"
+        ),
         required_field(
             "normalized_capture_ref",
             "Object-storage reference for the normalized capture.",
@@ -58,11 +60,19 @@ AMAZON_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
             "Non-sensitive digest of the resolved browser target.",
             type_hint="str",
         ),
+        optional_field(
+            "browser_provider_name",
+            "Non-sensitive browser provider code; never a profile or workspace identity.",
+            type_hint="str",
+        ),
+        optional_field(
+            "stage_durations_ms",
+            "Measured navigation, parse, and artifact durations in milliseconds.",
+            type_hint="dict[str, float]",
+        ),
     ),
     business_key_template="{source_record_id}:{requested_asin}",
-    dedupe_key_template=(
-        "{request_id}:amazon_collect:{source_record_id}:{requested_asin}"
-    ),
+    dedupe_key_template=("{request_id}:amazon_collect:{source_record_id}:{requested_asin}"),
     side_effects=("browser", "object_store", "runtime_db"),
 )
 

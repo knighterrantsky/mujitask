@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,17 +33,14 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 TASK_CODE = "refresh_amazon_product_row_by_asin"
 SOURCE_APP_TOKEN = "appAmazonToken"
 SOURCE_TABLE_ID = "tblAmazon"
-SOURCE_TABLE_URL = (
-    f"https://muji.feishu.cn/base/{SOURCE_APP_TOKEN}?table={SOURCE_TABLE_ID}"
-)
+SOURCE_VIEW_ID = "vewAmazon"
+TABLE_REF = "AMAZON_PRODUCTS"
 SOURCE_RECORD_ID = "rec-amazon-business-e2e"
 ASIN = "B0CHILD001"
 CANONICAL_URL = f"https://www.amazon.com/dp/{ASIN}"
 ARTIFACT_BUCKET = "pytest-amazon-artifacts"
 ARTIFACT_PREFIX = "pytest-business-e2e"
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "amazon"
-OBSERVED_AT = datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc)
-
 FACT_TABLES = (
     "amazon_products",
     "amazon_product_snapshots",
@@ -157,8 +154,11 @@ def _configure_runtime(
     runtime_db_url: str,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("TK_FACT_DB_URL", runtime_db_url)
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "test-feishu-token")
+    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", f"https://muji.feishu.cn/base/{SOURCE_APP_TOKEN}")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", SOURCE_TABLE_ID)
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", SOURCE_VIEW_ID)
     monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-e2e-profile")
     monkeypatch.setenv("AMAZON_US_LOCALE", "en_US")
     monkeypatch.setenv("AMAZON_US_DELIVERY_REGION", "US")
@@ -286,21 +286,34 @@ def _bind_fake_boundaries(
         media_handler_module,
         "urlopen",
         lambda request, timeout: FakeImageResponse(
-            f"fake-amazon-image:{request.full_url}".encode()
+            b"\xff\xd8\xff\xe0" + f"fake-amazon-image:{request.full_url}".encode()
         ),
     )
     monkeypatch.setattr(fact_handler_module, "create_artifact_store", lambda _settings: store)
     return state
 
 
-def _success_collection() -> dict[str, Any]:
+def _success_collection(*, observed_at: datetime) -> dict[str, Any]:
     html = (FIXTURE_DIR / "product_detail_child.html").read_text(encoding="utf-8")
     capture = extract_amazon_product_capture(
         html,
         requested_asin=ASIN,
         resolved_url=CANONICAL_URL,
-        observed_at=OBSERVED_AT,
+        observed_at=observed_at,
     )
+    capture["media"] = {
+        "main_image": {"url": "https://m.media-amazon.com/images/I/test-main.jpg"},
+        "gallery_images": [
+            {"url": "https://m.media-amazon.com/images/I/test-gallery-1.jpg"},
+            {"url": "https://m.media-amazon.com/images/I/test-gallery-2.jpg"},
+        ],
+    }
+    capture["field_evidence"]["media.main_image"]["value"] = capture["media"][
+        "main_image"
+    ]
+    capture["field_evidence"]["media.gallery_images"]["value"] = capture["media"][
+        "gallery_images"
+    ]
     return {
         "capture": capture,
         "html": html,
@@ -328,7 +341,7 @@ def _submit(runtime_db_url: str) -> str:
         _runtime_params(
             runtime_db_url,
             control_action="submit",
-            table_ref=SOURCE_TABLE_URL,
+            table_ref=TABLE_REF,
             source_record_id=SOURCE_RECORD_ID,
         ),
     )
@@ -423,13 +436,13 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     monkeypatch.setattr(
         browser_handler_module,
         "_collect_browser_page",
-        lambda **_kwargs: _success_collection(),
+        lambda **kwargs: _success_collection(observed_at=kwargs["observed_at"]),
     )
 
     request_id = _submit(runtime_db_url)
     store = RuntimeStore(db_url=runtime_db_url)
     assert store.load_task_request(request_id=request_id).payload == {
-        "table_ref": SOURCE_TABLE_URL,
+        "table_ref": TABLE_REF,
         "source_record_id": SOURCE_RECORD_ID,
     }
     assert store.load_task_request(request_id=request_id).stage_cursor[
@@ -445,6 +458,13 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
     assert read_worker["api_worker_job"]["result_status"] == "success"
 
+    collecting_dispatch = _executor(runtime_db_url)
+    assert collecting_dispatch["current_stage"] == "collect_amazon_product_detail"
+    collecting_worker = _api_worker(runtime_db_url)
+    assert collecting_worker["api_worker_job"]["job_code"] == "feishu_table_write"
+    assert collecting_worker["api_worker_job"]["result_status"] == "success"
+    assert feishu_state["updates"][-1]["fields"] == {"采集状态": "collecting"}
+
     browser_dispatch = _executor(runtime_db_url)
     assert browser_dispatch["current_stage"] == "collect_amazon_product_detail"
     browser_worker = _browser_worker(runtime_db_url)
@@ -453,6 +473,13 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     assert browser_worker["execution"]["result_status"] == "success"
     assert browser_worker["worker_result"]["result"]["requested_asin"] == ASIN
     assert "normalized_capture_ref" in browser_worker["worker_result"]["result"]
+
+    persisting_dispatch = _executor(runtime_db_url)
+    assert persisting_dispatch["current_stage"] == "persist_amazon_product_detail"
+    persisting_worker = _api_worker(runtime_db_url)
+    assert persisting_worker["api_worker_job"]["job_code"] == "feishu_table_write"
+    assert persisting_worker["api_worker_job"]["result_status"] == "success"
+    assert feishu_state["updates"][-1]["fields"] == {"采集状态": "persisting"}
 
     persist_dispatch = _executor(runtime_db_url)
     assert persist_dispatch["current_stage"] == "persist_amazon_product_detail"
@@ -479,8 +506,10 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     assert len(finalized["outbox"]) == 1
 
     assert feishu_state["creates"] == []
-    assert len(feishu_state["updates"]) == 1
-    assert feishu_state["updates"][0]["record_id"] == SOURCE_RECORD_ID
+    assert len(feishu_state["updates"]) == 3
+    assert {item["record_id"] for item in feishu_state["updates"]} == {
+        SOURCE_RECORD_ID
+    }
     written_fields = feishu_state["record"]["fields"]
     assert written_fields["ASIN"] == ASIN
     assert written_fields["来源关键词"] == "desk lamp"
@@ -532,7 +561,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     )
     assert replay.status == "success"
     assert _fact_counts(runtime_db_url) == SUCCESS_FACT_COUNTS
-    assert len(feishu_state["updates"]) == 2
+    assert len(feishu_state["updates"]) == 4
     assert {item["record_id"] for item in feishu_state["updates"]} == {
         SOURCE_RECORD_ID
     }
@@ -581,6 +610,11 @@ def test_terminal_browser_failure_writes_status_only_and_never_enters_row_persis
     assert _executor(runtime_db_url)["current_stage"] == "read_amazon_product_row"
     assert _api_worker(runtime_db_url)["api_worker_job"]["result_status"] == "success"
     assert _executor(runtime_db_url)["current_stage"] == "collect_amazon_product_detail"
+    collecting_worker = _api_worker(runtime_db_url)
+    assert collecting_worker["api_worker_job"]["job_code"] == "feishu_table_write"
+    assert collecting_worker["api_worker_job"]["result_status"] == "success"
+    assert feishu_state["updates"][-1]["fields"] == {"采集状态": "collecting"}
+    assert _executor(runtime_db_url)["current_stage"] == "collect_amazon_product_detail"
 
     browser_worker = _browser_worker(runtime_db_url)
     assert browser_worker["execution"]["result_status"] == "failed"
@@ -597,10 +631,15 @@ def test_terminal_browser_failure_writes_status_only_and_never_enters_row_persis
     writeback_dispatch = _executor(runtime_db_url)
     assert writeback_dispatch["request_status"] == "waiting"
     assert writeback_dispatch["current_stage"] == "collect_amazon_product_detail"
-    writeback_jobs = store.list_api_worker_jobs_for_request(
-        request_id=request_id,
-        job_code="feishu_table_write",
-    )
+    writeback_jobs = [
+        job
+        for job in store.list_api_worker_jobs_for_request(
+            request_id=request_id,
+            job_code="feishu_table_write",
+        )
+        if str((job.get("payload") or {}).get("writeback_kind") or "")
+        == "amazon_terminal_status"
+    ]
     assert len(writeback_jobs) == 1
     writeback_payload = writeback_jobs[0]["payload"]
     assert writeback_payload["stage_code"] == "collect_amazon_product_detail"
@@ -643,9 +682,11 @@ def test_terminal_browser_failure_writes_status_only_and_never_enters_row_persis
         request_id=request_id,
         job_code="amazon_product_row_persist",
     ) == []
-    assert len(feishu_state["updates"]) == 1
-    assert feishu_state["updates"][0]["record_id"] == SOURCE_RECORD_ID
-    status_fields = feishu_state["updates"][0]["fields"]
+    assert len(feishu_state["updates"]) == 2
+    assert {item["record_id"] for item in feishu_state["updates"]} == {
+        SOURCE_RECORD_ID
+    }
+    status_fields = feishu_state["updates"][-1]["fields"]
     assert set(status_fields) == {"采集状态", "上次采集时间", "采集错误"}
     assert status_fields["采集状态"] == expected_collection_status
     assert status_fields["上次采集时间"]

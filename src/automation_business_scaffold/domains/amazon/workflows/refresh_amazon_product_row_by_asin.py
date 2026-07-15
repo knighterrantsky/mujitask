@@ -55,6 +55,12 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
                         adapter_code="amazon_product_table_source_adapter",
                         result_consumer="validated source row and resolved table identity",
                     ),
+                    StageJobBinding(
+                        job_code="feishu_table_write",
+                        mapper_code="amazon_product_projection_mapper",
+                        result_consumer="status-only terminal identity validation failure",
+                        optional=True,
+                    ),
                 ),
             ),
             StageDefinition(
@@ -64,6 +70,12 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
                 enter_condition="the source row contains one validated Amazon US ASIN",
                 exit_condition="compact capture references or a controlled terminal failure are stored",
                 job_bindings=(
+                    StageJobBinding(
+                        job_code="feishu_table_write",
+                        mapper_code="amazon_product_projection_mapper",
+                        result_consumer="collecting or terminal status-only source-row update",
+                        optional=True,
+                    ),
                     StageJobBinding(
                         job_code="amazon_product_browser_fetch",
                         flow_code="amazon_product_browser_fetch",
@@ -79,6 +91,12 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
                 enter_condition="browser collection produced a persistable compact capture result",
                 exit_condition="the row persistence job reaches a terminal business result",
                 job_bindings=(
+                    StageJobBinding(
+                        job_code="feishu_table_write",
+                        mapper_code="amazon_product_projection_mapper",
+                        result_consumer="persisting or terminal status-only source-row update",
+                        optional=True,
+                    ),
                     StageJobBinding(
                         job_code="amazon_product_row_persist",
                         flow_code="amazon_product_row_persist",
@@ -169,7 +187,7 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
             TimeoutRule(
                 target_code="feishu_table_write",
                 timeout_seconds=120,
-                description="Terminal Amazon status writeback timeout.",
+                description="Amazon stage or terminal status writeback timeout.",
             ),
             TimeoutRule(
                 target_code="amazon_product_row_persist",
@@ -192,11 +210,18 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
         summary_contract=contract(
             "refresh_amazon_product_row_by_asin_summary",
             required_field("final_status", "Top-level workflow result status.", type_hint="str"),
-            required_field("row_total_count", "Always one after a source row resolves.", type_hint="int"),
+            required_field(
+                "row_total_count", "Always one after a source row resolves.", type_hint="int"
+            ),
             required_field(
                 "row_status_counts",
                 "Counts keyed by Amazon row business status.",
                 type_hint="dict[str, int]",
+            ),
+            optional_field(
+                "row_summary",
+                "Single-row sanitized identity, timings, coverage, counts, status, and error code.",
+                type_hint="dict[str, Any]",
             ),
         ),
         error_contract=contract(

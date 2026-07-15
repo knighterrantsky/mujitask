@@ -326,6 +326,12 @@ stateDiagram-v2
 和脱敏 `采集错误`。该写回不新增第五个 stage，不进入媒体或 Fact persistence，也不得携带
 页面商品字段；写回完成或重试耗尽后才允许父任务失败收敛。来源行不存在时不执行写回。
 
+来源行身份校验完成后，Workflow 还必须在浏览器任务派发前写回
+`采集状态=collecting`，并在行持久化任务派发前写回 `采集状态=persisting`。这两个非终态
+写回仍属于现有四个 stage，不更新 `上次采集时间`，且只有写回成功后才能派发对应副作用。
+persist stage 的最终失败同样先执行 status-only `failed` 写回；状态写回自身重试耗尽时，
+父任务以写回错误失败收敛，不继续触发浏览器、媒体或 Fact 副作用。
+
 ```mermaid
 sequenceDiagram
     participant User as CLI / Skill
@@ -615,7 +621,7 @@ erDiagram
 #### `amazon_raw_captures`
 
 - `raw_capture_id`、`product_id`、`snapshot_id`。
-- `capture_kind`: `normalized_capture`、`html`、`embedded_data`、`network_data` 或 `screenshot`。
+- `capture_kind`: `normalized_capture`、`html`、`network_data` 或 `screenshot`。
 - `bucket`、`object_key`、`content_digest`、`content_type`。
 - `request_id`、`execution_id`、`run_id`。
 - `sanitization_status`。
@@ -628,8 +634,8 @@ erDiagram
 - `binding_id`、`product_id`。
 - `base_id`、`table_id`、`record_id`。
 - `source_asin`、`status`。
-- `last_synced_snapshot_id`。
-- `first_bound_at`、`last_synced_at`、`created_at`、`updated_at`。
+- `latest_snapshot_id`：当前来源绑定对应的最新 Fact snapshot，不表示飞书已写回。
+- `first_bound_at`、`last_bound_at`、`created_at`、`updated_at`。
 
 唯一键: `(base_id, table_id, record_id)`。
 
@@ -637,17 +643,27 @@ erDiagram
 
 首期新增 Amazon 专用 `AmazonFactStore` / repository 和 `amazon_product_fact_upsert` handler，不改变 `TKFactStore` 的稳定语义，也不把现有 `fact_bundle_upsert` 静默改成跨平台路由器。
 
+一次 normalized capture 对应的 product、snapshot、raw capture index、Offer、变体、BSR、
+媒体关系、飞书 binding 和 `latest_snapshot_id` 必须在同一个 PostgreSQL 事务中提交；任一后段
+写入失败时整包回滚，`latest_snapshot_id` 作为最后一条数据库写入。证据对象在事务前写入并
+校验，对象存储和后续飞书 projection 不属于该数据库事务。
+
 如果未来需要统一多平台 Fact Store，必须先形成跨平台 entity contract 和 migration，不在本需求中提前抽象。
 
 ### 10.5 Migration、兼容与回滚
 
-- 使用新的 additive Alembic migration 创建 `amazon_*` 表和索引。
+- 使用独立 `alembic_fact.ini` 和 `fact_alembic_version` 的 additive Fact migration 创建
+  `amazon_*` 表和索引；Runtime Alembic 同 revision 只保留无 DDL 兼容节点。
+- Fact migration 必须显式读取 `BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL`，不得回退
+  到 Runtime DB URL 或 worker 的 Fact DB URL。
 - 不修改或迁移任何 `tk_*` 数据。
 - migration 使用 `mujitask_migration_user`；生产 worker 不执行 DDL。
-- runtime user 获得新表的 `SELECT / INSERT / UPDATE / DELETE` 权限。
+- `BUSINESS_EXECUTION_CONTROL_FACT_RUNTIME_ROLE` 是 API worker 共用的受限 Fact 身份，只授予
+  schema USAGE、机器契约列出的 TikTok / Amazon Fact 表
+  `SELECT / INSERT / UPDATE / DELETE` 和 `fact_alembic_version` SELECT；不得授予 Runtime 表权限。
 - 应用启动检查 schema version；版本不匹配时新 Amazon worker fail fast。
 - 旧 worker 不认识新 handler，不应消费新 Amazon job；发布时应先 migration，再原子更新 executor/browser/API worker。
-- 代码回滚时优先停用 Amazon task/handler，保留 additive 表和对象；只有确认无保留数据需求并完成备份后才执行 downgrade。
+- 代码回滚时优先停用 Amazon task/handler，保留 additive 表和对象；只有确认无保留数据需求并完成备份后，才在 Fact migration 图执行 downgrade 到 `base`。
 
 ## 11. 对象存储设计
 
@@ -658,10 +674,10 @@ erDiagram
 | 内容 | 推荐 object key |
 | --- | --- |
 | Runtime 证据 | `<env>/runs/<run_id>/amazon/<asin>/<kind>.<ext>` |
-| 标准化 capture | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/normalized.json` |
-| 原始 HTML | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/page.html.gz` |
-| 允许的页面数据 | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/page-data.json` |
-| 截图 | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/page.png` |
+| 标准化 capture | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/normalized.json` |
+| 原始 HTML | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page.html.gz` |
+| 允许的页面数据 | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page-data.json` |
+| 截图 | `<env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page.png` |
 | 商品媒体 | `<env>/product-media/amazon/us/<asin>/<media_role>/<sha256>.<ext>` |
 
 Runtime 证据写入 `artifact_object`；业务媒体写入 `amazon_media_assets`；raw capture 同时由 `artifact_object` 和 `amazon_raw_captures` 建立运行与事实索引。
@@ -669,9 +685,30 @@ Runtime 证据写入 `artifact_object`；业务媒体写入 `amazon_media_assets
 ### 11.2 持久化要求
 
 - `normalized_capture.json` 和 sanitized HTML 是正常采集的必需证据。
+- Fact handler 只接受受控 capture kind，并校验其 content type 与 sanitization status：
+  normalized capture 为 `application/json + normalized`，HTML 为
+  `application/gzip + sanitized`，network data 为 `application/json + allowlisted`，
+  screenshot 为 `image/png + not_applicable`。
+- 每个 raw ref 必须携带当前 `request_id`、同一个来源 Browser `execution_id` 和当前
+  `run_id`；Fact handler 在写库前读取实际对象字节并复算 digest。HTML 必须能解压为
+  UTF-8，且解压后再次通过脚本、敏感元素、属性、metadata 和结构化数据脱敏检查，不能只信任引用 metadata。
+- `field_evidence` 必须精确覆盖 contract revision 1 的目标字段，并包含
+  `value/status/source_kind/source_locator/confidence`；evidence value 必须与 normalized
+  capture 对应字段一致，`missing` 不得指向非空值。
+- 同一 `(bucket, object_key)` 只能对应相同商品、快照、run、kind、digest 与脱敏状态；
+  重试发现不可变证据变化时必须失败，不能把新对象内容与旧 Fact digest 静默拼接。
+- Raw capture key 中的 `<sha256>` 必须是实际上传字节的 digest。相同内容重试复用同一
+  coordinate；内容变化写入新 coordinate 并保留旧对象，但同一 run 的 normalized
+  capture digest 变化仍按 `same_run_capture_conflict` 拒绝进入 Fact DB。
 - 受阻、失败和身份不一致时截图为必需证据。
 - 主图和图库必须先物化到非本地对象存储，再建立 media fact。
+- Fact handler 在建立 media fact 前必须读取物化对象，复核对象存在性、SHA-256、大小、
+  受控图片 MIME 与内容签名；对象暂不可读按可重试错误处理，摘要或类型不一致按验证错误拒绝。
+- 进入 normalized capture 和媒体同步队列的图片 URL 只允许 HTTPS Amazon CDN
+  `media-amazon.com` / `ssl-images-amazon.com`（默认端口或 443、无 userinfo），并在持久化前删除 query 和 fragment；不合规 URL 不得下载或保存为事实，并把本次采集降为 partial success。
 - 未成功上传的 CDN URL 不能作为已持久化媒体事实。
+- normalized capture、network data、压缩 HTML、截图和商品媒体分别使用受控读取上限；
+  HTML 解压也必须有独立上限，禁止压缩炸弹进入 worker 内存。
 - 正式 workflow 要求 `requires_fact_db=true` 和 `requires_object_storage=true`。
 - 缺少 Fact DB、MinIO/S3 provider、bucket 或 credential 时 submit preflight 失败。
 - `provider=local` 不能作为正式生产成功。
@@ -743,6 +780,8 @@ AMAZON_PRODUCTS
 ### 12.3 写回规则
 
 - 单行和批量都按来源 `record_id` 更新，不按标题或 URL 猜测记录。
+- 最终写回 handler 必须返回 `written_count=1`、`failed_count=0`、`skipped_count=0`，且
+  `target_record_ids` 精确等于当前 `source_record_id`；否则按写回未收敛失败，不能完成行任务。
 - `ASIN` 是业务输入字段，projection 不改写。
 - Search seed 创建前按 ASIN 查询，存在则复用原 record。
 - Amazon-owned 字段采用 refresh 语义，可覆盖旧的已观察值。
@@ -859,8 +898,8 @@ Browser task success 只表示采集能力完成，不等于商品行成功。
 
 ### 16.3 Fact 与架构 ownership
 
-- `contracts/facts/amazon-product-fact-collection.yaml`。
-- 更新 `contracts/facts/product-fact-collection.yaml`，登记 Amazon 对统一媒体/严格持久化原则的遵守方式。
+- Amazon Fact contract 合并维护在 `contracts/facts/product-fact-collection.yaml` 的
+  `platform_contracts.amazon_us`，不另建语义重复的专用 contract。
 - 更新 `contracts/harness/architecture-ownership.yaml`，声明 Amazon browser owner、row flow 和允许的 workflow orchestrator。
 - 更新 `docs/arch/fact-db-schema-design.md`、`storage-architecture-design.md`、`handler-contract-design.md` 和 `entry-output-contract-design.md`。
 
