@@ -178,6 +178,11 @@ def _configure_runtime(
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES", "true")
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)
     monkeypatch.setattr(runtime_orchestrator, "BROWSER_HANDLER_REGISTRY", None, raising=False)
+    monkeypatch.setattr(
+        runtime_orchestrator,
+        "resolve_automation_browser_target_digest",
+        lambda *, profile_ref: "target-digest",
+    )
 
 
 def _bind_fake_boundaries(
@@ -427,6 +432,12 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
         "table_ref": SOURCE_TABLE_URL,
         "source_record_id": SOURCE_RECORD_ID,
     }
+    assert store.load_task_request(request_id=request_id).stage_cursor[
+        "runtime_context"
+    ] == {
+        "browser_target_digest": "target-digest",
+        "browser_resource_code": "browser:amazon:target-digest",
+    }
 
     read_dispatch = _executor(runtime_db_url)
     assert read_dispatch["current_stage"] == "read_amazon_product_row"
@@ -438,6 +449,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     assert browser_dispatch["current_stage"] == "collect_amazon_product_detail"
     browser_worker = _browser_worker(runtime_db_url)
     assert browser_worker["execution"]["item_code"] == "amazon_product_browser_fetch"
+    assert browser_worker["execution"]["resource_code"] == "browser:amazon:target-digest"
     assert browser_worker["execution"]["result_status"] == "success"
     assert browser_worker["worker_result"]["result"]["requested_asin"] == ASIN
     assert "normalized_capture_ref" in browser_worker["worker_result"]["result"]

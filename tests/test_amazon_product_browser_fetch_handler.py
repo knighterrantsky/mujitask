@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import automation_business_scaffold.infrastructure.browser.browser_bridge as browser_bridge
 from automation_business_scaffold.capabilities.browser import amazon_product_fetch_handler as handler_module
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     AmazonAccessBlockedError,
@@ -154,6 +155,26 @@ def test_handler_is_allowlisted_bound_and_has_compact_job_contract() -> None:
     )
     assert "capture" not in AMAZON_PRODUCT_BROWSER_FETCH_JOB.result_contract.field_names()
     assert "html" not in AMAZON_PRODUCT_BROWSER_FETCH_JOB.result_contract.field_names()
+
+
+def test_amazon_resource_lane_digest_uses_resolved_browser_target_key(monkeypatch) -> None:
+    target = object()
+    monkeypatch.setattr(
+        browser_bridge,
+        "resolve_browser_target",
+        lambda *, profile_ref: target if profile_ref == "amazon-us" else None,
+    )
+    monkeypatch.setattr(
+        browser_bridge,
+        "build_target_key",
+        lambda resolved: "roxy:workspace:profile" if resolved is target else "",
+    )
+
+    digest = browser_bridge.resolve_automation_browser_target_digest(
+        profile_ref="amazon-us"
+    )
+
+    assert digest == hashlib.sha256(b"roxy:workspace:profile").hexdigest()
 
 
 def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact_refs(

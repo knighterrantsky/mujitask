@@ -260,6 +260,19 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             error_code=str(exc) or "amazon_source_context_missing",
             message="Validated Amazon source context is unavailable.",
         )
+    browser_runtime_context = _browser_runtime_context(request)
+    if not browser_runtime_context:
+        return _terminal_failure_with_writeback(
+            store=store,
+            request=request,
+            workflow=workflow,
+            stage_code=BROWSER_STAGE_CODE,
+            row_status="failed",
+            error_code="amazon_browser_resource_context_missing",
+            message="Amazon browser resource context is unavailable.",
+            requested_asin=row["requested_asin"],
+            collection_status="failed",
+        )
     executions = browser_executions_for_stage(
         store,
         request_id=request.request_id,
@@ -295,7 +308,7 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
                 {
                     "business_key": keys["business_key"],
                     "dedupe_key": keys["dedupe_key"],
-                    "resource_code": "browser:amazon:US",
+                    "resource_code": browser_runtime_context["browser_resource_code"],
                     "payload": payload,
                     "max_attempts": 3,
                     "max_execution_seconds": timeout_seconds_for_workflow(
@@ -316,20 +329,34 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
     browser_result = extract_effective_result_payload(execution)
     if handler_status not in {"success", "partial_success"}:
         collection_status = str(browser_result.get("collection_status") or "failed")
+        error_code = _record_error_code(execution) or "amazon_browser_collection_failed"
+        actual_target_digest = str(browser_result.get("browser_target_digest") or "")
+        if (
+            actual_target_digest
+            and actual_target_digest != browser_runtime_context["browser_target_digest"]
+        ):
+            collection_status = "failed"
+            error_code = "browser_target_identity_mismatch"
         return _terminal_failure_with_writeback(
             store=store,
             request=request,
             workflow=workflow,
             stage_code=BROWSER_STAGE_CODE,
             row_status="blocked" if collection_status == "blocked" else "failed",
-            error_code=_record_error_code(execution) or "amazon_browser_collection_failed",
+            error_code=error_code,
             message="Amazon browser collection failed.",
             requested_asin=row["requested_asin"],
             collection_status=collection_status,
             evidence_refs=_mapping_list(browser_result.get("artifact_refs")),
         )
     try:
-        _validate_browser_result(row=row, result=browser_result)
+        _validate_browser_result(
+            row=row,
+            result=browser_result,
+            expected_browser_target_digest=browser_runtime_context[
+                "browser_target_digest"
+            ],
+        )
     except ValueError as exc:
         return _terminal_failure_with_writeback(
             store=store,
@@ -349,7 +376,17 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
 def _advance_persist(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:
     try:
         row = _read_context(store=store, request=request)
-        browser_result = _browser_result(store=store, request_id=request.request_id, row=row)
+        browser_runtime_context = _browser_runtime_context(request)
+        if not browser_runtime_context:
+            raise ValueError("amazon_browser_resource_context_missing")
+        browser_result = _browser_result(
+            store=store,
+            request_id=request.request_id,
+            row=row,
+            expected_browser_target_digest=browser_runtime_context[
+                "browser_target_digest"
+            ],
+        )
     except ValueError as exc:
         return _failure(
             stage_code=PERSIST_STAGE_CODE,
@@ -653,7 +690,13 @@ def _read_context(*, store: Any, request: Any) -> dict[str, Any]:
     }
 
 
-def _browser_result(*, store: Any, request_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
+def _browser_result(
+    *,
+    store: Any,
+    request_id: str,
+    row: Mapping[str, Any],
+    expected_browser_target_digest: str,
+) -> dict[str, Any]:
     executions = browser_executions_for_stage(
         store,
         request_id=request_id,
@@ -662,15 +705,29 @@ def _browser_result(*, store: Any, request_id: str, row: Mapping[str, Any]) -> d
     if not executions:
         raise ValueError("amazon_capture_context_missing")
     result = extract_effective_result_payload(executions[-1])
-    _validate_browser_result(row=row, result=result)
+    _validate_browser_result(
+        row=row,
+        result=result,
+        expected_browser_target_digest=expected_browser_target_digest,
+    )
     return result
 
 
-def _validate_browser_result(*, row: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+def _validate_browser_result(
+    *,
+    row: Mapping[str, Any],
+    result: Mapping[str, Any],
+    expected_browser_target_digest: str,
+) -> None:
     if str(result.get("marketplace_code") or "") != "US":
         raise ValueError("unsupported_marketplace")
     if str(result.get("requested_asin") or "") != row["requested_asin"]:
         raise ValueError("identity_mismatch")
+    if (
+        str(result.get("browser_target_digest") or "")
+        != expected_browser_target_digest
+    ):
+        raise ValueError("browser_target_identity_mismatch")
     try:
         resolved_asin = normalize_asin(result.get("resolved_asin"))
         parent_value = str(result.get("parent_asin") or "").strip()
@@ -693,6 +750,26 @@ def _validate_browser_result(*, row: Mapping[str, Any], result: Mapping[str, Any
         raise ValueError("raw_capture_refs_missing")
     if "capture" in result or "html" in result:
         raise ValueError("inline_amazon_capture_forbidden")
+
+
+def _browser_runtime_context(request: Any) -> dict[str, str]:
+    stage_cursor = _mapping(getattr(request, "stage_cursor", {}))
+    runtime_context = _mapping(stage_cursor.get("runtime_context"))
+    browser_target_digest = str(
+        runtime_context.get("browser_target_digest") or ""
+    ).strip()
+    browser_resource_code = str(
+        runtime_context.get("browser_resource_code") or ""
+    ).strip()
+    if (
+        not browser_target_digest
+        or browser_resource_code != f"browser:amazon:{browser_target_digest}"
+    ):
+        return {}
+    return {
+        "browser_target_digest": browser_target_digest,
+        "browser_resource_code": browser_resource_code,
+    }
 
 
 def _final_payload(

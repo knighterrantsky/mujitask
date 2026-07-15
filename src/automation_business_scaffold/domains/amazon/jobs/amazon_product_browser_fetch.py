@@ -53,7 +53,7 @@ AMAZON_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
             "Observed media URLs awaiting materialization.",
             type_hint="list[dict[str, Any]]",
         ),
-        optional_field(
+        required_field(
             "browser_target_digest",
             "Non-sensitive digest of the resolved browser target.",
             type_hint="str",

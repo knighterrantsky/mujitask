@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.control_plane.executor.runner import (
     run_task_request,
 )
@@ -12,6 +15,15 @@ TASK_CODE = "refresh_amazon_product_row_by_asin"
 TABLE_REF = "AMAZON_PRODUCTS"
 SOURCE_RECORD_ID = "rec-amazon-1"
 ASIN = "B0ABC12345"
+
+
+@pytest.fixture(autouse=True)
+def _resolved_browser_target(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_orchestrator,
+        "resolve_automation_browser_target_digest",
+        lambda *, profile_ref: "digest-only",
+    )
 
 
 def _runtime_params(runtime_db_url: str, **overrides: Any) -> dict[str, Any]:
@@ -188,6 +200,10 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     store, request_id = _submit(runtime_db_url)
     request = store.load_task_request(request_id=request_id)
     assert request.payload == {"table_ref": TABLE_REF, "source_record_id": SOURCE_RECORD_ID}
+    assert request.stage_cursor["runtime_context"] == {
+        "browser_target_digest": "digest-only",
+        "browser_resource_code": "browser:amazon:digest-only",
+    }
     assert request.current_stage == "read_amazon_product_row"
 
     read_dispatch = _executor(runtime_db_url)
@@ -233,7 +249,7 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     assert len(executions) == 1
     browser_execution = executions[0]
     assert browser_execution.item_code == "amazon_product_browser_fetch"
-    assert browser_execution.resource_code == "browser:amazon:US"
+    assert browser_execution.resource_code == "browser:amazon:digest-only"
     assert browser_execution.payload["source_record_id"] == SOURCE_RECORD_ID
     assert browser_execution.payload["requested_asin"] == ASIN
     assert browser_execution.payload["stage_code"] == "collect_amazon_product_detail"
@@ -530,3 +546,24 @@ def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
     )
     assert extra_field["request_status"] == "rejected"
     assert "browser_profile_ref" in extra_field["forbidden_runtime_config_fields"]
+
+    def unresolved_target(*, profile_ref: str) -> str:
+        del profile_ref
+        raise ValueError("missing profile")
+
+    monkeypatch.setattr(
+        runtime_orchestrator,
+        "resolve_automation_browser_target_digest",
+        unresolved_target,
+    )
+    unresolved_profile = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            source_record_id="rec-unresolved-profile",
+        ),
+    )
+    assert unresolved_profile["request_status"] == "rejected"
+    assert unresolved_profile["error_code"] == "amazon_browser_profile_unavailable"

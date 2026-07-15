@@ -28,6 +28,9 @@ from automation_business_scaffold.control_plane.executor.workflow_registry impor
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import ExecutionSupervisorOutcome
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
+from automation_business_scaffold.infrastructure.browser.browser_bridge import (
+    resolve_automation_browser_target_digest,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 ACTIVE_API_JOB_STATUSES = {"pending", "running"}
@@ -137,6 +140,19 @@ def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any
             retryable=False,
             result=amazon_preflight,
         )
+    amazon_runtime_context: dict[str, str] = {}
+    if normalized_task_code == AMAZON_PRODUCT_ROW_TASK_CODE:
+        try:
+            amazon_runtime_context = _amazon_product_runtime_context()
+        except Exception:
+            return _rejected_submit_payload(
+                task_code=normalized_task_code,
+                error_type="configuration",
+                error_code="amazon_browser_profile_unavailable",
+                message="The configured Amazon browser profile could not be resolved.",
+                retryable=False,
+                result={"configuration_key": "AMAZON_US_BROWSER_PROFILE_REF"},
+            )
     persistence_preflight = _strict_persistence_submit_preflight(
         task_code=normalized_task_code,
         params=params,
@@ -173,11 +189,17 @@ def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any
         reply_target=str(params.get("reply_target") or ""),
         idempotency_key=str(params.get("idempotency_key") or "").strip(),
     )
+    request_updates: dict[str, Any] = {}
     if not str(request.current_stage or "").strip():
-        store.update_task_request(
-            request_id=request.request_id,
-            current_stage=_initial_stage_for_task_code(normalized_task_code),
+        request_updates["current_stage"] = _initial_stage_for_task_code(
+            normalized_task_code
         )
+    if amazon_runtime_context:
+        stage_cursor = dict(getattr(request, "stage_cursor", {}) or {})
+        stage_cursor.setdefault("runtime_context", amazon_runtime_context)
+        request_updates["stage_cursor"] = stage_cursor
+    if request_updates:
+        store.update_task_request(request_id=request.request_id, **request_updates)
     _refresh_request_aggregate_counts(store, request_id=request.request_id)
     return build_request_payload(
         store=store,
@@ -472,6 +494,21 @@ def _amazon_product_submit_preflight(
             ),
         }
     return {}
+
+
+def _amazon_product_runtime_context() -> dict[str, str]:
+    profile_ref = str(
+        os.environ.get("AMAZON_US_BROWSER_PROFILE_REF")
+        or os.environ.get("DEFAULT_PROFILE_REF")
+        or ""
+    ).strip()
+    digest = resolve_automation_browser_target_digest(profile_ref=profile_ref)
+    if not digest:
+        raise ValueError("Amazon browser target digest is unavailable.")
+    return {
+        "browser_target_digest": digest,
+        "browser_resource_code": f"browser:amazon:{digest}",
+    }
 
 
 def _enrich_influencer_outreach_payload(payload: dict[str, Any]) -> None:

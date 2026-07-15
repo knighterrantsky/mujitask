@@ -90,6 +90,9 @@ Amazon 单商品任务的正式 payload 只传 `table_ref=AMAZON_PRODUCTS` 和
 `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`、可选的
 `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 与全局
 `MUJITASK_FEISHU_ACCESS_TOKEN` 解析实际飞书表，不把 URL、token 或表身份写入正式任务输入。
+submit 会解析 `AMAZON_US_BROWSER_PROFILE_REF` 指向的 browser target，并只把 target key digest
+作为 Browser Worker 资源 lane 写入 Runtime context；profile、workspace 与 provider credential
+不会进入业务 payload。
 
 ### 2.3 `.env`
 
