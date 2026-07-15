@@ -183,6 +183,7 @@ platform_contracts:
         - default
         - 443
       userinfo: forbidden
+      redirect_policy: validate_each_hop_against_same_allowlist_before_request
       query_and_fragment: strip_before_persistence
       invalid_observed_media: remove_and_mark_partial_success
     prohibited_fact_targets:

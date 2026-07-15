@@ -25,6 +25,7 @@ from automation_business_scaffold.capabilities.browser.amazon.product_page impor
     extract_amazon_network_product_data,
     extract_amazon_product_capture,
     extract_asin_from_url,
+    normalize_amazon_media_url,
     normalize_asin,
 )
 from automation_business_scaffold.config import get_execution_control_defaults
@@ -127,8 +128,33 @@ _MAX_NETWORK_RESPONSE_COUNT = 8
 _MAX_NETWORK_RESPONSE_BYTES = 256 * 1024
 _MAX_NETWORK_TOTAL_BYTES = 512 * 1024
 _NETWORK_SETTLE_MS = 750
+_SCROLL_SETTLE_MS = 150
+_SCROLL_CHECKPOINTS = (1200, 2800, 4800)
+_AMAZON_READY_SELECTOR = (
+    "#productTitle, #availability, #outOfStock, #productDetails_feature_div, "
+    "form[action*='validateCaptcha'], #captchacharacters"
+)
+_PRODUCT_DETAILS_TOGGLE_SELECTOR = (
+    "#productDetails_feature_div "
+    "[data-action='a-expander-toggle'][aria-expanded='false'], "
+    "#productDetails_feature_div button[aria-expanded='false'], "
+    "#productDetails_feature_div .a-expander-partial-collapse-header[aria-expanded='false'], "
+    "#detailBullets_feature_div "
+    "[data-action='a-expander-toggle'][aria-expanded='false']"
+)
+_MAX_DECOMPRESSED_HTML_BYTES = 8 * 1024 * 1024
+_RAW_CAPTURE_SIZE_LIMITS = {
+    "normalized_capture": 2 * 1024 * 1024,
+    "html": 2 * 1024 * 1024,
+    "network_data": 512 * 1024,
+    "screenshot": 10 * 1024 * 1024,
+}
 _BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _BROWSER_STAGE_NAMES = ("navigation", "parse", "artifact")
+
+
+class _ArtifactSizeLimitError(ValueError):
+    pass
 
 
 class _ArtifactWriteError(RuntimeError):
@@ -221,6 +247,18 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                 observed_at=observed_at,
                 html=_clean_text(collection.get("html"), strip=False),
                 screenshot_bytes=screenshot_bytes,
+            )
+        except _ArtifactSizeLimitError as exc:
+            stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
+            return _failure(
+                context,
+                error_code="artifact_size_limit_exceeded",
+                message=str(exc),
+                retryable=False,
+                collection_status="failed",
+                browser_target_digest=browser_target_digest,
+                browser_provider_name=browser_provider_name,
+                stage_durations_ms=stage_durations_ms,
             )
         except Exception as exc:
             stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
@@ -323,6 +361,18 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             capture_bytes=capture_bytes,
             sanitized_html=sanitized_html,
             network_data=network_data,
+        )
+    except _ArtifactSizeLimitError as exc:
+        stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
+        return _failure(
+            context,
+            error_code="artifact_size_limit_exceeded",
+            message=str(exc),
+            retryable=False,
+            collection_status="failed",
+            browser_target_digest=browser_target_digest,
+            browser_provider_name=browser_provider_name,
+            stage_durations_ms=stage_durations_ms,
         )
     except Exception as exc:
         stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
@@ -788,15 +838,35 @@ def _wait_for_amazon_page(page: Any, *, timeout_ms: int) -> None:
     if callable(wait_for_selector):
         try:
             wait_for_selector(
-                "#productTitle, #availability, form[action*='validateCaptcha'], title",
+                _AMAZON_READY_SELECTOR,
                 timeout=min(timeout_ms, 10_000),
             )
         except Exception:
             pass
     evaluate = getattr(page, "evaluate", None)
     if callable(evaluate):
+        wait_for_timeout = getattr(page, "wait_for_timeout", None)
+        for checkpoint in _SCROLL_CHECKPOINTS:
+            try:
+                evaluate(
+                    "window.scrollTo(0, Math.min(document.documentElement.scrollHeight, "
+                    f"{checkpoint}))"
+                )
+            except Exception:
+                continue
+            if callable(wait_for_timeout):
+                try:
+                    wait_for_timeout(_SCROLL_SETTLE_MS)
+                except Exception:
+                    pass
+    locator = getattr(page, "locator", None)
+    if callable(locator):
         try:
-            evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 1800))")
+            toggle = locator(_PRODUCT_DETAILS_TOGGLE_SELECTOR).first
+            is_visible = getattr(toggle, "is_visible", None)
+            click = getattr(toggle, "click", None)
+            if callable(is_visible) and callable(click) and is_visible():
+                click(timeout=min(timeout_ms, 2_000))
         except Exception:
             pass
 
@@ -852,6 +922,28 @@ def _write_success_artifacts(
         run_id=run_id,
         observed_at=observed_at,
     )
+    html_bytes = sanitized_html.encode("utf-8")
+    _require_artifact_payload_size(
+        capture_kind="decompressed_html",
+        payload=html_bytes,
+        max_bytes=_MAX_DECOMPRESSED_HTML_BYTES,
+    )
+    html_payload = gzip.compress(html_bytes, mtime=0)
+    network_payload = (
+        json.dumps(
+            network_data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if network_data
+        else b""
+    )
+    _require_raw_capture_size(capture_kind="normalized_capture", payload=capture_bytes)
+    _require_raw_capture_size(capture_kind="html", payload=html_payload)
+    if network_payload:
+        _require_raw_capture_size(capture_kind="network_data", payload=network_payload)
     refs: list[dict[str, Any]] = []
     try:
         normalized_ref = _upload_bytes(
@@ -870,7 +962,7 @@ def _write_success_artifacts(
             context=context,
             artifact_policy=artifact_policy,
             object_key=f"{base_key}/page.html.gz",
-            payload=gzip.compress(sanitized_html.encode("utf-8"), mtime=0),
+            payload=html_payload,
             capture_kind="html",
             content_type="application/gzip",
             sanitization_status="sanitized",
@@ -880,18 +972,12 @@ def _write_success_artifacts(
         )
         refs.append(html_ref)
         network_ref = None
-        if network_data:
+        if network_payload:
             network_ref = _upload_bytes(
                 context=context,
                 artifact_policy=artifact_policy,
                 object_key=f"{base_key}/page-data.json",
-                payload=json.dumps(
-                    network_data,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8"),
+                payload=network_payload,
                 capture_kind="network_data",
                 content_type="application/json",
                 sanitization_status="allowlisted",
@@ -899,6 +985,8 @@ def _write_success_artifacts(
                 observed_at=observed_at,
             )
             refs.append(network_ref)
+    except _ArtifactSizeLimitError:
+        raise
     except Exception as exc:
         raise _ArtifactWriteError(str(exc), artifact_refs=refs) from exc
     return normalized_ref, html_ref, network_ref
@@ -920,18 +1008,27 @@ def _write_failure_artifacts(
         run_id=run_id,
         observed_at=observed_at,
     )
+    html_payload = b""
+    if html:
+        sanitized_html_bytes = _sanitize_amazon_html(html).encode("utf-8")
+        _require_artifact_payload_size(
+            capture_kind="decompressed_html",
+            payload=sanitized_html_bytes,
+            max_bytes=_MAX_DECOMPRESSED_HTML_BYTES,
+        )
+        html_payload = gzip.compress(sanitized_html_bytes, mtime=0)
+        _require_raw_capture_size(capture_kind="html", payload=html_payload)
+    if screenshot_bytes:
+        _require_raw_capture_size(capture_kind="screenshot", payload=screenshot_bytes)
     refs: list[dict[str, Any]] = []
     try:
-        if html:
+        if html_payload:
             refs.append(
                 _upload_bytes(
                     context=context,
                     artifact_policy=artifact_policy,
                     object_key=f"{base_key}/page.html.gz",
-                    payload=gzip.compress(
-                        _sanitize_amazon_html(html).encode("utf-8"),
-                        mtime=0,
-                    ),
+                    payload=html_payload,
                     capture_kind="html",
                     content_type="application/gzip",
                     sanitization_status="sanitized",
@@ -954,6 +1051,8 @@ def _write_failure_artifacts(
                     observed_at=observed_at,
                 )
             )
+    except _ArtifactSizeLimitError:
+        raise
     except Exception as exc:
         raise _ArtifactWriteError(str(exc), artifact_refs=refs) from exc
     return refs
@@ -983,6 +1082,7 @@ def _upload_bytes(
     observed_at: datetime,
     content_encoding: str = "",
 ) -> dict[str, Any]:
+    _require_raw_capture_size(capture_kind=capture_kind, payload=payload)
     store = artifact_policy["store"]
     bucket = _required_text(artifact_policy.get("bucket"), "artifact bucket")
     content_digest = hashlib.sha256(payload).hexdigest()
@@ -1029,6 +1129,29 @@ def _upload_bytes(
     if content_encoding:
         ref["content_encoding"] = content_encoding
     return ref
+
+
+def _require_raw_capture_size(*, capture_kind: str, payload: bytes) -> None:
+    max_bytes = _RAW_CAPTURE_SIZE_LIMITS.get(capture_kind)
+    if max_bytes is None:
+        raise ValueError(f"Unsupported Amazon raw capture kind: {capture_kind}")
+    _require_artifact_payload_size(
+        capture_kind=capture_kind,
+        payload=payload,
+        max_bytes=max_bytes,
+    )
+
+
+def _require_artifact_payload_size(
+    *,
+    capture_kind: str,
+    payload: bytes,
+    max_bytes: int,
+) -> None:
+    if len(payload) > max_bytes:
+        raise _ArtifactSizeLimitError(
+            f"Amazon {capture_kind} artifact exceeds its {max_bytes}-byte size limit."
+        )
 
 
 class _AmazonHTMLSanitizer(HTMLParser):
@@ -1219,7 +1342,7 @@ def _media_source_refs(capture: Mapping[str, Any]) -> list[dict[str, Any]]:
     seen: set[str] = set()
 
     def append(item: Any, *, role: str, position: int) -> None:
-        source_url = _governed_media_url(_media_url(item))
+        source_url = normalize_amazon_media_url(_media_url(item))
         if not source_url or source_url in seen:
             return
         seen.add(source_url)
@@ -1302,37 +1425,8 @@ def _normalize_capture_media_urls(capture: dict[str, Any]) -> None:
 def _normalize_capture_media_item(value: Any) -> dict[str, str] | None:
     if not isinstance(value, Mapping):
         return None
-    source_url = _governed_media_url(_clean_text(value.get("url")))
+    source_url = normalize_amazon_media_url(_clean_text(value.get("url")))
     return {"url": source_url} if source_url else None
-
-
-def _governed_media_url(value: str) -> str:
-    if not value or any(character.isspace() for character in value):
-        return ""
-    try:
-        parsed = urlparse(value)
-        port = parsed.port
-    except ValueError:
-        return ""
-    hostname = (parsed.hostname or "").lower()
-    allowed_host = any(
-        hostname == suffix or hostname.endswith(f".{suffix}")
-        for suffix in ("media-amazon.com", "ssl-images-amazon.com")
-    )
-    if (
-        parsed.scheme.lower() != "https"
-        or not allowed_host
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-    ):
-        return ""
-    return parsed._replace(
-        scheme="https",
-        netloc=hostname,
-        query="",
-        fragment="",
-    ).geturl()
 
 
 def _evidence_status(evidence: Mapping[str, Any], path: str) -> str:

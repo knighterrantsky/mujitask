@@ -75,9 +75,9 @@ _NETWORK_SENSITIVE_KEY_MARKERS = (
     "user",
     "workspace",
 )
-_NETWORK_MEDIA_HOST_SUFFIXES = (
-    ".media-amazon.com",
-    ".ssl-images-amazon.com",
+_AMAZON_MEDIA_HOST_SUFFIXES = (
+    "media-amazon.com",
+    "ssl-images-amazon.com",
 )
 
 
@@ -175,6 +175,35 @@ def normalize_asin(value: object) -> str:
 
 def canonical_amazon_url(asin: object) -> str:
     return f"https://www.amazon.com/dp/{normalize_asin(asin)}"
+
+
+def normalize_amazon_media_url(value: object) -> str:
+    if not isinstance(value, str) or not value or any(character.isspace() for character in value):
+        return ""
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    allowed_host = any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _AMAZON_MEDIA_HOST_SUFFIXES
+    )
+    if (
+        parsed.scheme.lower() != "https"
+        or not allowed_host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        return ""
+    return parsed._replace(
+        scheme="https",
+        netloc=hostname,
+        query="",
+        fragment="",
+    ).geturl()
 
 
 def extract_asin_from_url(url: object) -> str:
@@ -1226,24 +1255,8 @@ def _normalize_network_media_item(value: Any) -> dict[str, str] | None:
     item = _normalize_media_item(value)
     if not item:
         return None
-    parsed = urlparse(item["url"])
-    host = (parsed.hostname or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme.lower() != "https"
-        or parsed.username
-        or parsed.password
-        or port not in {None, 443}
-        or not any(
-            host == suffix.removeprefix(".") or host.endswith(suffix)
-            for suffix in _NETWORK_MEDIA_HOST_SUFFIXES
-        )
-    ):
-        return None
-    return {"url": parsed._replace(query="", fragment="").geturl()}
+    normalized_url = normalize_amazon_media_url(item["url"])
+    return {"url": normalized_url} if normalized_url else None
 
 
 def _normalize_network_media_list(value: Any) -> list[dict[str, str]]:

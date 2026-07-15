@@ -124,8 +124,8 @@ class FakeImageResponse:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def read(self) -> bytes:
-        return self.payload
+    def read(self, size: int = -1) -> bytes:
+        return self.payload if size < 0 else self.payload[:size]
 
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -282,12 +282,18 @@ def _bind_fake_boundaries(
     monkeypatch.setattr(feishu_common, "FeishuBitableClient", FakeFeishuBitableClient)
     monkeypatch.setattr(browser_handler_module, "create_artifact_store", lambda _settings: store)
     monkeypatch.setattr(media_handler_module, "create_store_from_settings", lambda _settings: store)
+
+    class FakeImageOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            return FakeImageResponse(
+                b"\xff\xd8\xff\xe0" + f"fake-amazon-image:{request.full_url}".encode()
+            )
+
     monkeypatch.setattr(
         media_handler_module,
-        "urlopen",
-        lambda request, timeout: FakeImageResponse(
-            b"\xff\xd8\xff\xe0" + f"fake-amazon-image:{request.full_url}".encode()
-        ),
+        "build_opener",
+        lambda _redirect_handler: FakeImageOpener(),
     )
     monkeypatch.setattr(fact_handler_module, "create_artifact_store", lambda _settings: store)
     return state
@@ -676,6 +682,8 @@ def test_terminal_browser_failure_writes_status_only_and_never_enters_row_persis
     assert finalized["result"]["row_results"][0]["source_record_id"] == SOURCE_RECORD_ID
     assert finalized["result"]["row_results"][0]["writeback"] == {
         "written_count": 1,
+        "skipped_count": 0,
+        "failed_count": 0,
         "target_record_ids": [SOURCE_RECORD_ID],
     }
     assert store.list_api_worker_jobs_for_request(

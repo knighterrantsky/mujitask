@@ -120,6 +120,7 @@ def _mark_status_writeback_success(
     request_id: str,
     stage_code: str,
     row_status: str,
+    result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jobs = [
         job
@@ -146,8 +147,11 @@ def _mark_status_writeback_success(
         job_id=str(claimed["job_id"]),
         run_id=str(claimed["run_id"]),
         summary={"stage_code": stage_code},
-        result={
+        result=result
+        or {
             "written_count": 1,
+            "skipped_count": 0,
+            "failed_count": 0,
             "target_record_ids": [SOURCE_RECORD_ID],
         },
     )
@@ -473,6 +477,70 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     assert len(finalized["outbox"]) == 1
 
 
+@pytest.mark.parametrize(
+    "writeback_result",
+    [
+        {
+            "written_count": 1,
+            "skipped_count": 0,
+            "failed_count": 0,
+            "target_record_ids": ["rec-wrong"],
+        },
+        {
+            "written_count": 1,
+            "skipped_count": 1,
+            "failed_count": 0,
+            "target_record_ids": [SOURCE_RECORD_ID],
+        },
+        {
+            "written_count": 1,
+            "skipped_count": 0,
+            "failed_count": 1,
+            "target_record_ids": [SOURCE_RECORD_ID],
+        },
+        {
+            "written_count": 1,
+            "target_record_ids": [SOURCE_RECORD_ID],
+        },
+    ],
+)
+def test_collecting_status_writeback_requires_exact_source_row_convergence(
+    runtime_db_url: str,
+    monkeypatch,
+    writeback_result: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+    store, request_id = _submit(runtime_db_url)
+    _executor(runtime_db_url)
+    _mark_api_success(
+        store,
+        request_id=request_id,
+        stage_code="read_amazon_product_row",
+        job_code="feishu_table_read",
+        result=_read_result(),
+    )
+    assert _executor(runtime_db_url)["current_stage"] == "collect_amazon_product_detail"
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="collect_amazon_product_detail",
+        row_status="collecting",
+        result=writeback_result,
+    )
+
+    finalized = _executor(runtime_db_url)
+
+    assert finalized["request_status"] == "failed"
+    assert finalized["result"]["error_code"] == "amazon_collecting_status_writeback_failed"
+    assert finalized["result"]["row_results"][0]["writeback"] == {
+        "written_count": int(writeback_result.get("written_count") or 0),
+        "skipped_count": int(writeback_result.get("skipped_count") or 0),
+        "failed_count": int(writeback_result.get("failed_count") or 0),
+        "target_record_ids": writeback_result["target_record_ids"],
+    }
+    assert store.list_task_executions(request_id=request_id) == []
+
+
 def test_summary_gate_does_not_finalize_while_persist_job_is_active(
     runtime_db_url: str,
     monkeypatch,
@@ -527,6 +595,140 @@ def test_summary_gate_does_not_finalize_while_persist_job_is_active(
     assert attempted["request_status"] == "waiting"
     assert attempted["current_stage"] == "ready_for_summary"
     assert store.list_request_outbox(request_id=request_id) == []
+
+
+def test_persist_failure_writes_terminal_status_before_request_fails(
+    runtime_db_url: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+    store, request_id = _submit(runtime_db_url)
+    _executor(runtime_db_url)
+    _mark_api_success(
+        store,
+        request_id=request_id,
+        stage_code="read_amazon_product_row",
+        job_code="feishu_table_read",
+        result=_read_result(),
+    )
+    _executor(runtime_db_url)
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="collect_amazon_product_detail",
+        row_status="collecting",
+    )
+    _executor(runtime_db_url)
+    execution = store.claim_next_browser_execution(
+        worker_id="pytest-browser",
+        lease_seconds=30.0,
+        request_id=request_id,
+        item_codes=("amazon_product_browser_fetch",),
+    )
+    assert execution is not None
+    store.mark_browser_execution_success(
+        execution_id=execution.execution_id,
+        run_id=execution.run_id,
+        summary={"collection_status": "success"},
+        result=_browser_result(),
+    )
+    _executor(runtime_db_url)
+    _mark_status_writeback_success(
+        store,
+        request_id=request_id,
+        stage_code="persist_amazon_product_detail",
+        row_status="persisting",
+    )
+    _executor(runtime_db_url)
+
+    persist_jobs = _stage_jobs(
+        store,
+        request_id=request_id,
+        stage_code="persist_amazon_product_detail",
+        job_code="amazon_product_row_persist",
+    )
+    assert len(persist_jobs) == 1
+    engine = create_engine(runtime_db_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE api_worker_job SET max_attempts = 1 "
+                    "WHERE job_id = :job_id"
+                ),
+                {"job_id": persist_jobs[0]["job_id"]},
+            )
+    finally:
+        engine.dispose()
+    claimed_persist = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code="amazon_product_row_persist",
+    )
+    assert claimed_persist is not None
+    failed_persist = store.mark_api_worker_job_retry_or_failed(
+        job_id=str(claimed_persist["job_id"]),
+        run_id=str(claimed_persist["run_id"]),
+        error_text="fact write failed",
+        result={"observability": {"fact": 4.5}},
+        error_code="amazon_fact_write_failed",
+    )
+    assert failed_persist["result_status"] == "failed"
+
+    writeback_dispatch = _executor(runtime_db_url)
+
+    assert writeback_dispatch["request_status"] == "waiting"
+    assert writeback_dispatch["current_stage"] == "persist_amazon_product_detail"
+    assert store.list_request_outbox(request_id=request_id) == []
+    terminal_jobs = [
+        job
+        for job in _stage_jobs(
+            store,
+            request_id=request_id,
+            stage_code="persist_amazon_product_detail",
+            job_code="feishu_table_write",
+        )
+        if str((job.get("payload") or {}).get("writeback_kind") or "")
+        == "amazon_terminal_status"
+    ]
+    assert len(terminal_jobs) == 1
+    terminal_payload = terminal_jobs[0]["payload"]
+    assert terminal_payload["source_record_id"] == SOURCE_RECORD_ID
+    assert terminal_payload["row_status"] == "failed"
+    assert terminal_payload["error_code"] == "amazon_fact_write_failed"
+
+    claimed_writeback = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code="feishu_table_write",
+    )
+    assert claimed_writeback is not None
+    assert claimed_writeback["job_id"] == terminal_jobs[0]["job_id"]
+    store.mark_api_worker_job_success(
+        job_id=str(claimed_writeback["job_id"]),
+        run_id=str(claimed_writeback["run_id"]),
+        summary={"stage_code": "persist_amazon_product_detail"},
+        result={
+            "written_count": 1,
+            "skipped_count": 0,
+            "failed_count": 0,
+            "target_record_ids": [SOURCE_RECORD_ID],
+        },
+    )
+
+    finalized = _executor(runtime_db_url)
+
+    assert finalized["request_status"] == "failed"
+    assert finalized["result"]["error_code"] == "amazon_fact_write_failed"
+    assert finalized["result"]["row_results"][0]["writeback"] == {
+        "written_count": 1,
+        "skipped_count": 0,
+        "failed_count": 0,
+        "target_record_ids": [SOURCE_RECORD_ID],
+    }
+    assert finalized["summary"]["row_status_counts"] == {"failed": 1}
 
 
 def test_declared_parent_redirect_to_child_enters_persist_stage(
@@ -677,6 +879,8 @@ def test_invalid_source_asin_writes_status_then_fails_without_browser_or_persist
         job_code="feishu_table_write",
         result={
             "written_count": 1,
+            "skipped_count": 0,
+            "failed_count": 0,
             "target_record_ids": [SOURCE_RECORD_ID],
         },
     )
@@ -687,6 +891,8 @@ def test_invalid_source_asin_writes_status_then_fails_without_browser_or_persist
     assert finalized["summary"]["row_status_counts"] == {"failed": 1}
     assert finalized["result"]["row_results"][0]["writeback"] == {
         "written_count": 1,
+        "skipped_count": 0,
+        "failed_count": 0,
         "target_record_ids": [SOURCE_RECORD_ID],
     }
     assert store.list_task_executions(request_id=request_id) == []

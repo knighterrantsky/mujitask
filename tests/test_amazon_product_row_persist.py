@@ -13,6 +13,8 @@ from automation_business_scaffold.contracts.handler.contract import (
 
 
 ASIN = "B0ABC12345"
+MAIN_IMAGE_URL = "https://m.media-amazon.com/images/I/main.jpg"
+GALLERY_IMAGE_URL = "https://images-na.ssl-images-amazon.com/images/I/gallery.jpg"
 
 
 def _context(
@@ -75,7 +77,7 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
         "raw_capture_refs": [normalized_ref, html_ref],
         "media_source_refs": [
             {
-                "source_url": "https://images.example/main.jpg",
+                "source_url": MAIN_IMAGE_URL,
                 "source_platform": "amazon",
                 "marketplace_code": "US",
                 "product_id": ASIN,
@@ -83,7 +85,7 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
                 "position": 0,
             },
             {
-                "source_url": "https://images.example/gallery.jpg",
+                "source_url": GALLERY_IMAGE_URL,
                 "source_platform": "amazon",
                 "marketplace_code": "US",
                 "product_id": ASIN,
@@ -101,7 +103,7 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
 def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]]:
     assets = [
         {
-            "source_url": "https://images.example/main.jpg",
+            "source_url": MAIN_IMAGE_URL,
             "source_platform": "amazon",
             "marketplace_code": "US",
             "product_id": ASIN,
@@ -120,7 +122,7 @@ def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]
     if include_gallery:
         assets.append(
             {
-                "source_url": "https://images.example/gallery.jpg",
+                "source_url": GALLERY_IMAGE_URL,
                 "source_platform": "amazon",
                 "marketplace_code": "US",
                 "product_id": ASIN,
@@ -238,6 +240,9 @@ def _success_outcomes() -> dict[str, Callable[[HandlerContext], HandlerResult]]:
 
 
 def test_job_contract_declares_compact_serial_row_persistence() -> None:
+    from automation_business_scaffold.domains.amazon.jobs.feishu_table_write import (
+        FEISHU_TABLE_WRITE_JOB,
+    )
     from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
         JOB_DEFINITION,
     )
@@ -250,6 +255,12 @@ def test_job_contract_declares_compact_serial_row_persistence() -> None:
         "{request_id}:amazon_persist:{source_record_id}:{requested_asin}"
     )
     assert "observability" in JOB_DEFINITION.result_contract.field_names()
+    assert FEISHU_TABLE_WRITE_JOB.result_contract.field_names(required_only=True) == (
+        "written_count",
+        "skipped_count",
+        "failed_count",
+        "target_record_ids",
+    )
 
 
 def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
@@ -276,6 +287,7 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
             "access_token_ref": "secret://feishu/amazon-token",
         }
     }
+    payload["media_source_refs"][0]["source_url"] = f"{MAIN_IMAGE_URL}?tracking=1#fragment"
     from automation_business_scaffold.domains.amazon.flows.amazon_product_row_persist import (
         orchestrator,
     )
@@ -299,7 +311,16 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
     assert media_payload["require_object_storage"] is True
     assert media_payload["require_materialized_assets"] is True
     assert media_payload["sync_referenced_files"] is True
+    assert media_payload["media_download_max_bytes"] == 25 * 1024 * 1024
+    assert media_payload["media_download_allowed_host_suffixes"] == [
+        "media-amazon.com",
+        "ssl-images-amazon.com",
+    ]
     assert [item["position"] for item in media_payload["asset_refs"]] == [0, 1]
+    assert [item["source_url"] for item in media_payload["asset_refs"]] == [
+        MAIN_IMAGE_URL,
+        GALLERY_IMAGE_URL,
+    ]
 
     fact_payload = calls[1].payload
     assert fact_payload["source_table_ref"] == {"base_id": "app-1", "table_id": "tbl-1"}
@@ -374,14 +395,16 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
 
 
 @pytest.mark.parametrize(
-    ("written_count", "target_record_ids"),
+    ("summary_written_count", "written_count", "target_record_ids"),
     (
-        (0, []),
-        (1, ["rec-other"]),
+        (0, 0, []),
+        (1, 0, ["rec-1"]),
+        (1, 1, ["rec-other"]),
     ),
 )
 def test_row_persist_rejects_writeback_that_does_not_update_the_source_record(
     monkeypatch: pytest.MonkeyPatch,
+    summary_written_count: int,
     written_count: int,
     target_record_ids: list[str],
 ) -> None:
@@ -395,7 +418,7 @@ def test_row_persist_rejects_writeback_that_does_not_update_the_source_record(
         return HandlerResult.success(
             context,
             summary={
-                "written_count": written_count,
+                "written_count": summary_written_count,
                 "skipped_count": 0,
                 "failed_count": 0,
             },
@@ -664,6 +687,76 @@ def test_invalid_source_binding_fails_before_any_child_side_effect(
 
     payload = _payload()
     payload["source_table_identity"] = {"base_id": "app-1"}
+    calls = _fake_dispatch(monkeypatch, _success_outcomes())
+
+    result = amazon_product_row_persist_handler(_context(payload))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_persist_payload"
+    assert result.error.retryable is False
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "https://images.example/main.jpg",
+        "https://media-amazon.com.evil.example/main.jpg",
+        "https://user@images-na.ssl-images-amazon.com/main.jpg",
+    ],
+)
+def test_ungoverned_media_url_fails_before_media_download(
+    monkeypatch: pytest.MonkeyPatch,
+    source_url: str,
+) -> None:
+    from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
+        amazon_product_row_persist_handler,
+    )
+
+    payload = _payload()
+    payload["media_source_refs"][0]["source_url"] = source_url
+    calls = _fake_dispatch(monkeypatch, _success_outcomes())
+
+    result = amazon_product_row_persist_handler(_context(payload))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_persist_payload"
+    assert result.error.retryable is False
+    assert calls == []
+
+
+def test_media_ref_local_path_fails_before_local_file_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
+        amazon_product_row_persist_handler,
+    )
+
+    payload = _payload()
+    payload["media_source_refs"][0]["local_path"] = "/etc/passwd"
+    calls = _fake_dispatch(monkeypatch, _success_outcomes())
+
+    result = amazon_product_row_persist_handler(_context(payload))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_persist_payload"
+    assert result.error.retryable is False
+    assert calls == []
+
+
+def test_boolean_media_position_fails_before_media_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
+        amazon_product_row_persist_handler,
+    )
+
+    payload = _payload()
+    payload["media_source_refs"][0]["position"] = True
     calls = _fake_dispatch(monkeypatch, _success_outcomes())
 
     result = amazon_product_row_persist_handler(_context(payload))

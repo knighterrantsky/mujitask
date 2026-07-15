@@ -279,6 +279,7 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         ],
         "allowed_ports": ["default", 443],
         "userinfo": "forbidden",
+        "redirect_policy": "validate_each_hop_against_same_allowlist_before_request",
         "query_and_fragment": "strip_before_persistence",
         "invalid_observed_media": "remove_and_mark_partial_success",
     }

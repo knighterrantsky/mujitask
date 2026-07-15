@@ -8,6 +8,7 @@ from typing import Any
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     InvalidASINError,
+    normalize_amazon_media_url,
     normalize_asin,
 )
 from automation_business_scaffold.contracts.handler.contract import (
@@ -29,6 +30,16 @@ from automation_business_scaffold.contracts.workflow.execution_helpers import (
 
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _COLLECTION_STATUSES = {"success", "partial_success", "unavailable"}
+_MEDIA_ROLES = {"main_image", "gallery_image"}
+_MAX_AMAZON_MEDIA_DOWNLOAD_BYTES = 25 * 1024 * 1024
+_MEDIA_SOURCE_REF_FIELDS = {
+    "source_url",
+    "source_platform",
+    "marketplace_code",
+    "product_id",
+    "media_role",
+    "position",
+}
 _BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _BROWSER_STAGE_NAMES = ("navigation", "parse", "artifact")
 
@@ -68,6 +79,11 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
                 "sync_referenced_files": True,
                 "require_object_storage": True,
                 "require_materialized_assets": True,
+                "media_download_max_bytes": _MAX_AMAZON_MEDIA_DOWNLOAD_BYTES,
+                "media_download_allowed_host_suffixes": [
+                    "media-amazon.com",
+                    "ssl-images-amazon.com",
+                ],
             },
         )
         media_started_at = perf_counter()
@@ -368,15 +384,39 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
     if not raw_capture_refs:
         raise ValueError("raw_capture_refs is required.")
     media_source_refs = _mapping_list(payload.get("media_source_refs"))
+    normalized_media_source_refs: list[dict[str, Any]] = []
     for item in media_source_refs:
+        unexpected_fields = sorted(set(item) - _MEDIA_SOURCE_REF_FIELDS)
+        if unexpected_fields:
+            raise ValueError(
+                "Amazon media_source_ref contains unsupported fields: "
+                + ", ".join(unexpected_fields)
+            )
         if item.get("source_platform") != "amazon":
             raise ValueError("Every media_source_ref must use source_platform=amazon.")
         if item.get("marketplace_code") != "US":
             raise ValueError("Every media_source_ref must use marketplace_code=US.")
         if normalize_asin(item.get("product_id")) != requested_asin:
             raise ValueError("Every media_source_ref must match requested_asin.")
-        if not isinstance(item.get("position"), int) or item["position"] < 0:
+        media_role = _required_text(item.get("media_role"), "media_source_ref.media_role")
+        if media_role not in _MEDIA_ROLES:
+            raise ValueError("Every media_source_ref must use an approved Amazon media_role.")
+        if type(item.get("position")) is not int or item["position"] < 0:
             raise ValueError("Every media_source_ref must have a non-negative integer position.")
+        source_url = normalize_amazon_media_url(item.get("source_url"))
+        if not source_url:
+            raise ValueError("Every media_source_ref must use an approved HTTPS Amazon CDN URL.")
+        normalized_media_source_refs.append(
+            {
+                "source_url": source_url,
+                "source_platform": "amazon",
+                "marketplace_code": "US",
+                "product_id": requested_asin,
+                "media_role": media_role,
+                "position": item["position"],
+            }
+        )
+    media_source_refs = normalized_media_source_refs
     if collection_status == "unavailable" and media_source_refs:
         raise ValueError("Unavailable captures must not materialize product media.")
     raw_request_payload = _mapping(payload.get("request_payload"))
@@ -613,13 +653,15 @@ def _row_status(
 def _writeback_summary(result: HandlerResult) -> dict[str, Any]:
     payload = result.result
     return {
-        "written_count": int(
-            payload.get("written_count") or result.summary.get("written_count") or 0
+        "written_count": (
+            payload["written_count"] if type(payload.get("written_count")) is int else -1
         ),
-        "skipped_count": int(
-            payload.get("skipped_count") or result.summary.get("skipped_count") or 0
+        "skipped_count": (
+            payload["skipped_count"] if type(payload.get("skipped_count")) is int else -1
         ),
-        "failed_count": int(payload.get("failed_count") or result.summary.get("failed_count") or 0),
+        "failed_count": (
+            payload["failed_count"] if type(payload.get("failed_count")) is int else -1
+        ),
         "target_record_ids": [
             _text(item) for item in payload.get("target_record_ids", []) if _text(item)
         ]

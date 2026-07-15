@@ -4,7 +4,7 @@ import hashlib
 import mimetypes
 import tempfile
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
@@ -39,6 +39,27 @@ from typing import Any
 HANDLER_CODE = "media_asset_sync"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 _TK_MEDIA_CACHE_PLATFORMS = frozenset({"fastmoss", "tiktok"})
+
+
+class _GovernedMediaRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, allowed_host_suffixes: tuple[str, ...]) -> None:
+        super().__init__()
+        self._allowed_host_suffixes = allowed_host_suffixes
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Request | None:
+        _require_governed_media_url(
+            newurl,
+            allowed_host_suffixes=self._allowed_host_suffixes,
+        )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
@@ -681,16 +702,46 @@ def _download_referenced_asset(
         first_non_empty(payload.get("media_download_timeout_seconds"), payload.get("download_timeout_seconds")),
         default=30,
     )
+    raw_max_bytes = payload.get("media_download_max_bytes")
+    max_bytes = 0
+    if raw_max_bytes not in (None, ""):
+        max_bytes = _coerce_int(raw_max_bytes, default=0)
+        if max_bytes <= 0:
+            raise ValueError("media_download_max_bytes must be a positive integer")
+    allowed_host_suffixes = _media_download_host_suffixes(
+        payload.get("media_download_allowed_host_suffixes")
+    )
+    if allowed_host_suffixes:
+        _require_governed_media_url(
+            source_url,
+            allowed_host_suffixes=allowed_host_suffixes,
+        )
     request = Request(source_url, headers={"User-Agent": "Mozilla/5.0"})
     request_pacer.wait_before_request("media:download")
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - URLs come from trusted workflow fetches.
-            content = response.read()
+        response_context = (
+            build_opener(_GovernedMediaRedirectHandler(allowed_host_suffixes)).open(
+                request,
+                timeout=timeout_seconds,
+            )
+            if allowed_host_suffixes
+            else urlopen(request, timeout=timeout_seconds)  # noqa: S310 - governed by caller policy.
+        )
+        with response_context as response:
+            if allowed_host_suffixes:
+                response_url = getattr(response, "geturl", lambda: source_url)()
+                _require_governed_media_url(
+                    response_url,
+                    allowed_host_suffixes=allowed_host_suffixes,
+                )
+            content = response.read(max_bytes + 1) if max_bytes else response.read()
             content_type = coerce_str(response.headers.get("Content-Type"))
     finally:
         request_pacer.mark_request_finished("media:download")
     if not content:
         raise ValueError("downloaded asset is empty")
+    if max_bytes and len(content) > max_bytes:
+        raise ValueError("downloaded asset exceeds media_download_max_bytes")
 
     suffix = _guess_media_suffix(source_url, content_type)
     file_name = _safe_file_name(
@@ -767,6 +818,55 @@ def _coerce_int(value: Any, *, default: int) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _media_download_host_suffixes(value: Any) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("media_download_allowed_host_suffixes must be a list of DNS suffixes")
+    suffixes: list[str] = []
+    for item in value:
+        suffix = coerce_str(item).lower().lstrip(".")
+        if (
+            not suffix
+            or suffix.startswith("-")
+            or suffix.endswith(("-", "."))
+            or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-." for character in suffix)
+        ):
+            raise ValueError("media_download_allowed_host_suffixes contains an invalid DNS suffix")
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    if not suffixes:
+        raise ValueError("media_download_allowed_host_suffixes must not be empty")
+    return tuple(suffixes)
+
+
+def _require_governed_media_url(
+    value: Any,
+    *,
+    allowed_host_suffixes: tuple[str, ...],
+) -> None:
+    if not isinstance(value, str) or not value or any(character.isspace() for character in value):
+        raise ValueError("media download requires a governed HTTPS media host")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("media download requires a governed HTTPS media host") from exc
+    hostname = (parsed.hostname or "").lower()
+    allowed_host = any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in allowed_host_suffixes
+    )
+    if (
+        parsed.scheme.lower() != "https"
+        or not allowed_host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise ValueError("media download requires a governed HTTPS media host")
 
 
 __all__ = ["CONTRACT", "HANDLER_CODE", "media_asset_sync_handler"]

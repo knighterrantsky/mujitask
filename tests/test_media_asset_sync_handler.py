@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import pytest
+
 from automation_business_scaffold.capabilities.media import asset_sync_handler
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import (
@@ -19,8 +21,9 @@ class _FakeResponse:
     def __exit__(self, *args: Any) -> None:
         return None
 
-    def read(self) -> bytes:
-        return b"fake-webp-bytes"
+    def read(self, size: int = -1) -> bytes:
+        content = b"fake-webp-bytes"
+        return content if size < 0 else content[:size]
 
 
 def _context(payload: dict[str, Any]) -> HandlerContext:
@@ -77,6 +80,114 @@ def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypa
     assert asset["object_key"].endswith(".webp")
     assert asset["object_key"].startswith("runs/job-media/assets/")
     assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
+
+
+def test_media_asset_sync_enforces_configured_download_byte_limit(monkeypatch, tmp_path) -> None:
+    redirect_handlers: list[object] = []
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del request, timeout
+            return _FakeResponse()
+
+    def build_opener(handler):
+        redirect_handlers.append(handler)
+        return FakeOpener()
+
+    monkeypatch.setattr(asset_sync_handler, "build_opener", build_opener)
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "urlopen",
+        lambda request, timeout: pytest.fail("governed downloads must not use urlopen directly"),
+    )
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "artifact_bucket": "local-runtime",
+                "sync_referenced_files": True,
+                "require_materialized_assets": True,
+                "media_download_max_bytes": 4,
+                "media_download_allowed_host_suffixes": [
+                    "media-amazon.com",
+                    "ssl-images-amazon.com",
+                ],
+                "media_download_dir": str(tmp_path / "downloads"),
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "B0ABC12345",
+                        "media_role": "main_image",
+                        "source_url": "https://m.media-amazon.com/images/I/main.webp",
+                        "source_platform": "amazon",
+                        "marketplace_code": "US",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "media_asset_materialization_failed"
+    assert result.result["synced_assets"][0]["sync_state"] == "referenced"
+    assert not list((tmp_path / "downloads").rglob("*"))
+    assert len(redirect_handlers) == 1
+
+
+@pytest.mark.parametrize(
+    "redirect_url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "https://images.example.test/private.jpg",
+        "https://media-amazon.com.evil.example/private.jpg",
+        "https://user@m.media-amazon.com/private.jpg",
+    ],
+)
+def test_governed_media_redirect_rejects_urls_outside_allowed_cdn(
+    redirect_url: str,
+) -> None:
+    handler = asset_sync_handler._GovernedMediaRedirectHandler(
+        ("media-amazon.com", "ssl-images-amazon.com")
+    )
+    request = asset_sync_handler.Request(
+        "https://m.media-amazon.com/images/I/source.jpg"
+    )
+
+    with pytest.raises(ValueError, match="governed HTTPS media host"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            redirect_url,
+        )
+
+
+def test_governed_media_redirect_allows_https_redirect_within_cdn() -> None:
+    handler = asset_sync_handler._GovernedMediaRedirectHandler(
+        ("media-amazon.com", "ssl-images-amazon.com")
+    )
+    request = asset_sync_handler.Request(
+        "https://m.media-amazon.com/images/I/source.jpg"
+    )
+
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://images-na.ssl-images-amazon.com/images/I/target.jpg?signature=1",
+    )
+
+    assert redirected is not None
+    assert redirected.full_url == (
+        "https://images-na.ssl-images-amazon.com/images/I/target.jpg?signature=1"
+    )
 
 
 def test_media_asset_sync_uses_product_entity_key_for_download_path(monkeypatch, tmp_path) -> None:

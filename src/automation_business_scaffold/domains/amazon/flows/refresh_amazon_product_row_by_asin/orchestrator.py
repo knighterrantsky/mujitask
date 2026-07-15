@@ -652,9 +652,11 @@ def _ensure_stage_status_writeback(
 
     write_job = jobs[-1]
     write_result = extract_effective_result_payload(write_job)
-    if (
-        extract_handler_result_status(write_job) not in {"success", "partial_success"}
-        or int(write_result.get("written_count") or 0) != 1
+    source_record_id = str(row.get("source_record_id") or "").strip()
+    if not _status_writeback_converged(
+        handler_status=extract_handler_result_status(write_job),
+        value=write_result,
+        source_record_id=source_record_id,
     ):
         error_code = _record_error_code(write_job) or f"amazon_{row_status}_status_writeback_failed"
         return _failure(
@@ -662,7 +664,7 @@ def _ensure_stage_status_writeback(
             error_code=error_code,
             message=f"Amazon {row_status} status could not be written to the source row.",
             result={
-                "source_record_id": str(row.get("source_record_id") or "").strip(),
+                "source_record_id": source_record_id,
                 "requested_asin": str(row.get("requested_asin") or "").strip(),
                 "row_status": "failed",
                 "collection_status": "failed",
@@ -783,9 +785,10 @@ def _terminal_failure_with_writeback(
     write_job = jobs[-1]
     write_status = extract_handler_result_status(write_job)
     write_result = extract_effective_result_payload(write_job)
-    if (
-        write_status not in {"success", "partial_success"}
-        or int(write_result.get("written_count") or 0) != 1
+    if not _status_writeback_converged(
+        handler_status=write_status,
+        value=write_result,
+        source_record_id=failure_result["source_record_id"],
     ):
         writeback_error = _record_error_code(write_job) or "amazon_terminal_status_writeback_failed"
         return _failure(
@@ -829,12 +832,35 @@ def _source_table_identity(*, store: Any, request_id: str) -> dict[str, str]:
 def _compact_status_writeback(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "written_count": int(value.get("written_count") or 0),
+        "skipped_count": int(value.get("skipped_count") or 0),
+        "failed_count": int(value.get("failed_count") or 0),
         "target_record_ids": [
             str(item) for item in value.get("target_record_ids", []) if str(item).strip()
         ]
         if isinstance(value.get("target_record_ids"), list)
         else [],
     }
+
+
+def _status_writeback_converged(
+    *,
+    handler_status: str,
+    value: Mapping[str, Any],
+    source_record_id: str,
+) -> bool:
+    count_fields = ("written_count", "skipped_count", "failed_count")
+    if any(type(value.get(field)) is not int for field in count_fields):
+        return False
+    if not isinstance(value.get("target_record_ids"), list):
+        return False
+    compact = _compact_status_writeback(value)
+    return (
+        handler_status == "success"
+        and compact["written_count"] == 1
+        and compact["skipped_count"] == 0
+        and compact["failed_count"] == 0
+        and compact["target_record_ids"] == [source_record_id]
+    )
 
 
 def _utc_timestamp() -> str:

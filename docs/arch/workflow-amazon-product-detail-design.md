@@ -706,6 +706,7 @@ Runtime 证据写入 `artifact_object`；业务媒体写入 `amazon_media_assets
   受控图片 MIME 与内容签名；对象暂不可读按可重试错误处理，摘要或类型不一致按验证错误拒绝。
 - 进入 normalized capture 和媒体同步队列的图片 URL 只允许 HTTPS Amazon CDN
   `media-amazon.com` / `ssl-images-amazon.com`（默认端口或 443、无 userinfo），并在持久化前删除 query 和 fragment；不合规 URL 不得下载或保存为事实，并把本次采集降为 partial success。
+- 图片下载发生 30x 时，必须在发起下一跳请求前使用同一 HTTPS CDN allowlist 逐跳校验；禁止先跟随跳转再检查最终 URL。
 - 未成功上传的 CDN URL 不能作为已持久化媒体事实。
 - normalized capture、network data、压缩 HTML、截图和商品媒体分别使用受控读取上限；
   HTML 解压也必须有独立上限，禁止压缩炸弹进入 worker 内存。
@@ -824,6 +825,7 @@ Runtime lifecycle 继续使用现有状态；Amazon 行级业务结果使用 `re
 | `identity_mismatch` | 否 | 不写商品业务字段 |
 | `product_unavailable` | 不适用 | 作为终态商品事实成功持久化 |
 | `required_field_missing` | 视身份完整性 | 有稳定身份时 partial，否则 failed |
+| `artifact_size_limit_exceeded` | 否 | 上传前拒绝超限证据，不向对象存储写入本批对象 |
 | `media_sync_failed` | 是 | 事实可保存，媒体与飞书附件为 partial |
 | `fact_persistence_failed` | 是 | 不写 success 状态，幂等重试 |
 | `feishu_write_failed` | 是 | 事实保留，重试 projection |

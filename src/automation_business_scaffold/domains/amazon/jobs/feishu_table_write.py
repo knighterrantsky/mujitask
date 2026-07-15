@@ -33,6 +33,8 @@ FEISHU_TABLE_WRITE_JOB = JobDefinition(
     result_contract=contract(
         "amazon_collection_status_write_result",
         required_field("written_count", "Number of source rows updated.", type_hint="int"),
+        required_field("skipped_count", "Number of source rows skipped.", type_hint="int"),
+        required_field("failed_count", "Number of source rows that failed.", type_hint="int"),
         required_field(
             "target_record_ids",
             "Feishu record ids updated by the status projection.",

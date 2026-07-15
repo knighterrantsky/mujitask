@@ -513,6 +513,8 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
         def __init__(self) -> None:
             self.goto_calls: list[tuple[str, str, int]] = []
             self.screenshot_calls = 0
+            self.ready_selector = ""
+            self.evaluate_scripts: list[str] = []
 
         def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
             self.goto_calls.append((url, wait_until, timeout))
@@ -524,9 +526,10 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
         def wait_for_selector(self, selector: str, *, timeout: int) -> None:
             assert "#productTitle" in selector
             assert timeout == 5000
+            self.ready_selector = selector
 
         def evaluate(self, script: str) -> None:
-            assert "scrollTo" in script
+            self.evaluate_scripts.append(script)
 
         def content(self) -> str:
             return _fixture("product_detail_child.html")
@@ -575,8 +578,80 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
     assert collection["browser_provider_name"] == "chrome"
     assert set(collection["stage_durations_ms"]) == {"navigation", "parse"}
     assert all(value >= 0 for value in collection["stage_durations_ms"].values())
+    ready_tokens = {token.strip() for token in page.ready_selector.split(",")}
+    assert "title" not in ready_tokens
+    assert {
+        "#productTitle",
+        "#availability",
+        "#outOfStock",
+        "#productDetails_feature_div",
+        "form[action*='validateCaptcha']",
+        "#captchacharacters",
+    } <= ready_tokens
+    assert len(page.evaluate_scripts) == 3
+    assert all("scrollTo" in script for script in page.evaluate_scripts)
+    assert all("while" not in script for script in page.evaluate_scripts)
+    assert [
+        checkpoint
+        for checkpoint in (1200, 2800, 4800)
+        if any(str(checkpoint) in script for script in page.evaluate_scripts)
+    ] == [1200, 2800, 4800]
     assert "target_key" not in collection
     assert page.screenshot_calls == 0
+
+
+def test_wait_for_amazon_page_clicks_at_most_one_visible_details_toggle() -> None:
+    class Toggle:
+        def __init__(self) -> None:
+            self.first = self
+            self.click_count = 0
+
+        def is_visible(self) -> bool:
+            return True
+
+        def click(self, *, timeout: int) -> None:
+            assert timeout == 2000
+            self.click_count += 1
+            raise RuntimeError("detached after click")
+
+    class Page:
+        def __init__(self) -> None:
+            self.toggle = Toggle()
+            self.locator_selector = ""
+            self.scroll_count = 0
+            self.waits: list[int] = []
+
+        def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+            assert state == "domcontentloaded"
+            assert timeout == 5000
+
+        def wait_for_selector(self, selector: str, *, timeout: int) -> None:
+            del selector, timeout
+
+        def evaluate(self, script: str) -> None:
+            assert "scrollTo" in script
+            self.scroll_count += 1
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            self.waits.append(timeout_ms)
+
+        def locator(self, selector: str) -> Toggle:
+            self.locator_selector = selector
+            return self.toggle
+
+    page = Page()
+
+    handler_module._wait_for_amazon_page(page, timeout_ms=5000)
+
+    assert page.scroll_count == 3
+    assert page.waits == [150, 150, 150]
+    assert "#productDetails_feature_div" in page.locator_selector
+    assert "#detailBullets_feature_div" in page.locator_selector
+    assert all(
+        "aria-expanded='false'" in selector
+        for selector in page.locator_selector.split(",")
+    )
+    assert page.toggle.click_count == 1
 
 
 def test_screenshot_capture_fails_closed_when_sensitive_masking_fails() -> None:
@@ -646,8 +721,11 @@ def test_natural_same_origin_json_response_is_allowlisted_and_persisted_as_ref(
             assert self.response_listener is not None
 
         def wait_for_timeout(self, timeout_ms: int) -> None:
-            assert timeout_ms == handler_module._NETWORK_SETTLE_MS
-            self.events.append("network:settle")
+            if timeout_ms == handler_module._NETWORK_SETTLE_MS:
+                self.events.append("network:settle")
+            else:
+                assert timeout_ms == 150
+                self.events.append("scroll:settle")
             for response in (
                 Response(
                     url="https://evil.example/product.json",
@@ -1380,6 +1458,80 @@ def test_partial_artifact_upload_failure_returns_refs_for_already_stored_objects
     assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == [
         "normalized_capture"
     ]
+
+
+def test_oversized_normalized_capture_fails_closed_without_upload(monkeypatch) -> None:
+    store = FakeArtifactStore()
+    capture = _capture()
+    oversized_title = "x" * (2 * 1024 * 1024)
+    capture["product"]["title"] = oversized_title
+    capture["field_evidence"]["product.title"]["value"] = oversized_title
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: _success_collection(capture),
+    )
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "artifact_size_limit_exceeded"
+    assert result.error.retryable is False
+    assert store.uploads == {}
+
+
+def test_oversized_decompressed_html_fails_closed_without_upload(monkeypatch) -> None:
+    store = FakeArtifactStore()
+    collection = _success_collection()
+    collection["html"] = f"<html><body>{'x' * (8 * 1024 * 1024)}</body></html>"
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-profile")
+    monkeypatch.setattr(
+        handler_module,
+        "_collect_browser_page",
+        lambda **kwargs: collection,
+    )
+
+    result = amazon_product_browser_fetch_handler(_context(store=store))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "artifact_size_limit_exceeded"
+    assert result.error.retryable is False
+    assert store.uploads == {}
+
+
+@pytest.mark.parametrize(
+    ("capture_kind", "max_bytes", "content_type"),
+    [
+        ("normalized_capture", 2 * 1024 * 1024, "application/json"),
+        ("html", 2 * 1024 * 1024, "application/gzip"),
+        ("network_data", 512 * 1024, "application/json"),
+        ("screenshot", 10 * 1024 * 1024, "image/png"),
+    ],
+)
+def test_upload_bytes_rejects_each_artifact_above_its_stored_byte_limit(
+    capture_kind: str,
+    max_bytes: int,
+    content_type: str,
+) -> None:
+    store = FakeArtifactStore()
+
+    with pytest.raises(ValueError, match=f"{capture_kind}.*size limit"):
+        handler_module._upload_bytes(
+            context=_context(store=store),
+            artifact_policy={"store": store, "bucket": "artifacts", "object_prefix": "dev"},
+            object_key=f"dev/raw-captures/amazon/us/B0CHILD001/run-1/{capture_kind}.bin",
+            payload=b"x" * (max_bytes + 1),
+            capture_kind=capture_kind,
+            content_type=content_type,
+            sanitization_status="test",
+            run_id="run-1",
+            observed_at=OBSERVED_AT,
+        )
+
+    assert store.uploads == {}
 
 
 def test_browser_worker_claims_the_controlled_handler_allowlist(monkeypatch) -> None:
