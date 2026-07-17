@@ -36,21 +36,36 @@ skill.spec.yaml -> tools/render_skill.py -> SKILL.md -> tools/validate_skill.py 
 
 - skill metadata: `name`、`title`、`description`、`short_description`、`owner`、`side_effects`
 - source of truth: `business_overview`、`requirements_index`
-- formal task codes: 当前 5 个正式 workflow 的 `task_code`
-- inputs: `product_url`、`search_keyword`、`sales_7d_threshold`、`price_range_max_threshold`、`max_candidates`
+- formal task codes: 当前 skill 业务域允许暴露的正式 workflow `task_code`
+- inputs: 当前 skill 允许从用户请求提取并传给正式入口的业务字段
 - supported workflows: 每个 intent 的 `kind`、`task_code` 或 `parent_task_code`、目标表、需求文档、设计文档、入口命令
 - execution manual: `workflow`、`intent_precedence`、`output_format`、`guardrails`、`edge_cases`、`final_checks`
 - examples: 正例和负例必须覆盖提交、拒绝触发和目标表不明确场景
 
-当前正式 task_code 必须精确为：
+`mujitask-tiktok-feishu-sync` 的正式 task_code 必须精确为：
 
 ```text
 refresh_current_competitor_table
 search_keyword_competitor_products
 sync_tk_influencer_pool
+tiktok_influencer_outreach_sync
 tiktok_fastmoss_product_ingest
 search_keyword_selection_products
 ```
+
+`mujitask-amazon-feishu-sync` 的正式 task_code 必须精确为：
+
+```text
+refresh_amazon_product_row_by_asin
+refresh_current_amazon_product_table
+```
+
+业务域隔离规则：
+
+- TikTok Skill 的 `metadata.owner` 必须是 `domains/tiktok`，不得列出 Amazon task 或 intent。
+- Amazon Skill 的 `metadata.owner` 必须是 `domains/amazon`，不得列出 TikTok 或 FastMoss task/intent。
+- 每个业务域使用的 Skill、OpenClaw agent/workspace 和飞书账号/会话路由以 `contracts/agents/business-agent-bindings.yaml` 为准。
+- Skill bundle 不保存飞书 App ID、App Secret、token 真值或 OpenClaw 配置文件。
 
 不允许再使用 generic `keyword_search` 同时代表竞品和选品。关键词搜索竞品写入必须使用 `keyword_competitor_search`，关键词搜索选品写入必须使用 `keyword_selection_search`。
 
@@ -74,8 +89,9 @@ search_keyword_selection_products
 - 从 spec deterministic render。
 - 保留 OpenClaw 可读取的 YAML front matter。
 - front matter `description` 只描述明确触发场景，不能放宽为泛 FastMoss / 泛 TK 讨论。
-- 按以下 section 顺序生成：
+- 标准模式按以下 section 顺序生成：
   `Purpose`、`Source of truth`、`When to use`、`Do not use this skill`、`Required inputs`、`Supported workflows`、`Workflow`、`Intent precedence`、`Commands`、`Output format`、`Guardrails`、`Edge cases`、`Final checks`、`Examples`、`Negative activation examples`。
+- 单一入口且详细规则已归档到需求/契约的 Skill 可以设置 `metadata.render_mode: compact`，只生成 `Scope`、`Trigger`、`Input`、`Submit`、`Output`、`Guardrails`；完整结构仍保留在 `skill.spec.yaml`，不得复制到 `SKILL.md`。
 - 只作为 routing 和 task-submission 执行手册，不承载凭证、table ID、Runtime DB 排障或部署 runbook。
 
 禁止：
@@ -95,6 +111,7 @@ search_keyword_selection_products
 uv run --extra dev python tools/render_skill.py --check
 uv run --extra dev python tools/validate_skill.py
 uv run --extra dev pytest tests/test_skill_contract.py
+uv run --extra dev pytest tests/test_business_agent_isolation_contract.py
 ```
 
 `render_skill.py --check` 只做生成一致性检查，不写文件。需要更新生成产物时运行：

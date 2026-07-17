@@ -23,6 +23,7 @@ class ArtifactFileSpec:
     path: Path
     content_type: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    object_key: str = ""
 
 
 def runtime_object_key(run_id: str, relative_name: str) -> str:
@@ -82,7 +83,8 @@ def sync_artifact_specs(
         resolved_path = spec.path.expanduser()
         if not resolved_path.exists() or not resolved_path.is_file():
             continue
-        local_object_key = runtime_object_key(run_id, spec.relative_name)
+        explicit_object_key = str(spec.object_key or "").strip().lstrip("/")
+        local_object_key = explicit_object_key or runtime_object_key(run_id, spec.relative_name)
         content_type = spec.content_type or artifact_content_type(spec.kind, resolved_path)
         metadata = dict(spec.metadata)
         metadata.setdefault("local_object_key", local_object_key)
@@ -114,10 +116,11 @@ def sync_artifact_specs(
             content_type = uploaded.content_type or content_type
             metadata.update(uploaded.metadata)
             metadata["remote_uri"] = uploaded.uri
-            artifact_uri_prefix = artifact_store.build_uri(
-                bucket=bucket,
-                object_key=join_object_key(artifact_object_prefix, f"runs/{run_id}"),
-            )
+            if not explicit_object_key:
+                artifact_uri_prefix = artifact_store.build_uri(
+                    bucket=bucket,
+                    object_key=join_object_key(artifact_object_prefix, f"runs/{run_id}"),
+                )
         record = ArtifactObjectRecord(
             artifact_id=_build_artifact_id(run_id, spec.kind, resolved_path),
             request_id=request_id,

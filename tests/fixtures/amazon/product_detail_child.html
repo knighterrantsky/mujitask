@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <title>DOM product title</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "sku": "B0CHILD001",
+        "name": "Structured product title",
+        "brand": {"@type": "Brand", "name": "Structured Brand"},
+        "description": "Structured product description.",
+        "category": "Home & Kitchen > Lighting > Table Lamps",
+        "image": [
+          "https://images.example.test/structured-main.jpg",
+          "https://images.example.test/structured-gallery-1.jpg",
+          "https://images.example.test/structured-gallery-2.jpg"
+        ],
+        "aggregateRating": {
+          "@type": "AggregateRating",
+          "ratingValue": "4.7",
+          "reviewCount": "1,234"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "29.99",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock",
+          "seller": {"@type": "Organization", "name": "Structured Seller"}
+        }
+      }
+    </script>
+    <script id="amazon-product-state" type="application/json">
+      {
+        "asin": "B0CHILD001",
+        "parent_asin": "B0PARENT01",
+        "product": {
+          "title": "State product title",
+          "brand": "State Brand",
+          "category_path": ["Home & Kitchen", "Lighting", "Table Lamps"],
+          "bullet_points": ["Dimmable warm light", "Solid oak base"],
+          "description": "State product description.",
+          "technical_details": {
+            "Material": "Oak",
+            "Product Dimensions": "10 x 10 x 18 inches"
+          }
+        },
+        "commerce": {
+          "availability_status": "in_stock",
+          "rating": 4.1,
+          "review_count": 999,
+          "featured_offer": {
+            "seller_id": "SELLER123",
+            "seller_name": "State Seller",
+            "is_buy_box": true,
+            "price_amount": 31.0,
+            "list_price_amount": 39.99,
+            "currency": "USD",
+            "fulfillment_channel": "amazon",
+            "delivery_text": "FREE delivery Friday, July 17",
+            "coupon_text": "Save 10% with coupon",
+            "promotions": ["Buy 2, save 5%"]
+          }
+        },
+        "variants": {
+          "parent_asin": "B0PARENT01",
+          "child_asins": ["B0CHILD001", "B0CHILD002"],
+          "current_attributes": {"Color": "Blue", "Size": "Large"},
+          "dimensions": {
+            "Color": ["Blue", "Red"],
+            "Size": ["Large", "Small"]
+          }
+        },
+        "rankings": [
+          {
+            "category_name": "Table Lamps",
+            "category_path": ["Home & Kitchen", "Lighting", "Table Lamps"],
+            "rank": 7
+          },
+          {
+            "category_name": "Home & Kitchen",
+            "category_path": ["Home & Kitchen"],
+            "rank": 321
+          }
+        ],
+        "media": {
+          "main_image": "https://images.example.test/state-main.jpg",
+          "gallery_images": ["https://images.example.test/state-gallery.jpg"]
+        },
+        "cookie": "secret-cookie-must-not-leak",
+        "localStorage": {"authorization": "secret-token-must-not-leak"},
+        "profile": {"workspace": "secret-workspace-must-not-leak"}
+      }
+    </script>
+  </head>
+  <body>
+    <div id="wayfinding-breadcrumbs_feature_div">
+      <ul>
+        <li><a>DOM Home</a></li>
+        <li><a>DOM Lighting</a></li>
+      </ul>
+    </div>
+    <h1><span id="productTitle">DOM product title</span></h1>
+    <a id="bylineInfo">Brand: DOM Brand</a>
+    <div id="feature-bullets">
+      <ul>
+        <li><span>DOM bullet one</span></li>
+        <li><span>DOM bullet two</span></li>
+      </ul>
+    </div>
+    <div id="productDescription"><p>DOM product description.</p></div>
+
+    <img
+      id="landingImage"
+      src="https://images.example.test/dom-main-small.jpg"
+      data-old-hires="https://images.example.test/dom-main.jpg"
+      alt="DOM main image"
+    />
+    <div id="altImages">
+      <img data-old-hires="https://images.example.test/dom-gallery-1.jpg" alt="DOM gallery 1" />
+      <img data-old-hires="https://images.example.test/dom-gallery-2.jpg" alt="DOM gallery 2" />
+    </div>
+
+    <div id="corePrice_feature_div">
+      <span class="a-price"><span class="a-offscreen">$32.50</span></span>
+      <span id="priceblock_listprice">$44.00</span>
+    </div>
+    <span id="acrPopover" title="4.2 out of 5 stars">4.2</span>
+    <span id="acrCustomerReviewText">888 ratings</span>
+    <div id="availability"><span>In Stock</span></div>
+    <a id="sellerProfileTriggerId" data-seller-id="DOMSELLER">DOM Seller</a>
+    <div id="merchant-info" data-buy-box="true">Ships from Amazon.com</div>
+    <div id="deliveryBlockMessage">FREE delivery tomorrow</div>
+    <div id="couponText">Apply 10% coupon</div>
+    <div id="promoPriceBlockMessage_feature_div"><span>DOM promotion</span></div>
+
+    <div
+      id="twister"
+      data-parent-asin="B0PARENT01"
+      data-current-attributes='{"Color":"DOM Blue","Size":"DOM Large"}'
+      data-dimensions='{"Color":["DOM Blue","DOM Red"],"Size":["DOM Large"]}'
+    >
+      <a data-asin="B0CHILD001">DOM Blue</a>
+      <a data-asin="B0CHILD002">DOM Red</a>
+    </div>
+
+    <table id="productDetails_techSpec_section_1">
+      <tr><th>Material</th><td>DOM Pine</td></tr>
+      <tr><th>Product Dimensions</th><td>DOM dimensions</td></tr>
+    </table>
+    <table id="productDetails_detailBullets_sections1">
+      <tr>
+        <th>Best Sellers Rank</th>
+        <td>#9 in DOM Table Lamps<br />#400 in DOM Home &amp; Kitchen</td>
+      </tr>
+    </table>
+  </body>
+</html>

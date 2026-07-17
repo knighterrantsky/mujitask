@@ -997,8 +997,9 @@ class RuntimeStore:
         error_type: str = "",
         error_code: str = "",
         dead_letter_reason: str = "",
+        force_terminal: bool = False,
     ) -> dict[str, Any]:
-        return self._api_worker_job_repo.mark_api_worker_job_retry_or_failed(job_id=job_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason)
+        return self._api_worker_job_repo.mark_api_worker_job_retry_or_failed(job_id=job_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason, force_terminal=force_terminal)
 
     def load_api_worker_job(self, *, job_id: str) -> dict[str, Any]:
         return self._api_worker_job_repo.load_api_worker_job(job_id=job_id)
@@ -1252,6 +1253,29 @@ class RuntimeStore:
         result: dict[str, Any],
     ) -> RuntimeTaskExecutionRecord:
         return self._task_execution_repo.mark_browser_execution_skipped(execution_id=execution_id, run_id=run_id, summary=summary, result=result)
+
+    def mark_browser_execution_failed(
+        self,
+        *,
+        execution_id: str,
+        run_id: str,
+        error_text: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        error_type: str,
+        error_code: str,
+        dead_letter_reason: str,
+    ) -> RuntimeTaskExecutionRecord:
+        return self._task_execution_repo.mark_browser_execution_failed(
+            execution_id=execution_id,
+            run_id=run_id,
+            error_text=error_text,
+            summary=summary,
+            result=result,
+            error_type=error_type,
+            error_code=error_code,
+            dead_letter_reason=dead_letter_reason,
+        )
 
     def mark_browser_execution_retry_or_failed(
         self,

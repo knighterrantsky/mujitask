@@ -18,6 +18,7 @@
 当前正式 skill 名称：
 
 - `mujitask-tiktok-feishu-sync`
+- `mujitask-amazon-feishu-sync`
 
 它是一个 agent artifact，而不是 runtime worker。后续可以有多个业务 skill bundle，例如:
 
@@ -26,6 +27,8 @@
 - `mujitask-creator-discovery`
 
 每个 bundle 都应独立描述触发条件、参数提取、提交入口和首条回执契约；共同复用后台 Runtime DB、executor、worker、outbox 和项目安装配置。
+
+业务域入口还必须遵守 `contracts/agents/business-agent-bindings.yaml`。当前 Amazon 固定部署到 `amazon-ops` / `workspace-amazon`，只加载 `mujitask-amazon-feishu-sync`；TikTok 与 Amazon 共用飞书账号 `default`，但 Amazon 使用精确群聊 peer binding，二者不共用对话路由、Skill、agent 或 workspace。
 
 对外暴露两类业务语义：
 
@@ -164,7 +167,9 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 
 `skill.spec.yaml` 是人工维护源，`SKILL.md` 是 `tools/render_skill.py` 的生成产物。修改入口、意图路由、输入抽取、输出契约或失败处理时，必须先改 spec，再重新生成并运行 `tools/validate_skill.py`。
 
-这些文件是部署产物源。部署脚本会把它们复制到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync` 或等价 agent skills 目录。
+这些文件是部署产物源。部署脚本分别复制到
+`MUJITASK_TIKTOK_SKILLS_DIR/mujitask-tiktok-feishu-sync` 和
+`MUJITASK_AMAZON_SKILLS_DIR/mujitask-amazon-feishu-sync`，两个目录不得相同。
 
 `skill.local.env.example` 是配置模板；`skill.local.env` 是目标 agent workspace 中的本机配置。新增业务 skill 时，不要把生产密钥写进仓库内模板。
 
@@ -188,7 +193,7 @@ Agent workspace 与项目安装目录的边界:
 | 位置 | 作用 |
 | --- | --- |
 | 仓库 `skills/{skill_code}` | skill bundle 源代码和模板 |
-| 目标 `MUJITASK_SKILLS_DIR/{skill_code}` | agent 实际读取的 skill bundle |
+| 目标 `MUJITASK_TIKTOK_SKILLS_DIR/{skill_code}` / `MUJITASK_AMAZON_SKILLS_DIR/{skill_code}` | 对应业务 agent 实际读取的 skill bundle |
 | 目标 `skill.local.env` | agent skill 的固定输入和本机上下文 |
 | 项目安装目录 `executor.local.env` | Runtime DB、对象存储、通知、浏览器和第三方账号等后台运行配置 |
 

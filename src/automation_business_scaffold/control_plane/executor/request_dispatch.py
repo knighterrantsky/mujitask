@@ -7,14 +7,16 @@ from automation_business_scaffold.control_plane.executor.request_aggregation imp
     build_runtime_request_payload,
     refresh_request_aggregate_counts,
 )
-from automation_business_scaffold.control_plane.executor.workflow_registry import load_workflow_runtime
+from automation_business_scaffold.control_plane.executor.workflow_registry import (
+    get_workflow_definition,
+    load_workflow_runtime,
+)
 from automation_business_scaffold.control_plane.runtime_config.settings import (
     build_idle_payload,
     build_runtime_settings,
     create_runtime_store,
     ensure_formal_task_code,
 )
-from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 MAX_EXECUTOR_STAGE_HOPS = 16

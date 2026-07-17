@@ -27,8 +27,17 @@ from automation_business_scaffold.capabilities.input_sources.feishu.table_read_h
     feishu_table_read_handler,
 )
 from automation_business_scaffold.capabilities.media.asset_sync_handler import media_asset_sync_handler
+from automation_business_scaffold.capabilities.persistence.database.amazon_product_fact_upsert_handler import (
+    amazon_product_fact_upsert_handler,
+)
 from automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler import (
     fact_bundle_upsert_handler,
+)
+from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
+    amazon_product_row_persist_handler,
+)
+from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_refresh import (
+    amazon_product_row_refresh_handler,
 )
 from automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh import (
     competitor_row_refresh_handler,
@@ -74,6 +83,9 @@ BOUND_API_HANDLERS = MappingProxyType(
         "outreach_creator_video_metric_refresh": outreach_creator_video_metric_refresh_handler,
         "media_asset_sync": media_asset_sync_handler,
         "fact_bundle_upsert": fact_bundle_upsert_handler,
+        "amazon_product_fact_upsert": amazon_product_fact_upsert_handler,
+        "amazon_product_row_persist": amazon_product_row_persist_handler,
+        "amazon_product_row_refresh": amazon_product_row_refresh_handler,
         "selection_row_refresh": selection_row_refresh_handler,
     }
 )

@@ -60,6 +60,7 @@ mapper 拥有:
 projection 拥有:
 
 - domain object / workflow result 到飞书表格、消息、视图或 outbox payload 的字段投影。
+- 对显式登记的 handler result，投影到首次 Runtime 写入所需的紧凑 summary/result、受控 artifact index record 和脱敏失败策略；通用 worker 只负责 RuntimeStore 调用、retry/terminal 执行和 artifact replacement。
 - 写回字段名、列级默认值、展示格式和缺失值策略。
 - 面向外部通道的业务摘要文本，但不负责发送。
 - 飞书 projection mapper 的必填字段、可选字段、人工保留字段和系统覆盖字段策略。
@@ -68,6 +69,7 @@ mapper / projection 禁止:
 
 - 调用 Feishu / TikTok / FastMoss / AWS / MinIO / DB client。
 - claim job、推进 workflow、写 Runtime DB / Fact DB / Object Store。
+- 直接访问 `RuntimeStore`、决定 retry 时间或自行提交 Runtime 状态；Runtime result projection 只能返回纯数据和受控 failure policy。
 - 作为 handler registry key。
 - 通过 `__init__.py` 或 registry 显式 re-export 给旧路径使用。
 - 多个业务对象共用一个大 mapper 文件承载主体逻辑。

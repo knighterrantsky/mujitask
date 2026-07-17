@@ -13,11 +13,9 @@ from automation_business_scaffold.control_plane.executor.runner import _resolve_
 from automation_business_scaffold.control_plane.executor.workflow_registry import (
     WORKFLOW_RUNTIME_MODULES,
     WorkflowRuntimeModule,
-    load_workflow_runtime,
-)
-from automation_business_scaffold.domains.tiktok.workflows import (
     get_workflow_definition,
     list_workflow_definitions,
+    load_workflow_runtime,
 )
 
 

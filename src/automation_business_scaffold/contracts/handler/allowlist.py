@@ -11,6 +11,7 @@ _STANDARD_RESULT_STATUSES = (
     "partial_success",
     "failed",
     "fallback_required",
+    "browser_required",
 )
 
 PROHIBITED_HANDLER_CODES = MappingProxyType(
@@ -264,6 +265,40 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/handler-contract-design.md#67-fact_bundle_upsert",
             side_effects=("fact_db.write",),
         ),
+        "amazon_product_fact_upsert": _contract(
+            handler_code="amazon_product_fact_upsert",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Persist one normalized Amazon US product capture into isolated Amazon Fact tables.",
+            contract_reference="docs/arch/workflow-amazon-product-detail-design.md#104-fact-persistence-owner",
+            side_effects=("artifact.read", "fact_db.write"),
+        ),
+        "amazon_product_row_persist": _contract(
+            handler_code="amazon_product_row_persist",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose=(
+                "Serially converge Amazon product media, facts, projection, and same-row "
+                "Feishu writeback."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("artifact.read", "artifact.write", "fact_db.write", "feishu.write"),
+        ),
+        "amazon_product_row_refresh": _contract(
+            handler_code="amazon_product_row_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose=(
+                "Run one Amazon batch row through primary browser handoff and existing "
+                "row persistence contracts."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("feishu.write", "artifact.read", "artifact.write", "fact_db.write"),
+        ),
         "selection_row_refresh": _contract(
             handler_code="selection_row_refresh",
             worker_type="api_worker",
@@ -277,6 +312,18 @@ API_HANDLER_CONTRACTS = MappingProxyType(
 
 BROWSER_HANDLER_CONTRACTS = MappingProxyType(
     {
+        "amazon_product_browser_fetch": _contract(
+            handler_code="amazon_product_browser_fetch",
+            worker_type="browser_worker",
+            runtime_table="task_execution",
+            purpose=(
+                "Collect one Amazon US product page and write governed capture artifacts."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("browser.fetch", "artifact.write"),
+        ),
         "tiktok_product_browser_fetch": _contract(
             handler_code="tiktok_product_browser_fetch",
             worker_type="browser_worker",

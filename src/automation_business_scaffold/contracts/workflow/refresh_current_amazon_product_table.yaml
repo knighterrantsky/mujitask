@@ -1,0 +1,70 @@
+schema_version: 1
+workflow_origin: new_workflow
+workflow_code: refresh_current_amazon_product_table
+domain: amazon
+agent_artifact:
+  skill_code: mujitask-amazon-feishu-sync
+  path: skills/mujitask-amazon-feishu-sync
+  status: domain_task_runtime_facade
+task:
+  code: refresh_current_amazon_product_table
+  module: automation_business_scaffold.domains.amazon.tasks.refresh_current_amazon_product_table
+  exports:
+    - RefreshCurrentAmazonProductTableTask
+workflow:
+  module: automation_business_scaffold.domains.amazon.workflows.refresh_current_amazon_product_table
+  definition_export: build_refresh_current_amazon_product_table_definition
+  runtime_export: build_refresh_current_amazon_product_table_workflow
+  exports:
+    - REFRESH_CURRENT_AMAZON_PRODUCT_TABLE_DEFINITION
+custom_logic:
+  mappers:
+    - code: amazon_product_batch_source_adapter
+      module: automation_business_scaffold.domains.amazon.mappers.feishu_product_source_mapper
+      export: amazon_product_batch_source_adapter
+  policies: []
+  projections: []
+outbox:
+  job_code: task_completed_notification
+  handler_code: outbox_dispatch
+  capability:
+    role: channel
+    system: outbox
+    module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+    export: outbox_dispatch_handler
+jobs:
+  - code: feishu_table_read
+    module: automation_business_scaffold.domains.amazon.jobs.feishu_table_read
+    handler_code: feishu_table_read
+    capability:
+      role: input_source
+      system: feishu
+      module: automation_business_scaffold.capabilities.input_sources.feishu.table_read_handler
+      export: feishu_table_read_handler
+    custom_logic_refs:
+      mappers:
+        - amazon_product_batch_source_adapter
+  - code: amazon_product_row_refresh
+    module: automation_business_scaffold.domains.amazon.jobs.amazon_product_row_refresh
+    handler_code: amazon_product_row_refresh
+    capability:
+      role: business_orchestration
+      system: amazon
+      module: automation_business_scaffold.domains.amazon.jobs.amazon_product_row_refresh
+      export: amazon_product_row_refresh_handler
+  - code: amazon_product_browser_fetch
+    module: automation_business_scaffold.domains.amazon.jobs.amazon_product_browser_fetch
+    handler_code: amazon_product_browser_fetch
+    capability:
+      role: browser
+      system: amazon
+      module: automation_business_scaffold.capabilities.browser.amazon_product_fetch_handler
+      export: amazon_product_browser_fetch_handler
+  - code: task_completed_notification
+    module: automation_business_scaffold.domains.amazon.jobs.task_completed_notification
+    handler_code: outbox_dispatch
+    capability:
+      role: channel
+      system: outbox
+      module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+      export: outbox_dispatch_handler

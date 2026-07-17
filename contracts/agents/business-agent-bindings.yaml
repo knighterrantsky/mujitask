@@ -1,0 +1,46 @@
+schema_version: 1
+contract_type: business_agent_binding
+
+shared_runtime:
+  project_code: mujitask
+  runtime_db: shared
+  fact_db_instance: shared_with_domain_tables
+  object_store_bucket: shared_with_domain_prefixes
+  executor_and_workers: shared
+
+business_domains:
+  tiktok:
+    skill_code: mujitask-tiktok-feishu-sync
+    openclaw_agent_id: tiktok-ops
+    workspace_name: workspace-tiktok
+    required_channel: feishu
+    feishu_account_id: default
+    routing_scope: account_fallback
+    shared_runtime: true
+    allowed_task_domains:
+      - tiktok
+    forbidden_skill_codes:
+      - mujitask-amazon-feishu-sync
+
+  amazon:
+    skill_code: mujitask-amazon-feishu-sync
+    openclaw_agent_id: amazon-ops
+    workspace_name: workspace-amazon
+    required_channel: feishu
+    feishu_account_id: default
+    routing_scope: exact_peer
+    required_peer_kind: group
+    peer_id_source: openclaw_deployment_binding
+    shared_runtime: true
+    allowed_task_domains:
+      - amazon
+    forbidden_skill_codes:
+      - mujitask-tiktok-feishu-sync
+
+invariants:
+  - TikTok and Amazon share the default Feishu bot account but use distinct conversation routes, OpenClaw agent ids, workspaces, and skill bundles.
+  - The Amazon exact group peer binding must take precedence over the TikTok account-level fallback binding.
+  - A business workspace may install only its own allowed skill bundle.
+  - Amazon entry receipts and final outbox notifications must use reply_target.channel=feishu, reply_target.accountId=default, and a group target prefixed with chat:oc_.
+  - Feishu app credentials and bot secrets remain deployment secrets and never appear in this contract or a skill bundle.
+  - Runtime DB, governed Fact DB instance, object storage bucket, executor, API worker, browser worker, outbox dispatcher, and watchdog remain shared infrastructure.

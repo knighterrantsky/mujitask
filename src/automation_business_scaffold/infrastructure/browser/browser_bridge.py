@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -23,6 +24,11 @@ class BrowserPageSession:
     humanize: bool
     page: Any
     raw_page: Any
+
+
+def resolve_automation_browser_target_digest(*, profile_ref: str) -> str:
+    target = resolve_browser_target(profile_ref=profile_ref)
+    return hashlib.sha256(build_target_key(target).encode("utf-8")).hexdigest()
 
 
 @contextmanager

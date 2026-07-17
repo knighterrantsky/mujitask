@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.capabilities.input_sources.feishu.targets import (
     FeishuTableTarget,
 )
@@ -21,6 +22,10 @@ from automation_business_scaffold.capabilities.input_sources.feishu.write_payloa
     mapping,
     mapping_list,
     text,
+)
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import (
+    create_artifact_store,
+    normalize_artifact_store_provider,
 )
 
 
@@ -38,9 +43,14 @@ def prepare_fields_for_write(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     prepared: dict[str, Any] = {}
+    ignore_missing_fields = text(
+        mapping(payload.get("write_policy")).get("ignore_missing_fields")
+    ).lower() in {"1", "true", "yes", "y", "on"}
     for field_name, value in fields.items():
         name = text(field_name)
         if not name:
+            continue
+        if ignore_missing_fields and name not in field_schema:
             continue
         if is_attachment_field(field_schema.get(name)):
             attachment_refs = attachment_file_token_ref_items(value, client=client, target=target, payload=payload)
@@ -176,6 +186,7 @@ def attachment_write_items(value: Any) -> list[dict[str, str]]:
                     ),
                     "local_path": first_non_empty(item.get("local_path"), item.get("source_path"), item.get("path")),
                     "object" + "_key": first_non_empty(item.get("object" + "_key")),
+                    "bucket": first_non_empty(item.get("bucket")),
                     "file_name": first_non_empty(item.get("file_name"), item.get("name")),
                     "mime_type": first_non_empty(item.get("mime_type"), item.get("type")),
                 }
@@ -232,6 +243,17 @@ def upload_attachment_item(
             extra=_attachment_upload_extra(target, payload),
         )
 
+    bucket = first_non_empty(item.get("bucket"))
+    object_key = first_non_empty(item.get("object_key"))
+    if bucket or object_key:
+        file_data = _read_materialized_attachment(bucket=bucket, object_key=object_key)
+        return client.upload_media(
+            file_name=file_name or Path(object_key).name or "attachment.bin",
+            file_data=file_data,
+            parent_node=target.app_token,
+            extra=_attachment_upload_extra(target, payload),
+        )
+
     url = first_non_empty(item.get("url"))
     if not url or url.startswith("s3://"):
         return ""
@@ -274,6 +296,38 @@ def upload_attachment_item(
         parent_node=target.app_token,
         extra=_attachment_upload_extra(target, payload),
     )
+
+
+def _read_materialized_attachment(*, bucket: str, object_key: str) -> bytes:
+    if not bucket or not object_key:
+        raise ValueError("Materialized Feishu attachment requires bucket and object_key.")
+    defaults = get_execution_control_defaults()
+    provider = normalize_artifact_store_provider(defaults.artifact_store_provider)
+    if provider == "local" or not defaults.artifact_bucket:
+        raise ValueError("Object storage is not configured for materialized attachment read.")
+    if bucket != defaults.artifact_bucket:
+        raise ValueError("Materialized attachment bucket is outside configured object storage.")
+    prefix = defaults.artifact_object_prefix.strip("/")
+    normalized_key = object_key.strip().lstrip("/")
+    if prefix and not normalized_key.startswith(f"{prefix}/"):
+        raise ValueError("Materialized attachment object_key is outside configured prefix.")
+    store = create_artifact_store(
+        {
+            "artifact_store_provider": defaults.artifact_store_provider,
+            "minio_endpoint": defaults.minio_endpoint,
+            "minio_access_key": defaults.minio_access_key,
+            "minio_secret_key": defaults.minio_secret_key,
+            "minio_secure": defaults.minio_secure,
+            "minio_region": defaults.minio_region,
+            "minio_create_bucket": False,
+        }
+    )
+    if store is None or not callable(getattr(store, "read_bytes", None)):
+        raise ValueError("Configured object storage does not support attachment reads.")
+    content = store.read_bytes(bucket=bucket, object_key=normalized_key)
+    if not content:
+        raise ValueError("Materialized attachment object is empty.")
+    return content
 
 
 def _multi_select_allowed_options(field_schema: Mapping[str, Any] | None) -> set[str]:

@@ -392,6 +392,49 @@ raw response 存储边界:
 - 生产环境通过 Alembic migration 使用 migration user 执行 `ALTER TABLE`、`CREATE TABLE`、`CREATE INDEX`；应用 worker 不应在 claim/job 路径执行 DDL。
 - 回滚时可以删除 `tk_video_metric_snapshots`、相关索引和 `tk_videos` 新增的外部达人字段；主体表、既有关联关系和旧播放量来源不受影响。
 
+### 5.7 Amazon 商品事实 schema
+
+Amazon 美国站商品详情首期复用现有 Fact DB 实例，但使用 9 张独立的 `amazon_*`
+表：商品主档、商品快照、Featured Offer 快照、变体关系、BSR 快照、媒体资产、商品媒体关系、
+原始 capture 索引和飞书来源绑定。Amazon 表不引用 `tk_*` 表，也不改变 Runtime DB schema。
+
+稳定幂等键如下：
+
+| 事实 | 幂等键 |
+| --- | --- |
+| 商品主档 | `(marketplace_code, asin)` |
+| 商品快照 | `(marketplace_code, asin, run_id)` |
+| Featured Offer | `(product_snapshot_id, offer_key)` |
+| 变体关系 | `(marketplace_code, parent_asin, child_asin)` |
+| BSR | `(product_snapshot_id, category_name, category_path_json)` |
+| 媒体资产 | `asset_key` |
+| 商品媒体关系 | `(product_id, asset_id, media_role, position)` |
+| 原始 capture | `(bucket, object_key)` |
+| 飞书绑定 | `(base_id, table_id, record_id)` |
+
+新表中的扩展 JSON 默认分别为 `{}` 或 `[]`；文本状态默认使用空字符串、`active` 或
+`unknown`。价格、评分和评论数允许 `NULL`，避免把页面缺失误写为数值 0。由于 migration
+只新增表和索引，不修改既有 `tk_*` 表，旧数据不需要回填，旧 worker 继续按原表运行；旧
+worker 不得消费新的 Amazon handler job。
+
+生产发布必须先由 migration user 通过 `alembic_fact.ini` 执行 Fact revision
+`20260714_0007`，再启动包含 Amazon handler 的 worker。Fact migration 只读取
+`BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL`，不得回退到 Runtime DB 或运行用户
+连接串；它使用独立的 `fact_alembic_version`，Runtime Alembic 图中的同名 revision 仅保留
+无 DDL 的兼容节点。`BUSINESS_EXECUTION_CONTROL_FACT_RUNTIME_ROLE` 是 API worker 共用的受限
+Fact 身份，只获得 schema USAGE、机器契约列出的 TikTok Fact 表与 9 张 Amazon 表的 DML
+权限，以及 Fact version 表的 SELECT 权限；不得拥有 Runtime 表权限。
+
+`ensure_amazon_fact_schema` 只用于本地开发和隔离测试，Store 构造函数、daemon、dispatcher、
+watchdog 和 handler 均不得调用它。代码回滚时优先停用 Amazon 入口并保留新增表；只有完成
+备份且确认不保留 Amazon 数据后，才对 Fact migration 图 downgrade 到 `base`。该 downgrade
+只删除 9 张 `amazon_*` 表及其索引，不触碰 TikTok 或 Runtime 表；Runtime 兼容 revision
+保持不变。
+
+单次 Amazon capture 的 9 张表写入以及商品主档的 `latest_snapshot_id` 发布使用同一个
+PostgreSQL 事务；后段冲突或写入失败必须回滚本次整包变更。对象存储证据在事务外先行写入并
+完成摘要校验，飞书 projection 也不属于 Fact DB 事务，因此两者通过幂等重试收敛。
+
 ## 6. Workflow 写入路径
 
 ### 6.1 选品采集 Workflow

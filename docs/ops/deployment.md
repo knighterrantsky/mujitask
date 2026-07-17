@@ -55,10 +55,14 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 当前仓库内源目录:
 
 - `skills/mujitask-tiktok-feishu-sync/`
+- `skills/mujitask-amazon-feishu-sync/`
 
-部署目标:
+部署目标必须分离:
 
-- `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
+- `MUJITASK_TIKTOK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
+- `MUJITASK_AMAZON_SKILLS_DIR/mujitask-amazon-feishu-sync`
+
+Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-ops` / `workspace-tiktok`。两个 workspace 不得交叉安装对方 Skill。二者共用飞书账号 `default`，Amazon 通过新建群聊的 `oc_*` peer binding 精确路由；飞书机器人密钥仍只由 OpenClaw secret 配置管理。
 
 部署脚本负责:
 
@@ -83,6 +87,10 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
   - `skills/mujitask-tiktok-feishu-sync/run_competitor_row_by_url_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_product_url_complete_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh`
+  - `skills/mujitask-amazon-feishu-sync/skill.spec.yaml`
+  - `skills/mujitask-amazon-feishu-sync/examples.eval.yaml`
+  - `skills/mujitask-amazon-feishu-sync/SKILL.md`
+  - `skills/mujitask-amazon-feishu-sync/run_task.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_skill_step.py`
   - `skills/mujitask-tiktok-feishu-sync/lightweight_submit.py`
@@ -120,6 +128,9 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
   3. `.env`
 - 自动加载不会覆盖已经显式传入的进程环境变量或 CLI 参数。
 - Runtime DB / Fact DB / MinIO / 浏览器 profile 的正式默认配置应放在项目运行配置中，不能放在 `skill.local.env`。
+- Runtime / Amazon Fact migration 连接串都不属于项目运行配置，不能写入 `executor.local.env`、`skill.local.env` 或 launchd plist。
+- `deploy.local.env` 可能包含管理员连接串和全部业务密钥，必须由当前部署用户持有、权限为 `0400` 或 `0600`，且不能是符号链接；`preflight.sh` 和 `deploy.sh` 都会在加载前拒绝不满足这些条件的文件。
+- Native MinIO launchd plist 包含 root 凭据；部署在写入前检查非符号链接和 owner，写入后固定并复核为当前用户持有的 `0600` 文件。
 
 ### 6.1 skill.local.env
 
@@ -129,11 +140,14 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 - `MUJITASK_FEISHU_BASE_URL`
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
 
-浏览器 profile 默认值属于项目运行配置；不要写入 `skill.local.env`。
+浏览器 profile 和 migration 身份属于项目运行配置或发布配置；不要写入 `skill.local.env`。
+部署会拒绝符号链接或非当前用户持有的既有 `skill.local.env`，并在写入后固定为 `0600`。
 
 飞书业务表路由配置必须使用英文 alias，不在配置 key 或配置值中写中文表名，也不维护第二套完整 URL 配置。系统只使用一个 Base URL 加每张表的 `table_id` / `view_id` 拼出完整 table URL。当前标准 alias 为:
 
@@ -144,6 +158,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 | `TK_INFLUENCER_POOL` | `tblwLYl59TkfVFLe` | `vewuKd9i6D` |
 | `TK_INFLUENCER_OUTREACH` | `tblpK4zCGaaL6h6v` | `vewmMgDNV5` |
 | `TK_HOT_VIDEO` | `tblP9S5mRrirutDT` | `vewu7vztKp` |
+| `AMAZON_PRODUCTS` | 部署环境显式配置 | 部署环境显式配置 |
 
 达人池同步的来源表固定由 `TK_COMPETITOR` 路由推导，目标表固定由 `TK_INFLUENCER_POOL` 路由推导；配置层不再维护派生出来的完整表 URL。
 
@@ -156,7 +171,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 至少需要：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
-- `TK_FACT_DB_URL` 或 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
@@ -165,6 +180,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 - `BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `BROWSER_PROFILE_REF`
+- `AMAZON_US_BROWSER_PROFILE_REF`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
 - `NOTIFICATION_CHANNEL_CODE`
@@ -173,7 +189,28 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 - 当前推荐使用 `BUSINESS_*` 前缀。
 - 代码也兼容 `EXECUTION_CONTROL_*`，但部署文档统一按 `BUSINESS_*` 说明。
-- 如果在项目仓库内运行 skill、daemon、CLI、pytest 或 Alembic，运行时会自动加载这份文件；不需要每次手工导出。
+- skill、daemon、CLI 和 pytest 会自动加载这份文件；Runtime / Amazon Fact Alembic 不使用这里的 worker URL 作为 External migration 凭据。
+- macOS 部署会清除历史遗留的 `TK_FACT_DB_URL` 和所有 migration key，确保共享 Fact DB 连接统一使用受限的 Fact runtime 账号。
+- `AMAZON_US_BROWSER_PROFILE_REF` 只写入 `executor.local.env`；Amazon 表 route 同时写入已安装的 `skill.local.env` 和 `executor.local.env`，确保调用入口与 API worker 都能解析 `AMAZON_PRODUCTS`。浏览器 profile 不进入 skill 配置或 plist。
+- `executor.local.env` 包含 Runtime / Fact worker 连接串和业务密钥。部署在写入前拒绝符号链接和非当前用户持有的既有文件，写入后固定为 `0600` 并再次核对 owner；不要把它复制到共享目录。
+
+### 6.3 migration.local.env
+
+macOS 部署生成 `${MUJITASK_INSTALL_DIR}/runtime/deployment/migration.local.env`，权限固定为
+`0600`。它只在发布进程中短时提供：
+
+- `BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_FACT_RUNTIME_ROLE`
+
+该文件位于被 Git 忽略的 `runtime/` 下，不由 `run_launchd_agent.sh` 加载，也不会渲染到
+任何 plist。只有 Fact migration runner 在显式传入
+`BUSINESS_EXECUTION_CONTROL_MIGRATION_ENV_FILE` 时读取它，并拒绝权限宽于 `0600` 的文件；
+它不读取 `executor.local.env`，也不接受进程环境中残留的 Fact migration URL 作为回退。
+部署通过 stdin 或仅对子进程可见的受控环境传递数据库连接，不把连接串或密码放进
+Python / `psql` 参数。发布成功、失败或被中断时，EXIT cleanup 都会删除该临时文件。
+External Runtime migration URL 不写入该文件；部署只在调用 Runtime Alembic runner 时通过
+`BUSINESS_EXECUTION_CONTROL_RUNTIME_MIGRATION_DB_URL` 子进程环境短时传递，runner 加载 worker
+配置后再显式覆盖 Alembic URL。
 
 ## 7. 数据库与对象存储
 
@@ -199,9 +236,17 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 | 账号 | 用途 | 权限 |
 | --- | --- | --- |
-| `mujitask_runtime_user` | daemon / worker / dispatcher / watchdog | Runtime/Fact 表读写，不含 DDL |
-| `mujitask_migration_user` | 发布 migration | `CREATE / ALTER / DROP / CREATE INDEX` |
+| `mujitask_runtime_user` | executor / daemon / dispatcher / watchdog | 当前 Native 兼容路径仍负责既有 Runtime/TikTok schema bootstrap |
+| `mujitask_fact_runtime` | API worker 共用 Fact 身份 | 契约治理的 `tk_*` / `amazon_*` 表 DML、Fact version 表只读；不含 Runtime 表权限或 DDL |
+| `mujitask_migration_user` | 发布 Amazon Fact migration | `CREATE / ALTER / DROP / CREATE INDEX`，不进入 worker 配置 |
 | `mujitask_readonly_user` | 排障、报表、只读分析 | `SELECT` |
+
+本次 Amazon 交付只收敛 Fact worker 边界：Native 部署创建独立的无高权 Fact login，
+撤销它的 schema `CREATE`，仅按机器维护的 TikTok/Amazon Fact 表白名单授予
+`SELECT/INSERT/UPDATE/DELETE`，只读 `fact_alembic_version`，并拒绝其对 Runtime 或其他表
+保留任何权限。现有 Runtime migration 图尚未
+完全覆盖 Runtime/TikTok schema，因此 Native 安装仍保留既有 bootstrap；不能把这一路径描述为
+Runtime 权限模型已经治理完成。
 
 长期运行必须按 [runtime-db-connection-stability.md](./runtime-db-connection-stability.md) 配置连接保护。核心要求:
 
@@ -231,20 +276,31 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 
 当前标准交付先收窄为 `macOS + launchd + Homebrew 本机 Postgres/MinIO`。
 运行前需要 Homebrew 已安装；`deploy.sh` 会安装缺失的 `postgresql@17` / `minio` / `node` formula，`preflight.sh` 会提前检查端口、Node.js/npm 和必填配置。
-现场实施必须显式设定两个目录：
+现场实施必须显式设定三个目录：
 
 - `MUJITASK_INSTALL_DIR`：项目安装路径，例如 `$HOME/apps/mujitask`
-- `MUJITASK_SKILLS_DIR`：目标 agent 读取 skills 的根目录，例如 OpenClaw 的 `$HOME/.openclaw/workspace/skills`，或 Hermes Agent 在现场约定的 skills 目录
+- `MUJITASK_TIKTOK_SKILLS_DIR`：TikTok agent 的 skills 根目录，例如 `$HOME/.openclaw/workspace-tiktok/skills`
+- `MUJITASK_AMAZON_SKILLS_DIR`：Amazon agent 的 skills 根目录，例如 `$HOME/.openclaw/workspace-amazon/skills`
 
-部署脚本只负责把 skill bundle 安装到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`，不再推断任何 agent workspace。
+部署脚本把两个 skill bundle 分别安装到显式目录，并拒绝两个目录相同。OpenClaw agent 与飞书账号的机器绑定以 `contracts/agents/business-agent-bindings.yaml` 为准；创建飞书应用、保存 App Secret 和给机器人授权仍属于现场 secret 配置，不由仓库写入。
 
-本机 Postgres 运行时默认通过 TCP 连接，配置为 `mujitask/mujitask@127.0.0.1:5432/automation_business_scaffold`。部署脚本会在 `native` 模式下创建或更新这个 runtime 账号，并把生成的 URL 写入 `scripts/execution_control/executor.local.env`。`MUJITASK_POSTGRES_SOCKET_DIR=/tmp` 只用于部署脚本以本机管理员身份 bootstrap Homebrew Postgres，不进入 daemon 的运行时连接串；切换云 Postgres 时改为 `MUJITASK_RUNTIME_MODE=external` 并填写 `MUJITASK_DB_URL` 即可。对象存储默认前缀为 `MUJITASK_ARTIFACT_OBJECT_PREFIX=mujitask/local`，用于给 MinIO bucket 内的运行产物分目录，例如 `mujitask/local/runs/...`。
+本机 Postgres Runtime 连接默认使用 `mujitask`，Fact 连接使用显式配置的
+`MUJITASK_FACT_RUNTIME_ROLE`。Native 部署会创建独立的 Fact login，拒绝把 Runtime DB owner
+复用为 Fact role，并只为它补齐既有 `tk_*` DML 和本次 migration 授予的 `amazon_*` DML /
+`fact_alembic_version` SELECT。部署还会用实际连接核对 Fact worker URL 与 Fact migration
+URL 的当前数据库、数据库 OID、Postgres 启动时间和版本，确保二者落到同一运行实例、同一库。
+`MUJITASK_POSTGRES_SOCKET_DIR=/tmp` 只用于部署进程以本机管理员
+身份执行 Fact migration，不进入 daemon 连接串。External 模式必须显式提供 Runtime worker URL、
+Runtime migration URL、Fact worker URL、Fact migration URL 和 Fact runtime role；部署分别核对
+两组 worker/migration URL 指向同一运行实例和数据库。对象存储默认前缀仍为
+`MUJITASK_ARTIFACT_OBJECT_PREFIX=mujitask/local`。
 
 首次部署或更新已有部署：
 
 ```bash
 cp scripts/deploy/macos/deploy.local.env.example scripts/deploy/macos/deploy.local.env
 # 填写 deploy.local.env 中的项目安装路径、skills 安装路径、飞书、FastMoss、浏览器和通知配置
+chmod 600 scripts/deploy/macos/deploy.local.env
 bash scripts/deploy/macos/preflight.sh
 bash scripts/deploy/macos/deploy.sh
 ```
@@ -252,7 +308,7 @@ bash scripts/deploy/macos/deploy.sh
 关键文件：
 
 - `scripts/deploy/macos/preflight.sh`：检查 macOS、Homebrew、launchd、端口、Node.js/npm、必填配置、Chrome 提示。
-- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装 Python 与 Node.js 运行依赖、安装并启动本机 Postgres/MinIO、写入运行配置、执行 Alembic migration、安装 skill bundle、安装 launchd 并执行 smoke check。
+- `scripts/deploy/macos/deploy.sh`：同步项目到安装路径、安装 Python 与 Node.js 运行依赖、安装并启动本机 Postgres/MinIO、写入隔离的运行/迁移配置、依次执行 Runtime 和 Fact Alembic migration、校验 Fact 权限、安装 skill bundle、安装 launchd 并执行 smoke check。
 - `scripts/deploy/macos/deploy.local.env.example`：一键部署配置模板。
 
 这条路径用于“用户机器依赖不确定”的默认交付；如果目标环境使用已有 Postgres/MinIO，可以在 `deploy.local.env` 中改为 `MUJITASK_RUNTIME_MODE=external` 并提供对应连接配置。
@@ -276,6 +332,8 @@ python3 -m venv .venv
 - `MUJITASK_FEISHU_BASE_URL`
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
@@ -293,14 +351,19 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 推荐把 Runtime 相关变量只维护在这份文件：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
-- `TK_FACT_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
+- `AMAZON_US_BROWSER_PROFILE_REF`
 - `TEST_DATABASE_URL`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ENDPOINT`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_ACCESS_KEY`
 - `BUSINESS_EXECUTION_CONTROL_MINIO_SECRET_KEY`
 
-这样 daemon、CLI、Alembic 和 pytest 都会从同一个项目配置入口读取，不需要每次运行前再手工 `export`。
+这样 daemon、CLI 和 pytest 都从同一个项目运行配置入口读取。不要向该文件加入
+`BUSINESS_EXECUTION_CONTROL_MIGRATION_DB_URL`、
+`BUSINESS_EXECUTION_CONTROL_RUNTIME_MIGRATION_DB_URL`、
+`BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL` 或
+`BUSINESS_EXECUTION_CONTROL_FACT_RUNTIME_ROLE`，也不要加入对应的 `MUJITASK_*_MIGRATION_DB_URL`。
 
 ### 8.4 初始化或升级数据库
 
@@ -308,21 +371,39 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 
 生产环境不要让 daemon / worker 在正常消费任务时自动建表、改表或删表。生产发布应先使用 migration 账号执行 Alembic migration 或等价迁移脚本，然后让运行进程使用 runtime 账号启动并校验 schema version。
 
-首次部署和更新已有部署都必须在启动或重启 `launchd` 之前执行数据库迁移：
+首次部署和更新已有部署都必须在启动或重启 `launchd` 之前执行 Runtime migration 与独立
+Amazon Fact migration。External 手工执行时先准备 Runtime migration URL 和权限为 `0600` 的
+私有 Fact migration env，然后运行：
 
 ```bash
-bash scripts/execution_control/run_alembic_upgrade.sh
+BUSINESS_EXECUTION_CONTROL_RUNTIME_MIGRATION_DB_URL="$RUNTIME_MIGRATION_DB_URL" \
+  bash scripts/execution_control/run_alembic_upgrade.sh
+BUSINESS_EXECUTION_CONTROL_MIGRATION_ENV_FILE=/secure/path/migration.local.env \
+  bash scripts/execution_control/run_fact_alembic_upgrade.sh
 ```
 
 推荐更新顺序：
 
 1. 更新项目代码和 Python 依赖。
-2. 确认 `scripts/execution_control/executor.local.env` 指向目标 Runtime / Fact DB。
-3. 确认 Postgres 可连接。
-4. 执行 `bash scripts/execution_control/run_alembic_upgrade.sh`。
-5. 再安装或重启 `launchd` 守护进程。
+2. 确认 `executor.local.env` 只包含 Runtime / Fact worker URL，migration URL 不在 executor、skill 或 plist 中。
+3. 确认私有 migration env 只包含 Fact migration URL 和显式 Fact runtime role，且权限为 `0600`。
+4. External 模式先核对 Runtime worker/migration URL 的数据库身份，再用独立 migration URL 执行
+   Runtime migration；Native 模式保持既有 Runtime migration 与随后 Runtime/TikTok 兼容 bootstrap。
+5. 执行独立 `fact_alembic_version` 图的 Amazon Fact migration。
+6. Native 模式按显式 Fact 表白名单补齐 Fact DML；External 模式由数据库管理员预先创建
+   TikTok Fact 表并授权。两种模式都检查 Fact runtime 账号对权威 TikTok 表全集和 9 张
+   Amazon 表具备 DML、对 `fact_alembic_version` 只有只读权限。
+7. 读取 `fact_alembic_version.version_num`，确认它与应用要求的 Fact revision 完全一致；仅凭表存在不能通过发布门禁。
+8. 使用 Fact worker URL 只读核验角色身份、无高权属性，并扫描所有非系统 schema 的 table、
+   partitioned table、view、materialized view、foreign table 与 sequence；除默认 Fact schema 白名单外
+   不允许任何有效权限或 ownership。
+9. 删除临时 migration env，再安装或重启 `launchd` 守护进程。
 
-当前 macOS 一键部署脚本会在 `install_launch_agents.sh` 之前自动执行上述 migration。`install_launch_agents.sh` 内部的 schema bootstrap 只作为本地便利初始化兜底，不能替代 Alembic migration，也不能保证已有表会执行 `ALTER TABLE` 类升级。
+当前 macOS 一键部署脚本会在安装 launchd 之前自动执行上述顺序，并在数据库身份、任一迁移、
+实际 revision 或权限核验失败时停止。Native 模式继续通过 `install_launch_agents.sh` 执行既有
+Runtime/TikTok 兼容 bootstrap；External 模式使用不含 schema bootstrap 的 launchd 安装路径，
+不会用 external Runtime worker URL 执行建表。Runtime migration 图补齐之前，Native 兼容路径
+不能移除，也不能宣称 Runtime worker 已经完全取消 DDL 权限。
 
 如果跳过 migration，已有环境可能停留在旧 `alembic_version`，新 worker 会在写入或查询新字段时失败，例如 Fact DB 缺少 `tk_videos.creator_uid` / `tk_videos.creator_unique_id`。
 

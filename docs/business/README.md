@@ -1,6 +1,6 @@
 # Business 文档索引
 
-更新时间：`2026-05-05`
+更新时间：`2026-07-15`
 
 `docs/business` 只承载客户需求、业务规则、飞书表口径和验收口径。系统架构、Runtime 状态机、数据库 schema、Storage、部署运维、开发调试、外部接口研究不再作为本目录的 active truth source。
 
@@ -26,6 +26,7 @@
 | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | 竞品到达人池同步需求 |
 | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | 选品采集需求 |
 | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | 关键词搜索选品写入需求 |
+| [requirements/amazon-product-detail-collection.md](./requirements/amazon-product-detail-collection.md) | Amazon 美国站单商品详情采集正式需求（实施中） |
 | [requirements-backlog.md](./requirements-backlog.md) | 原始待澄清需求和需求候选记录；不能改写原始表述，也不能作为实现事实来源 |
 | [feishu-five-table-relationship-analysis.md](./feishu-five-table-relationship-analysis.md) | 飞书业务表结构事实和需求依据 |
 
@@ -63,6 +64,11 @@
 - `sync_tk_influencer_pool`
 - `tiktok_fastmoss_product_ingest`
 - `search_keyword_selection_products`
+
+已批准、实施中且 completion gate 尚未通过：
+
+- `refresh_amazon_product_row_by_asin`
+- `refresh_current_amazon_product_table`
 
 ## README 实践
 

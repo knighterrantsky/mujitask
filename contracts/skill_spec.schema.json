@@ -66,6 +66,13 @@
         },
         "side_effects": {
           "type": "boolean"
+        },
+        "render_mode": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "compact"
+          ]
         }
       }
     },

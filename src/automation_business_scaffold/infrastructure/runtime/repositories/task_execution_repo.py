@@ -634,6 +634,9 @@ class TaskExecutionRepository:
         summary: dict[str, Any],
         result: dict[str, Any],
         error_text: str,
+        error_type: str = "",
+        error_code: str = "",
+        dead_letter_reason: str = "",
     ) -> RuntimeTaskExecutionRecord:
         with self._engine.begin() as connection:
             now = time.time()
@@ -665,9 +668,9 @@ class TaskExecutionRepository:
                         summary_json = :summary_json,
                         result_json = :result_json,
                         error_text = :error_text,
-                        error_type = '',
-                        error_code = '',
-                        dead_letter_reason = '',
+                        error_type = :error_type,
+                        error_code = :error_code,
+                        dead_letter_reason = :dead_letter_reason,
                         worker_id = '',
                         worker_pid = 0,
                         updated_at = :updated_at,
@@ -688,6 +691,9 @@ class TaskExecutionRepository:
                     "summary_json": _json_dumps(summary),
                     "result_json": _json_dumps(result),
                     "error_text": error_text,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "dead_letter_reason": dead_letter_reason,
                     "updated_at": now,
                     "finished_at": now,
                     "heartbeat_at": now,
@@ -752,6 +758,30 @@ class TaskExecutionRepository:
             summary=summary,
             result=result,
             error_text="",
+        )
+
+    def mark_browser_execution_failed(
+        self,
+        *,
+        execution_id: str,
+        run_id: str,
+        error_text: str,
+        summary: dict[str, Any],
+        result: dict[str, Any],
+        error_type: str,
+        error_code: str,
+        dead_letter_reason: str,
+    ) -> RuntimeTaskExecutionRecord:
+        return self._finalize_browser_execution(
+            execution_id=execution_id,
+            status="failed",
+            run_id=run_id,
+            summary=summary,
+            result=result,
+            error_text=error_text,
+            error_type=error_type,
+            error_code=error_code,
+            dead_letter_reason=dead_letter_reason,
         )
 
     def mark_browser_execution_retry_or_failed(

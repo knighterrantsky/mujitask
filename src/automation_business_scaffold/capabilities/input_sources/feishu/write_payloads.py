@@ -13,20 +13,49 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
         records = selection_writeback_records(payload)
     mapper_code = text(payload.get("mapper_code"))
+    field_allowlist = set(
+        list_text(mapping(payload.get("write_policy")).get("field_allowlist"))
+    )
     mapped: list[dict[str, Any]] = []
     for record in records:
         if text(record.get("op")) == "delete":
             mapped.append(normalize_write_record(record, payload))
             continue
         if mapping(record.get("fields")):
-            mapped.append(normalize_write_record(record, payload))
+            item = normalize_write_record(record, payload)
+            mapped.append(_filter_write_fields(item, field_allowlist))
             continue
         from automation_business_scaffold.contracts.handler.domain_mapping import (
             map_projection_record,
         )
 
-        mapped.append(map_projection_record(mapper_code, record, payload))
-    return [record for record in mapped if mapping(record.get("fields")) or text(record.get("op")) == "delete"]
+        item = map_projection_record(mapper_code, record, payload)
+        mapped.append(_filter_write_fields(item, field_allowlist))
+    return [
+        record
+        for record in mapped
+        if mapping(record.get("fields"))
+        or text(record.get("op")) == "delete"
+        or (field_allowlist and text(record.get("record_id")))
+    ]
+
+
+def _filter_write_fields(
+    record: Mapping[str, Any],
+    field_allowlist: set[str],
+) -> dict[str, Any]:
+    if not field_allowlist:
+        return dict(record)
+    item = dict(record)
+    item["fields"] = {
+        name: value
+        for name, value in mapping(item.get("fields")).items()
+        if name in field_allowlist
+    }
+    item["clear_fields"] = [
+        name for name in list_text(item.get("clear_fields")) if name in field_allowlist
+    ]
+    return item
 
 
 def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -42,6 +71,13 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
             op = "update"
         else:
             op = "append"
+    fields = mapping(record.get("fields"))
+    clear_fields = list(record.get("clear_fields") or payload.get("clear_fields") or [])
+    normalized_fields = compact(fields)
+    for field_name in clear_fields:
+        name = text(field_name)
+        if name in fields and fields[name] in (None, "", []):
+            normalized_fields[name] = fields[name]
     item = {
         "op": op,
         "record_id": record_id,
@@ -50,10 +86,14 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
         "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
         "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
         "update_accumulate_fields": mapping(record.get("update_accumulate_fields") or payload.get("update_accumulate_fields")),
-        "fields": mapping(record.get("fields")),
+        "clear_fields": clear_fields,
+        "fields": normalized_fields,
         "source_context": mapping(record.get("source_context")) or source_context_from_record(record, payload),
     }
-    return compact(item)
+    normalized = compact(item)
+    if normalized_fields:
+        normalized["fields"] = normalized_fields
+    return normalized
 
 
 def write_record_key(record: Mapping[str, Any]) -> str:

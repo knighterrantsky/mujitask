@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "contracts" / "skill_spec.schema.json"
 EXAMPLES_FILE = "examples.eval.yaml"
 
-EXPECTED_SECTIONS = [
+STANDARD_EXPECTED_SECTIONS = [
     "## Purpose",
     "## Source of truth",
     "## When to use",
@@ -34,6 +34,14 @@ EXPECTED_SECTIONS = [
     "## Final checks",
     "## Examples",
     "## Negative activation examples",
+]
+COMPACT_EXPECTED_SECTIONS = [
+    "## Scope",
+    "## Trigger",
+    "## Input",
+    "## Submit",
+    "## Output",
+    "## Guardrails",
 ]
 OLD_SECTIONS = [
     "## 生成说明",
@@ -63,14 +71,41 @@ STANDALONE_BROAD_TRIGGERS = [
     "写入当前飞书表",
     "更新当前表",
 ]
-EXPECTED_FORMAL_TASK_CODES = [
-    "refresh_current_competitor_table",
-    "search_keyword_competitor_products",
-    "sync_tk_influencer_pool",
-    "tiktok_influencer_outreach_sync",
-    "tiktok_fastmoss_product_ingest",
-    "search_keyword_selection_products",
-]
+SKILL_RULES = {
+    "mujitask-tiktok-feishu-sync": {
+        "owner": "domains/tiktok",
+        "formal_task_codes": [
+            "refresh_current_competitor_table",
+            "search_keyword_competitor_products",
+            "sync_tk_influencer_pool",
+            "tiktok_influencer_outreach_sync",
+            "tiktok_fastmoss_product_ingest",
+            "search_keyword_selection_products",
+        ],
+        "required_intents": {
+            "competitor_table_refresh",
+            "keyword_competitor_search",
+            "influencer_pool_sync",
+            "influencer_outreach_sync",
+            "selection_table_ingest",
+            "keyword_selection_search",
+            "batch_keyword_search_submit",
+            "product_url_complete",
+            "competitor_row_by_url",
+        },
+    },
+    "mujitask-amazon-feishu-sync": {
+        "owner": "domains/amazon",
+        "formal_task_codes": [
+            "refresh_amazon_product_row_by_asin",
+            "refresh_current_amazon_product_table",
+        ],
+        "required_intents": {
+            "amazon_product_row_refresh",
+            "amazon_product_table_refresh",
+        },
+    },
+}
 SPECIAL_EXAMPLE_INTENTS = {"do_not_use_skill", "ask_target_table"}
 
 
@@ -232,13 +267,16 @@ def _validate_command_path(errors: list[str], path: Path, command: str, skill_co
         _record(errors, path, f"intent command references missing script: {script}")
 
 
-def _validate_formal_task_codes(errors: list[str], spec_path: Path, spec: dict[str, Any]) -> None:
+def _validate_formal_task_codes(
+    errors: list[str], spec_path: Path, spec: dict[str, Any], skill_code: str
+) -> None:
     formal_task_codes = _as_text_list(spec.get("formal_task_codes"))
-    if formal_task_codes != EXPECTED_FORMAL_TASK_CODES:
+    expected = SKILL_RULES.get(skill_code, {}).get("formal_task_codes")
+    if expected is not None and formal_task_codes != expected:
         _record(
             errors,
             spec_path,
-            "formal_task_codes must equal: " + ", ".join(EXPECTED_FORMAL_TASK_CODES),
+            "formal_task_codes must equal: " + ", ".join(expected),
         )
 
 
@@ -310,20 +348,17 @@ def _validate_intents(errors: list[str], spec_path: Path, spec: dict[str, Any], 
         else:
             _record(errors, spec_path, f"intent {intent_id}.kind must be formal_workflow or operational_sub_intent")
 
-    missing_intents = sorted(
-        {
-            "competitor_table_refresh",
-            "keyword_competitor_search",
-            "influencer_pool_sync",
-            "selection_table_ingest",
-            "keyword_selection_search",
-            "product_url_complete",
-            "competitor_row_by_url",
-        }
-        - seen_intents
-    )
+    required_intents = set(SKILL_RULES.get(skill_code, {}).get("required_intents", set()))
+    missing_intents = sorted(required_intents - seen_intents)
     if missing_intents:
         _record(errors, spec_path, "missing required intents: " + ", ".join(missing_intents))
+    unexpected_intents = sorted(seen_intents - required_intents) if required_intents else []
+    if unexpected_intents:
+        _record(errors, spec_path, "unexpected intents for skill: " + ", ".join(unexpected_intents))
+
+    if skill_code != "mujitask-tiktok-feishu-sync":
+        return
+
     if "keyword_competitor_search" not in seen_intents or "keyword_selection_search" not in seen_intents:
         _record(errors, spec_path, "keyword_competitor_search and keyword_selection_search must both exist")
 
@@ -385,16 +420,19 @@ def _validate_spec_shape(errors: list[str], spec_path: Path, spec: dict[str, Any
     _required_text(errors, spec_path, metadata, "title", "metadata")
     _required_text(errors, spec_path, metadata, "description", "metadata")
     _required_text(errors, spec_path, metadata, "short_description", "metadata")
-    _required_text(errors, spec_path, metadata, "owner", "metadata")
+    owner = _required_text(errors, spec_path, metadata, "owner", "metadata")
     if not isinstance(metadata.get("side_effects"), bool):
         _record(errors, spec_path, "metadata.side_effects must be boolean")
     if skill_code and spec_path.parent.name != skill_code:
         _record(errors, spec_path, f"metadata.name must match directory name {spec_path.parent.name}")
+    expected_owner = SKILL_RULES.get(skill_code, {}).get("owner")
+    if expected_owner is not None and owner != expected_owner:
+        _record(errors, spec_path, f"metadata.owner must equal {expected_owner}")
 
     source = _required_mapping(errors, spec_path, spec.get("source_of_truth"), "source_of_truth")
     _required_text(errors, spec_path, source, "business_overview", "source_of_truth")
     _required_text(errors, spec_path, source, "requirements_index", "source_of_truth")
-    _validate_formal_task_codes(errors, spec_path, spec)
+    _validate_formal_task_codes(errors, spec_path, spec, skill_code)
     _validate_intents(errors, spec_path, spec, skill_code)
 
     for key in (
@@ -440,6 +478,9 @@ def _validate_examples(errors: list[str], skill_dir: Path, spec: dict[str, Any])
     }
     cases = _required_list(errors, examples_path, loaded.get("cases"), "cases")
     covered: set[str] = set()
+    metadata = spec.get("metadata")
+    skill_name = _text(metadata.get("name")) if isinstance(metadata, dict) else ""
+    is_tiktok_skill = skill_name == "mujitask-tiktok-feishu-sync"
     has_keyword_selection_positive = False
     has_ambiguous_fastmoss_negative = False
     for index, item in enumerate(cases, start=1):
@@ -471,15 +512,20 @@ def _validate_examples(errors: list[str], skill_dir: Path, spec: dict[str, Any])
     missing_coverage = sorted(intent_id for intent_id in intents if intent_id and intent_id not in covered)
     if missing_coverage:
         _record(errors, examples_path, "missing eval coverage for intents: " + ", ".join(missing_coverage))
-    if not has_keyword_selection_positive:
+    if is_tiktok_skill and not has_keyword_selection_positive:
         _record(errors, examples_path, "missing keyword_selection_search positive eval case")
-    if not has_ambiguous_fastmoss_negative:
+    if is_tiktok_skill and not has_ambiguous_fastmoss_negative:
         _record(errors, examples_path, "missing ambiguous FastMoss target-table negative eval case")
 
 
-def _validate_rendered_sections(errors: list[str], skill_path: Path, current: str) -> None:
+def _validate_rendered_sections(
+    errors: list[str], skill_path: Path, current: str, *, render_mode: str
+) -> None:
+    expected_sections = (
+        COMPACT_EXPECTED_SECTIONS if render_mode == "compact" else STANDARD_EXPECTED_SECTIONS
+    )
     positions: list[int] = []
-    for section in EXPECTED_SECTIONS:
+    for section in expected_sections:
         position = current.find(section)
         if position < 0:
             _record(errors, skill_path, f"missing generated section {section}")
@@ -490,6 +536,10 @@ def _validate_rendered_sections(errors: list[str], skill_path: Path, current: st
     for section in OLD_SECTIONS:
         if section in current:
             _record(errors, skill_path, f"old section is not allowed: {section}")
+    if render_mode == "compact":
+        for section in STANDARD_EXPECTED_SECTIONS:
+            if section not in COMPACT_EXPECTED_SECTIONS and section in current:
+                _record(errors, skill_path, f"compact skill contains verbose section {section}")
 
 
 def _validate_rendered_sensitive_content(errors: list[str], skill_path: Path, current: str) -> None:
@@ -517,7 +567,14 @@ def _validate_rendered_skill(errors: list[str], skill_dir: Path, spec: dict[str,
     rendered = render_skill(spec)
     if current != rendered:
         _record(errors, skill_path, "generated output is stale; run tools/render_skill.py")
-    _validate_rendered_sections(errors, skill_path, current)
+    metadata = spec.get("metadata")
+    render_mode = _text(metadata.get("render_mode")) if isinstance(metadata, dict) else ""
+    _validate_rendered_sections(
+        errors,
+        skill_path,
+        current,
+        render_mode=render_mode or "standard",
+    )
     _validate_rendered_sensitive_content(errors, skill_path, current)
 
 

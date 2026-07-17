@@ -34,8 +34,15 @@ ALLOWLIST_BY_WORKER = {
         "influencer_creator_sync",
         "media_asset_sync",
         "fact_bundle_upsert",
+        "amazon_product_fact_upsert",
+        "amazon_product_row_refresh",
+        "amazon_product_row_persist",
     },
-    "browser": {"fastmoss_security_browser_resolve", "tiktok_product_browser_fetch"},
+    "browser": {
+        "amazon_product_browser_fetch",
+        "fastmoss_security_browser_resolve",
+        "tiktok_product_browser_fetch",
+    },
     "outbox": {"outbox_dispatch"},
 }
 FORBIDDEN_EXACT_NAMES = {

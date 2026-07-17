@@ -1,6 +1,6 @@
 # 业务流程需求文档索引
 
-更新时间：`2026-05-22`
+更新时间：`2026-07-15`
 
 本目录用于承载从主需求文档中拆分出的流程级需求文档。主需求文档仍然作为总览、共用字段口径和索引入口；单个业务流程的需求、采集回写、交付形式和验收口径在本目录独立维护。
 
@@ -20,6 +20,8 @@
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | [tk-selection-collection.md](./tk-selection-collection.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | [search-keyword-selection-products.md](./search-keyword-selection-products.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | [tk-influencer-outreach.md](./tk-influencer-outreach.md) |
+| Amazon 竞品表单商品采集（实施中） | `refresh_amazon_product_row_by_asin` | 指定飞书来源行手动/自动触发 | [amazon-product-detail-collection.md](./amazon-product-detail-collection.md) |
+| Amazon 竞品表批量采集（实施中） | `refresh_current_amazon_product_table` | OpenClaw 手动触发，只处理 `采集标签=T` | [amazon-product-detail-collection.md](./amazon-product-detail-collection.md) |
 
 ## 维护规则
 

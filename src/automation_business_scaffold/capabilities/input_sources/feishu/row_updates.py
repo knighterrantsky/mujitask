@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Mapping
 
 from automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes import (
@@ -385,4 +386,18 @@ def _should_skip_uploaded_attachment_replace(existing: Any, incoming: Any) -> bo
     incoming_items = attachment_write_items(incoming)
     if not incoming_items:
         return False
-    return not any(is_feishu_attachment_file_token(item.get("file_token")) for item in incoming_items)
+    return not any(
+        is_feishu_attachment_file_token(item.get("file_token"))
+        or _has_materialized_local_attachment(item)
+        or _has_materialized_object_attachment(item)
+        for item in incoming_items
+    )
+
+
+def _has_materialized_local_attachment(item: Mapping[str, Any]) -> bool:
+    local_path = text(item.get("local_path"))
+    return bool(local_path and Path(local_path).expanduser().is_file())
+
+
+def _has_materialized_object_attachment(item: Mapping[str, Any]) -> bool:
+    return bool(text(item.get("bucket")) and text(item.get("object_key")))

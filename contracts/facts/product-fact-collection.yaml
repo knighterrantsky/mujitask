@@ -4,7 +4,8 @@ status: active_contract
 
 principles:
   - product facts are independent from Feishu business writeback
-  - all product media facts must be materialized to object storage before being persisted as fact media
+  - every persisted product media fact must be materialized to object storage before being persisted as fact media
+  - Amazon media materialization may persist a validated subset of observed media; missing observed media makes the handler partial_success, while unexpected or duplicate media remains invalid
   - formal workflows that use fact_bundle_upsert or media_asset_sync must declare requires_fact_db=true and requires_object_storage=true
   - missing Fact DB or object storage configuration must fail fast during submit or handler execution
   - formal skill payloads carry business inputs only; project runtime config resolves Runtime DB, Fact DB, and object storage
@@ -57,6 +58,288 @@ business_job_usage:
     - influencer_creator_sync must treat first-created Fact DB creator-product relations as the Feishu related-product-sales delta; Feishu influencer pool updates must read existing 关联商品销量 and add the delta instead of overwriting it, while new influencer rows may write the current matched-product sales total.
     - influencer_creator_sync Runtime DB result_json must remain a small structured handoff for downstream stages and summary; full fact bundles, raw FastMoss responses, full media sync payloads, and full Feishu write records belong in Fact DB or artifact/object storage and must not be embedded in runtime result_json.
     - influencer_creator_sync may persist per-step timing diagnostics in handler summary/result for creator_fetch, media_asset_sync, fact_bundle_upsert, influencer_pool_write, product_status_reconcile, and total duration; these diagnostics are observational metadata only and must not alter fact persistence, media materialization, Feishu projection, or workflow status semantics.
+
+platform_contracts:
+  amazon_us:
+    workflow_code: refresh_amazon_product_row_by_asin
+    marketplace_code: US
+    identity_key:
+      - marketplace_code
+      - asin
+    fact_tables:
+      - amazon_products
+      - amazon_product_snapshots
+      - amazon_offer_snapshots
+      - amazon_product_variants
+      - amazon_bsr_snapshots
+      - amazon_media_assets
+      - amazon_product_media_assets
+      - amazon_raw_captures
+      - amazon_feishu_bindings
+    object_prefixes:
+      runtime_evidence: <env>/runs/<run_id>/amazon/<asin>/
+      raw_capture: <env>/raw-captures/amazon/us/<asin>/
+      product_media: <env>/product-media/amazon/us/<asin>/
+    runtime_db_schema_change: false
+    cross_platform_foreign_keys: false
+    fact_database_policy: same_fact_database_instance_with_isolated_amazon_tables
+    object_storage_policy: reuse_configured_bucket_with_isolated_amazon_prefixes
+    raw_capture_object_key:
+      template: <env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/<filename>
+      content_address: sha256_of_stored_bytes
+      exact_retry: reuse_same_coordinate
+      changed_bytes: preserve_new_coordinate_without_overwriting_old_object
+      same_run_normalized_capture: reject_divergent_digest
+    persistence_handler: amazon_product_fact_upsert
+    fact_bundle_transaction:
+      database_scope: one_capture_database_transaction
+      includes:
+        - product_identity_and_master
+        - product_snapshot
+        - raw_capture_indexes
+        - featured_offer
+        - variants
+        - bsr
+        - media_assets_and_relations
+        - feishu_binding
+        - latest_snapshot_pointer
+      commit_visibility: all_or_nothing
+      latest_snapshot_publish: final_database_write
+      excludes:
+        - object_storage_objects
+        - feishu_projection_write
+    runtime_result_policy: compact_references_only
+    required_evidence:
+      - normalized_capture_ref
+      - raw_capture_refs
+      - field_coverage
+    raw_capture_kinds:
+      required_on_success:
+        - normalized_capture
+        - html
+      optional:
+        - network_data
+        - screenshot
+    raw_capture_metadata:
+      normalized_capture:
+        content_type: application/json
+        sanitization_status: normalized
+      html:
+        content_type: application/gzip
+        sanitization_status: sanitized
+      network_data:
+        content_type: application/json
+        sanitization_status: allowlisted
+      screenshot:
+        content_type: image/png
+        sanitization_status: not_applicable
+    raw_capture_provenance:
+      required_fields:
+        - request_id
+        - execution_id
+        - run_id
+      request_binding: active_runtime_request
+      execution_binding: one_origin_browser_execution
+      run_binding: active_collection_run
+      persisted_execution_id: origin_browser_execution_id
+      stored_byte_digest_verification: required_before_fact_write
+      html_payload_validation:
+        encoding: valid_gzip_utf8
+        sanitization_revalidation: required_after_decompression
+        sensitive_element_detection: independent_html_parser
+        screenshot_masking_failure: fail_closed_without_screenshot_upload
+      size_limits:
+        normalized_capture_bytes: 2097152
+        compressed_html_bytes: 2097152
+        decompressed_html_bytes: 8388608
+        network_data_bytes: 524288
+        screenshot_bytes: 10485760
+        materialized_media_bytes: 26214400
+    raw_capture_key_collision: reject_changed_immutable_evidence
+    field_evidence_policy:
+      contract_revision: 2
+      accepted_capture_revisions:
+        - 1
+        - 2
+      coverage: exact_target_field_set
+      target_fields:
+        - product.title
+        - product.brand
+        - product.category_path
+        - product.bullet_points
+        - product.description
+        - product.technical_details
+        - commerce.availability_status
+        - commerce.rating
+        - commerce.review_count
+        - commerce.featured_offer.seller_id
+        - commerce.featured_offer.seller_name
+        - commerce.featured_offer.is_buy_box
+        - commerce.featured_offer.price_amount
+        - commerce.featured_offer.list_price_amount
+        - commerce.featured_offer.currency
+        - commerce.featured_offer.fulfillment_channel
+        - commerce.featured_offer.delivery_text
+        - commerce.featured_offer.coupon_text
+        - commerce.featured_offer.promotions
+        - variants.parent_asin
+        - variants.child_asins
+        - variants.current_attributes
+        - variants.dimensions
+        - rankings
+        - media.main_image
+        - media.gallery_images
+      required_keys:
+        - value
+        - status
+        - source_kind
+        - source_locator
+        - confidence
+      value_binding: exact_normalized_capture_field_value
+      missing_requires_empty_capture_value: true
+      success_allows_missing: false
+      partial_success_requires_missing: false
+    normalized_capture_contract:
+      current_revision: 2
+      accepted_revisions:
+        - 1
+        - 2
+      new_browser_output_revision: 2
+      revision_1_promotions: text_array
+      revision_2_promotions:
+        type: object_array
+        exact_keys:
+          - promotion_type
+          - label
+          - discount_type
+          - discount_value
+          - deal_price
+          - reference_price
+          - reference_price_type
+          - currency
+          - prime_only
+          - claim_required
+          - raw_text
+        promotion_types:
+          - coupon
+          - limited_time_deal
+        discount_types:
+          - percentage
+          - amount
+          - price_override
+        reference_price_types:
+          - null
+        observation_time_binding: parent_capture.captured_at
+        profile_context_binding: parent_capture.profile_context_digest
+      compatibility:
+        persistence_reads_revision_1: true
+        revision_1_rewrite_required: false
+        fact_schema_ddl_required: false
+        legacy_coupon_text_preserved: true
+      dom_text_policy:
+        controlled_offer_regions_only: true
+        exclude_tags:
+          - script
+          - style
+          - noscript
+          - template
+        forbidden_content:
+          - redeem_parameters
+          - token
+          - cookie
+          - account_or_address_text
+      field_semantics:
+        commerce.featured_offer.promotions:
+          allowed_types:
+            - coupon
+            - limited_time_deal
+          excluded_page_offers:
+            - checkout_discount
+            - prime_member_price
+            - prime_exclusive_price
+            - prime_day_deal
+            - subscribe_and_save
+            - quantity_discount
+            - qualifying_purchase
+            - ordinary_strikethrough_price
+            - other
+          limited_time_deal_fields:
+            keep:
+              - label
+              - deal_price
+            clear:
+              - discount_value
+              - reference_price
+              - reference_price_type
+          projection_field: 促销活动记录
+          projection_write_policy: overwrite_current_snapshot
+          projection_empty_observation: clear_field
+          projection_timestamp_timezone: Asia/Shanghai
+          coupon_calculated_price_source: commerce.featured_offer.price_amount
+        product.technical_details.Number of Items:
+          source: Product information.Item details.Number of Items
+          projection_field: 包装规格
+          projection_missing_value: 没有包装规格
+          forbidden_fallback_sources:
+            - Unit Count
+            - quantity_selector
+            - product_title
+        commerce.featured_offer.delivery_text:
+          required_prefix: FREE delivery
+          source: featured_offer_primary_delivery_message
+          projection_field: 送达日期
+          strip_segments:
+            - destination_address_and_postcode
+            - fastest_delivery
+            - order_countdown
+            - account_text
+    network_data_policy:
+      source: exact_same_origin_page_fetch_or_xhr
+      identity_binding: resolved_asin
+      persisted_body: capture_field_allowlist_only
+      runtime_body: forbidden
+    media_source_url_policy:
+      enforcement_owner: media_asset_sync
+      caller_override_policy: may_only_tighten
+      download_size_limit_bytes: 26214400
+      identity_conflict_policy: reject
+      amazon_marketplace_policy: require_us
+      caller_materialized_fields_policy: forbidden
+      scheme: https
+      allowed_host_suffixes:
+        - media-amazon.com
+        - ssl-images-amazon.com
+      allowed_ports:
+        - default
+        - 443
+      userinfo: forbidden
+      redirect_policy: validate_each_hop_against_same_allowlist_before_request
+      redirect_response_body_limit: download_size_limit_bytes_each_hop
+      query_and_fragment: strip_before_persistence
+      invalid_observed_media: remove_and_mark_partial_success
+    prohibited_fact_targets:
+      - tk_*
+    media_coverage_policy:
+      stored_object_verification:
+        existence: required_before_fact_write
+        content_digest: sha256_of_stored_bytes
+        size_bytes: exact_match
+        mime_type: allowlisted_image_signature_match
+        object_key: content_addressed_by_digest
+      validated_subset_may_persist: true
+      unexpected_assets: reject
+      duplicate_role_position_mapping: reject
+      same_source_url_distinct_role_position: preserve_each_relation
+      invalid_storage_reference: reject
+      missing_observed_assets_status: partial_success
+      compact_summary_fields:
+        - expected
+        - materialized
+        - missing
+        - complete
+      projection:
+        main_image: project_independently_when_materialized
+        gallery_images: project_only_when_the_observed_gallery_is_fully_materialized
 
 formal_workflow_persistence_contract:
   required_flags:

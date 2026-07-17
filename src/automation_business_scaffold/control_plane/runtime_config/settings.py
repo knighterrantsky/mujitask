@@ -16,6 +16,8 @@ SELECTION_KEYWORD_TASK_CODE = "search_keyword_selection_products"
 INFLUENCER_POOL_TASK_CODE = "sync_tk_influencer_pool"
 INFLUENCER_OUTREACH_TASK_CODE = "tiktok_influencer_outreach_sync"
 PRODUCT_INGEST_TASK_CODE = "tiktok_fastmoss_product_ingest"
+AMAZON_PRODUCT_ROW_TASK_CODE = "refresh_amazon_product_row_by_asin"
+AMAZON_PRODUCT_BATCH_TASK_CODE = "refresh_current_amazon_product_table"
 
 FORMAL_TASK_CODES = (
     REFRESH_TASK_CODE,
@@ -25,6 +27,8 @@ FORMAL_TASK_CODES = (
     INFLUENCER_POOL_TASK_CODE,
     INFLUENCER_OUTREACH_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
+    AMAZON_PRODUCT_ROW_TASK_CODE,
+    AMAZON_PRODUCT_BATCH_TASK_CODE,
 )
 
 CONTROL_ACTION_ALIASES = {
@@ -244,6 +248,8 @@ __all__ = [
     "CONTROL_ACTION_ALIASES",
     "ExecutionControlDefaults",
     "FORMAL_TASK_CODES",
+    "AMAZON_PRODUCT_BATCH_TASK_CODE",
+    "AMAZON_PRODUCT_ROW_TASK_CODE",
     "INFLUENCER_POOL_TASK_CODE",
     "INFLUENCER_OUTREACH_TASK_CODE",
     "KEYWORD_TASK_CODE",

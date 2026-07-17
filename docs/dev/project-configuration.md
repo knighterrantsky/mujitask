@@ -33,7 +33,7 @@
 应该放：
 
 - `BUSINESS_EXECUTION_CONTROL_DB_URL`
-- `TK_FACT_DB_URL` 或 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
+- `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`（规范键；旧 `TK_FACT_DB_URL` 仅作兼容回退）
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_ROOT`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET`
 - `BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER`
@@ -61,11 +61,12 @@
 
 共同依赖的默认来源。
 
-### 2.2 `skills/mujitask-tiktok-feishu-sync/skill.local.env`
+### 2.2 业务域独立 `skill.local.env`
 
-这是 skill wrapper 的固定业务输入配置。
+TikTok 使用 `skills/mujitask-tiktok-feishu-sync/skill.local.env`，Amazon 使用
+`skills/mujitask-amazon-feishu-sync/skill.local.env`；部署时二者位于不同 OpenClaw workspace。
 
-应该放：
+TikTok skill env 应该放：
 
 - `INSTALL_DIR`
 - `MUJITASK_FEISHU_BASE_URL`
@@ -76,12 +77,30 @@
 - `FASTMOSS_PASSWORD`
 - `OPENCLAW_*`
 
+Amazon skill env 只应放 `INSTALL_DIR`、`NOTIFICATION_CHANNEL_CODE`、
+`OPENCLAW_AGENT_ID=amazon-ops`、`OPENCLAW_STATE_DIR` 和
+`OPENCLAW_DELIVERY_ACCOUNT_ID=amazon`。Amazon 表路由、表访问 token、浏览器和持久化配置全部属于项目运行配置。
+
 说明：
 
-- skill wrapper 仍然会直接解析这份文件。
+- 每个 skill wrapper 只解析自己 workspace 中的配置文件。
 - 如果 skill 在项目仓库内运行，运行时代码也会自动读取它，但只接受业务输入和 agent 上下文。
 - Runtime DB / Fact DB / MinIO/S3 / 浏览器 profile 的正式默认配置必须放在项目运行配置中，不能由 skill env 或 skill submit payload 透传。
 - 旧 `skill.local.env` 中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键会被项目配置加载器忽略。
+
+Amazon 单商品任务的正式 payload 只传 `table_ref=AMAZON_PRODUCTS` 和
+`source_record_id`。运行时优先使用 Amazon 表专属的
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL`、
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN`，未配置时回退到全局
+`MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_ACCESS_TOKEN`；表与视图由
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`、可选的
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 解析。URL、token 和表身份都不进入正式任务输入。
+submit 会解析 `AMAZON_US_BROWSER_PROFILE_REF` 指向的 browser target，并只把 target key digest
+作为 Browser Worker 资源 lane 写入 Runtime context；profile、workspace 与 provider credential
+不会进入业务 payload。
+
+Amazon 飞书机器人 App ID / App Secret 由 OpenClaw 的 `channels.feishu.accounts.amazon`
+secret 配置持有，不等同于多维表格 access token，也不得写入任何 skill env 模板。
 
 ### 2.3 `.env`
 
@@ -90,6 +109,7 @@
 适合放：
 
 - `BROWSER_PROFILES_FILE`
+- `AMAZON_US_BROWSER_PROFILE_REF`
 - `DEFAULT_PROFILE_REF`
 - `AGENT_HOST`
 - `AGENT_PORT`
@@ -125,7 +145,7 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 填写：
 
 - Runtime DB 连接串
-- Fact DB 连接串；本地共库时也要显式填写 `TK_FACT_DB_URL`
+- Fact DB 连接串；本地共库时也要显式填写 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
 - MinIO endpoint / access key / secret key
 - artifact bucket / object prefix
 

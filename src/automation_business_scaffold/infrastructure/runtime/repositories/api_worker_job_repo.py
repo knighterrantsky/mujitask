@@ -757,6 +757,7 @@ class ApiWorkerJobRepository:
         error_type: str = "",
         error_code: str = "",
         dead_letter_reason: str = "",
+        force_terminal: bool = False,
     ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             now = time.time()
@@ -783,7 +784,11 @@ class ApiWorkerJobRepository:
             attempt_count = int(row["attempt_count"] or 0)
             max_attempts = int(row["max_attempts"] or 1)
             parent_cancelling = str(row["request_status"] or "") == "cancelling"
-            will_retry = attempt_count < max_attempts and not parent_cancelling
+            will_retry = (
+                not force_terminal
+                and attempt_count < max_attempts
+                and not parent_cancelling
+            )
             status = "cancelled" if parent_cancelling else ("pending" if will_retry else "finished")
             result_status = "" if will_retry or parent_cancelling else "failed"
             available_at = now if parent_cancelling else (now + max(retry_delay_seconds, 0.1) if will_retry else now)

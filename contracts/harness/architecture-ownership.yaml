@@ -16,10 +16,19 @@ owners:
         reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
       - path: src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/stages/dispatch_product_collection.py
         reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
+      - path: src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py
+        reason: Required Amazon single-row workflow package entrypoint called only by the registered Runtime facade; it owns four-stage transitions and compact child payloads, while handlers retain all browser, Fact DB, object-storage, and Feishu side effects.
+      - path: src/automation_business_scaffold/domains/amazon/flows/refresh_current_amazon_product_table/orchestrator.py
+        reason: Required Amazon batch workflow entrypoint that selects 采集标签=T rows and creates idempotent amazon_product_row_refresh jobs under the same top-level request; it does not create child task requests or duplicate browser parsing, fact persistence, media sync, or Feishu projection.
+      - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_refresh/orchestrator.py
+        reason: Admitted Amazon row-level business job owner shared by batch row fan-out; it emits the primary browser_required wait signal, consumes the governed browser result, and delegates persistence through the existing amazon_product_row_persist handler contract.
+      - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py
+        reason: Required Amazon row persistence package entrypoint that serially composes existing media, fact persistence, projection, and Feishu handlers through dispatch boundaries, preserves media-partial retry semantics, and does not create a generic helper owner.
     responsibilities:
       - decide what business targets to collect
       - decide business filtering and row follow-up strategy
       - decide which projection mapper to use
+      - own Amazon single-row stage transitions, child dispatch keys, and summary gating without directly executing handler side effects
       - decide whether a workflow enters fastmoss_security_browser_fallback and whether to retry the original FastMoss handler after browser resolution
     forbidden:
       - own durable fact persistence
@@ -106,6 +115,67 @@ owners:
       - collect external facts
       - upload media
       - upsert Fact DB
+
+  amazon_runtime_result_projection:
+    paths:
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+      - src/automation_business_scaffold/domains/amazon/projections/registry.py
+    entrypoint:
+      - src/automation_business_scaffold/contracts/handler/domain_mapping.py:get_runtime_result_projection
+    allowed_callers:
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/contracts/handler/domain_mapping.py
+    forbidden_callers:
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/domains/**/flows/**
+      - src/automation_business_scaffold/domains/**/jobs/**
+      - src/automation_business_scaffold/domains/**/workflows/**
+    responsibilities:
+      - validate and project Amazon handler results into compact Runtime summary and result envelopes
+      - enforce ASIN, media, capture evidence, writeback, observability, and Runtime response field allowlists
+      - bind browser capture evidence to the claimed resource lane and return sanitized artifact index records
+      - classify Amazon Runtime failures without mutating Runtime state
+    forbidden:
+      - access RuntimeStore or a database directly
+      - execute browser, media, Fact DB, object storage, or Feishu side effects
+      - claim jobs, advance workflow stages, or decide retry scheduling
+      - create a parallel helper, service, manager, coordinator, collector, or orchestrator owner
+
+  amazon_browser_capture:
+    paths:
+      - src/automation_business_scaffold/capabilities/browser/amazon/**
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+    responsibilities:
+      - normalize Amazon US ASIN identity and canonical URL for browser collection
+      - visit one Amazon product page through the existing browser bridge
+      - parse embedded data, same-origin page responses, semantic DOM, and controlled text blocks in precedence order
+      - persist complete capture evidence to object storage and return compact artifact references
+    forbidden:
+      - write Fact DB
+      - write Feishu business projections
+      - materialize long-lived product media
+      - bypass captcha, access blocks, or provider security policy
+
+  amazon_fact_persistence:
+    paths:
+      - alembic_fact.ini
+      - alembic_fact/**
+      - alembic/versions/20260714_0007_amazon_product_facts.py
+      - scripts/execution_control/run_fact_alembic_upgrade.sh
+      - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
+      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
+      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
+    responsibilities:
+      - route Amazon Fact DDL through the explicit Fact migration database URL and isolated fact_alembic_version table
+      - grant the configured shared Fact runtime role only schema usage, governed TikTok and Amazon Fact table DML, and Fact version reads; Runtime tables remain outside this role
+      - define Amazon fact tables for migration and test bootstrap consumers
+      - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
+      - enforce marketplace plus ASIN identity and per-run idempotency keys
+    forbidden:
+      - decide Feishu fields
+      - visit or parse Amazon pages
+      - decide workflow stage transitions
+      - execute production DDL from daemon or worker paths
 
   rate_limit:
     paths:
