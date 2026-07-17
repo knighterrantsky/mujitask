@@ -18,7 +18,7 @@ def test_amazon_agent_binding_is_physically_isolated_from_tiktok() -> None:
     assert amazon["skill_code"] == "mujitask-amazon-feishu-sync"
     assert amazon["openclaw_agent_id"] == "amazon-ops"
     assert amazon["workspace_name"] == "workspace-amazon"
-    assert amazon["feishu_account_id"] == "default"
+    assert amazon["feishu_account_id_source"] == "MUJITASK_AMAZON_FEISHU_ACCOUNT_ID"
     assert amazon["routing_scope"] == "exact_peer"
     assert amazon["required_peer_kind"] == "group"
     assert amazon["peer_id_source"] == "openclaw_deployment_binding"
@@ -30,7 +30,7 @@ def test_amazon_agent_binding_is_physically_isolated_from_tiktok() -> None:
     assert amazon["skill_code"] != tiktok["skill_code"]
     assert amazon["openclaw_agent_id"] != tiktok["openclaw_agent_id"]
     assert amazon["workspace_name"] != tiktok["workspace_name"]
-    assert amazon["feishu_account_id"] == tiktok["feishu_account_id"]
+    assert "feishu_account_id" not in amazon
     assert amazon["routing_scope"] != tiktok["routing_scope"]
 
 
@@ -46,12 +46,15 @@ def test_amazon_workflow_contract_routes_through_amazon_agent_artifact() -> None
         "path": "skills/mujitask-amazon-feishu-sync",
         "openclaw_agent_id": "amazon-ops",
         "workspace_name": "workspace-amazon",
-        "feishu_account_id": "default",
+        "feishu_account_id_source": "MUJITASK_AMAZON_FEISHU_ACCOUNT_ID",
         "feishu_peer_kind": "group",
         "peer_id_source": "openclaw_deployment_binding",
     }
     assert workflow["notification_routing"]["required_reply_channel"] == "feishu"
-    assert workflow["notification_routing"]["required_account_id"] == "default"
+    assert (
+        workflow["notification_routing"]["required_account_id_source"]
+        == "MUJITASK_AMAZON_FEISHU_ACCOUNT_ID"
+    )
     assert workflow["notification_routing"]["required_target_prefix"] == "chat:oc_"
 
 
@@ -67,7 +70,10 @@ def test_amazon_batch_workflow_uses_the_same_isolated_agent_route() -> None:
 
     assert workflow["agent_artifact"]["skill_code"] == "mujitask-amazon-feishu-sync"
     assert workflow["agent_artifact"]["openclaw_agent_id"] == "amazon-ops"
-    assert workflow["agent_artifact"]["feishu_account_id"] == "default"
+    assert (
+        workflow["agent_artifact"]["feishu_account_id_source"]
+        == "MUJITASK_AMAZON_FEISHU_ACCOUNT_ID"
+    )
     assert workflow["selection"] == {
         "table_display_name": "Amazon竞品表",
         "field_name": "采集标签",

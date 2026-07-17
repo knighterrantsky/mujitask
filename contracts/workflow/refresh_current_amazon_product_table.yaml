@@ -10,13 +10,13 @@ agent_artifact:
   path: skills/mujitask-amazon-feishu-sync
   openclaw_agent_id: amazon-ops
   workspace_name: workspace-amazon
-  feishu_account_id: default
+  feishu_account_id_source: MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
   feishu_peer_kind: group
   peer_id_source: openclaw_deployment_binding
 
 notification_routing:
   required_reply_channel: feishu
-  required_account_id: default
+  required_account_id_source: MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
   required_target_prefix: chat:oc_
   transport_owner: notification_outbox
 
@@ -26,11 +26,23 @@ field_contracts:
   - contracts/fields/feishu-amazon-products.yaml
 
 payload:
-  business_inputs_only: true
+  business_inputs_only: false
   required:
     - table_ref
+    - table_refs
   allowed:
     - table_ref
+    - table_refs
+  business_input_fields:
+    - table_ref
+  configuration_snapshot:
+    field: table_refs
+    source: amazon_skill_local_env
+    required: true
+    secret_free: true
+    allowed_keys:
+      - AMAZON_PRODUCTS
+    precedence: task_payload_only
   value_constraints:
     table_ref:
       const: AMAZON_PRODUCTS
@@ -79,6 +91,7 @@ stages:
     handler_code: task_completed_notification
 
 acceptance:
+  - The skill must snapshot the configured AMAZON_PRODUCTS table URL in table_refs; credentials never enter the payload, and worker runtime configuration is not a route source or fallback.
   - Only records whose 采集标签 is exactly T create row jobs.
   - Each included source_record_id creates at most one idempotent amazon_product_row_refresh job under the batch request_id.
   - Batch collection creates no refresh_amazon_product_row_by_asin child task_request.

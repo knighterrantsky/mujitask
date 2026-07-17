@@ -63,8 +63,9 @@ Amazon 美国站单商品采集的稳定 Task 为 `refresh_amazon_product_row_by
 
 ASIN 必须由 `source_record_id` 指向的飞书行读取；正式入口不得直接传 ASIN、商品详情、
 browser profile、cookie、Runtime/Fact DB URL、bucket 或凭据。项目运行配置解析美国站
-profile、Fact DB、对象存储和 `AMAZON_PRODUCTS` 表路由，并在创建 `task_request` 前完成
-必填配置检查。正式入口不接受任意飞书 URL 或其他表 alias。
+profile、Fact DB 和对象存储；Amazon skill 从自身配置生成必填的
+`table_refs.AMAZON_PRODUCTS` 无密钥路由快照，并在创建 `task_request` 前完成检查。正式入口
+不接受任意飞书 URL、其他表 alias 或缺失路由快照的提交。
 
 同步接收结果沿用通用 `request_id` 契约。异步终态结果只返回来源行、请求/解析 ASIN、
 `row_status`、coverage、各步骤状态和 Fact/artifact 紧凑引用；完整 capture、HTML、页面数据
@@ -82,7 +83,8 @@ Amazon竞品表批量采集的稳定 Task 为 `refresh_current_amazon_product_ta
 ```
 
 批量筛选固定为 `采集标签` 严格等于 `T`，不接受 ASIN、`source_record_id`、自定义筛选字段
-或筛选值。父任务为每条有效来源记录创建一个幂等的
+或筛选值。Amazon skill 还必须随提交附带自身配置生成的
+`table_refs.AMAZON_PRODUCTS` 无密钥路由快照。父任务为每条有效来源记录创建一个幂等的
 `refresh_amazon_product_row_by_asin` 子任务，并只返回父 `request_id`；子任务不向飞书群
 重复发送通知，所有子任务终态后由父任务输出一次汇总。
 

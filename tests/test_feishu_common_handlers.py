@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from automation_business_scaffold.contracts.handler.api import build_bound_api_handler_registry
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.capabilities.input_sources.feishu.table_common import (
@@ -12,6 +14,7 @@ from automation_business_scaffold.capabilities.input_sources.feishu.field_envelo
     prepare_fields_for_write,
 )
 from automation_business_scaffold.capabilities.input_sources.feishu.targets import (
+    FeishuCommonError,
     FeishuTableTarget,
 )
 from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
@@ -106,15 +109,41 @@ def test_bound_api_registry_includes_feishu_common_handlers() -> None:
     assert registry.get("feishu_table_write").is_bound
 
 
-def test_feishu_table_target_resolves_configured_alias_from_project_env(monkeypatch) -> None:
-    monkeypatch.delenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL", raising=False)
-    monkeypatch.delenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN", raising=False)
+def test_amazon_table_target_does_not_resolve_route_from_worker_env(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
+        "https://example.feishu.cn/base/app-worker",
+    )
     monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-amazon")
 
-    target = resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
+    with pytest.raises(FeishuCommonError) as exc_info:
+        resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
+
+    assert exc_info.value.error_code == "missing_feishu_table_target"
+    assert set(exc_info.value.details["missing"]) == {"app_token", "table_id"}
+
+
+def test_amazon_task_snapshot_uses_alias_specific_worker_token(monkeypatch) -> None:
+    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-tiktok")
+    monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-tiktok")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN", "access-amazon")
+
+    target = resolve_read_target(
+        {
+            "source_table_ref": "AMAZON_PRODUCTS",
+            "request_payload": {
+                "table_refs": {
+                    "AMAZON_PRODUCTS": (
+                        "https://example.feishu.cn/base/app-amazon"
+                        "?table=tbl-amazon&view=vew-amazon"
+                    )
+                }
+            },
+        }
+    )
 
     assert target.app_token == "app-amazon"
     assert target.table_id == "tbl-amazon"
@@ -122,22 +151,32 @@ def test_feishu_table_target_resolves_configured_alias_from_project_env(monkeypa
     assert target.access_token == "access-amazon"
 
 
-def test_feishu_table_target_prefers_alias_specific_base_and_token(monkeypatch) -> None:
-    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-tiktok")
-    monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-tiktok")
+def test_feishu_table_target_prefers_request_route_snapshot_over_worker_env(monkeypatch) -> None:
     monkeypatch.setenv(
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
-        "https://example.feishu.cn/base/app-amazon",
+        "https://example.feishu.cn/base/app-worker",
     )
-    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-amazon")
-    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-worker")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-worker")
     monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN", "access-amazon")
 
-    target = resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
+    target = resolve_read_target(
+        {
+            "source_table_ref": "AMAZON_PRODUCTS",
+            "request_payload": {
+                "table_refs": {
+                    "AMAZON_PRODUCTS": (
+                        "https://example.feishu.cn/base/app-snapshot"
+                        "?table=tbl-snapshot&view=vew-snapshot"
+                    )
+                }
+            },
+        }
+    )
 
-    assert target.app_token == "app-amazon"
-    assert target.table_id == "tbl-amazon"
-    assert target.view_id == "vew-amazon"
+    assert target.app_token == "app-snapshot"
+    assert target.table_id == "tbl-snapshot"
+    assert target.view_id == "vew-snapshot"
     assert target.access_token == "access-amazon"
 
 

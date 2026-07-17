@@ -68,6 +68,17 @@ _SENSITIVE_PROMOTION_TEXT = re.compile(
     r"authorization|bearer\s|(?:access[_-]?token|token|cookie|password|credential)\s*[=:])",
     re.IGNORECASE,
 )
+_DELIVERY_DATE_PATTERN = re.compile(
+    r"\b(?:(?P<weekday>Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    r"\s*,?\s+)?"
+    r"(?P<start_month>January|February|March|April|May|June|July|August|"
+    r"September|October|November|December)"
+    r"\s+(?P<start_day>\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:\s*-\s*(?:(?P<end_month>January|February|March|April|May|June|July|"
+    r"August|September|October|November|December)\s+)?"
+    r"(?P<end_day>\d{1,2})(?:st|nd|rd|th)?)?\b",
+    re.IGNORECASE,
+)
 _OFFER_PROJECTION_FIELDS = {
     "commerce.featured_offer.price_amount": "当前价格",
     "commerce.featured_offer.list_price_amount": "原价",
@@ -216,13 +227,7 @@ def amazon_product_projection_mapper(
             )
         _project_evidenced(fields, field_name, evidence, evidence_path, value)
 
-    _project_evidenced(
-        fields,
-        "送达日期",
-        evidence,
-        "commerce.featured_offer.delivery_text",
-        offer.get("delivery_text"),
-    )
+    _project_delivery_date(fields, evidence, offer.get("delivery_text"))
 
     _project_fulfillment(fields, evidence, offer)
     _project_buy_box(fields, evidence, offer)
@@ -274,6 +279,40 @@ def _project_evidenced(
         fields[field_name] = value
     elif status == "explicitly_unavailable":
         fields[field_name] = None
+
+
+def _project_delivery_date(
+    fields: dict[str, Any],
+    evidence: Mapping[str, Any],
+    value: Any,
+) -> None:
+    status = _evidence_status(evidence, "commerce.featured_offer.delivery_text")
+    if status == "observed":
+        delivery_date = _delivery_date_text(value)
+        if delivery_date:
+            fields["送达日期"] = delivery_date
+    elif status == "explicitly_unavailable":
+        fields["送达日期"] = None
+
+
+def _delivery_date_text(value: Any) -> str:
+    match = _DELIVERY_DATE_PATTERN.search(_text(value))
+    if match is None:
+        return ""
+
+    weekday = match.group("weekday")
+    start_month = match.group("start_month").title()
+    start_day = str(int(match.group("start_day")))
+    result = f"{start_month} {start_day}"
+    if weekday:
+        result = f"{weekday.title()}, {result}"
+
+    end_day = match.group("end_day")
+    if end_day:
+        end_month = match.group("end_month")
+        end = f"{end_month.title()} " if end_month else ""
+        result = f"{result} - {end}{int(end_day)}"
+    return result
 
 
 def _project_fulfillment(

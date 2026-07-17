@@ -62,7 +62,7 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 - `MUJITASK_TIKTOK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
 - `MUJITASK_AMAZON_SKILLS_DIR/mujitask-amazon-feishu-sync`
 
-Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-ops` / `workspace-tiktok`。两个 workspace 不得交叉安装对方 Skill。二者共用飞书账号 `default`，Amazon 通过新建群聊的 `oc_*` peer binding 精确路由；飞书机器人密钥仍只由 OpenClaw secret 配置管理。
+Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-ops` / `workspace-tiktok`。两个 workspace 不得交叉安装对方 Skill。Amazon 的飞书 account ID 由 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID` 配置，并通过新建群聊的 `oc_*` peer binding 精确路由；飞书机器人密钥仍只由 OpenClaw secret 配置管理。
 
 部署脚本负责:
 
@@ -140,6 +140,7 @@ Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-op
 - `MUJITASK_FEISHU_BASE_URL`
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
+- `MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL`
 - `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`
 - `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
@@ -165,6 +166,7 @@ Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-op
 当前模板见：
 
 - `skills/mujitask-tiktok-feishu-sync/skill.local.env.example`
+- `skills/mujitask-amazon-feishu-sync/skill.local.env.example`
 
 ### 6.2 executor.local.env
 
@@ -191,7 +193,7 @@ Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-op
 - 代码也兼容 `EXECUTION_CONTROL_*`，但部署文档统一按 `BUSINESS_*` 说明。
 - skill、daemon、CLI 和 pytest 会自动加载这份文件；Runtime / Amazon Fact Alembic 不使用这里的 worker URL 作为 External migration 凭据。
 - macOS 部署会清除历史遗留的 `TK_FACT_DB_URL` 和所有 migration key，确保共享 Fact DB 连接统一使用受限的 Fact runtime 账号。
-- `AMAZON_US_BROWSER_PROFILE_REF` 只写入 `executor.local.env`；Amazon 表 route 同时写入已安装的 `skill.local.env` 和 `executor.local.env`，确保调用入口与 API worker 都能解析 `AMAZON_PRODUCTS`。浏览器 profile 不进入 skill 配置或 plist。
+- `AMAZON_US_BROWSER_PROFILE_REF` 只写入 `executor.local.env`。Amazon 表 route 只写入已安装的 Amazon `skill.local.env`；skill 提交必填的无密钥 `table_refs` 快照，worker 不从 `.env` 或 `executor.local.env` 读取路由。浏览器 profile 不进入 skill 配置、业务 payload 或 plist。
 - `executor.local.env` 包含 Runtime / Fact worker 连接串和业务密钥。部署在写入前拒绝符号链接和非当前用户持有的既有文件，写入后固定为 `0600` 并再次核对 owner；不要把它复制到共享目录。
 
 ### 6.3 migration.local.env
@@ -329,11 +331,10 @@ python3 -m venv .venv
 至少确认：
 
 - `INSTALL_DIR`
+- Amazon skill 的 `OPENCLAW_DELIVERY_ACCOUNT_ID` 与客户本地 OpenClaw 飞书 account ID 一致
 - `MUJITASK_FEISHU_BASE_URL`
 - `MUJITASK_FEISHU_TK_*_TABLE_ID`
 - `MUJITASK_FEISHU_TK_*_VIEW_ID`
-- `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`
-- `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID`
 - `MUJITASK_FEISHU_ACCESS_TOKEN`
 - `FASTMOSS_PHONE`
 - `FASTMOSS_PASSWORD`
@@ -346,7 +347,10 @@ python3 -m venv .venv
 cp scripts/execution_control/executor.local.env.example scripts/execution_control/executor.local.env
 ```
 
-然后填写数据库、MinIO、通知和浏览器相关变量。
+Amazon 表路由不得写入该文件。它只存在于 Amazon `skill.local.env`，并由 skill 固化为 Task 的
+必填 `table_refs` 快照；缺失快照的 Amazon Task 必须拒绝或 fail closed。
+
+在该文件中填写数据库、MinIO、通知、表访问 token 和浏览器相关变量。
 
 推荐把 Runtime 相关变量只维护在这份文件：
 

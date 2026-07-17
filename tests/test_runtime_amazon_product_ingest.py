@@ -17,6 +17,9 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 
 TASK_CODE = "refresh_amazon_product_row_by_asin"
 TABLE_REF = "AMAZON_PRODUCTS"
+TABLE_REFS = {
+    TABLE_REF: "https://example.feishu.cn/base/app-amazon?table=tbl-amazon&view=vew-amazon"
+}
 SOURCE_RECORD_ID = "rec-amazon-1"
 ASIN = "B0ABC12345"
 ARTIFACT_PREFIX = "pytest-amazon"
@@ -96,6 +99,7 @@ def _submit(runtime_db_url: str) -> tuple[RuntimeStore, str]:
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id=SOURCE_RECORD_ID,
         ),
     )
@@ -410,7 +414,11 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
     monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
     store, request_id = _submit(runtime_db_url)
     request = store.load_task_request(request_id=request_id)
-    assert request.payload == {"table_ref": TABLE_REF, "source_record_id": SOURCE_RECORD_ID}
+    assert request.payload == {
+        "table_ref": TABLE_REF,
+        "source_record_id": SOURCE_RECORD_ID,
+        "table_refs": TABLE_REFS,
+    }
     assert request.stage_cursor["runtime_context"] == {
         "browser_target_digest": "digest-only",
         "browser_resource_code": "browser:amazon:digest-only",
@@ -436,8 +444,13 @@ def test_runtime_dispatches_exact_amazon_read_browser_persist_summary_chain(
         "stage_code": "read_amazon_product_row",
         "source_table_ref": TABLE_REF,
         "source_record_id": SOURCE_RECORD_ID,
+        "request_payload": {
+            "table_ref": TABLE_REF,
+            "source_record_id": SOURCE_RECORD_ID,
+            "table_refs": TABLE_REFS,
+        },
         "adapter_code": "amazon_product_table_source_adapter",
-            "field_names": ["ASIN", "采集标签", "商品链接", "强制刷新", "采集状态"],
+        "field_names": ["ASIN", "采集标签", "商品链接", "强制刷新", "采集状态"],
     }
     assert _executor(runtime_db_url)["daemon_status"] == "idle"
     assert (
@@ -1355,6 +1368,7 @@ def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id=SOURCE_RECORD_ID,
         ),
     )
@@ -1362,12 +1376,25 @@ def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
     assert no_profile["error_code"] == "amazon_browser_profile_missing"
 
     monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-test")
+    missing_route = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            source_record_id=SOURCE_RECORD_ID,
+        ),
+    )
+    assert missing_route["request_status"] == "rejected"
+    assert missing_route["error_code"] == "invalid_amazon_table_route_snapshot"
+
     extra_field = run_task_request(
         TASK_CODE,
         _runtime_params(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id=SOURCE_RECORD_ID,
             browser_profile_ref="must-not-enter-formal-payload",
         ),
@@ -1390,6 +1417,7 @@ def test_amazon_submit_rejects_missing_profile_and_extra_business_fields(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id="rec-unresolved-profile",
         ),
     )
@@ -1438,6 +1466,7 @@ def test_amazon_submit_rejects_fact_schema_revision_mismatch_before_task_creatio
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id="rec-schema-mismatch",
         ),
     )
@@ -1481,6 +1510,7 @@ def test_amazon_submit_marks_fact_schema_connectivity_failure_retryable(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id="rec-schema-unavailable",
         ),
     )

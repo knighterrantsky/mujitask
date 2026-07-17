@@ -10,13 +10,13 @@ agent_artifact:
   path: skills/mujitask-amazon-feishu-sync
   openclaw_agent_id: amazon-ops
   workspace_name: workspace-amazon
-  feishu_account_id: default
+  feishu_account_id_source: MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
   feishu_peer_kind: group
   peer_id_source: openclaw_deployment_binding
 
 notification_routing:
   required_reply_channel: feishu
-  required_account_id: default
+  required_account_id_source: MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
   required_target_prefix: chat:oc_
   transport_owner: notification_outbox
 
@@ -28,13 +28,26 @@ state_contracts:
   - contracts/states/amazon-product-collection-status.yaml
 
 payload:
-  business_inputs_only: true
+  business_inputs_only: false
   required:
     - table_ref
     - source_record_id
+    - table_refs
   allowed:
     - table_ref
     - source_record_id
+    - table_refs
+  business_input_fields:
+    - table_ref
+    - source_record_id
+  configuration_snapshot:
+    field: table_refs
+    source: amazon_skill_local_env
+    required: true
+    secret_free: true
+    allowed_keys:
+      - AMAZON_PRODUCTS
+    precedence: task_payload_only
   value_constraints:
     table_ref:
       const: AMAZON_PRODUCTS

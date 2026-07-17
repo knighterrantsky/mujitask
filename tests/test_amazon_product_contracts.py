@@ -155,9 +155,18 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
             ],
         },
     }
-    assert contract["payload"]["business_inputs_only"] is True
-    assert contract["payload"]["required"] == ["table_ref", "source_record_id"]
-    assert contract["payload"]["allowed"] == ["table_ref", "source_record_id"]
+    assert contract["payload"]["business_inputs_only"] is False
+    assert contract["payload"]["required"] == ["table_ref", "source_record_id", "table_refs"]
+    assert contract["payload"]["allowed"] == ["table_ref", "source_record_id", "table_refs"]
+    assert contract["payload"]["business_input_fields"] == ["table_ref", "source_record_id"]
+    assert contract["payload"]["configuration_snapshot"] == {
+        "field": "table_refs",
+        "source": "amazon_skill_local_env",
+        "required": True,
+        "secret_free": True,
+        "allowed_keys": ["AMAZON_PRODUCTS"],
+        "precedence": "task_payload_only",
+    }
     assert contract["payload"]["value_constraints"] == {"table_ref": {"const": "AMAZON_PRODUCTS"}}
     assert contract["payload"]["additional_properties"] is False
     top_level_summary = contract["observability"]["top_level_summary"]
@@ -529,7 +538,10 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
                 "required_prefix": "FREE delivery",
                 "source": "featured_offer_primary_delivery_message",
                 "projection_field": "送达日期",
+                "projection_format": "english_date_or_date_range_only",
                 "strip_segments": [
+                    "free_delivery_label",
+                    "order_threshold",
                     "destination_address_and_postcode",
                     "fastest_delivery",
                     "order_countdown",

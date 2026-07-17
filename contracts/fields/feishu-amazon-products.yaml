@@ -209,7 +209,15 @@ fields:
     owner: amazon_projection
     write_policy: observed_only
     fact_source: commerce.featured_offer.delivery_text
-    value_policy: free_delivery_primary_message_without_destination_or_fastest_delivery
+    value_policy:
+      input: free_delivery_primary_message_without_destination_or_fastest_delivery
+      output: english_date_or_date_range_only
+      weekday_date_format: "Weekday, Month D"
+      date_range_format: "Month D - D or Month D - Month D"
+      strip_before_projection:
+        - free_delivery_label
+        - order_threshold
+      unparseable_observed_value: preserve_existing
 
   - name: 包装规格
     canonical_name: package_quantity

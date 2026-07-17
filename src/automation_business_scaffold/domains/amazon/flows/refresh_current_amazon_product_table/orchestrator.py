@@ -249,6 +249,7 @@ def _advance_read(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:
             "workflow_code": workflow.workflow_code,
             "stage_code": READ_STAGE_CODE,
             "source_table_ref": str(request.payload.get("table_ref") or "").strip(),
+            "request_payload": dict(request.payload or {}),
             "adapter_code": "amazon_product_batch_source_adapter",
             "field_names": list(AMAZON_PRODUCT_SOURCE_FIELDS),
         }

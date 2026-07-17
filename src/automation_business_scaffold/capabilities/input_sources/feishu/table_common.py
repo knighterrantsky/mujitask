@@ -178,6 +178,8 @@ def _configured_table_payload(table_ref: str) -> dict[str, Any]:
             else "MUJITASK_FEISHU_ACCESS_TOKEN"
         )
     }
+    if alias_key == "AMAZON_PRODUCTS":
+        return result
     base_url = _text(
         os.environ.get(f"MUJITASK_FEISHU_{alias_key}_BASE_URL")
         or os.environ.get("MUJITASK_FEISHU_BASE_URL")

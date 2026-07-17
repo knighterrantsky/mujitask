@@ -40,6 +40,11 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
             "refresh_amazon_product_row_by_asin_payload",
             required_field("table_ref", "Configured Amazon Feishu table alias.", type_hint="str"),
             required_field("source_record_id", "Exact Feishu source record id.", type_hint="str"),
+            required_field(
+                "table_refs",
+                "Required secret-free Amazon table route snapshot from the skill.",
+                type_hint="dict[str, str]",
+            ),
             notes=("No runtime, browser, credential, or storage configuration is accepted here.",),
         ),
         stages=(

@@ -43,7 +43,7 @@
 | 搜索采集 | 搜索结果先按 ASIN 去重写入飞书，再复用批量采集能力 |
 | Agent 入口 | 独立 `mujitask-amazon-feishu-sync` Skill |
 | OpenClaw 隔离 | 独立 `amazon-ops` agent 与 `workspace-amazon` |
-| 飞书机器人 | 独立账号别名 `amazon`，覆盖入口、受理回执和最终通知 |
+| 飞书机器人 | 使用部署配置的本地 account ID，覆盖入口、受理回执和最终通知；不固定 `default` 或 `amazon` 等别名 |
 
 首期采集字段:
 
@@ -97,10 +97,11 @@ Amazon 的入口和通知采用业务域级物理隔离，机器绑定以 `contr
 执行边界：
 
 1. Amazon Skill 只做意图识别、确认预览、业务输入提取和顶层 `task_request` 提交。
-2. Skill 从 `amazon-ops` session 取得回复目标，并校验 `reply_target.channel=feishu`、`reply_target.accountId=default`、`reply_target.to=chat:oc_*` 后提交。
-3. Workflow 只写 `notification_outbox`；通用 outbox dispatcher 使用同一默认飞书机器人回复原 Amazon 群聊，不新增 Amazon 专用通知 handler。
-4. App ID、App Secret、token 和真实 workspace 绝对路径是部署配置，不进入 workflow payload 或 Runtime result。
-5. 后续新增 Amazon 批量、搜索、监控或分析 workflow 时，只能扩展 Amazon Skill 的 intent，不得加入 TikTok Skill。
+2. Skill 只从自身 `skill.local.env` 拼接 `AMAZON_PRODUCTS` 表 URL，并以必填的无密钥 `table_refs` 配置快照随顶层 Request 提交；worker 只消费该快照，启动环境不得提供 Amazon 表路由或回退。
+3. Skill 从 `amazon-ops` session 取得回复目标，并校验 `reply_target.channel=feishu`、`reply_target.accountId` 等于 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID`、`reply_target.to=chat:oc_*` 后提交。
+4. Workflow 只写 `notification_outbox`；通用 outbox dispatcher 使用该部署绑定的飞书机器人回复原 Amazon 群聊，不新增 Amazon 专用通知 handler。
+5. App ID、App Secret、token 和真实 workspace 绝对路径是部署配置，不进入 workflow payload 或 Runtime result。
+6. 后续新增 Amazon 批量、搜索、监控或分析 workflow 时，只能扩展 Amazon Skill 的 intent，不得加入 TikTok Skill。
 
 ## 4. 商品身份与 URL Contract
 
@@ -256,7 +257,7 @@ requested ASIN 或当前页面 resolved ASIN，并包含 capture contract allowl
 - Product information 的 `prodDetTable` 属于受控技术参数区域；`Number of Items` 以原始可见文本进入 `product.technical_details`，由飞书 projection 生成 `包装规格`。
 - `包装规格` 不从 `Unit Count`、Quantity 选择器或标题推导；`Number of Items` 缺失时 projection 写固定文本 `没有包装规格`。
 - `commerce.featured_offer.delivery_text` 只允许以 `FREE delivery` 开头的主配送文案，并在进入 capture 前移除配送地址、邮编、`Or fastest delivery`、倒计时和账户文本。
-- 飞书 `送达日期` 直接投影净化后的 `delivery_text`；该证据为 `missing` 时保留原值。
+- 飞书 `送达日期` 从净化后的 `delivery_text` 提取英文日期或日期范围，并去除 `FREE delivery` 标签和订单门槛；该证据为 `missing` 或无法提取日期时保留原值。
 
 每个字段保存:
 
@@ -875,7 +876,7 @@ AMAZON_PRODUCTS
 | 变体属性 | 多行文本 | Amazon projection | 当前 ASIN 属性与变体维度的稳定 JSON 文本 |
 | 卖家 | 单行文本 | Amazon projection | Featured Offer 卖家 |
 | 配送方式 | 单行文本 | Amazon projection | Amazon / Merchant / unknown 及配送摘要 |
-| 送达日期 | 单行文本 | Amazon projection | 净化后的 `FREE delivery` 主配送日期，不含地址和 fastest delivery |
+| 送达日期 | 单行文本 | Amazon projection | 从净化后的主配送文案提取 `Weekday, Month D` 或英文日期范围，不含配送标签、订单门槛、地址和 fastest delivery |
 | 包装规格 | 单行文本 | Amazon projection | Product information / Item details 的 `Number of Items`；缺失写 `没有包装规格` |
 | Buy Box卖家 | 单行文本 | Amazon projection | 当前 Buy Box 卖家 |
 | Buy Box价格 | 数字 | Amazon projection | 当前 Buy Box 价格 |

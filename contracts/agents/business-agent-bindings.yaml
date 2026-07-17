@@ -27,7 +27,7 @@ business_domains:
     openclaw_agent_id: amazon-ops
     workspace_name: workspace-amazon
     required_channel: feishu
-    feishu_account_id: default
+    feishu_account_id_source: MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
     routing_scope: exact_peer
     required_peer_kind: group
     peer_id_source: openclaw_deployment_binding
@@ -38,9 +38,9 @@ business_domains:
       - mujitask-tiktok-feishu-sync
 
 invariants:
-  - TikTok and Amazon share the default Feishu bot account but use distinct conversation routes, OpenClaw agent ids, workspaces, and skill bundles.
-  - The Amazon exact group peer binding must take precedence over the TikTok account-level fallback binding.
+  - TikTok and Amazon use distinct conversation routes, OpenClaw agent ids, workspaces, and skill bundles; the Amazon Feishu account id is deployment-configured and is not pinned to a literal local alias.
+  - When TikTok and Amazon share one Feishu account, the Amazon exact group peer binding must take precedence over the TikTok account-level fallback binding.
   - A business workspace may install only its own allowed skill bundle.
-  - Amazon entry receipts and final outbox notifications must use reply_target.channel=feishu, reply_target.accountId=default, and a group target prefixed with chat:oc_.
+  - Amazon entry receipts and final outbox notifications must use reply_target.channel=feishu, reply_target.accountId equal to MUJITASK_AMAZON_FEISHU_ACCOUNT_ID, and a group target prefixed with chat:oc_.
   - Feishu app credentials and bot secrets remain deployment secrets and never appear in this contract or a skill bundle.
   - Runtime DB, governed Fact DB instance, object storage bucket, executor, API worker, browser worker, outbox dispatcher, and watchdog remain shared infrastructure.

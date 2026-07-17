@@ -33,6 +33,9 @@ from automation_business_scaffold.infrastructure.runtime.runtime_store import Ru
 TASK_CODE = "refresh_current_amazon_product_table"
 ROW_JOB_CODE = "amazon_product_row_refresh"
 TABLE_REF = "AMAZON_PRODUCTS"
+TABLE_REFS = {
+    TABLE_REF: "https://example.feishu.cn/base/app-amazon?table=tbl-amazon&view=vew-amazon"
+}
 EXPECTED_STAGES = (
     "read_amazon_product_rows",
     "dispatch_amazon_product_rows",
@@ -78,7 +81,7 @@ def test_amazon_batch_task_and_workflow_contract_are_registered() -> None:
     assert workflow.workflow_id == TASK_CODE
     assert definition.task_code == TASK_CODE
     assert definition.stage_codes == EXPECTED_STAGES
-    assert definition.payload_contract.field_names() == ("table_ref",)
+    assert definition.payload_contract.field_names() == ("table_ref", "table_refs")
     assert definition.stages[0].job_bindings[0].adapter_code == (
         "amazon_product_batch_source_adapter"
     )
@@ -299,18 +302,22 @@ def test_runtime_marks_browser_required_row_job_waiting() -> None:
     assert store.waiting["error_code"] == ""
 
 
-def test_amazon_batch_submit_accepts_only_table_ref(runtime_db_url: str) -> None:
+def test_amazon_batch_submit_accepts_table_ref_and_route_snapshot(runtime_db_url: str) -> None:
     submitted = run_task_request(
         TASK_CODE,
         _runtime_params(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
         ),
     )
 
     assert submitted["request_status"] == "pending"
-    assert submitted["task_request"]["payload"] == {"table_ref": TABLE_REF}
+    assert submitted["task_request"]["payload"] == {
+        "table_ref": TABLE_REF,
+        "table_refs": TABLE_REFS,
+    }
 
     rejected = run_task_request(
         TASK_CODE,
@@ -318,12 +325,36 @@ def test_amazon_batch_submit_accepts_only_table_ref(runtime_db_url: str) -> None
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             collection_tag="A",
         ),
     )
     assert rejected["request_status"] == "rejected"
     assert rejected["error_code"] == "invalid_amazon_task_payload"
     assert rejected["unexpected_business_fields"] == ["collection_tag"]
+
+    missing_route = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+        ),
+    )
+    assert missing_route["request_status"] == "rejected"
+    assert missing_route["error_code"] == "invalid_amazon_table_route_snapshot"
+
+    invalid_route = run_task_request(
+        TASK_CODE,
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            table_refs={TABLE_REF: "not-a-table-url"},
+        ),
+    )
+    assert invalid_route["request_status"] == "rejected"
+    assert invalid_route["error_code"] == "invalid_amazon_table_route_snapshot"
 
 
 def test_amazon_batch_dispatches_same_request_row_jobs_and_summarizes(
@@ -335,6 +366,7 @@ def test_amazon_batch_dispatches_same_request_row_jobs_and_summarizes(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
         ),
     )
     parent_id = str(submitted["request_id"])
@@ -351,6 +383,10 @@ def test_amazon_batch_dispatches_same_request_row_jobs_and_summarizes(
         job_code="feishu_table_read",
     )
     assert read_job is not None
+    assert read_job["payload"]["request_payload"] == {
+        "table_ref": TABLE_REF,
+        "table_refs": TABLE_REFS,
+    }
     source_rows = [
         {
             "source_record_id": "rec-t-1",
@@ -469,7 +505,12 @@ def test_amazon_batch_resumes_the_same_row_job_after_primary_browser(
 ) -> None:
     submitted = run_task_request(
         TASK_CODE,
-        _runtime_params(runtime_db_url, control_action="submit", table_ref=TABLE_REF),
+        _runtime_params(
+            runtime_db_url,
+            control_action="submit",
+            table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
+        ),
     )
     parent_id = str(submitted["request_id"])
     store = RuntimeStore(db_url=runtime_db_url)
@@ -586,6 +627,7 @@ def test_amazon_batch_with_no_t_tagged_rows_finishes_without_row_jobs(
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
         ),
     )
     parent_id = str(submitted["request_id"])

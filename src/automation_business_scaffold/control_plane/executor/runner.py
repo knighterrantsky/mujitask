@@ -36,6 +36,7 @@ from automation_business_scaffold.infrastructure.facts.amazon_fact_store import 
     AmazonFactSchemaVersionError,
     AmazonFactStore,
 )
+from automation_business_scaffold.infrastructure.feishu.api import parse_table_url
 from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
     AMAZON_FACT_SCHEMA_REVISION,
 )
@@ -100,6 +101,8 @@ AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK = {
     AMAZON_PRODUCT_BATCH_TASK_CODE: {"table_ref"},
 }
 AMAZON_TASK_CODES = set(AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK)
+AMAZON_FORMAL_CONFIGURATION_FIELDS = {"table_refs"}
+AMAZON_TABLE_REF = "AMAZON_PRODUCTS"
 AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS = {
     "BROWSER_PROFILE_ID",
     "BROWSER_PROFILE_REF",
@@ -448,10 +451,14 @@ def _sanitize_task_payload(
     settings: Any | None = None,
 ) -> dict[str, Any]:
     if task_code in AMAZON_TASK_CODES:
-        return {
+        sanitized = {
             field: str(params.get(field) or "").strip()
             for field in sorted(AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK[task_code])
         }
+        table_refs = _normalize_amazon_table_refs(params.get("table_refs"))
+        if table_refs:
+            sanitized["table_refs"] = table_refs
+        return sanitized
     sanitized = dict(params)
     sanitized.pop("control_action", None)
     for key in FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS:
@@ -461,6 +468,26 @@ def _sanitize_task_payload(
     if task_code in STRICT_PERSISTENCE_TASK_CODES and settings is not None:
         _enrich_strict_persistence_payload(sanitized, params=params, settings=settings)
     return sanitized
+
+
+def _normalize_amazon_table_refs(value: Any) -> dict[str, str]:
+    if value in (None, "", {}):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("table_refs must be a JSON object.")
+    unsupported_keys = sorted(str(key) for key in value if str(key) != AMAZON_TABLE_REF)
+    if unsupported_keys:
+        raise ValueError(
+            "table_refs contains unsupported keys: " + ", ".join(unsupported_keys) + "."
+        )
+    table_url = str(value.get(AMAZON_TABLE_REF) or "").strip()
+    if not table_url:
+        raise ValueError("table_refs.AMAZON_PRODUCTS is required when table_refs is provided.")
+    try:
+        parse_table_url(table_url)
+    except ValueError as exc:
+        raise ValueError("table_refs.AMAZON_PRODUCTS must be a valid Feishu table URL.") from exc
+    return {AMAZON_TABLE_REF: table_url}
 
 
 def _amazon_product_submit_preflight(
@@ -497,6 +524,18 @@ def _amazon_product_submit_preflight(
             ),
             "required_table_ref": "AMAZON_PRODUCTS",
         }
+    try:
+        table_refs = _normalize_amazon_table_refs(params.get("table_refs"))
+        if not table_refs:
+            raise ValueError(
+                "table_refs.AMAZON_PRODUCTS is required from the Amazon skill configuration."
+            )
+    except ValueError as exc:
+        return {
+            "error_type": "invalid_input",
+            "error_code": "invalid_amazon_table_route_snapshot",
+            "message": str(exc),
+        }
     forbidden_browser_fields = sorted(
         field
         for field in AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS
@@ -513,10 +552,11 @@ def _amazon_product_submit_preflight(
             "forbidden_runtime_config_fields": forbidden_browser_fields,
         }
     ignored_control_fields = FORMAL_SUBMIT_CONTROL_FIELDS | FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS
+    allowed_payload_fields = business_fields | AMAZON_FORMAL_CONFIGURATION_FIELDS
     unexpected = sorted(
         str(key)
         for key, value in params.items()
-        if key not in business_fields
+        if key not in allowed_payload_fields
         and key not in ignored_control_fields
         and value not in (None, "", [], {})
     )
