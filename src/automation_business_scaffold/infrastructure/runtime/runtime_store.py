@@ -997,8 +997,9 @@ class RuntimeStore:
         error_type: str = "",
         error_code: str = "",
         dead_letter_reason: str = "",
+        force_terminal: bool = False,
     ) -> dict[str, Any]:
-        return self._api_worker_job_repo.mark_api_worker_job_retry_or_failed(job_id=job_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason)
+        return self._api_worker_job_repo.mark_api_worker_job_retry_or_failed(job_id=job_id, run_id=run_id, error_text=error_text, summary=summary, result=result, retry_delay_seconds=retry_delay_seconds, error_type=error_type, error_code=error_code, dead_letter_reason=dead_letter_reason, force_terminal=force_terminal)
 
     def load_api_worker_job(self, *, job_id: str) -> dict[str, Any]:
         return self._api_worker_job_repo.load_api_worker_job(job_id=job_id)

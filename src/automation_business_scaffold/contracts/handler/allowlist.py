@@ -11,6 +11,7 @@ _STANDARD_RESULT_STATUSES = (
     "partial_success",
     "failed",
     "fallback_required",
+    "browser_required",
 )
 
 PROHIBITED_HANDLER_CODES = MappingProxyType(
@@ -284,6 +285,19 @@ API_HANDLER_CONTRACTS = MappingProxyType(
                 "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
             ),
             side_effects=("artifact.read", "artifact.write", "fact_db.write", "feishu.write"),
+        ),
+        "amazon_product_row_refresh": _contract(
+            handler_code="amazon_product_row_refresh",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose=(
+                "Run one Amazon batch row through primary browser handoff and existing "
+                "row persistence contracts."
+            ),
+            contract_reference=(
+                "docs/arch/workflow-amazon-product-detail-design.md#81-新增稳定-handler"
+            ),
+            side_effects=("feishu.write", "artifact.read", "artifact.write", "fact_db.write"),
         ),
         "selection_row_refresh": _contract(
             handler_code="selection_row_refresh",

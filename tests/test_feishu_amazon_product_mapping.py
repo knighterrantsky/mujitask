@@ -33,9 +33,11 @@ from automation_business_scaffold.contracts.handler.api import (
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.domains.amazon.mappers.feishu_product_source_mapper import (
     AMAZON_PRODUCT_SOURCE_FIELDS,
+    amazon_product_batch_source_adapter,
     amazon_product_table_source_adapter,
 )
 from automation_business_scaffold.domains.amazon.projections.feishu_product_projection import (
+    AMAZON_PRODUCT_FEISHU_WRITE_FIELDS,
     AMAZON_PRODUCT_MANUAL_PRESERVE_FIELDS,
     AMAZON_PRODUCT_PROJECTION_FIELDS,
     amazon_product_projection_mapper,
@@ -160,6 +162,7 @@ def _projection_record(capture=None, **overrides):
 def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
     assert AMAZON_PRODUCT_SOURCE_FIELDS == (
         "ASIN",
+        "采集标签",
         "商品链接",
         "强制刷新",
         "采集状态",
@@ -169,6 +172,13 @@ def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
         "来源关键词",
         "强制刷新",
     }
+    assert AMAZON_PRODUCT_FEISHU_WRITE_FIELDS == (
+        "主图",
+        "侧边栏图片",
+        "送达日期",
+        "包装规格",
+        "促销活动记录",
+    )
     assert set(AMAZON_PRODUCT_PROJECTION_FIELDS) == {
         "商品链接",
         "采集状态",
@@ -180,7 +190,7 @@ def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
         "卖点",
         "描述",
         "主图",
-        "图库",
+        "侧边栏图片",
         "当前价格",
         "原价",
         "币种",
@@ -192,10 +202,12 @@ def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
         "变体属性",
         "卖家",
         "配送方式",
+        "送达日期",
+        "包装规格",
         "Buy Box卖家",
         "Buy Box价格",
         "优惠券",
-        "促销",
+        "促销活动记录",
         "BSR排名",
         "技术参数",
         "页面ASIN",
@@ -250,6 +262,43 @@ def test_common_domain_mapping_routes_amazon_source_adapter() -> None:
         "amazon_product_table_source_adapter",
         [_raw_row()],
         _source_payload(),
+    )
+
+    assert result["candidate_keys"] == ["amazon:US:B0CHILD001"]
+
+
+def test_amazon_batch_source_adapter_selects_only_exact_t_tagged_rows() -> None:
+    result = amazon_product_batch_source_adapter(
+        [
+            _raw_row(record_id="rec-t-1", **{"采集标签": "T"}),
+            _raw_row(record_id="rec-a", **{"采集标签": "A"}),
+            _raw_row(record_id="rec-lower-t", **{"采集标签": "t"}),
+            _raw_row(record_id="rec-empty", **{"采集标签": ""}),
+            _raw_row(record_id="rec-invalid", **{"采集标签": "T", "ASIN": "bad"}),
+        ],
+        {"source_table_ref": "AMAZON_PRODUCTS"},
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == ["rec-t-1"]
+    assert result["adapter_summary"] == {
+        "adapter_code": "amazon_product_batch_source_adapter",
+        "input_row_count": 5,
+        "tagged_row_count": 2,
+        "source_row_count": 1,
+        "selection_field": "采集标签",
+        "selection_value": "T",
+        "invalid_asin_count": 1,
+        "identity_mismatch_count": 0,
+        "unsupported_marketplace_count": 0,
+        "missing_record_id_count": 0,
+    }
+
+
+def test_common_domain_mapping_routes_amazon_batch_source_adapter() -> None:
+    result = adapt_source_rows(
+        "amazon_product_batch_source_adapter",
+        [_raw_row(**{"采集标签": "T"}), _raw_row(record_id="ignored", **{"采集标签": "A"})],
+        {"source_table_ref": "AMAZON_PRODUCTS"},
     )
 
     assert result["candidate_keys"] == ["amazon:US:B0CHILD001"]
@@ -371,10 +420,14 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
     }
     assert fields["卖家"] == "Structured Seller"
     assert fields["配送方式"] == "Amazon | FREE delivery Friday, July 17"
+    assert fields["送达日期"] == "FREE delivery Friday, July 17"
+    assert fields["包装规格"] == "没有包装规格"
     assert fields["Buy Box卖家"] == "Structured Seller"
     assert fields["Buy Box价格"] == 29.99
     assert fields["优惠券"] == "Save 10% with coupon"
-    assert fields["促销"] == "Buy 2, save 5%"
+    assert fields["促销活动记录"] == (
+        "2026-07-14 16:00:00 | coupon | 10% | $26.99"
+    )
     assert fields["BSR排名"] == (
         "#7 - Home & Kitchen > Lighting > Table Lamps\n"
         "#321 - Home & Kitchen"
@@ -396,13 +449,100 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
             "mime_type": "image/jpeg",
         }
     ]
-    assert [item["file_name"] for item in fields["图库"]] == [
+    assert [item["file_name"] for item in fields["侧边栏图片"]] == [
         "gallery-1.jpg",
         "gallery-2.jpg",
     ]
     assert "ASIN" not in fields
     assert "来源关键词" not in fields
     assert "强制刷新" not in fields
+
+
+def test_projection_uses_number_of_items_for_packaging_specification() -> None:
+    capture = _capture()
+    capture["product"]["technical_details"]["Number of Items"] = "2"
+    capture["field_evidence"]["product.technical_details"]["value"] = dict(
+        capture["product"]["technical_details"]
+    )
+
+    fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
+
+    assert fields["包装规格"] == "2"
+
+
+def test_projection_formats_fixed_amount_coupon_with_calculated_price() -> None:
+    capture = _capture()
+    offer = capture["commerce"]["featured_offer"]
+    offer["promotions"] = [
+        {
+            "promotion_type": "coupon",
+            "label": "Coupon",
+            "discount_type": "amount",
+            "discount_value": 10.0,
+            "deal_price": None,
+            "reference_price": None,
+            "reference_price_type": None,
+            "currency": "USD",
+            "prime_only": False,
+            "claim_required": True,
+            "raw_text": "Apply $10 coupon",
+        }
+    ]
+    capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = list(
+        offer["promotions"]
+    )
+
+    fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
+
+    assert fields["促销活动记录"] == (
+        "2026-07-14 16:00:00 | coupon | $10 | $19.99"
+    )
+
+
+def test_projection_formats_limited_time_deal_without_discount_or_reference_price() -> None:
+    capture = _capture()
+    offer = capture["commerce"]["featured_offer"]
+    offer["promotions"] = [
+        {
+            "promotion_type": "limited_time_deal",
+            "label": "Limited time deal",
+            "discount_type": "price_override",
+            "discount_value": None,
+            "deal_price": 26.99,
+            "reference_price": None,
+            "reference_price_type": None,
+            "currency": "USD",
+            "prime_only": False,
+            "claim_required": False,
+            "raw_text": "Limited time deal | $26.99",
+        }
+    ]
+    capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = list(
+        offer["promotions"]
+    )
+
+    fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
+
+    assert fields["促销活动记录"] == (
+        "2026-07-14 16:00:00 | Limited time deal | $26.99"
+    )
+
+
+def test_projection_clears_observed_empty_promotion_snapshot() -> None:
+    capture = _capture()
+    capture["commerce"]["featured_offer"]["promotions"] = []
+    capture["field_evidence"]["commerce.featured_offer.promotions"] = {
+        "value": [],
+        "status": "observed",
+        "source_kind": "semantic_dom",
+        "source_locator": "promotion-zones",
+        "confidence": 1.0,
+    }
+
+    command = amazon_product_projection_mapper(_projection_record(capture), {})
+
+    assert command["fields"]["促销活动记录"] == ""
+    assert "促销活动记录" in command["clear_fields"]
 
 
 def test_common_write_mapping_routes_amazon_projection_mapper() -> None:
@@ -497,6 +637,7 @@ def test_composite_projection_omits_entire_field_when_any_component_is_missing()
 
     assert "变体属性" not in fields
     assert "配送方式" not in fields
+    assert "送达日期" not in fields
 
 
 def test_unavailable_projection_clears_offer_fields_but_preserves_missing_values() -> None:
@@ -520,9 +661,9 @@ def test_unavailable_projection_clears_offer_fields_but_preserves_missing_values
     assert fields["Buy Box卖家"] is None
     assert fields["Buy Box价格"] is None
     assert fields["优惠券"] is None
-    assert fields["促销"] is None
+    assert fields["促销活动记录"] is None
     assert "主图" not in fields
-    assert "图库" not in fields
+    assert "侧边栏图片" not in fields
 
 
 @pytest.mark.parametrize(
@@ -572,7 +713,7 @@ def test_projection_ignores_media_that_was_not_materialized() -> None:
     fields = amazon_product_projection_mapper(record, {})["fields"]
 
     assert "主图" not in fields
-    assert "图库" in fields
+    assert "侧边栏图片" in fields
 
 
 def test_materialized_local_attachment_can_replace_existing_feishu_attachment(
@@ -662,7 +803,7 @@ def test_materialized_object_attachment_can_replace_and_upload_after_local_file_
     assert refs == [{"file_token": "new-feishu-token"}]
 
 
-def test_feishu_write_uploads_materialized_amazon_media_replaces_old_attachments_and_clears_error(
+def test_feishu_write_only_transports_five_active_amazon_projection_fields(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -677,10 +818,10 @@ def test_feishu_write_uploads_materialized_amazon_media_replaces_old_attachments
         def list_all_fields(self, app_token, table_id):
             return [
                 {"field_name": "主图", "type": 17},
-                {"field_name": "图库", "type": 17},
-                {"field_name": "上次采集时间", "type": 5},
-                {"field_name": "采集错误", "type": 1},
-                {"field_name": "标题", "type": 1},
+                {"field_name": "侧边栏图片", "type": 17},
+                {"field_name": "送达日期", "type": 1},
+                {"field_name": "包装规格", "type": 1},
+                {"field_name": "促销活动记录", "type": 1},
             ]
 
         def get_record(self, app_token, table_id, record_id):
@@ -690,7 +831,7 @@ def test_feishu_write_uploads_materialized_amazon_media_replaces_old_attachments
                         "record_id": record_id,
                         "fields": {
                             "主图": [{"file_token": "old-main"}],
-                            "图库": [{"file_token": "old-gallery"}],
+                            "侧边栏图片": [{"file_token": "old-gallery"}],
                             "采集错误": "old error",
                         },
                     }
@@ -744,6 +885,10 @@ def test_feishu_write_uploads_materialized_amazon_media_replaces_old_attachments
             "access_token": "access-token",
             "mapper_code": "amazon_product_projection_mapper",
             "records": [record],
+            "write_policy": {
+                "ignore_missing_fields": True,
+                "field_allowlist": list(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS),
+            },
         },
         job_code="feishu_table_write",
     )
@@ -758,10 +903,13 @@ def test_feishu_write_uploads_materialized_amazon_media_replaces_old_attachments
     written = FakeClient.updates[0]
     assert written["record_id"] == "rec-amazon-1"
     assert written["fields"]["主图"] == [{"file_token": "new-asset-0.jpg"}]
-    assert written["fields"]["图库"] == [
+    assert written["fields"]["侧边栏图片"] == [
         {"file_token": "new-asset-1.jpg"},
         {"file_token": "new-asset-2.jpg"},
     ]
-    assert written["fields"]["采集错误"] == ""
-    assert written["fields"]["上次采集时间"] == 1784016000000
-    assert "ASIN" not in written["fields"]
+    assert set(written["fields"]) == set(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS)
+    assert written["fields"]["送达日期"] == "FREE delivery Friday, July 17"
+    assert written["fields"]["包装规格"] == "没有包装规格"
+    assert written["fields"]["促销活动记录"] == (
+        "2026-07-14 16:00:00 | coupon | 10% | $26.99"
+    )

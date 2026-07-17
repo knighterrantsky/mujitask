@@ -18,6 +18,10 @@ owners:
         reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
       - path: src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py
         reason: Required Amazon single-row workflow package entrypoint called only by the registered Runtime facade; it owns four-stage transitions and compact child payloads, while handlers retain all browser, Fact DB, object-storage, and Feishu side effects.
+      - path: src/automation_business_scaffold/domains/amazon/flows/refresh_current_amazon_product_table/orchestrator.py
+        reason: Required Amazon batch workflow entrypoint that selects 采集标签=T rows and creates idempotent amazon_product_row_refresh jobs under the same top-level request; it does not create child task requests or duplicate browser parsing, fact persistence, media sync, or Feishu projection.
+      - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_refresh/orchestrator.py
+        reason: Admitted Amazon row-level business job owner shared by batch row fan-out; it emits the primary browser_required wait signal, consumes the governed browser result, and delegates persistence through the existing amazon_product_row_persist handler contract.
       - path: src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py
         reason: Required Amazon row persistence package entrypoint that serially composes existing media, fact persistence, projection, and Feishu handlers through dispatch boundaries, preserves media-partial retry semantics, and does not create a generic helper owner.
     responsibilities:
@@ -111,6 +115,31 @@ owners:
       - collect external facts
       - upload media
       - upsert Fact DB
+
+  amazon_runtime_result_projection:
+    paths:
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+      - src/automation_business_scaffold/domains/amazon/projections/registry.py
+    entrypoint:
+      - src/automation_business_scaffold/contracts/handler/domain_mapping.py:get_runtime_result_projection
+    allowed_callers:
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/contracts/handler/domain_mapping.py
+    forbidden_callers:
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/domains/**/flows/**
+      - src/automation_business_scaffold/domains/**/jobs/**
+      - src/automation_business_scaffold/domains/**/workflows/**
+    responsibilities:
+      - validate and project Amazon handler results into compact Runtime summary and result envelopes
+      - enforce ASIN, media, capture evidence, writeback, observability, and Runtime response field allowlists
+      - bind browser capture evidence to the claimed resource lane and return sanitized artifact index records
+      - classify Amazon Runtime failures without mutating Runtime state
+    forbidden:
+      - access RuntimeStore or a database directly
+      - execute browser, media, Fact DB, object storage, or Feishu side effects
+      - claim jobs, advance workflow stages, or decide retry scheduling
+      - create a parallel helper, service, manager, coordinator, collector, or orchestrator owner
 
   amazon_browser_capture:
     paths:

@@ -8,6 +8,12 @@ from automation_business_scaffold.capabilities.input_sources.feishu.table_common
     resolve_read_target,
     resolve_write_target,
 )
+from automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes import (
+    prepare_fields_for_write,
+)
+from automation_business_scaffold.capabilities.input_sources.feishu.targets import (
+    FeishuTableTarget,
+)
 from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
 from automation_business_scaffold.domains.tiktok.projections.registry import PROJECTION_MAPPER_CODES
 from automation_business_scaffold.domains.tiktok.mappers.registry import SOURCE_ADAPTER_CODES
@@ -43,6 +49,56 @@ def _table_payload(**extra: Any) -> dict[str, Any]:
     }
 
 
+def test_prepare_fields_for_write_optionally_filters_missing_schema_fields() -> None:
+    target = FeishuTableTarget(
+        access_token="token",
+        app_token="app-token",
+        table_id="tbl-token",
+    )
+    fields = {"品牌": "HAPPYCLUB", "采集状态": "collecting"}
+    schema = {"品牌": {"field_name": "品牌", "type": 1}}
+
+    assert prepare_fields_for_write(
+        fields,
+        schema,
+        client=object(),
+        target=target,
+        payload={},
+    ) == fields
+    assert prepare_fields_for_write(
+        fields,
+        schema,
+        client=object(),
+        target=target,
+        payload={"write_policy": {"ignore_missing_fields": True}},
+    ) == {"品牌": "HAPPYCLUB"}
+
+
+def test_map_write_records_enforces_explicit_field_allowlist() -> None:
+    records = map_write_records(
+        {
+            "write_mode": "update",
+            "write_policy": {"field_allowlist": ["主图", "包装规格"]},
+            "records": [
+                {
+                    "source_record_id": "rec-amazon",
+                    "fields": {
+                        "品牌": "must-not-write",
+                        "主图": [{"file_token": "main-token"}],
+                        "包装规格": "2",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert records[0]["record_id"] == "rec-amazon"
+    assert records[0]["fields"] == {
+        "主图": [{"file_token": "main-token"}],
+        "包装规格": "2",
+    }
+
+
 def test_bound_api_registry_includes_feishu_common_handlers() -> None:
     registry = build_bound_api_handler_registry()
 
@@ -51,10 +107,31 @@ def test_bound_api_registry_includes_feishu_common_handlers() -> None:
 
 
 def test_feishu_table_target_resolves_configured_alias_from_project_env(monkeypatch) -> None:
+    monkeypatch.delenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL", raising=False)
+    monkeypatch.delenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-amazon")
     monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-amazon")
+
+    target = resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
+
+    assert target.app_token == "app-amazon"
+    assert target.table_id == "tbl-amazon"
+    assert target.view_id == "vew-amazon"
+    assert target.access_token == "access-amazon"
+
+
+def test_feishu_table_target_prefers_alias_specific_base_and_token(monkeypatch) -> None:
+    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app-tiktok")
+    monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "access-tiktok")
+    monkeypatch.setenv(
+        "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
+        "https://example.feishu.cn/base/app-amazon",
+    )
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", "tbl-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", "vew-amazon")
+    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN", "access-amazon")
 
     target = resolve_read_target({"source_table_ref": "AMAZON_PRODUCTS"})
 

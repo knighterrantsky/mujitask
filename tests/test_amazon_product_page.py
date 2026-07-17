@@ -15,6 +15,7 @@ from automation_business_scaffold.capabilities.browser.amazon.product_page impor
     extract_amazon_network_product_data,
     extract_amazon_product_capture,
     extract_asin_from_url,
+    normalize_amazon_media_url,
     normalize_asin,
 )
 
@@ -53,6 +54,56 @@ def test_canonical_url_contains_only_the_normalized_asin() -> None:
 @pytest.mark.parametrize(
     "url",
     [
+        "https://m.media-amazon.com/images/<script>bad.jpg",
+        "https://m.media-amazon.com/images/%3Cscript%3Ebad.jpg",
+        "https://m.media-amazon.com/images/%253Cscript%253Ebad.jpg",
+        "https://m.media-amazon.com/images/%25252525252525253Cscript%25252525252525253Ebad.jpg",
+        "https://m.media-amazon.com/images/&amp;percnt;3Cscript&amp;percnt;3Ebad.jpg",
+        "https://m.media-amazon.com/images/Bearer-runtime-token.jpg",
+        "https://m.media-amazon.com/images/Cookie=session-secret.jpg",
+        "https://m.media-amazon.com/images/token=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/API_KEY=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/password=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/credential=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/mycookie=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/xBearer:runtime-secret.jpg",
+        "https://m.media-amazon.com/images/%74%6f%6b%65%6e=runtime-secret.jpg",
+        "https://m.media-amazon.com/images/%2500bad.jpg",
+        "https://m.media-amazon.com/images/%257Fbad.jpg",
+        "https://m.media-amazon.com/images/%255Cbad.jpg",
+    ],
+)
+def test_amazon_media_url_rejects_sensitive_or_html_path(url: str) -> None:
+    assert normalize_amazon_media_url(url) == ""
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://m.media-amazon.com/images/I/example._SL1500_.jpg",
+            "https://m.media-amazon.com/images/I/example._SL1500_.jpg",
+        ),
+        (
+            "https://m.media-amazon.com/images/I/tokenized-cookiecrumb.jpg",
+            "https://m.media-amazon.com/images/I/tokenized-cookiecrumb.jpg",
+        ),
+        (
+            "https://m.media-amazon.com/images/I/example.jpg?token=removed#cookie",
+            "https://m.media-amazon.com/images/I/example.jpg",
+        ),
+    ],
+)
+def test_amazon_media_url_preserves_safe_path_and_strips_query_fragment(
+    url: str,
+    expected: str,
+) -> None:
+    assert normalize_amazon_media_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
         "https://www.amazon.com/dp/B0CHILD001?tag=affiliate-20",
         "https://amazon.com/gp/product/B0CHILD001/ref=something",
         "https://smile.amazon.com/Example-Product/dp/B0CHILD001#reviews",
@@ -76,7 +127,7 @@ def test_extract_asin_rejects_non_us_marketplaces(url: str) -> None:
     assert error.value.error_code == "unsupported_marketplace"
 
 
-def test_extract_full_capture_uses_layered_precedence_and_all_v1_fields() -> None:
+def test_extract_full_capture_uses_layered_precedence_and_all_v2_fields() -> None:
     capture = extract_amazon_product_capture(
         _fixture("product_detail_child.html"),
         requested_asin="B0CHILD001",
@@ -84,7 +135,7 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v1_fields() -> Non
         observed_at=OBSERVED_AT,
     )
 
-    assert capture["contract_revision"] == 1
+    assert capture["contract_revision"] == 2
     assert capture["source_platform"] == "amazon"
     assert capture["marketplace_code"] == "US"
     assert capture["requested_asin"] == "B0CHILD001"
@@ -119,7 +170,21 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v1_fields() -> Non
             "fulfillment_channel": "amazon",
             "delivery_text": "FREE delivery Friday, July 17",
             "coupon_text": "Save 10% with coupon",
-            "promotions": ["Buy 2, save 5%"],
+            "promotions": [
+                {
+                    "promotion_type": "coupon",
+                    "label": "Coupon",
+                    "discount_type": "percentage",
+                    "discount_value": 10.0,
+                    "deal_price": None,
+                    "reference_price": None,
+                    "reference_price_type": None,
+                    "currency": None,
+                    "prime_only": False,
+                    "claim_required": True,
+                    "raw_text": "Save 10% with coupon",
+                },
+            ],
         },
     }
     assert capture["variants"] == {
@@ -249,6 +314,7 @@ def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -
                         "http://127.0.0.1:8000/private.jpg",
                         "https://user:pass@m.media-amazon.com/private.jpg",
                         "https://m.media-amazon.com/images/I/safe.jpg?token=media-secret#frag",
+                        "https://m.media-amazon.com/images/I/safe.jpg?token=media-secret#frag",
                     ]
                 },
             },
@@ -265,6 +331,7 @@ def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -
     assert network_data["product"]["technical_details"] == {"Material": "Oak"}
     assert network_data["variants"]["current_attributes"] == {"Color": "Blue"}
     assert network_data["media"]["gallery_images"] == [
+        {"url": "https://m.media-amazon.com/images/I/safe.jpg"},
         {"url": "https://m.media-amazon.com/images/I/safe.jpg"}
     ]
     assert "delivery_text" not in network_data["commerce"]["featured_offer"]
@@ -474,6 +541,43 @@ def test_network_delivery_text_drops_personalized_destination(delivery_text: str
     assert network_data == {}
 
 
+def test_dom_extracts_number_of_items_and_only_primary_free_delivery_text() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="deliveryBlockMessage">
+            <div id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE">
+              <span>FREE delivery</span>
+              <strong>August 6 - 19</strong>
+              <span>to</span>
+              <a>Los Angeles 90001</a>
+            </div>
+            <div>Or fastest delivery August 6 - 17</div>
+          </div>
+          <section>
+            <h2>Product information</h2>
+            <div>Item details</div>
+            <table class="a-keyvalue prodDetTable">
+              <tr><th>Number of Items</th><td>1</td></tr>
+              <tr><th>Unit Count</th><td>1 Count</td></tr>
+            </table>
+          </section>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["product"]["technical_details"]["Number of Items"] == "1"
+    assert capture["product"]["technical_details"]["Unit Count"] == "1 Count"
+    assert capture["commerce"]["featured_offer"]["delivery_text"] == (
+        "FREE delivery August 6 - 19"
+    )
+    assert "Los Angeles 90001" not in json.dumps(capture, ensure_ascii=False)
+    assert "fastest delivery" not in json.dumps(capture, ensure_ascii=False)
+
+
 def test_stable_dom_precedes_controlled_text_and_controlled_text_is_final_fallback() -> None:
     dom_capture = extract_amazon_product_capture(
         """
@@ -550,7 +654,178 @@ def test_embedded_state_scalar_values_are_normalized() -> None:
     assert capture["commerce"]["featured_offer"]["price_amount"] == 19.5
     assert capture["commerce"]["featured_offer"]["currency"] == "USD"
     assert capture["commerce"]["featured_offer"]["fulfillment_channel"] == "amazon"
-    assert capture["commerce"]["featured_offer"]["promotions"] == ["Save $2"]
+    assert capture["commerce"]["featured_offer"]["promotions"] == []
+
+
+def test_dom_promotions_are_structured_and_exclude_hidden_script_content() -> None:
+    capture = extract_amazon_product_capture(
+        _fixture("product_detail_promotions.html"),
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    promotions = capture["commerce"]["featured_offer"]["promotions"]
+    by_type = {item["promotion_type"]: item for item in promotions}
+
+    assert by_type["coupon"] == {
+        "promotion_type": "coupon",
+        "label": "Coupon",
+        "discount_type": "percentage",
+        "discount_value": 15.0,
+        "deal_price": None,
+        "reference_price": None,
+        "reference_price_type": None,
+        "currency": None,
+        "prime_only": False,
+        "claim_required": True,
+        "raw_text": "Apply 15% coupon",
+    }
+    assert set(by_type) == {"coupon"}
+    assert capture["commerce"]["featured_offer"]["coupon_text"] == "Apply 15% coupon"
+
+    serialized = json.dumps(capture, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "anti-csrftoken",
+        "secret-token",
+        "window.location",
+        "background: #ff9900",
+    ):
+        assert forbidden not in serialized
+
+
+def test_dom_fixed_amount_coupon_records_usd_amount() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="couponTextpctch-dynamic-id">Apply $10 coupon</div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    promotion = capture["commerce"]["featured_offer"]["promotions"][0]
+    assert promotion["promotion_type"] == "coupon"
+    assert promotion["discount_type"] == "amount"
+    assert promotion["discount_value"] == 10.0
+    assert promotion["currency"] == "USD"
+    assert promotion["claim_required"] is True
+
+
+def test_dom_limited_time_deal_keeps_only_label_and_activity_price() -> None:
+    html = """
+    <html><body>
+      <div id="apex_desktop">
+        <span id="dealBadgeSupportingText">Limited time deal</span>
+        <span class="savingsPercentage">-10%</span>
+        <span class="a-price"><span class="a-offscreen">$26.99</span></span>
+        <span>Typical price:</span>
+        <span class="a-text-price"><span class="a-offscreen">$39.99</span></span>
+      </div>
+    </body></html>
+    """
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    promotion = capture["commerce"]["featured_offer"]["promotions"][0]
+    assert promotion == {
+        "promotion_type": "limited_time_deal",
+        "label": "Limited time deal",
+        "discount_type": "price_override",
+        "discount_value": None,
+        "deal_price": 26.99,
+        "reference_price": None,
+        "reference_price_type": None,
+        "currency": "USD",
+        "prime_only": False,
+        "claim_required": False,
+        "raw_text": "Limited time deal | $26.99",
+    }
+
+
+def test_prime_price_and_list_price_are_excluded_but_coupon_is_kept() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="apex_desktop">
+            <span>$29.99 with 25 percent savings</span>
+            <span>List Price: $39.99</span>
+            <span>Exclusive Prime price</span>
+            <span id="couponTextpctch-prime-example">Apply $10 coupon</span>
+          </div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    promotions = capture["commerce"]["featured_offer"]["promotions"]
+    assert [item["promotion_type"] for item in promotions] == ["coupon"]
+    assert promotions[0]["discount_value"] == 10.0
+
+
+def test_prime_member_and_subscribe_prices_are_not_promotions() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="desktop_buybox">
+            <span>Deal price $31.33</span>
+            <span>13% claimed</span>
+            <span>This deal is exclusively for Amazon Prime members.</span>
+            <span>Regular Price $34.07</span>
+            <span>Subscribe &amp; Save</span>
+            <span>$32.37</span>
+            <span>$28.96 with 15 percent savings</span>
+          </div>
+          <div id="apex_desktop">
+            <div>
+              <span>With Prime</span>
+              <span>$31.33 with 12 percent savings</span>
+              <span>Typical price: $35.62</span>
+            </div>
+            <div id="apex_desktop_snsAccordionRowMiddle">
+              <span>$32.37 with 5 percent savings</span>
+              <span>One-Time Price: $34.07</span>
+              <span>The strike-through price may be used for Subscribe &amp; Save offers.</span>
+              <span>$28.96 with 15 percent savings</span>
+              <span>One-Time Price: $34.07</span>
+            </div>
+          </div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["commerce"]["featured_offer"]["promotions"] == []
+
+
+def test_prime_shipping_and_subscribe_explanation_are_not_promotions() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="apex_desktop">
+            <span>Get Fast, Free Shipping with Amazon Prime</span>
+            <span class="a-price"><span class="a-offscreen">$39.99</span></span>
+            <span>The strike-through price may be used for Subscribe &amp; Save offers.</span>
+          </div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["commerce"]["featured_offer"]["promotions"] == []
 
 
 def test_offerless_available_page_is_partial_without_inventing_buy_box_or_price() -> None:
@@ -742,6 +1017,37 @@ def test_explicit_empty_embedded_collections_remain_observed() -> None:
     assert all(
         capture["field_evidence"][path]["status"] == "observed" for path in observed_empty_paths
     )
+
+
+def test_embedded_gallery_preserves_same_url_in_distinct_positions() -> None:
+    source_url = "https://m.media-amazon.com/images/I/shared-gallery.jpg"
+    html = f"""
+    <html><body>
+      <script id="amazon-product-state" type="application/json">
+        {{
+          "asin": "B0CHILD001",
+          "product": {{"title": "Product with repeated gallery slots"}},
+          "media": {{"gallery_images": ["{source_url}", "{source_url}"]}}
+        }}
+      </script>
+    </body></html>
+    """
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["media"]["gallery_images"] == [
+        {"url": source_url},
+        {"url": source_url},
+    ]
+    assert capture["field_evidence"]["media.gallery_images"]["value"] == [
+        {"url": source_url},
+        {"url": source_url},
+    ]
 
 
 def test_explicitly_unavailable_page_returns_a_persistable_terminal_capture() -> None:

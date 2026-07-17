@@ -33,7 +33,8 @@ def test_formal_requirement_and_domain_route_are_declared() -> None:
         "美国站",
         "^[A-Z0-9]{10}$",
         "同一飞书 record_id",
-        "批量和搜索不在首期实现范围",
+        "refresh_current_amazon_product_table",
+        "采集标签=T",
     )
     assert all(token in requirement for token in required_requirement_tokens)
 
@@ -43,6 +44,7 @@ def test_formal_requirement_and_domain_route_are_declared() -> None:
         "../../../contracts/fields/feishu-amazon-products.yaml",
         "../../../contracts/states/amazon-product-collection-status.yaml",
         "../../../contracts/workflow/refresh_amazon_product_row_by_asin.yaml",
+        "../../../contracts/workflow/refresh_current_amazon_product_table.yaml",
     )
     assert all(reference in domain_route for reference in required_route_refs)
 
@@ -74,9 +76,77 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
         "requires_fact_db": True,
         "requires_object_storage": True,
         "runtime_result_policy": "compact_references_only",
+        "persist_result_identity": {
+            "source_record_id": "exact_source_row",
+            "requested_asin": "exact_normalized_source_asin",
+            "resolved_asin": "exact_validated_browser_resolved_asin",
+            "run_id": "exact_stable_collection_run",
+            "mismatch": "fail_before_summary",
+        },
+        "runtime_result_nested_allowlists": {
+            "fact_refs": [
+                "product_id",
+                "snapshot_id",
+                "binding_id",
+                "raw_capture_ids",
+                "normalized_capture_ref",
+            ],
+            "media_coverage": ["expected", "materialized", "missing", "complete"],
+            "writeback": [
+                "written_count",
+                "skipped_count",
+                "failed_count",
+                "target_record_ids",
+            ],
+            "artifact_ref": [
+                "capture_kind",
+                "bucket",
+                "object_key",
+                "content_digest",
+                "content_type",
+                "sanitization_status",
+                "request_id",
+                "execution_id",
+                "run_id",
+                "collected_at",
+                "created_at",
+            ],
+            "media_source_ref": [
+                "source_url",
+                "source_platform",
+                "marketplace_code",
+                "product_id",
+                "media_role",
+                "position",
+            ],
+        },
+        "runtime_result_nested_value_constraints": {
+            "fact_ids": "lowercase_uuid_hex_32",
+            "raw_capture_ids": "list_of_lowercase_uuid_hex_32",
+            "capture_ref": "governed_amazon_raw_capture_coordinate_with_bound_provenance",
+            "capture_ref_request_and_execution_ids": "lowercase_uuid_hex_32",
+            "capture_ref_run_id": "lowercase_sha256_hex_64",
+            "media_source_ref": (
+                "amazon_us_https_cdn_url_without_query_or_fragment_or_sensitive_path"
+            ),
+            "media_source_role_position": "unique_or_reject_before_persist_dispatch",
+            "same_source_url_distinct_role_position": "preserve_each_relation",
+            "writeback": "raw_exact_1_0_0_and_single_source_record_before_compaction",
+        },
         "runtime_context": {
             "location": "task_request.stage_cursor.runtime_context",
-            "allowed": ["browser_target_digest", "browser_resource_code"],
+            "allowed": [
+                "browser_target_digest",
+                "browser_resource_code",
+                "artifact_bucket",
+                "artifact_object_prefix",
+            ],
+            "value_constraints": {
+                "browser_target_digest": "lowercase_sha256_hex_64",
+                "browser_resource_code": "browser:amazon:{browser_target_digest}",
+            },
+            "artifact_coordinate_snapshot": "immutable_submit_time_non_secret_policy",
+            "missing_artifact_coordinate_snapshot": ("fail_closed_for_legacy_inflight_request"),
             "forbidden": [
                 "browser_profile_ref",
                 "browser_provider_token",
@@ -88,10 +158,62 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
     assert contract["payload"]["business_inputs_only"] is True
     assert contract["payload"]["required"] == ["table_ref", "source_record_id"]
     assert contract["payload"]["allowed"] == ["table_ref", "source_record_id"]
-    assert contract["payload"]["value_constraints"] == {
-        "table_ref": {"const": "AMAZON_PRODUCTS"}
-    }
+    assert contract["payload"]["value_constraints"] == {"table_ref": {"const": "AMAZON_PRODUCTS"}}
     assert contract["payload"]["additional_properties"] is False
+    top_level_summary = contract["observability"]["top_level_summary"]
+    assert top_level_summary["required_fields"] == [
+        "final_status",
+        "row_total_count",
+        "row_status_counts",
+        "aggregate_metrics",
+        "row_summary",
+        "failed_stage",
+        "error_code",
+    ]
+    assert top_level_summary["row_status_count_keys"] == [
+        "success",
+        "partial_success",
+        "unavailable",
+        "blocked",
+        "failed",
+        "skipped",
+    ]
+    assert top_level_summary["row_status_count_policy"] == "single_row_one_hot_zero_or_one"
+    assert top_level_summary["aggregate_metrics"]["required"] == [
+        "average_row_duration_ms",
+        "max_row_duration_ms",
+        "blocked_rate",
+        "average_parse_coverage_percentage",
+        "media_failure_rate",
+        "feishu_failure_rate",
+    ]
+    assert top_level_summary["aggregate_metrics"]["average_parse_coverage_percentage"] == (
+        "recompute((observed+explicitly_unavailable)/total*100); zero_when_total_zero_or_invalid"
+    )
+    assert (
+        contract["observability"]["row_summary"]["terminal_feishu_writeback_duration"]
+        == "merge_runtime_finished_at_minus_started_at"
+    )
+    assert contract["observability"]["runtime_error_codes"] == {
+        "browser_retryable": [
+            "navigation_timeout",
+            "transient_page_failure",
+            "rate_limited",
+        ],
+        "browser_terminal": [
+            "invalid_asin",
+            "invalid_product_url",
+            "unsupported_marketplace",
+            "browser_profile_unavailable",
+            "access_blocked",
+            "captcha_required",
+            "identity_mismatch",
+            "artifact_size_limit_exceeded",
+            "required_failure_evidence_missing",
+        ],
+        "unknown_child_code": "fixed_safe_fallback",
+        "api_non_retryable_or_supervisor_terminal": ("force_terminal_even_before_max_attempts"),
+    }
 
 
 def test_feishu_field_and_state_ownership_is_explicit() -> None:
@@ -99,6 +221,7 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     states_contract = _load_yaml("contracts/states/amazon-product-collection-status.yaml")
 
     assert fields_contract["table_alias"] == "AMAZON_PRODUCTS"
+    assert fields_contract["table_display_name"] == "Amazon竞品表"
     assert fields_contract["identity"] == {
         "marketplace_code": "US",
         "field": "ASIN",
@@ -108,27 +231,62 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     }
     fields = {field["name"]: field for field in fields_contract["fields"]}
     assert fields["ASIN"]["owner"] == "business_input"
+    assert fields["采集标签"] == {
+        "name": "采集标签",
+        "canonical_name": "collection_tag",
+        "type": "single_select",
+        "owner": "business_input",
+        "role": "batch_selector",
+        "write_policy": "never_write",
+        "batch_inclusion_value": "T",
+    }
     assert fields["强制刷新"]["owner"] == "business_input"
     assert fields["来源关键词"]["owner"] == "amazon_search_workflow"
     assert fields["采集状态"]["owner"] == "amazon_workflow"
+    promotion_field = fields["促销活动记录"]
+    assert promotion_field["write_policy"] == "overwrite_current_snapshot"
+    assert promotion_field["allowed_promotion_types"] == [
+        "coupon",
+        "limited_time_deal",
+    ]
+    assert promotion_field["value_policy"] == {
+        "timestamp_timezone": "Asia/Shanghai",
+        "timestamp_format": "%Y-%m-%d %H:%M:%S",
+        "coupon": "采集时间 | coupon | 折扣 | 折后价",
+        "limited_time_deal": "采集时间 | Limited time deal | 活动价",
+        "coupon_price_basis": "commerce.featured_offer.price_amount",
+        "coupon_rounding": "usd_half_up_2_decimals",
+        "limited_time_deal_price_basis": "promotion.deal_price",
+        "empty_observed_promotions": "clear_field",
+        "missing_promotions": "preserve_existing",
+    }
     projection_fields = {
         "商品链接",
         "标题",
         "品牌",
         "主图",
-        "图库",
+        "侧边栏图片",
         "当前价格",
         "库存状态",
         "Parent ASIN",
         "Child ASIN列表",
         "BSR排名",
         "技术参数",
+        "送达日期",
+        "包装规格",
         "页面ASIN",
         "字段完整度",
     }
     assert all(fields[name]["owner"] == "amazon_projection" for name in projection_fields)
     assert fields_contract["writeback_rules"]["missing"] == "preserve_existing"
     assert fields_contract["writeback_rules"]["record_target"] == ("source_record_id")
+    assert fields_contract["writeback_rules"]["active_write_fields"] == [
+        "主图",
+        "侧边栏图片",
+        "送达日期",
+        "包装规格",
+        "促销活动记录",
+    ]
 
     states = {state["code"]: state for state in states_contract["states"]}
     assert set(states) == {
@@ -235,8 +393,37 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
     }
     assert amazon["raw_capture_key_collision"] == "reject_changed_immutable_evidence"
     assert amazon["field_evidence_policy"] == {
-        "contract_revision": 1,
+        "contract_revision": 2,
+        "accepted_capture_revisions": [1, 2],
         "coverage": "exact_target_field_set",
+        "target_fields": [
+            "product.title",
+            "product.brand",
+            "product.category_path",
+            "product.bullet_points",
+            "product.description",
+            "product.technical_details",
+            "commerce.availability_status",
+            "commerce.rating",
+            "commerce.review_count",
+            "commerce.featured_offer.seller_id",
+            "commerce.featured_offer.seller_name",
+            "commerce.featured_offer.is_buy_box",
+            "commerce.featured_offer.price_amount",
+            "commerce.featured_offer.list_price_amount",
+            "commerce.featured_offer.currency",
+            "commerce.featured_offer.fulfillment_channel",
+            "commerce.featured_offer.delivery_text",
+            "commerce.featured_offer.coupon_text",
+            "commerce.featured_offer.promotions",
+            "variants.parent_asin",
+            "variants.child_asins",
+            "variants.current_attributes",
+            "variants.dimensions",
+            "rankings",
+            "media.main_image",
+            "media.gallery_images",
+        ],
         "required_keys": [
             "value",
             "status",
@@ -248,6 +435,108 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "missing_requires_empty_capture_value": True,
         "success_allows_missing": False,
         "partial_success_requires_missing": False,
+    }
+    assert amazon["normalized_capture_contract"] == {
+        "current_revision": 2,
+        "accepted_revisions": [1, 2],
+        "new_browser_output_revision": 2,
+        "revision_1_promotions": "text_array",
+        "revision_2_promotions": {
+            "type": "object_array",
+            "exact_keys": [
+                "promotion_type",
+                "label",
+                "discount_type",
+                "discount_value",
+                "deal_price",
+                "reference_price",
+                "reference_price_type",
+                "currency",
+                "prime_only",
+                "claim_required",
+                "raw_text",
+            ],
+            "promotion_types": [
+                "coupon",
+                "limited_time_deal",
+            ],
+            "discount_types": [
+                "percentage",
+                "amount",
+                "price_override",
+            ],
+            "reference_price_types": [None],
+            "observation_time_binding": "parent_capture.captured_at",
+            "profile_context_binding": "parent_capture.profile_context_digest",
+        },
+        "compatibility": {
+            "persistence_reads_revision_1": True,
+            "revision_1_rewrite_required": False,
+            "fact_schema_ddl_required": False,
+            "legacy_coupon_text_preserved": True,
+        },
+        "dom_text_policy": {
+            "controlled_offer_regions_only": True,
+            "exclude_tags": ["script", "style", "noscript", "template"],
+            "forbidden_content": [
+                "redeem_parameters",
+                "token",
+                "cookie",
+                "account_or_address_text",
+            ],
+        },
+        "field_semantics": {
+            "commerce.featured_offer.promotions": {
+                "allowed_types": ["coupon", "limited_time_deal"],
+                "excluded_page_offers": [
+                    "checkout_discount",
+                    "prime_member_price",
+                    "prime_exclusive_price",
+                    "prime_day_deal",
+                    "subscribe_and_save",
+                    "quantity_discount",
+                    "qualifying_purchase",
+                    "ordinary_strikethrough_price",
+                    "other",
+                ],
+                "limited_time_deal_fields": {
+                    "keep": ["label", "deal_price"],
+                    "clear": [
+                        "discount_value",
+                        "reference_price",
+                        "reference_price_type",
+                    ],
+                },
+                "projection_field": "促销活动记录",
+                "projection_write_policy": "overwrite_current_snapshot",
+                "projection_empty_observation": "clear_field",
+                "projection_timestamp_timezone": "Asia/Shanghai",
+                "coupon_calculated_price_source": (
+                    "commerce.featured_offer.price_amount"
+                ),
+            },
+            "product.technical_details.Number of Items": {
+                "source": "Product information.Item details.Number of Items",
+                "projection_field": "包装规格",
+                "projection_missing_value": "没有包装规格",
+                "forbidden_fallback_sources": [
+                    "Unit Count",
+                    "quantity_selector",
+                    "product_title",
+                ],
+            },
+            "commerce.featured_offer.delivery_text": {
+                "required_prefix": "FREE delivery",
+                "source": "featured_offer_primary_delivery_message",
+                "projection_field": "送达日期",
+                "strip_segments": [
+                    "destination_address_and_postcode",
+                    "fastest_delivery",
+                    "order_countdown",
+                    "account_text",
+                ],
+            },
+        },
     }
     assert amazon["raw_capture_provenance"] == {
         "required_fields": ["request_id", "execution_id", "run_id"],
@@ -272,6 +561,12 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         },
     }
     assert amazon["media_source_url_policy"] == {
+        "enforcement_owner": "media_asset_sync",
+        "caller_override_policy": "may_only_tighten",
+        "download_size_limit_bytes": 26214400,
+        "identity_conflict_policy": "reject",
+        "amazon_marketplace_policy": "require_us",
+        "caller_materialized_fields_policy": "forbidden",
         "scheme": "https",
         "allowed_host_suffixes": [
             "media-amazon.com",
@@ -280,9 +575,14 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "allowed_ports": ["default", 443],
         "userinfo": "forbidden",
         "redirect_policy": "validate_each_hop_against_same_allowlist_before_request",
+        "redirect_response_body_limit": "download_size_limit_bytes_each_hop",
         "query_and_fragment": "strip_before_persistence",
         "invalid_observed_media": "remove_and_mark_partial_success",
     }
+    assert (
+        amazon["media_source_url_policy"]["download_size_limit_bytes"]
+        == (amazon["raw_capture_provenance"]["size_limits"]["materialized_media_bytes"])
+    )
 
 
 def test_amazon_owner_boundaries_are_registered() -> None:
@@ -292,6 +592,7 @@ def test_amazon_owner_boundaries_are_registered() -> None:
     helper_paths = {entry["path"] for entry in owners["business_flow"]["allowed_helper_like_paths"]}
     assert {
         "src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py",
+        "src/automation_business_scaffold/domains/amazon/flows/refresh_current_amazon_product_table/orchestrator.py",
         "src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py",
     } <= helper_paths
 
@@ -300,6 +601,23 @@ def test_amazon_owner_boundaries_are_registered() -> None:
         "src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py",
     ]
     assert "write Fact DB" in owners["amazon_browser_capture"]["forbidden"]
+    runtime_projection = owners["amazon_runtime_result_projection"]
+    assert runtime_projection["paths"] == [
+        "src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py",
+        "src/automation_business_scaffold/domains/amazon/projections/registry.py",
+    ]
+    assert runtime_projection["entrypoint"] == [
+        "src/automation_business_scaffold/contracts/handler/domain_mapping.py:get_runtime_result_projection"
+    ]
+    assert runtime_projection["allowed_callers"] == [
+        "src/automation_business_scaffold/control_plane/executor/worker_dispatch.py",
+        "src/automation_business_scaffold/contracts/handler/domain_mapping.py",
+    ]
+    assert "access RuntimeStore or a database directly" in runtime_projection["forbidden"]
+    assert (
+        "execute browser, media, Fact DB, object storage, or Feishu side effects"
+        in runtime_projection["forbidden"]
+    )
     assert owners["amazon_fact_persistence"]["paths"] == [
         "alembic_fact.ini",
         "alembic_fact/**",
@@ -318,9 +636,11 @@ def test_amazon_roadmap_features_have_expected_status_and_gates() -> None:
 
     schema = features["amazon_product_fact_schema"]
     ingest = features["amazon_single_product_ingest"]
+    batch = features["amazon_batch_product_ingest"]
     assert schema["status"] == "complete"
     assert ingest["status"] == "in_progress"
-    for feature in (schema, ingest):
+    assert batch["status"] == "complete"
+    for feature in (schema, ingest, batch):
         assert feature["requires_architecture_delta_gate"] is True
         assert feature["source_contracts"]
         assert feature["allowed_paths"]
@@ -355,7 +675,11 @@ def test_amazon_roadmap_features_have_expected_status_and_gates() -> None:
         "src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py",
     }
     assert fact_owned_paths.isdisjoint(ingest["allowed_paths"])
-    assert "contracts/facts/product-fact-collection.yaml" in ingest["source_contracts"]
+    assert {
+        "docs/arch/runtime-control-plane-contract.md",
+        "docs/arch/module-ownership-contract.md",
+        "contracts/facts/product-fact-collection.yaml",
+    } <= set(ingest["source_contracts"])
     assert {
         "src/automation_business_scaffold/capabilities/browser/amazon/product_page.py",
         "src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py",
@@ -428,6 +752,7 @@ def test_amazon_handler_entry_and_fact_migration_docs_freeze_runtime_boundaries(
     assert "Runtime payload/result 不内联完整 normalized capture" in handler_doc
 
     assert "### 2.2 Amazon 单商品入口" in entry_doc
+    assert "### 2.3 Amazon 竞品表批量入口" in entry_doc
     assert '"table_ref": "AMAZON_PRODUCTS"' in entry_doc
     assert '"source_record_id": "recxxxxxxxx"' in entry_doc
     assert "正式入口不得直接传 ASIN" in entry_doc
@@ -444,5 +769,22 @@ def test_contract_index_and_design_status_match_implementation_phase() -> None:
     assert "feishu-amazon-products.yaml" in contract_index
     assert "amazon-product-collection-status.yaml" in contract_index
     assert "refresh_amazon_product_row_by_asin.yaml" in contract_index
+    assert "refresh_current_amazon_product_table.yaml" in contract_index
     assert "状态: 已批准，实施中，能力尚未完成" in design
     assert "代码、migration 和机器契约完成并通过 completion gate 前" in design
+
+
+def test_amazon_documentation_routes_and_runtime_projection_boundary_are_indexed() -> None:
+    root_readme = _read("README.md")
+    business_overview = _read("docs/business/business-requirements.md")
+    runtime_contract = _read("docs/arch/runtime-control-plane-contract.md")
+    module_contract = _read("docs/arch/module-ownership-contract.md")
+
+    assert "TikTok / FastMoss / Amazon" in root_readme
+    assert "`AMAZON_PRODUCTS`" in root_readme
+    assert "当前阶段已经明确的业务目标主要有五类" in business_overview
+    assert "当前已实时验证的 5 张 TikTok 飞书表" in business_overview
+    assert "requirements/amazon-product-detail-collection.md" in business_overview
+    assert "domain Runtime result projection" in runtime_contract
+    assert "domains/{domain}/projections/*runtime_result_projection.py" in runtime_contract
+    assert "Runtime result projection" in module_contract

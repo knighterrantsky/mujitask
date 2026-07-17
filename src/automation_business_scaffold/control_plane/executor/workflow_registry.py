@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from automation_business_scaffold.contracts.workflow import WorkflowDefinition
 from automation_business_scaffold.control_plane.runtime_config.settings import (
+    AMAZON_PRODUCT_BATCH_TASK_CODE,
     AMAZON_PRODUCT_ROW_TASK_CODE,
     INFLUENCER_POOL_TASK_CODE,
     INFLUENCER_OUTREACH_TASK_CODE,
@@ -46,6 +47,10 @@ class WorkflowRuntimeModule(Protocol):
 
 
 WORKFLOW_RUNTIME_MODULES = {
+    AMAZON_PRODUCT_BATCH_TASK_CODE: (
+        "automation_business_scaffold.domains.amazon.flows."
+        "refresh_current_amazon_product_table.orchestrator"
+    ),
     AMAZON_PRODUCT_ROW_TASK_CODE: (
         "automation_business_scaffold.domains.amazon.flows."
         "refresh_amazon_product_row_by_asin.orchestrator"

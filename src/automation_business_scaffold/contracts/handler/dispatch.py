@@ -75,6 +75,10 @@ _API_HANDLER_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist",
         "amazon_product_row_persist_handler",
     ),
+    "amazon_product_row_refresh": (
+        "automation_business_scaffold.domains.amazon.jobs.amazon_product_row_refresh",
+        "amazon_product_row_refresh_handler",
+    ),
     "selection_row_refresh": (
         "automation_business_scaffold.domains.tiktok.jobs.selection_row_refresh",
         "selection_row_refresh_handler",

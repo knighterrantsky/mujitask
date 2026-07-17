@@ -19,6 +19,16 @@ AMAZON_PRODUCT_BROWSER_FETCH_JOB = JobDefinition(
         required_field("requested_asin", "Normalized Amazon US ASIN.", type_hint="str"),
         required_field("source_record_id", "Source Feishu record id.", type_hint="str"),
         required_field("run_id", "Stable collection run id.", type_hint="str"),
+        required_field(
+            "artifact_bucket",
+            "Submit-time governed object-storage bucket snapshot.",
+            type_hint="str",
+        ),
+        required_field(
+            "artifact_object_prefix",
+            "Submit-time governed object-storage prefix snapshot; may be empty.",
+            type_hint="str",
+        ),
     ),
     result_contract=contract(
         "amazon_product_browser_fetch_result",

@@ -1,0 +1,88 @@
+schema_version: 1
+contract_type: workflow_contract
+domain: amazon_product_detail
+task_code: refresh_current_amazon_product_table
+workflow_code: refresh_current_amazon_product_table
+status: complete
+
+agent_artifact:
+  skill_code: mujitask-amazon-feishu-sync
+  path: skills/mujitask-amazon-feishu-sync
+  openclaw_agent_id: amazon-ops
+  workspace_name: workspace-amazon
+  feishu_account_id: default
+  feishu_peer_kind: group
+  peer_id_source: openclaw_deployment_binding
+
+notification_routing:
+  required_reply_channel: feishu
+  required_account_id: default
+  required_target_prefix: chat:oc_
+  transport_owner: notification_outbox
+
+business_requirement: docs/business/requirements/amazon-product-detail-collection.md
+architecture_design: docs/arch/workflow-amazon-product-detail-design.md
+field_contracts:
+  - contracts/fields/feishu-amazon-products.yaml
+
+payload:
+  business_inputs_only: true
+  required:
+    - table_ref
+  allowed:
+    - table_ref
+  value_constraints:
+    table_ref:
+      const: AMAZON_PRODUCTS
+  additional_properties: false
+
+selection:
+  table_display_name: Amazon竞品表
+  field_name: 采集标签
+  comparison: exact_text
+  include_value: T
+  missing_or_other_value: exclude
+  asin_validation: trim_uppercase_then_match_10_alphanumeric
+
+row_pipeline:
+  job_code: amazon_product_row_refresh
+  runtime_table: api_worker_job
+  fanout_key: source_record_id
+  idempotency_key: "{request_id}:amazon-row-refresh:{source_record_id}:{requested_asin}"
+  request_scope: same_top_level_request
+  browser_execution:
+    handler_code: amazon_product_browser_fetch
+    runtime_table: task_execution
+    wait_signal: browser_required
+    resume_policy: requeue_same_row_job_with_compact_browser_result
+    fallback_semantics: forbidden
+  notification_policy: parent_single_summary
+  reuse_policy: browser_parse_fact_media_and_writeback_owned_by_existing_amazon_handlers
+
+stages:
+  - stage_code: read_amazon_product_rows
+    execution_mode: api_worker_job
+    handler_code: feishu_table_read
+    source_adapter: amazon_product_batch_source_adapter
+  - stage_code: dispatch_amazon_product_rows
+    execution_mode: executor_action
+    action_code: dispatch_amazon_product_row_jobs
+  - stage_code: collect_amazon_product_rows
+    execution_mode: api_worker_job
+    handler_code: amazon_product_row_refresh
+  - stage_code: collect_amazon_product_browsers
+    execution_mode: browser_task_execution
+    handler_code: amazon_product_browser_fetch
+    resume_job_code: amazon_product_row_refresh
+  - stage_code: ready_for_summary
+    execution_mode: summary
+    handler_code: task_completed_notification
+
+acceptance:
+  - Only records whose 采集标签 is exactly T create row jobs.
+  - Each included source_record_id creates at most one idempotent amazon_product_row_refresh job under the batch request_id.
+  - Batch collection creates no refresh_amazon_product_row_by_asin child task_request.
+  - Production daemon claims without a request_id must progress row jobs through browser_required, task_execution, same-job resume, persistence, and terminal summary.
+  - ASIN, URL, browser profile, credentials, Fact DB, and object-storage configuration are not accepted from the conversation payload.
+  - The parent sends one final batch notification; row jobs never notify the Feishu conversation directly.
+  - Feishu transport fields are restricted to 主图, 侧边栏图片, 送达日期, 包装规格, and 促销活动记录; status-only projection converges as skipped and does not block browser collection.

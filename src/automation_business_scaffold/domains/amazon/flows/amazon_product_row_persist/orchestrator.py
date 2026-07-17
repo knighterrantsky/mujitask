@@ -26,6 +26,9 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
+from automation_business_scaffold.domains.amazon.projections.feishu_product_projection import (
+    AMAZON_PRODUCT_FEISHU_WRITE_FIELDS,
+)
 
 
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
@@ -161,7 +164,24 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
             child_status=fact_result.status,
         )
 
-    fact_refs = _fact_refs(fact_result.result)
+    try:
+        fact_refs = _fact_refs(
+            fact_result.result,
+            expected_normalized_capture_ref=inputs["normalized_capture_ref"],
+        )
+    except ValueError as exc:
+        return _failed_child_result(
+            context,
+            inputs=inputs,
+            step_statuses=step_statuses,
+            failed_step="amazon_product_fact_upsert",
+            child_error=build_error(
+                error_type="contract_error",
+                error_code="amazon_fact_reference_mismatch",
+                message=str(exc),
+                retryable=False,
+            ),
+        )
     media_coverage = _media_coverage(
         fact_result,
         expected_count=len(inputs["media_source_refs"]),
@@ -281,6 +301,10 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
         "table_id": inputs["source_table_identity"]["table_id"],
         **inputs["feishu_credential_refs"],
     }
+    write_payload["write_policy"] = {
+        "ignore_missing_fields": True,
+        "field_allowlist": list(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS),
+    }
     write_context = _child_context(
         context,
         handler_code="feishu_table_write",
@@ -315,12 +339,9 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
         row_status = "partial_success"
         warnings.append("Feishu writeback completed only partially.")
 
-    writeback = _writeback_summary(write_result)
-    if (
-        writeback["written_count"] != 1
-        or writeback["skipped_count"] != 0
-        or writeback["failed_count"] != 0
-        or writeback["target_record_ids"] != [inputs["source_record_id"]]
+    if not _raw_writeback_converged(
+        write_result.result,
+        source_record_id=inputs["source_record_id"],
     ):
         step_statuses["feishu_table_write"] = "failed"
         return _failed_child_result(
@@ -337,6 +358,7 @@ def run_amazon_product_row_persist_flow(context: HandlerContext) -> HandlerResul
             fact_refs=fact_refs,
             media_coverage=media_coverage,
         )
+    writeback = _writeback_summary(write_result)
     result = _compact_result(
         inputs,
         row_status=row_status,
@@ -385,6 +407,7 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("raw_capture_refs is required.")
     media_source_refs = _mapping_list(payload.get("media_source_refs"))
     normalized_media_source_refs: list[dict[str, Any]] = []
+    seen_media_coordinates: set[tuple[str, int]] = set()
     for item in media_source_refs:
         unexpected_fields = sorted(set(item) - _MEDIA_SOURCE_REF_FIELDS)
         if unexpected_fields:
@@ -403,6 +426,10 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Every media_source_ref must use an approved Amazon media_role.")
         if type(item.get("position")) is not int or item["position"] < 0:
             raise ValueError("Every media_source_ref must have a non-negative integer position.")
+        media_coordinate = (media_role, item["position"])
+        if media_coordinate in seen_media_coordinates:
+            raise ValueError("Amazon media_source_refs must use unique role/position mappings.")
+        seen_media_coordinates.add(media_coordinate)
         source_url = normalize_amazon_media_url(item.get("source_url"))
         if not source_url:
             raise ValueError("Every media_source_ref must use an approved HTTPS Amazon CDN URL.")
@@ -417,8 +444,6 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
     media_source_refs = normalized_media_source_refs
-    if collection_status == "unavailable" and media_source_refs:
-        raise ValueError("Unavailable captures must not materialize product media.")
     raw_request_payload = _mapping(payload.get("request_payload"))
     feishu_credential_refs = _feishu_credential_refs(
         table_ref=table_ref,
@@ -595,36 +620,66 @@ def _materialized_assets(raw_assets: Any) -> list[dict[str, Any]]:
     )
 
 
-def _fact_refs(result: Mapping[str, Any]) -> dict[str, Any]:
+def _fact_refs(
+    result: Mapping[str, Any],
+    *,
+    expected_normalized_capture_ref: Mapping[str, Any],
+) -> dict[str, Any]:
     refs = {
         key: result[key]
-        for key in (
-            "product_id",
-            "snapshot_id",
-            "binding_id",
-            "raw_capture_ids",
-            "normalized_capture_ref",
-        )
-        if result.get(key) not in (None, "", [], {})
+        for key in ("product_id", "snapshot_id", "binding_id")
+        if isinstance(result.get(key), str) and result[key]
     }
+    raw_capture_ids = result.get("raw_capture_ids")
+    if isinstance(raw_capture_ids, list) and all(
+        isinstance(item, str) and item for item in raw_capture_ids
+    ):
+        refs["raw_capture_ids"] = list(raw_capture_ids)
+    capture_fields = {
+        "capture_kind",
+        "bucket",
+        "object_key",
+        "content_digest",
+        "content_type",
+        "sanitization_status",
+        "request_id",
+        "execution_id",
+        "run_id",
+        "collected_at",
+        "created_at",
+    }
+    raw_normalized = _mapping(result.get("normalized_capture_ref"))
+    expected_normalized = {
+        key: expected_normalized_capture_ref[key]
+        for key in capture_fields
+        if key in expected_normalized_capture_ref
+    }
+    normalized = {
+        key: raw_normalized[key]
+        for key in capture_fields
+        if key in raw_normalized
+    }
+    if raw_normalized and normalized != expected_normalized:
+        raise ValueError(
+            "Fact normalized_capture_ref must match the validated browser capture."
+        )
+    if normalized:
+        refs["normalized_capture_ref"] = normalized
     return refs
 
 
 def _media_coverage(
-    fact_result: HandlerResult,
+    _fact_result: HandlerResult,
     *,
     expected_count: int,
     materialized_count: int,
 ) -> dict[str, Any]:
-    coverage = _mapping(fact_result.result.get("media_coverage")) or _mapping(
-        fact_result.summary.get("media_coverage")
-    )
-    if coverage:
-        return coverage
-    missing_count = max(expected_count - materialized_count, 0)
+    expected = max(expected_count, 0)
+    materialized = min(max(materialized_count, 0), expected)
+    missing_count = expected - materialized
     return {
-        "expected": expected_count,
-        "materialized": materialized_count,
+        "expected": expected,
+        "materialized": materialized,
         "missing": missing_count,
         "complete": missing_count == 0,
     }
@@ -668,6 +723,22 @@ def _writeback_summary(result: HandlerResult) -> dict[str, Any]:
         if isinstance(payload.get("target_record_ids"), list)
         else [],
     }
+
+
+def _raw_writeback_converged(
+    value: Mapping[str, Any],
+    *,
+    source_record_id: str,
+) -> bool:
+    return (
+        type(value.get("written_count")) is int
+        and type(value.get("skipped_count")) is int
+        and type(value.get("failed_count")) is int
+        and value.get("written_count") == 1
+        and value.get("skipped_count") == 0
+        and value.get("failed_count") == 0
+        and value.get("target_record_ids") == [source_record_id]
+    )
 
 
 def _compact_result(

@@ -5,7 +5,14 @@ from typing import Any, Literal, Protocol
 
 HandlerWorkerType = Literal["api_worker", "browser_worker", "outbox_dispatcher"]
 HandlerRuntimeTable = Literal["api_worker_job", "task_execution", "notification_outbox"]
-HandlerStatus = Literal["success", "skipped", "partial_success", "failed", "fallback_required"]
+HandlerStatus = Literal[
+    "success",
+    "skipped",
+    "partial_success",
+    "failed",
+    "fallback_required",
+    "browser_required",
+]
 
 
 @dataclass(frozen=True)
@@ -253,6 +260,27 @@ class HandlerResult:
             warnings=tuple(warnings),
             next_action=next_action or HandlerNextAction(),
             error=error,
+        )
+
+    @classmethod
+    def browser_required(
+        cls,
+        context: HandlerContext,
+        *,
+        summary: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        warnings: tuple[str, ...] | list[str] = (),
+        next_action: HandlerNextAction | None = None,
+    ) -> HandlerResult:
+        return cls(
+            status="browser_required",
+            handler_code=context.handler_code,
+            request_id=context.request_id,
+            job_id=context.job_id,
+            summary=summary or {},
+            result=result or {},
+            warnings=tuple(warnings),
+            next_action=next_action or HandlerNextAction(type="browser_required"),
         )
 
     def to_dict(self) -> dict[str, Any]:

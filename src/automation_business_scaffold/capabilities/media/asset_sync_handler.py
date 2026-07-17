@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import suppress
+from html import unescape
 import hashlib
 import mimetypes
+import re
 import tempfile
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from automation_business_scaffold.config import get_execution_control_defaults
@@ -22,6 +25,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     first_non_empty,
     new_fact_bundle,
     now_timestamp,
+    partial_success_result,
     skipped_result,
     success_result,
 )
@@ -39,12 +43,85 @@ from typing import Any
 HANDLER_CODE = "media_asset_sync"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
 _TK_MEDIA_CACHE_PLATFORMS = frozenset({"fastmoss", "tiktok"})
+_AMAZON_US_MEDIA_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+_AMAZON_US_MEDIA_ALLOWED_HOST_SUFFIXES = (
+    "media-amazon.com",
+    "ssl-images-amazon.com",
+)
+_AMAZON_MEDIA_UNSAFE_PATH = re.compile(
+    r"(?:[<>{}\\\x00-\x1f\x7f]|(?:(?<![A-Za-z0-9])(?:authorization|bearer|cookie|"
+    r"token|access[_-]?token|api[_-]?key|secret[_-]?key|session[_-]?secret|password|"
+    r"credential)(?![A-Za-z0-9])|(?:authorization|bearer|cookie|token|access[_-]?token|"
+    r"api[_-]?key|secret[_-]?key|session[_-]?secret|password|credential)(?=[=:])))",
+    re.IGNORECASE,
+)
+_AMAZON_CALLER_MATERIALIZED_FIELDS = (
+    "local_path",
+    "object_key",
+    "source_path",
+    "bucket",
+    "remote_uri",
+    "file_token",
+)
+
+
+class _BoundedRedirectResponse:
+    def __init__(self, response: Any, *, max_bytes: int) -> None:
+        self._response = response
+        self._max_bytes = max_bytes
+        self._bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        read_limit = self._max_bytes - self._bytes_read + 1
+        if size >= 0:
+            read_limit = min(size, read_limit)
+        content = self._response.read(read_limit)
+        self._bytes_read += len(content)
+        if self._bytes_read > self._max_bytes:
+            with suppress(Exception):
+                self.close()
+            raise ValueError("redirect response exceeds media_download_max_bytes")
+        return content
+
+    def close(self) -> None:
+        self._response.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
 
 
 class _GovernedMediaRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, allowed_host_suffixes: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        allowed_host_suffixes: tuple[str, ...],
+        *,
+        max_bytes: int = 0,
+    ) -> None:
         super().__init__()
         self._allowed_host_suffixes = allowed_host_suffixes
+        self._max_bytes = max_bytes
+
+    def http_error_302(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+    ) -> Any:
+        bounded_fp = (
+            _BoundedRedirectResponse(fp, max_bytes=self._max_bytes)
+            if self._max_bytes > 0
+            else fp
+        )
+        try:
+            return super().http_error_302(req, bounded_fp, code, msg, headers)
+        finally:
+            if bounded_fp is not None:
+                with suppress(Exception):
+                    bounded_fp.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
     def redirect_request(
         self,
@@ -55,10 +132,16 @@ class _GovernedMediaRedirectHandler(HTTPRedirectHandler):
         headers: Any,
         newurl: str,
     ) -> Request | None:
-        _require_governed_media_url(
-            newurl,
-            allowed_host_suffixes=self._allowed_host_suffixes,
-        )
+        try:
+            _require_governed_media_url(
+                newurl,
+                allowed_host_suffixes=self._allowed_host_suffixes,
+            )
+        except ValueError:
+            if fp is not None:
+                with suppress(Exception):
+                    fp.close()
+            raise
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -70,6 +153,57 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
             context,
             summary={"asset_count": 0, "synced_count": 0},
             result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+        )
+
+    try:
+        normalized_asset_refs = [
+            _normalize_media_asset(
+                asset,
+                fallback_product_id=payload.get("product_id"),
+                fallback_source_platform=payload.get("source_platform"),
+                fallback_marketplace_code=payload.get("marketplace_code"),
+            )
+            for asset in asset_refs
+        ]
+        normalized_asset_refs, rejected_url_warnings = _govern_amazon_media_source_urls(
+            normalized_asset_refs,
+            payload=payload,
+        )
+    except ValueError as exc:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="invalid_input",
+                error_code="invalid_media_asset_input",
+                message=str(exc),
+                retryable=False,
+                details={"asset_count": len(asset_refs)},
+            ),
+            summary={
+                "asset_count": len(asset_refs),
+                "synced_count": 0,
+                "artifact_count": 0,
+            },
+            result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+        )
+    rejected_count = len(rejected_url_warnings)
+    if not normalized_asset_refs:
+        media_bundle = new_fact_bundle()
+        media_bundle["media_assets"] = []
+        return partial_success_result(
+            context,
+            summary={
+                "asset_count": len(asset_refs),
+                "synced_count": 0,
+                "artifact_count": 0,
+                "rejected_count": rejected_count,
+            },
+            result={
+                "synced_assets": [],
+                "artifact_refs": [],
+                "media_fact_bundle": media_bundle,
+            },
+            warnings=tuple(rejected_url_warnings),
         )
 
     artifact_settings = _resolve_artifact_settings(payload)
@@ -136,15 +270,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     synced_assets: list[dict[str, Any]] = []
     synced_assets_by_ref: dict[str, dict[str, Any]] = {}
     deferred_reuse_assets: list[tuple[dict[str, Any], str]] = []
-    warnings: list[str] = []
-    normalized_asset_refs = [
-        _normalize_media_asset(
-            asset,
-            fallback_product_id=payload.get("product_id"),
-            fallback_source_platform=payload.get("source_platform"),
-        )
-        for asset in asset_refs
-    ]
+    warnings = list(rejected_url_warnings)
     fact_store = _create_fact_store(
         payload,
         asset_refs=normalized_asset_refs,
@@ -260,6 +386,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "asset_count": len(asset_refs),
         "synced_count": len(synced_assets),
         "artifact_count": len(artifact_refs),
+        "rejected_count": rejected_count,
         "artifact_store_provider": getattr(artifact_store, "provider_code", "local") if artifact_store else "local",
     }
     result = {
@@ -283,6 +410,13 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                 result=result,
                 warnings=tuple(warnings),
             )
+    if rejected_count:
+        return partial_success_result(
+            context,
+            summary=summary,
+            result=result,
+            warnings=tuple(warnings),
+        )
     if warnings:
         return success_result(context, summary=summary, result=result, warnings=tuple(warnings))
     return success_result(context, summary=summary, result=result)
@@ -557,7 +691,24 @@ def _normalize_media_asset(
     *,
     fallback_product_id: str = "",
     fallback_source_platform: str = "",
+    fallback_marketplace_code: str = "",
 ) -> dict[str, Any]:
+    source_platform, marketplace_code = _resolve_media_asset_identity(
+        asset,
+        fallback_source_platform=fallback_source_platform,
+        fallback_marketplace_code=fallback_marketplace_code,
+    )
+    if source_platform == "amazon":
+        injected_fields = [
+            field
+            for field in _AMAZON_CALLER_MATERIALIZED_FIELDS
+            if asset.get(field) not in (None, "", [], {})
+        ]
+        if injected_fields:
+            raise ValueError(
+                "Amazon media assets cannot provide caller-materialized fields: "
+                + ", ".join(injected_fields)
+            )
     entity_key_type, entity_key_external_id = _entity_parts_from_key(asset.get("entity_key"))
     entity_type = first_non_empty(asset.get("entity_type"), entity_key_type, "product")
     entity_external_id = first_non_empty(
@@ -581,16 +732,89 @@ def _normalize_media_asset(
             "mime_type": asset.get("mime_type"),
             "bucket": asset.get("bucket"),
             "remote_uri": asset.get("remote_uri"),
-            "source_platform": first_non_empty(
-                asset.get("source_platform"),
-                fallback_source_platform,
-                "tiktok",
-            ).lower(),
-            "marketplace_code": coerce_str(asset.get("marketplace_code")).upper(),
+            "source_platform": source_platform,
+            "marketplace_code": marketplace_code,
             "position": asset.get("position"),
             "metadata": coerce_mapping(asset.get("metadata")),
         }
     )
+
+
+def _resolve_media_asset_identity(
+    asset: dict[str, Any],
+    *,
+    fallback_source_platform: Any,
+    fallback_marketplace_code: Any,
+) -> tuple[str, str]:
+    payload_source_platform = coerce_str(fallback_source_platform).lower()
+    asset_source_platform = coerce_str(asset.get("source_platform")).lower()
+    payload_marketplace_code = coerce_str(fallback_marketplace_code).upper()
+    asset_marketplace_code = coerce_str(asset.get("marketplace_code")).upper()
+    amazon_identity = "amazon" in {
+        payload_source_platform,
+        asset_source_platform,
+    }
+    if amazon_identity:
+        if (
+            payload_source_platform
+            and asset_source_platform
+            and payload_source_platform != asset_source_platform
+        ):
+            raise ValueError("payload and asset source_platform must not conflict for Amazon media")
+        if (
+            payload_marketplace_code
+            and asset_marketplace_code
+            and payload_marketplace_code != asset_marketplace_code
+        ):
+            raise ValueError("payload and asset marketplace_code must not conflict for Amazon media")
+
+    source_platform = first_non_empty(
+        asset_source_platform,
+        payload_source_platform,
+        "tiktok",
+    )
+    marketplace_code = first_non_empty(
+        asset_marketplace_code,
+        payload_marketplace_code,
+    )
+    if source_platform == "amazon" and marketplace_code != "US":
+        raise ValueError("Amazon media assets require marketplace_code=US")
+    return source_platform, marketplace_code
+
+
+def _govern_amazon_media_source_urls(
+    asset_refs: list[dict[str, Any]],
+    *,
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    governed_assets: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for index, asset in enumerate(asset_refs):
+        if not _is_amazon_us_media(asset):
+            governed_assets.append(asset)
+            continue
+        _, allowed_host_suffixes = _resolve_media_download_policy(
+            asset,
+            payload=payload,
+        )
+        try:
+            _require_governed_media_url(
+                asset.get("source_url"),
+                allowed_host_suffixes=allowed_host_suffixes,
+            )
+        except ValueError:
+            warnings.append(
+                f"Amazon media asset at index {index} was rejected by URL policy."
+            )
+            continue
+        governed_asset = dict(asset)
+        parsed_source_url = urlparse(coerce_str(asset.get("source_url")))
+        governed_asset["source_url"] = parsed_source_url._replace(
+            query="",
+            fragment="",
+        ).geturl()
+        governed_assets.append(governed_asset)
+    return governed_assets, warnings
 
 
 def _entity_parts_from_key(value: Any) -> tuple[str, str]:
@@ -652,10 +876,16 @@ def _append_artifact_spec(
 
 def _is_amazon_product_media(asset: dict[str, Any]) -> bool:
     return (
-        coerce_str(asset.get("source_platform")).lower() == "amazon"
-        and coerce_str(asset.get("marketplace_code")).upper() == "US"
+        _is_amazon_us_media(asset)
         and coerce_str(asset.get("entity_type")) == "product"
         and bool(coerce_str(asset.get("entity_external_id")))
+    )
+
+
+def _is_amazon_us_media(asset: dict[str, Any]) -> bool:
+    return (
+        coerce_str(asset.get("source_platform")).lower() == "amazon"
+        and coerce_str(asset.get("marketplace_code")).upper() == "US"
     )
 
 
@@ -702,14 +932,9 @@ def _download_referenced_asset(
         first_non_empty(payload.get("media_download_timeout_seconds"), payload.get("download_timeout_seconds")),
         default=30,
     )
-    raw_max_bytes = payload.get("media_download_max_bytes")
-    max_bytes = 0
-    if raw_max_bytes not in (None, ""):
-        max_bytes = _coerce_int(raw_max_bytes, default=0)
-        if max_bytes <= 0:
-            raise ValueError("media_download_max_bytes must be a positive integer")
-    allowed_host_suffixes = _media_download_host_suffixes(
-        payload.get("media_download_allowed_host_suffixes")
+    max_bytes, allowed_host_suffixes = _resolve_media_download_policy(
+        asset,
+        payload=payload,
     )
     if allowed_host_suffixes:
         _require_governed_media_url(
@@ -720,7 +945,12 @@ def _download_referenced_asset(
     request_pacer.wait_before_request("media:download")
     try:
         response_context = (
-            build_opener(_GovernedMediaRedirectHandler(allowed_host_suffixes)).open(
+            build_opener(
+                _GovernedMediaRedirectHandler(
+                    allowed_host_suffixes,
+                    max_bytes=max_bytes,
+                )
+            ).open(
                 request,
                 timeout=timeout_seconds,
             )
@@ -842,6 +1072,47 @@ def _media_download_host_suffixes(value: Any) -> tuple[str, ...]:
     return tuple(suffixes)
 
 
+def _resolve_media_download_policy(
+    asset: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+) -> tuple[int, tuple[str, ...]]:
+    raw_max_bytes = payload.get("media_download_max_bytes")
+    max_bytes = 0
+    if raw_max_bytes not in (None, ""):
+        max_bytes = _coerce_int(raw_max_bytes, default=0)
+        if max_bytes <= 0:
+            raise ValueError("media_download_max_bytes must be a positive integer")
+    allowed_host_suffixes = _media_download_host_suffixes(
+        payload.get("media_download_allowed_host_suffixes")
+    )
+    if not _is_amazon_us_media(asset):
+        return max_bytes, allowed_host_suffixes
+
+    max_bytes = min(
+        max_bytes or _AMAZON_US_MEDIA_DOWNLOAD_MAX_BYTES,
+        _AMAZON_US_MEDIA_DOWNLOAD_MAX_BYTES,
+    )
+    if not allowed_host_suffixes:
+        return max_bytes, _AMAZON_US_MEDIA_ALLOWED_HOST_SUFFIXES
+
+    effective_host_suffixes: list[str] = []
+    for required_suffix in _AMAZON_US_MEDIA_ALLOWED_HOST_SUFFIXES:
+        for caller_suffix in allowed_host_suffixes:
+            effective_suffix = ""
+            if caller_suffix == required_suffix or caller_suffix.endswith(f".{required_suffix}"):
+                effective_suffix = caller_suffix
+            elif required_suffix.endswith(f".{caller_suffix}"):
+                effective_suffix = required_suffix
+            if effective_suffix and effective_suffix not in effective_host_suffixes:
+                effective_host_suffixes.append(effective_suffix)
+    if not effective_host_suffixes:
+        raise ValueError(
+            "media_download_allowed_host_suffixes cannot allow hosts outside the Amazon CDN policy"
+        )
+    return max_bytes, tuple(effective_host_suffixes)
+
+
 def _require_governed_media_url(
     value: Any,
     *,
@@ -855,6 +1126,15 @@ def _require_governed_media_url(
     except ValueError as exc:
         raise ValueError("media download requires a governed HTTPS media host") from exc
     hostname = (parsed.hostname or "").lower()
+    decoded_path = parsed.path
+    for _ in range(8):
+        next_path = unescape(unquote(decoded_path))
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    else:
+        if unescape(unquote(decoded_path)) != decoded_path:
+            raise ValueError("media download requires a governed HTTPS media host")
     allowed_host = any(
         hostname == suffix or hostname.endswith(f".{suffix}")
         for suffix in allowed_host_suffixes
@@ -865,6 +1145,8 @@ def _require_governed_media_url(
         or parsed.username is not None
         or parsed.password is not None
         or port not in (None, 443)
+        or any(character.isspace() for character in decoded_path)
+        or _AMAZON_MEDIA_UNSAFE_PATH.search(decoded_path)
     ):
         raise ValueError("media download requires a governed HTTPS media host")
 

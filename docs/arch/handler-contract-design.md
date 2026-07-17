@@ -1333,20 +1333,22 @@ result 示例:
 
 ### 6.8 Amazon 单商品采集 Handler
 
-Amazon 美国站单商品流程新增三个稳定 handler，并继续复用 `media_asset_sync`、
+Amazon 美国站单商品与批量流程使用四个稳定 handler，并继续复用 `media_asset_sync`、
 `feishu_table_read` 和 `feishu_table_write`。Browser handler 只采集和写对象证据；Fact
 handler 只从受控对象引用恢复 capture 并写 Amazon 表；行级 persist handler 通过既有
-dispatch 边界串行收敛媒体、事实和同一飞书来源行。
+dispatch 边界串行收敛媒体、事实和同一飞书来源行；批量 row refresh handler 只负责
+正常浏览器等待、结果恢复和对现有 persist handler 的调用。
 
 | handler_code | worker / Runtime 表 | 必填输入 | 紧凑输出 | 副作用 |
 | --- | --- | --- | --- | --- |
+| `amazon_product_row_refresh` | `api_worker` / `api_worker_job` | 已验证来源行、ASIN、来源表 identity、browser runtime context | `browser_required` 请求或最终 row result | collecting/persisting 状态写回、调用既有 row persist handler |
 | `amazon_product_browser_fetch` | `browser_worker` / `task_execution` | `requested_asin`、`source_record_id`、`run_id` | identity、collection status、coverage、`normalized_capture_ref`、`raw_capture_refs`、media source refs | Chrome/指纹浏览器访问、对象存储写入、Runtime artifact 索引 |
 | `amazon_product_fact_upsert` | `api_worker` / `api_worker_job` | normalized/raw refs、source table identity、source record、ASIN、run | product/snapshot/binding/raw ids、persisted counts | 对象存储读取、独立 `amazon_*` Fact 写入 |
 | `amazon_product_row_persist` | `api_worker` / `api_worker_job` | 来源行、identity、run、capture refs、media source refs | row status、step statuses、Fact refs、media coverage、writeback 摘要 | 串行调用媒体、Fact 和飞书 handler |
 
 稳定约束:
 
-- 正常 Amazon 采集直接使用 browser task，不返回 `fallback_required`。
+- 正常 Amazon 采集直接使用 browser task，不返回 `fallback_required`。批量行级主 Job 使用新增的 `browser_required` 状态表达主路径浏览器等待；worker 将其映射为 `api_worker_job.status=waiting`，浏览器终态后 Runtime 恢复同一个 Job。
 - Runtime payload/result 不内联完整 normalized capture、HTML、页面网络正文或媒体正文。
 - Browser 成功至少产生 content-addressed normalized JSON 与 sanitized HTML；可选网络数据
   必须重新通过 resolved ASIN 绑定和字段 allowlist。

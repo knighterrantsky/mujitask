@@ -1,0 +1,45 @@
+schema_version: 1
+skill: mujitask-amazon-feishu-sync
+
+cases:
+  - id: amazon-competitor-row-refresh
+    user: 采集 Amazon竞品表记录 recABC123
+    expected_intent: amazon_product_row_refresh
+    expected_command: bash skills/mujitask-amazon-feishu-sync/run_task.sh --intent "amazon_product_row_refresh" --source-record-id "<source_record_id>"
+    expected_task_code: refresh_amazon_product_row_by_asin
+    must_not_include:
+      - tiktok
+      - batch
+
+  - id: asin-without-record-negative
+    user: 帮我采集 B0D9JMW97T
+    expected_intent: do_not_use_skill
+    expected_action: ask_for_source_record_id_without_submission
+
+  - id: tiktok-negative
+    user: 帮我更新 TK 竞品表
+    expected_intent: do_not_use_skill
+    expected_action: route_to_the_tiktok_business_skill
+
+  - id: amazon-competitor-table-batch
+    user: 采集 Amazon竞品表中采集标签为T的数据
+    expected_intent: amazon_product_table_refresh
+    expected_command: bash skills/mujitask-amazon-feishu-sync/run_task.sh --intent "amazon_product_table_refresh"
+    expected_task_code: refresh_current_amazon_product_table
+    must_not_include:
+      - source_record_id
+      - tiktok
+
+  - id: amazon-whole-table-phrase
+    user: 批量采集整个 Amazon竞品表
+    expected_intent: amazon_product_table_refresh
+    expected_command: bash skills/mujitask-amazon-feishu-sync/run_task.sh --intent "amazon_product_table_refresh"
+    expected_task_code: refresh_current_amazon_product_table
+    must_not_include:
+      - custom_filter
+      - source_record_id
+
+  - id: custom-tag-negative
+    user: 采集 Amazon竞品表里采集标签为A的数据
+    expected_intent: do_not_use_skill
+    expected_action: reject_custom_batch_filter

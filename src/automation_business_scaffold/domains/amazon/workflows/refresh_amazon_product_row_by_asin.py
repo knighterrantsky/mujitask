@@ -215,13 +215,34 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
             ),
             required_field(
                 "row_status_counts",
-                "Counts keyed by Amazon row business status.",
+                (
+                    "One-hot counts for success, partial_success, unavailable, blocked, "
+                    "failed, and skipped."
+                ),
                 type_hint="dict[str, int]",
             ),
-            optional_field(
+            required_field(
+                "aggregate_metrics",
+                (
+                    "Single-row duration, blocked, parse coverage, media failure, and "
+                    "Feishu failure aggregates."
+                ),
+                type_hint="dict[str, float]",
+            ),
+            required_field(
                 "row_summary",
                 "Single-row sanitized identity, timings, coverage, counts, status, and error code.",
                 type_hint="dict[str, Any]",
+            ),
+            required_field(
+                "failed_stage",
+                "Failed workflow stage, or an empty string for non-failures.",
+                type_hint="str",
+            ),
+            required_field(
+                "error_code",
+                "Stable redacted error code, or an empty string for non-failures.",
+                type_hint="str",
             ),
         ),
         error_contract=contract(

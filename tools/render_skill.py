@@ -284,6 +284,65 @@ def _render_negative_activation_examples(lines: list[str], examples: list[Any]) 
         lines.append("")
 
 
+def _render_compact_skill(
+    spec: dict[str, Any],
+    metadata: dict[str, Any],
+    intents: list[dict[str, Any]],
+    inputs: dict[str, Any],
+    output_format: dict[str, Any],
+) -> str:
+    name = _required_text(metadata, "name", "metadata")
+    title = _required_text(metadata, "title", "metadata")
+    description = _required_text(metadata, "description", "metadata")
+    short_description = _required_text(metadata, "short_description", "metadata")
+
+    lines = [
+        "---",
+        f"name: {_frontmatter_value(name)}",
+        "description: >-",
+        _folded_block(description).rstrip("\n"),
+        "metadata:",
+        f"  short-description: {_frontmatter_value(short_description)}",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        GENERATED_MARKER,
+        "",
+        "## Scope",
+        "",
+    ]
+    lines.extend(_bullet(_as_text_list(spec.get("purpose"))))
+    for intent in intents:
+        lines.append(f"- Task: `{_required_text(intent, 'task_code', 'intent')}`")
+        lines.append(
+            "- Target: "
+            + ", ".join(f"`{item}`" for item in _as_text_list(intent.get("target_tables")))
+        )
+    lines.extend(["", "## Trigger", ""])
+    lines.extend(_bullet(_as_text_list(spec.get("when_to_use"))))
+    lines.extend(["", "Do not trigger for:", ""])
+    lines.extend(_bullet(_as_text_list(spec.get("do_not_use"))))
+    lines.extend(["", "## Input", ""])
+    for input_id, raw_input in inputs.items():
+        item = _required_mapping(raw_input, f"inputs.{input_id}")
+        lines.append(f"- `{input_id}`: {_required_text(item, 'description', f'inputs.{input_id}')}")
+        lines.extend(_bullet(_as_text_list(item.get("extraction_rules")), indent=2))
+    lines.extend(["", "## Submit", ""])
+    for index, item in enumerate(_as_text_list(spec.get("workflow")), start=1):
+        lines.append(f"{index}. {item}")
+    for intent in intents:
+        lines.extend(["", f"`{intent['id']}`:", ""])
+        lines.extend(_command_block(_required_text(intent, "command", "intent")))
+    lines.extend(["", "## Output", "", "Success:", "", "```text"])
+    lines.append(_required_text(output_format, "success", "output_format"))
+    lines.extend(["```", "", "Failure:", "", "```text"])
+    lines.append(_required_text(output_format, "failure", "output_format"))
+    lines.extend(["```", "", "## Guardrails", ""])
+    lines.extend(_bullet(_as_text_list(spec.get("guardrails"))))
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_skill(spec: dict[str, Any]) -> str:
     metadata = _required_mapping(spec.get("metadata"), "metadata")
     intents = [_required_mapping(item, "intents[]") for item in _required_list(spec.get("intents"), "intents")]
@@ -294,6 +353,9 @@ def render_skill(spec: dict[str, Any]) -> str:
     title = _required_text(metadata, "title", "metadata")
     description = _required_text(metadata, "description", "metadata")
     short_description = _required_text(metadata, "short_description", "metadata")
+
+    if metadata.get("render_mode") == "compact":
+        return _render_compact_skill(spec, metadata, intents, inputs, output_format)
 
     lines: list[str] = []
     lines.append("---")

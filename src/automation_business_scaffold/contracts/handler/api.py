@@ -36,6 +36,9 @@ from automation_business_scaffold.capabilities.persistence.database.fact_bundle_
 from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_persist import (
     amazon_product_row_persist_handler,
 )
+from automation_business_scaffold.domains.amazon.jobs.amazon_product_row_refresh import (
+    amazon_product_row_refresh_handler,
+)
 from automation_business_scaffold.domains.tiktok.jobs.competitor_row_refresh import (
     competitor_row_refresh_handler,
 )
@@ -82,6 +85,7 @@ BOUND_API_HANDLERS = MappingProxyType(
         "fact_bundle_upsert": fact_bundle_upsert_handler,
         "amazon_product_fact_upsert": amazon_product_fact_upsert_handler,
         "amazon_product_row_persist": amazon_product_row_persist_handler,
+        "amazon_product_row_refresh": amazon_product_row_refresh_handler,
         "selection_row_refresh": selection_row_refresh_handler,
     }
 )

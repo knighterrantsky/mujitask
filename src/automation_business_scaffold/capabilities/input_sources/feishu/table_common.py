@@ -170,8 +170,18 @@ def _configured_table_payload(table_ref: str) -> dict[str, Any]:
     if not alias_key:
         return {}
 
-    result: dict[str, Any] = {"access_token_env": "MUJITASK_FEISHU_ACCESS_TOKEN"}
-    base_url = _text(os.environ.get("MUJITASK_FEISHU_BASE_URL"))
+    table_access_token_env = f"MUJITASK_FEISHU_{alias_key}_ACCESS_TOKEN"
+    result: dict[str, Any] = {
+        "access_token_env": (
+            table_access_token_env
+            if _text(os.environ.get(table_access_token_env))
+            else "MUJITASK_FEISHU_ACCESS_TOKEN"
+        )
+    }
+    base_url = _text(
+        os.environ.get(f"MUJITASK_FEISHU_{alias_key}_BASE_URL")
+        or os.environ.get("MUJITASK_FEISHU_BASE_URL")
+    )
     table_id = _text(os.environ.get(f"MUJITASK_FEISHU_{alias_key}_TABLE_ID"))
     if not base_url or not table_id:
         return result

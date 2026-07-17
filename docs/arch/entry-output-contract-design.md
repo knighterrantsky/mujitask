@@ -71,6 +71,21 @@ profile、Fact DB、对象存储和 `AMAZON_PRODUCTS` 表路由，并在创建 `
 和媒体正文分别留在 Fact DB 或对象存储。`blocked` / identity mismatch 必须返回脱敏错误并
 只更新来源行状态，不得输出或写回错误商品字段。
 
+### 2.3 Amazon 竞品表批量入口
+
+Amazon竞品表批量采集的稳定 Task 为 `refresh_current_amazon_product_table`。正式提交只接收:
+
+```json
+{
+  "table_ref": "AMAZON_PRODUCTS"
+}
+```
+
+批量筛选固定为 `采集标签` 严格等于 `T`，不接受 ASIN、`source_record_id`、自定义筛选字段
+或筛选值。父任务为每条有效来源记录创建一个幂等的
+`refresh_amazon_product_row_by_asin` 子任务，并只返回父 `request_id`；子任务不向飞书群
+重复发送通知，所有子任务终态后由父任务输出一次汇总。
+
 ## 3. 同步返回契约
 
 入口层同步返回必须短小、可机读、可追踪。

@@ -43,9 +43,14 @@ def prepare_fields_for_write(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     prepared: dict[str, Any] = {}
+    ignore_missing_fields = text(
+        mapping(payload.get("write_policy")).get("ignore_missing_fields")
+    ).lower() in {"1", "true", "yes", "y", "on"}
     for field_name, value in fields.items():
         name = text(field_name)
         if not name:
+            continue
+        if ignore_missing_fields and name not in field_schema:
             continue
         if is_attachment_field(field_schema.get(name)):
             attachment_refs = attachment_file_token_ref_items(value, client=client, target=target, payload=payload)

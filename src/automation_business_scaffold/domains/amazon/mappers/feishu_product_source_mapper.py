@@ -15,6 +15,7 @@ from automation_business_scaffold.capabilities.browser.amazon.product_page impor
 
 AMAZON_PRODUCT_SOURCE_FIELDS = (
     "ASIN",
+    "采集标签",
     "商品链接",
     "强制刷新",
     "采集状态",
@@ -103,6 +104,7 @@ def amazon_product_table_source_adapter(
     target_table_ref = _first_non_empty(payload.get("target_table_ref"), source_table_ref)
     source_fields = {
         "ASIN": asin,
+        "采集标签": _field_text(fields.get("采集标签")),
         "商品链接": canonical_url,
         "强制刷新": _field_bool(fields.get("强制刷新")),
         "采集状态": _field_text(fields.get("采集状态")),
@@ -139,6 +141,54 @@ def amazon_product_table_source_adapter(
         lookup_status="matched",
         counters=counters,
     )
+
+
+def amazon_product_batch_source_adapter(
+    raw_rows: list[Mapping[str, Any]],
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    tagged_rows = [
+        row
+        for row in raw_rows
+        if _field_text(_mapping(row.get("fields")).get("采集标签")) == "T"
+    ]
+    source_rows: list[dict[str, Any]] = []
+    counters = {
+        "invalid_asin_count": 0,
+        "identity_mismatch_count": 0,
+        "unsupported_marketplace_count": 0,
+        "missing_record_id_count": 0,
+    }
+    for row in tagged_rows:
+        source_record_id = _text(row.get("record_id"))
+        if not source_record_id:
+            counters["missing_record_id_count"] += 1
+            continue
+        row_result = amazon_product_table_source_adapter(
+            [row],
+            {**dict(payload), "source_record_id": source_record_id},
+        )
+        row_summary = _mapping(row_result.get("adapter_summary"))
+        for key in (
+            "invalid_asin_count",
+            "identity_mismatch_count",
+            "unsupported_marketplace_count",
+        ):
+            counters[key] += int(row_summary.get(key) or 0)
+        source_rows.extend(row_result.get("source_rows") or [])
+    return {
+        "source_rows": source_rows,
+        "candidate_keys": [row["business_key"] for row in source_rows],
+        "adapter_summary": {
+            "adapter_code": "amazon_product_batch_source_adapter",
+            "input_row_count": len(raw_rows),
+            "tagged_row_count": len(tagged_rows),
+            "source_row_count": len(source_rows),
+            "selection_field": "采集标签",
+            "selection_value": "T",
+            **counters,
+        },
+    }
 
 
 def _result(
@@ -211,5 +261,6 @@ def _text(value: Any) -> str:
 
 __all__ = [
     "AMAZON_PRODUCT_SOURCE_FIELDS",
+    "amazon_product_batch_source_adapter",
     "amazon_product_table_source_adapter",
 ]

@@ -1279,8 +1279,6 @@ install_agent_skill() {
   local tk_influencer_outreach_view_id="${17}"
   local tk_hot_video_table_id="${18}"
   local tk_hot_video_view_id="${19}"
-  local amazon_products_table_id="${20}"
-  local amazon_products_view_id="${21}"
 
   local source_skill_dir="${install_dir}/skills/mujitask-tiktok-feishu-sync"
   local target_skill_dir="${skills_dir}/mujitask-tiktok-feishu-sync"
@@ -1328,7 +1326,11 @@ install_agent_skill() {
     "MUJITASK_RUNTIME_MIGRATION_DB_URL" \
     "MUJITASK_FACT_MIGRATION_DB_URL" \
     "MUJITASK_FACT_RUNTIME_ROLE" \
-    "MUJITASK_FACT_RUNTIME_PASSWORD"
+    "MUJITASK_FACT_RUNTIME_PASSWORD" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN"
   merge_key_value_file \
     "${skill_env_file}" \
     "INSTALL_DIR=$(quote_env_value "${install_dir}")" \
@@ -1343,8 +1345,6 @@ install_agent_skill() {
     "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$(quote_env_value "${tk_influencer_outreach_view_id}")" \
     "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "${tk_hot_video_table_id}")" \
     "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "${tk_hot_video_view_id}")" \
-    "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID=$(quote_env_value "${amazon_products_table_id}")" \
-    "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID=$(quote_env_value "${amazon_products_view_id}")" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
     "FASTMOSS_PHONE=$(quote_env_value "${fastmoss_phone}")" \
     "FASTMOSS_PASSWORD=$(quote_env_value "${fastmoss_password}")" \
@@ -1354,6 +1354,50 @@ install_agent_skill() {
   umask "${previous_umask}"
   seal_private_file "${skill_env_file}" "Skill environment file"
   INSTALLED_SKILL_DIR="${target_skill_dir}"
+}
+
+install_amazon_agent_skill() {
+  local install_dir="$1"
+  local skills_dir="$2"
+  local notification_channel_code="$3"
+  local openclaw_agent_id="$4"
+  local openclaw_state_dir="$5"
+  local feishu_account_id="$6"
+
+  local source_skill_dir="${install_dir}/skills/mujitask-amazon-feishu-sync"
+  local target_skill_dir="${skills_dir}/mujitask-amazon-feishu-sync"
+  local skill_env_file="${target_skill_dir}/skill.local.env"
+
+  [[ -d "${source_skill_dir}" ]] || fail_deploy "Missing Amazon skill bundle at ${source_skill_dir}."
+  validate_private_file_target "${skill_env_file}" "Amazon skill environment file"
+  local previous_umask
+  previous_umask="$(umask)"
+  umask 077
+
+  mkdir -p "${skills_dir}"
+  local previous_skill_env="${TMP_ROOT}/previous-amazon-skill.local.env"
+  if [[ -f "${target_skill_dir}/skill.local.env" ]]; then
+    cp "${target_skill_dir}/skill.local.env" "${previous_skill_env}"
+  fi
+  replace_target_dir "${target_skill_dir}"
+  cp -R "${source_skill_dir}"/. "${target_skill_dir}"/
+  if [[ -f "${previous_skill_env}" ]]; then
+    cp "${previous_skill_env}" "${skill_env_file}"
+  fi
+
+  validate_private_file_target "${skill_env_file}" "Amazon skill environment file"
+  seed_key_value_file_from_example "${skill_env_file}" "${target_skill_dir}/skill.local.env.example"
+  remove_skill_runtime_config_keys "${skill_env_file}"
+  merge_key_value_file \
+    "${skill_env_file}" \
+    "INSTALL_DIR=$(quote_env_value "${install_dir}")" \
+    "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "${notification_channel_code}")" \
+    "OPENCLAW_AGENT_ID=$(quote_env_value "${openclaw_agent_id}")" \
+    "OPENCLAW_STATE_DIR=$(quote_env_value "${openclaw_state_dir}")" \
+    "OPENCLAW_DELIVERY_ACCOUNT_ID=$(quote_env_value "${feishu_account_id}")"
+  umask "${previous_umask}"
+  seal_private_file "${skill_env_file}" "Amazon skill environment file"
+  INSTALLED_AMAZON_SKILL_DIR="${target_skill_dir}"
 }
 
 main() {
@@ -1367,9 +1411,11 @@ main() {
     BUSINESS_EXECUTION_CONTROL_FACT_MIGRATION_DB_URL
   MUJITASK_PREFLIGHT_REQUIRE_ENV=1 MUJITASK_DEPLOY_ENV_FILE="${ENV_FILE}" bash "${SOURCE_DIR}/scripts/deploy/macos/preflight.sh"
 
-  local install_dir skills_dir agent_type
+  local install_dir tiktok_skills_dir amazon_skills_dir agent_type
   install_dir="$(resolve_path "$(config_value MUJITASK_INSTALL_DIR INSTALL_DIR "${HOME}/apps/mujitask")" "${SOURCE_DIR}")"
-  skills_dir="$(resolve_path "$(require_config_value MUJITASK_SKILLS_DIR SKILLS_INSTALL_DIR)" "${HOME}")"
+  tiktok_skills_dir="$(resolve_path "$(require_config_value MUJITASK_TIKTOK_SKILLS_DIR MUJITASK_SKILLS_DIR)" "${HOME}")"
+  amazon_skills_dir="$(resolve_path "$(require_config_value MUJITASK_AMAZON_SKILLS_DIR)" "${HOME}")"
+  [[ "${tiktok_skills_dir}" != "${amazon_skills_dir}" ]] || fail_deploy "TikTok and Amazon skills directories must be different."
   agent_type="$(config_value MUJITASK_AGENT_TYPE AGENT_TYPE "generic")"
   PROJECT_DIR="${install_dir}"
 
@@ -1389,7 +1435,7 @@ main() {
   local tk_influencer_pool_table_id tk_influencer_pool_view_id
   local tk_influencer_outreach_table_id tk_influencer_outreach_view_id
   local tk_hot_video_table_id tk_hot_video_view_id
-  local amazon_products_table_id amazon_products_view_id
+  local amazon_products_base_url amazon_products_table_id amazon_products_view_id amazon_products_access_token
   feishu_base_url="$(require_config_value MUJITASK_FEISHU_BASE_URL)"
   tk_selection_table_id="$(require_config_value MUJITASK_FEISHU_TK_SELECTION_TABLE_ID)"
   tk_selection_view_id="$(require_config_value MUJITASK_FEISHU_TK_SELECTION_VIEW_ID)"
@@ -1401,8 +1447,10 @@ main() {
   tk_influencer_outreach_view_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID)"
   tk_hot_video_table_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID)"
   tk_hot_video_view_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID)"
+  amazon_products_base_url="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL MUJITASK_FEISHU_BASE_URL "${feishu_base_url}")"
   amazon_products_table_id="$(require_config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID)"
   amazon_products_view_id="$(require_config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID)"
+  amazon_products_access_token="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN MUJITASK_FEISHU_ACCESS_TOKEN "${token}")"
 
   local postgres_port postgres_db postgres_user postgres_password postgres_admin_user postgres_socket_dir
   postgres_port="${MUJITASK_POSTGRES_PORT:-5432}"
@@ -1453,10 +1501,12 @@ main() {
   minio_create_bucket="$(config_value MUJITASK_MINIO_CREATE_BUCKET BUSINESS_EXECUTION_CONTROL_MINIO_CREATE_BUCKET "true")"
   sync_referenced_files="$(config_value MUJITASK_SYNC_REFERENCED_FILES BUSINESS_EXECUTION_CONTROL_SYNC_REFERENCED_FILES "true")"
 
-  local requested_by notification_channel_code openclaw_agent_id openclaw_state_dir
+  local requested_by notification_channel_code tiktok_openclaw_agent_id amazon_openclaw_agent_id openclaw_state_dir amazon_feishu_account_id
   requested_by="$(config_value MUJITASK_REQUESTED_BY BUSINESS_EXECUTION_CONTROL_REQUESTED_BY "${agent_type}-skill")"
   notification_channel_code="$(config_value MUJITASK_NOTIFICATION_CHANNEL_CODE NOTIFICATION_CHANNEL_CODE "feishu_bot_api")"
-  openclaw_agent_id="$(config_value MUJITASK_OPENCLAW_AGENT_ID OPENCLAW_AGENT_ID "tiktok-ops")"
+  tiktok_openclaw_agent_id="$(config_value MUJITASK_TIKTOK_OPENCLAW_AGENT_ID MUJITASK_OPENCLAW_AGENT_ID "tiktok-ops")"
+  amazon_openclaw_agent_id="$(config_value MUJITASK_AMAZON_OPENCLAW_AGENT_ID "" "amazon-ops")"
+  amazon_feishu_account_id="$(config_value MUJITASK_AMAZON_FEISHU_ACCOUNT_ID "" "default")"
   openclaw_state_dir="$(config_value MUJITASK_OPENCLAW_STATE_DIR OPENCLAW_STATE_DIR "${HOME}/.openclaw")"
 
   prepare_project_tree "${install_dir}"
@@ -1495,8 +1545,10 @@ main() {
     "${executor_env_file}" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
     "MUJITASK_FEISHU_BASE_URL=$(quote_env_value "${feishu_base_url}")" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL=$(quote_env_value "${amazon_products_base_url}")" \
     "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID=$(quote_env_value "${amazon_products_table_id}")" \
     "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID=$(quote_env_value "${amazon_products_view_id}")" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN=$(quote_env_value "${amazon_products_access_token}")" \
     "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL=$(quote_env_value "${fact_db_url}")" \
     "AMAZON_US_BROWSER_PROFILE_REF=$(quote_env_value "${amazon_us_browser_profile_ref}")"
   remove_key_value_file \
@@ -1561,12 +1613,12 @@ main() {
   INSTALLED_SKILL_DIR=""
   install_agent_skill \
     "${install_dir}" \
-    "${skills_dir}" \
+    "${tiktok_skills_dir}" \
     "${token}" \
     "${fastmoss_phone}" \
     "${fastmoss_password}" \
     "${notification_channel_code}" \
-    "${openclaw_agent_id}" \
+    "${tiktok_openclaw_agent_id}" \
     "${openclaw_state_dir}" \
     "${feishu_base_url}" \
     "${tk_selection_table_id}" \
@@ -1578,11 +1630,21 @@ main() {
     "${tk_influencer_outreach_table_id}" \
     "${tk_influencer_outreach_view_id}" \
     "${tk_hot_video_table_id}" \
-    "${tk_hot_video_view_id}" \
-    "${amazon_products_table_id}" \
-    "${amazon_products_view_id}"
+    "${tk_hot_video_view_id}"
   target_skill_dir="${INSTALLED_SKILL_DIR}"
   [[ -n "${target_skill_dir}" ]] || fail_deploy "Skill installation did not return a target directory."
+
+  local amazon_target_skill_dir
+  INSTALLED_AMAZON_SKILL_DIR=""
+  install_amazon_agent_skill \
+    "${install_dir}" \
+    "${amazon_skills_dir}" \
+    "${notification_channel_code}" \
+    "${amazon_openclaw_agent_id}" \
+    "${openclaw_state_dir}" \
+    "${amazon_feishu_account_id}"
+  amazon_target_skill_dir="${INSTALLED_AMAZON_SKILL_DIR}"
+  [[ -n "${amazon_target_skill_dir}" ]] || fail_deploy "Amazon skill installation did not return a target directory."
 
   local resolved_ref="local-checkout"
   if command -v git >/dev/null 2>&1 && git -C "${SOURCE_DIR}" rev-parse --short HEAD >/dev/null 2>&1; then
@@ -1603,7 +1665,8 @@ main() {
   log "Deployment completed."
   log "Project directory: ${install_dir}"
   log "Agent type: ${agent_type}"
-  log "Skill directory: ${target_skill_dir}"
+  log "TikTok skill directory: ${target_skill_dir}"
+  log "Amazon skill directory: ${amazon_target_skill_dir}"
   log "Runtime mode: ${MUJITASK_RUNTIME_MODE:-native}"
 }
 

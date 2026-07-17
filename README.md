@@ -1,13 +1,13 @@
 # Mujitask
 
-Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
+Mujitask 是当前 TikTok / FastMoss / Amazon / 飞书自动化业务项目。
 
 它的核心职责是：
 
 - 从 OpenClaw / Skill / CLI 接收业务任务。
 - 通过 Runtime DB 编排长流程任务。
 - 使用 `executor_daemon`、`api_worker_daemon`、`browser_runloop`、`outbox_dispatcher`、`watchdog` 执行业务和运行时恢复。
-- 采集 TikTok / FastMoss 数据，写回飞书业务表，并沉淀事实数据库和运行产物。
+- 采集 TikTok / FastMoss / Amazon 数据，写回飞书业务表，并沉淀事实数据库和运行产物。
 
 当前项目依赖 `automation-framework`，但不在本仓库维护 framework 的接口说明和 contract 文档。framework 的公开接口、运行时契约和升级说明应直接从 `automation-framework` 包或 framework 仓库读取；本仓库 README 只说明 Mujitask 这个业务项目如何部署、运行和维护。
 
@@ -53,6 +53,13 @@ Mujitask 是当前 TikTok / FastMoss / 飞书自动化业务项目。
 | `tiktok_fastmoss_product_ingest` | 选品采集：TikTok + FastMoss 商品事实采集并写回选品表 | submit 入队，api worker 采集、上传媒体、写事实库 |
 | `search_keyword_selection_products` | 关键词搜索选品写入 | submit 入队，executor 编排，browser/API worker 执行 |
 
+正在实施且 completion gate 尚未通过的正式需求入口：
+
+| task_code | 作用 | 当前状态 |
+| --- | --- | --- |
+| `refresh_amazon_product_row_by_asin` | 从飞书来源行读取美国站 ASIN，采集详情、沉淀 Amazon 事实并写回同一行 | 实施中，尚未作为完成能力发布 |
+| `refresh_current_amazon_product_table` | 扫描 Amazon竞品表并只采集 `采集标签=T` 的记录 | 实施中，尚未作为完成能力发布 |
+
 内部 / debug leaf task 仍可直接运行，但不作为客户正式入口：
 
 - `tiktok_product_link_cleanup`
@@ -83,7 +90,7 @@ bash scripts/deploy/macos/deploy.sh
 
 `deploy.sh` 会在启动或重启 `launchd` 守护进程前执行 Alembic migration，避免新代码访问旧 schema。
 
-飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`），运行时从 `MUJITASK_FEISHU_BASE_URL` 和每张表的 `TABLE_ID` / `VIEW_ID` 拼出完整 table URL。
+飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`、`AMAZON_PRODUCTS`），运行时从 `MUJITASK_FEISHU_BASE_URL` 和每张表的 `TABLE_ID` / `VIEW_ID` 拼出完整 table URL。Amazon 路由由 `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID` 和可选的 `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 显式配置。
 
 ## 4. 本地开发运行
 
@@ -196,7 +203,8 @@ automation-business-scaffold-run run \
 | `src/automation_business_scaffold/models/` | 运行时和业务模型 |
 | `src/automation_business_scaffold/validators/` | 业务参数校验 |
 | `contracts/` | 根级字段、状态、workflow、Codex task routing 机器契约 |
-| `skills/mujitask-tiktok-feishu-sync/` | 仓库内 agent skill bundle 源 |
+| `skills/mujitask-tiktok-feishu-sync/` | TikTok 业务独立 agent skill bundle 源 |
+| `skills/mujitask-amazon-feishu-sync/` | Amazon 业务独立 agent skill bundle 源；部署到 `amazon-ops` / `workspace-amazon` |
 | `scripts/deploy/macos/` | macOS 一键部署 |
 | `scripts/execution_control/` | Runtime DB、daemon、launchd、测试辅助脚本 |
 | `docs/` | 项目文档地图 |
@@ -219,14 +227,15 @@ automation-business-scaffold-run run \
 | `.env` | 本地 agent / browser profile / 通用调试配置 |
 | `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
 | `scripts/execution_control/executor.local.env` | Runtime DB、Fact DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
-| `skills/mujitask-tiktok-feishu-sync/skill.local.env` | skill 固定业务输入配置；正式 skill submit 不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
+| `skills/mujitask-tiktok-feishu-sync/skill.local.env` | TikTok workspace 的 skill 固定业务输入配置 |
+| `skills/mujitask-amazon-feishu-sync/skill.local.env` | Amazon workspace 的 agent/飞书回复路由配置；不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
 
 当前代码自动加载的优先级是：
 
 1. CLI 参数
 2. 当前 shell / launchd / CI 显式环境变量
 3. `scripts/execution_control/executor.local.env`
-4. `skills/mujitask-tiktok-feishu-sync/skill.local.env`
+4. 当前业务 workspace 对应的 `skills/{skill_code}/skill.local.env`
 5. `.env`
 
 配置说明详见 [docs/dev/project-configuration.md](./docs/dev/project-configuration.md)。

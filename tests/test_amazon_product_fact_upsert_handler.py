@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 from sqlalchemy import create_engine, text
 
 import automation_business_scaffold.capabilities.persistence.database.amazon_product_fact_upsert_handler as fact_handler_module
@@ -100,6 +101,29 @@ def _capture_bytes(name: str, *, asin: str, resolved_url: str) -> bytes:
         "delivery_region": "US test region",
         "profile_context_digest": "profile-digest",
     }
+    media = capture.get("media")
+    evidence = capture.get("field_evidence")
+    if isinstance(media, dict) and isinstance(evidence, dict):
+        governed_urls: dict[str, str] = {}
+
+        def governed_media(value: object) -> object:
+            if not isinstance(value, dict) or not isinstance(value.get("url"), str):
+                return value
+            original = value["url"]
+            governed_url = governed_urls.setdefault(
+                original,
+                f"https://m.media-amazon.com/images/I/fact-{len(governed_urls)}.jpg",
+            )
+            return {"url": governed_url}
+
+        media["main_image"] = governed_media(media.get("main_image"))
+        media["gallery_images"] = [
+            governed_media(item) for item in media.get("gallery_images", [])
+        ]
+        if isinstance(evidence.get("media.main_image"), dict):
+            evidence["media.main_image"]["value"] = media["main_image"]
+        if isinstance(evidence.get("media.gallery_images"), dict):
+            evidence["media.gallery_images"]["value"] = media["gallery_images"]
     return json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -157,12 +181,10 @@ def _payload(capture_bytes: bytes, *, asin: str = "B0CHILD001") -> dict[str, obj
             )
         )
     if evidence.get("media.gallery_images", {}).get("status") == "observed":
-        seen_urls = {main_url} if main_url else set()
         for position, image in enumerate(media.get("gallery_images", [])):
             source_url = str(image.get("url") or "") if isinstance(image, dict) else ""
-            if not source_url or source_url in seen_urls:
+            if not source_url:
                 continue
-            seen_urls.add(source_url)
             materialized_media_assets.append(
                 _materialized_asset(
                     asin=asin,
@@ -260,6 +282,21 @@ def test_handler_is_allowlisted_bound_and_has_a_strict_job_contract() -> None:
     )
     assert AMAZON_PRODUCT_FACT_UPSERT_JOB.business_key_template == "{source_record_id}"
     assert "projection_facts" not in AMAZON_PRODUCT_FACT_UPSERT_JOB.result_contract.field_names()
+
+
+def test_field_evidence_paths_match_the_machine_fact_contract() -> None:
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "contracts"
+        / "facts"
+        / "product-fact-collection.yaml"
+    )
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    target_fields = contract["platform_contracts"]["amazon_us"]["field_evidence_policy"][
+        "target_fields"
+    ]
+
+    assert set(target_fields) == fact_handler_module._REQUIRED_FIELD_EVIDENCE_PATHS
 
 
 def test_handler_fails_when_fact_database_configuration_is_missing(monkeypatch) -> None:
@@ -922,6 +959,68 @@ def test_handler_rejects_invalid_capture_payload(runtime_db_url) -> None:
     assert _count(runtime_db_url, "amazon_products") == 0
 
 
+def test_capture_validator_accepts_legacy_revision_1_promotion_texts() -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    legacy_promotions = [
+        item["raw_text"]
+        for item in capture["commerce"]["featured_offer"]["promotions"]
+    ]
+    capture["contract_revision"] = 1
+    capture["commerce"]["featured_offer"]["promotions"] = legacy_promotions
+    capture["field_evidence"]["commerce.featured_offer.promotions"][
+        "value"
+    ] = legacy_promotions
+
+    validated = fact_handler_module._decode_and_validate_capture(
+        json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+    assert validated["contract_revision"] == 1
+    assert validated["commerce"]["featured_offer"]["promotions"] == legacy_promotions
+
+
+def test_capture_validator_rejects_sensitive_revision_2_promotion_text() -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    promotions = capture["commerce"]["featured_offer"]["promotions"]
+    promotions[0]["raw_text"] = "Apply 10% coupon token=must-not-persist"
+    capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = promotions
+
+    with pytest.raises(ValueError, match="sensitive promotion text"):
+        fact_handler_module._decode_and_validate_capture(
+            json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+
+
+def test_capture_validator_rejects_non_whitelisted_revision_2_promotion() -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    promotions = capture["commerce"]["featured_offer"]["promotions"]
+    promotions[0]["promotion_type"] = "checkout_discount"
+    capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = promotions
+
+    with pytest.raises(ValueError, match="promotion_type is invalid"):
+        fact_handler_module._decode_and_validate_capture(
+            json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+
+
 def test_handler_rejects_capture_with_incomplete_field_evidence_before_any_fact_write(
     runtime_db_url,
 ) -> None:
@@ -1224,6 +1323,7 @@ def test_handler_persists_partial_media_and_omits_incomplete_gallery_projection(
     assert [asset["media_role"] for asset in materialized_assets] == [
         "main_image",
         "gallery_image",
+        "gallery_image",
     ]
 
     result = amazon_product_fact_upsert_handler(
@@ -1240,12 +1340,12 @@ def test_handler_persists_partial_media_and_omits_incomplete_gallery_projection(
     assert result.status == "partial_success"
     assert result.summary["collection_status"] == "partial_success"
     assert result.summary["media_coverage"] == {
-        "expected": 3,
-        "materialized": 2,
+        "expected": 4,
+        "materialized": 3,
         "missing": 1,
         "complete": False,
     }
-    assert result.result["persisted_counts"]["media_assets"] == 2
+    assert result.result["persisted_counts"]["media_assets"] == 3
     projection = result.result["projection_facts"]
     assert projection["collection_status"] == "partial_success"
     assert projection["field_evidence"]["media.main_image"]["status"] == "observed"
@@ -1259,10 +1359,10 @@ def test_handler_persists_partial_media_and_omits_incomplete_gallery_projection(
         {},
     )
     assert "主图" in command["fields"]
-    assert "图库" not in command["fields"]
+    assert "侧边栏图片" not in command["fields"]
     assert _count(runtime_db_url, "amazon_products") == 1
-    assert _count(runtime_db_url, "amazon_media_assets") == 2
-    assert _count(runtime_db_url, "amazon_product_media_assets") == 2
+    assert _count(runtime_db_url, "amazon_media_assets") == 3
+    assert _count(runtime_db_url, "amazon_product_media_assets") == 3
 
 
 def test_handler_accepts_partial_capture_with_observed_subset_and_no_missing_evidence(
@@ -1392,8 +1492,8 @@ def test_same_run_partial_media_retry_converges_to_full_without_duplicate_facts(
     assert partial.summary["media_coverage"]["complete"] is False
     assert complete.status == "success"
     assert complete.summary["media_coverage"] == {
-        "expected": 3,
-        "materialized": 3,
+        "expected": 4,
+        "materialized": 4,
         "missing": 0,
         "complete": True,
     }
@@ -1405,8 +1505,8 @@ def test_same_run_partial_media_retry_converges_to_full_without_duplicate_facts(
     assert _count(runtime_db_url, "amazon_offer_snapshots") == 1
     assert _count(runtime_db_url, "amazon_product_variants") == 2
     assert _count(runtime_db_url, "amazon_bsr_snapshots") == 2
-    assert _count(runtime_db_url, "amazon_media_assets") == 3
-    assert _count(runtime_db_url, "amazon_product_media_assets") == 3
+    assert _count(runtime_db_url, "amazon_media_assets") == 4
+    assert _count(runtime_db_url, "amazon_product_media_assets") == 4
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
     assert (
@@ -1525,6 +1625,47 @@ def test_handler_rejects_invalid_media_scalar_before_fact_write(runtime_db_url) 
     assert _count(runtime_db_url, "amazon_products") == 0
 
 
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "https://evil.example/image.jpg",
+        "https://m.media-amazon.com/images/I/image.jpg?token=must-not-persist",
+    ],
+)
+def test_handler_rejects_ungoverned_capture_media_before_fact_write(
+    runtime_db_url,
+    unsafe_url: str,
+) -> None:
+    capture_bytes = _capture_bytes(
+        "product_detail_child.html",
+        asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+    )
+    capture = json.loads(capture_bytes)
+    capture["media"]["main_image"] = {"url": unsafe_url}
+    capture["field_evidence"]["media.main_image"]["value"] = {"url": unsafe_url}
+    invalid_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode()
+    payload = _payload(invalid_bytes)
+    artifact_store = FakeArtifactStore(
+        {("artifacts", payload["normalized_capture_ref"]["object_key"]): invalid_bytes}
+    )
+
+    result = amazon_product_fact_upsert_handler(
+        _context(
+            payload,
+            metadata={
+                "fact_store": AmazonFactStore(db_url=runtime_db_url),
+                "artifact_store": artifact_store,
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "invalid_amazon_capture"
+    assert _count(runtime_db_url, "amazon_products") == 0
+
+
 def test_handler_rejects_media_prefix_that_only_appears_mid_path(runtime_db_url) -> None:
     capture_bytes = _capture_bytes(
         "product_detail_child.html",
@@ -1620,8 +1761,8 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
         "offer_snapshots": 1,
         "variant_relations": 2,
         "bsr_snapshots": 2,
-        "media_assets": 3,
-        "media_relations": 3,
+        "media_assets": 4,
+        "media_relations": 4,
         "raw_captures": 2,
         "feishu_bindings": 1,
     }
@@ -1646,8 +1787,8 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert _count(runtime_db_url, "amazon_offer_snapshots") == 1
     assert _count(runtime_db_url, "amazon_product_variants") == 2
     assert _count(runtime_db_url, "amazon_bsr_snapshots") == 2
-    assert _count(runtime_db_url, "amazon_media_assets") == 3
-    assert _count(runtime_db_url, "amazon_product_media_assets") == 3
+    assert _count(runtime_db_url, "amazon_media_assets") == 4
+    assert _count(runtime_db_url, "amazon_product_media_assets") == 4
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
 
@@ -1760,7 +1901,7 @@ def test_handler_rejects_divergent_capture_for_the_same_run_before_mutable_fact_
     assert _count(runtime_db_url, "amazon_offer_snapshots") == 1
     assert _count(runtime_db_url, "amazon_product_variants") == 2
     assert _count(runtime_db_url, "amazon_bsr_snapshots") == 2
-    assert _count(runtime_db_url, "amazon_media_assets") == 3
+    assert _count(runtime_db_url, "amazon_media_assets") == 4
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
 

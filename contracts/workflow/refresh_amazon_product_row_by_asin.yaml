@@ -5,6 +5,21 @@ task_code: refresh_amazon_product_row_by_asin
 workflow_code: refresh_amazon_product_row_by_asin
 status: in_progress
 
+agent_artifact:
+  skill_code: mujitask-amazon-feishu-sync
+  path: skills/mujitask-amazon-feishu-sync
+  openclaw_agent_id: amazon-ops
+  workspace_name: workspace-amazon
+  feishu_account_id: default
+  feishu_peer_kind: group
+  peer_id_source: openclaw_deployment_binding
+
+notification_routing:
+  required_reply_channel: feishu
+  required_account_id: default
+  required_target_prefix: chat:oc_
+  transport_owner: notification_outbox
+
 business_requirement: docs/business/requirements/amazon-product-detail-collection.md
 architecture_design: docs/arch/workflow-amazon-product-detail-design.md
 field_contracts:
@@ -47,11 +62,70 @@ persistence:
   requires_fact_db: true
   requires_object_storage: true
   runtime_result_policy: compact_references_only
+  persist_result_identity:
+    source_record_id: exact_source_row
+    requested_asin: exact_normalized_source_asin
+    resolved_asin: exact_validated_browser_resolved_asin
+    run_id: exact_stable_collection_run
+    mismatch: fail_before_summary
+  runtime_result_nested_allowlists:
+    fact_refs:
+      - product_id
+      - snapshot_id
+      - binding_id
+      - raw_capture_ids
+      - normalized_capture_ref
+    media_coverage:
+      - expected
+      - materialized
+      - missing
+      - complete
+    writeback:
+      - written_count
+      - skipped_count
+      - failed_count
+      - target_record_ids
+    artifact_ref:
+      - capture_kind
+      - bucket
+      - object_key
+      - content_digest
+      - content_type
+      - sanitization_status
+      - request_id
+      - execution_id
+      - run_id
+      - collected_at
+      - created_at
+    media_source_ref:
+      - source_url
+      - source_platform
+      - marketplace_code
+      - product_id
+      - media_role
+      - position
+  runtime_result_nested_value_constraints:
+    fact_ids: lowercase_uuid_hex_32
+    raw_capture_ids: list_of_lowercase_uuid_hex_32
+    capture_ref: governed_amazon_raw_capture_coordinate_with_bound_provenance
+    capture_ref_request_and_execution_ids: lowercase_uuid_hex_32
+    capture_ref_run_id: lowercase_sha256_hex_64
+    media_source_ref: amazon_us_https_cdn_url_without_query_or_fragment_or_sensitive_path
+    media_source_role_position: unique_or_reject_before_persist_dispatch
+    same_source_url_distinct_role_position: preserve_each_relation
+    writeback: raw_exact_1_0_0_and_single_source_record_before_compaction
   runtime_context:
     location: task_request.stage_cursor.runtime_context
     allowed:
       - browser_target_digest
       - browser_resource_code
+      - artifact_bucket
+      - artifact_object_prefix
+    value_constraints:
+      browser_target_digest: lowercase_sha256_hex_64
+      browser_resource_code: browser:amazon:{browser_target_digest}
+    artifact_coordinate_snapshot: immutable_submit_time_non_secret_policy
+    missing_artifact_coordinate_snapshot: fail_closed_for_legacy_inflight_request
     forbidden:
       - browser_profile_ref
       - browser_provider_token
@@ -80,7 +154,8 @@ stages:
       collection_status: collecting
       record_target: source_record_id
       last_collected_at: forbidden
-      completion_gate: required_before_browser_dispatch
+      field_policy: excluded_by_active_feishu_write_allowlist
+      completion_gate: skipped_empty_fields_before_browser_dispatch
     exit_condition: normalized capture 引用或受控终态错误已持久化
   - stage_code: persist_amazon_product_detail
     execution_mode: api_worker_job
@@ -95,7 +170,8 @@ stages:
       collection_status: persisting
       record_target: source_record_id
       last_collected_at: forbidden
-      completion_gate: required_before_persist_dispatch
+      field_policy: excluded_by_active_feishu_write_allowlist
+      completion_gate: skipped_empty_fields_before_persist_dispatch
     exit_condition: 媒体、Amazon 事实和来源行投影均已收敛
   - stage_code: ready_for_summary
     execution_mode: summary
@@ -103,6 +179,39 @@ stages:
     exit_condition: 行结果、summary 和 outbox 已持久化
 
 observability:
+  top_level_summary:
+    required_fields:
+      - final_status
+      - row_total_count
+      - row_status_counts
+      - aggregate_metrics
+      - row_summary
+      - failed_stage
+      - error_code
+    row_status_count_keys:
+      - success
+      - partial_success
+      - unavailable
+      - blocked
+      - failed
+      - skipped
+    row_status_count_policy: single_row_one_hot_zero_or_one
+    aggregate_metrics:
+      required:
+        - average_row_duration_ms
+        - max_row_duration_ms
+        - blocked_rate
+        - average_parse_coverage_percentage
+        - media_failure_rate
+        - feishu_failure_rate
+      row_duration: sum_of_sanitized_stage_durations_ms
+      average_parse_coverage_percentage: recompute((observed+explicitly_unavailable)/total*100); zero_when_total_zero_or_invalid
+      media_failure_rate: clamp((media_observed_count-media_materialized_count)/media_observed_count,0,1); zero_when_unobserved
+      feishu_failure_rate: one_when_attempted_step_or_writeback_failed; zero_when_not_attempted
+      bounds:
+        rates: 0_to_1
+        average_parse_coverage_percentage: 0_to_100
+      missing_observation: zero
   row_summary:
     required_identity:
       - requested_asin
@@ -117,6 +226,7 @@ observability:
       - media
       - fact
       - feishu
+    terminal_feishu_writeback_duration: merge_runtime_finished_at_minus_started_at
     counts:
       - field_coverage
       - artifact_count
@@ -134,17 +244,41 @@ observability:
       - cookie
       - object_storage_credential
   runtime_policy: compact_sanitized_observation_only
+  runtime_error_codes:
+    browser_retryable:
+      - navigation_timeout
+      - transient_page_failure
+      - rate_limited
+    browser_terminal:
+      - invalid_asin
+      - invalid_product_url
+      - unsupported_marketplace
+      - browser_profile_unavailable
+      - access_blocked
+      - captcha_required
+      - identity_mismatch
+      - artifact_size_limit_exceeded
+      - required_failure_evidence_missing
+    unknown_child_code: fixed_safe_fallback
+    api_non_retryable_or_supervisor_terminal: force_terminal_even_before_max_attempts
 
 protected_invariants:
   - Browser 是 Amazon 正常采集阶段，不使用 fallback_required 表示正常流程。
   - 完整 capture、HTML 和媒体正文不得进入 Runtime DB；Runtime 只保存紧凑对象引用。
+  - Browser result 在首次写入 task_execution 前，必须按 submit-time bucket/prefix、当前 request/execution、稳定 run 和 ASIN 校验并投影引用；success、partial_success、blocked、failed 都必须携带 browser_target_digest，且必须是当前 browser:amazon:<sha256> resource lane 的精确 suffix；缺失、空值、非法 lane 或不匹配必须失败收敛，非法引用不得进入 artifact_object。
+  - Browser child 返回的 ETag 不属于 Runtime artifact ref contract，不得写入 artifact_object；Runtime 只索引已校验的受控引用字段。
+  - amazon_product_row_persist result 在首次写入 api_worker_job 前，必须按嵌套 allowlist 投影 identity、fact refs、media coverage、writeback 和 observability；child summary、warning、error details 与 progress details 不得原样落库。
+  - amazon_product_row_persist 只允许 success、partial_success 或 failed handler result；fallback_required 和 skipped 必须按 invalid_handler_result 立即失败收敛，不得进入 waiting。
+  - amazon_product_row_persist 的 handler 或 supervisor 明确为 non-retryable/terminal 时，即使尚未耗尽 attempts 也必须 force-terminal，不能回到 pending。
   - 网络层只观察页面自然加载的 exact same-origin fetch/xhr JSON；按 resolved ASIN 和字段 allowlist 净化后才能持久化。
   - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
-  - 飞书投影只更新 source_record_id；missing 字段必须保留已有值。
+  - 飞书投影只更新 source_record_id，且字段集合只能是主图、侧边栏图片、送达日期、包装规格、促销活动记录的子集；missing 字段必须保留已有值。
   - 最终投影只有在 written_count=1、failed_count=0、skipped_count=0 且 target_record_ids 精确等于 source_record_id 时才算收敛。
-  - blocked/captcha 保存证据并失败收敛，不新增绕过路径。
-  - 已定位来源行的 blocked/failed 只通过 status-only projection 写回，不进入商品 Fact persistence。
+  - media_source_ref 的 percent-decoded path 不得含 HTML/token/cookie；重复 media_role/position 必须在 persist 派发和媒体下载前拒绝。
+  - 相同 source URL 对应不同 media_role/position 时必须保留每条商品媒体关系，不得按 URL 全局去重。
+  - blocked/captcha 在首次 Runtime 写入前必须带受控 screenshot artifact evidence，并失败收敛；预导航配置或连接失败可无页面证据，不新增绕过路径。
+  - 已定位来源行的 blocked/failed 不写飞书字段，也不进入商品 Fact persistence；兼容 status-only handler 必须以 skipped_empty_fields 收敛。
   - 单行重复执行必须按来源行、ASIN、run 和事实唯一键保持幂等。
   - collecting 与 persisting 必须在对应副作用派发前写回同一 source_record_id，且非终态写回不得更新上次采集时间。
-  - persist stage 的终态失败必须通过 status-only projection 写回 failed 后再收敛。
-  - 行级观测只保存非敏感 provider code、实测阶段耗时、覆盖率、数量、终态和脱敏错误码；不得保存 profile/workspace/token/cookie 或对象存储 credential。
+  - persist stage 的终态失败不得写飞书状态字段；兼容 status-only handler 以 skipped_empty_fields 收敛后返回原始失败。
+  - 行级观测只保存字段级 allowlist 允许的 provider、progress stage、supervisor 状态、error type/code、实测阶段耗时、覆盖率、数量和终态；未知 child code 使用固定 fallback，不得保存 profile/workspace/token/cookie、通用 opaque code 或对象存储 credential。

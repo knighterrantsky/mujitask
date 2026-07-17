@@ -34,6 +34,7 @@ from automation_business_scaffold.contracts.handler.contract import (
 )
 from automation_business_scaffold.control_plane.executor import worker_dispatch
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
+    ExecutionProgressEvent,
     ExecutionSupervisorError,
     ExecutionSupervisorOutcome,
 )
@@ -47,6 +48,10 @@ from automation_business_scaffold.models import ArtifactObjectRecord
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "amazon"
 OBSERVED_AT = datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc)
+RUNTIME_REQUEST_ID = "1" * 32
+RUNTIME_EXECUTION_ID = "2" * 32
+STABLE_CAPTURE_RUN_ID = "3" * 64
+RUNTIME_TARGET_DIGEST = "d" * 64
 
 
 class FakeArtifactStore:
@@ -113,6 +118,8 @@ def _context(
         "requested_asin": asin,
         "source_record_id": "record-1",
         "run_id": "run-1",
+        "artifact_bucket": "artifacts",
+        "artifact_object_prefix": "dev",
     }
     payload.update(payload_overrides or {})
     metadata: dict[str, object] = {"observed_at": OBSERVED_AT}
@@ -175,6 +182,8 @@ def test_handler_is_allowlisted_bound_and_has_compact_job_contract() -> None:
         "requested_asin",
         "source_record_id",
         "run_id",
+        "artifact_bucket",
+        "artifact_object_prefix",
     )
     assert AMAZON_PRODUCT_BROWSER_FETCH_JOB.business_key_template == (
         "{source_record_id}:{requested_asin}"
@@ -219,11 +228,10 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
         _context(
             store=store,
             payload_overrides={
-                "browser_profile_ref": "payload-must-be-ignored",
-                "browser_workspace_id": "workspace-must-be-ignored",
-                "browser_provider_token": "provider-token-must-be-ignored",
-                "artifact_bucket": "payload-bucket-must-be-ignored",
-                "minio_secret_key": "payload-secret-must-be-ignored",
+                    "browser_profile_ref": "payload-must-be-ignored",
+                    "browser_workspace_id": "workspace-must-be-ignored",
+                    "browser_provider_token": "provider-token-must-be-ignored",
+                    "minio_secret_key": "payload-secret-must-be-ignored",
             },
         )
     )
@@ -300,6 +308,14 @@ def test_success_uploads_governed_capture_and_sanitized_html_and_returns_compact
             "marketplace_code": "US",
             "product_id": "B0CHILD001",
             "media_role": "main_image",
+            "position": 0,
+        },
+        {
+            "source_url": "https://m.media-amazon.com/images/I/structured-main.jpg",
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "gallery_image",
             "position": 0,
         },
         {
@@ -399,6 +415,69 @@ def test_media_source_refs_strip_query_fragment_and_normalize_capture(monkeypatc
     normalized = json.loads(store.uploads[("artifacts", normalized_ref["object_key"])])
     assert normalized["media"]["main_image"]["url"] == expected_url
     assert normalized["field_evidence"]["media.main_image"]["value"]["url"] == expected_url
+
+
+def test_media_source_refs_preserve_same_asset_across_main_and_gallery_roles() -> None:
+    capture = _success_collection()["capture"]
+    source_url = "https://m.media-amazon.com/images/I/shared.jpg"
+    capture["media"]["main_image"] = {"url": source_url}
+    capture["media"]["gallery_images"] = [{"url": source_url}]
+    capture["field_evidence"]["media.main_image"]["value"] = {"url": source_url}
+    capture["field_evidence"]["media.gallery_images"]["value"] = [{"url": source_url}]
+
+    assert handler_module._media_source_refs(capture) == [
+        {
+            "source_url": source_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "main_image",
+            "position": 0,
+        },
+        {
+            "source_url": source_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "gallery_image",
+            "position": 0,
+        },
+    ]
+
+
+def test_media_source_refs_preserve_same_asset_across_gallery_positions() -> None:
+    capture = _success_collection()["capture"]
+    source_url = "https://m.media-amazon.com/images/I/shared-gallery.jpg"
+    capture["media"]["gallery_images"] = [{"url": source_url}, {"url": source_url}]
+    capture["field_evidence"]["media.gallery_images"]["value"] = [
+        {"url": source_url},
+        {"url": source_url},
+    ]
+
+    gallery_refs = [
+        ref
+        for ref in handler_module._media_source_refs(capture)
+        if ref["media_role"] == "gallery_image"
+    ]
+
+    assert gallery_refs == [
+        {
+            "source_url": source_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "gallery_image",
+            "position": 0,
+        },
+        {
+            "source_url": source_url,
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "gallery_image",
+            "position": 1,
+        },
+    ]
 
 
 @pytest.mark.parametrize(
@@ -652,6 +731,46 @@ def test_wait_for_amazon_page_clicks_at_most_one_visible_details_toggle() -> Non
         for selector in page.locator_selector.split(",")
     )
     assert page.toggle.click_count == 1
+
+
+def test_wait_for_amazon_page_uses_framework_humanized_scroll_when_available() -> None:
+    class AutomationPage:
+        def __init__(self) -> None:
+            self.scrolls: list[int] = []
+
+        def scroll_by(self, delta_y: int) -> None:
+            self.scrolls.append(delta_y)
+
+    class Page:
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+            assert state == "domcontentloaded"
+            assert timeout == 5000
+
+        def wait_for_selector(self, selector: str, *, timeout: int) -> None:
+            del selector, timeout
+
+        def evaluate(self, script: str) -> None:
+            del script
+            self.evaluate_calls += 1
+
+        def locator(self, selector: str):
+            del selector
+            raise RuntimeError("details toggle is unavailable")
+
+    page = Page()
+    automation_page = AutomationPage()
+
+    handler_module._wait_for_amazon_page(
+        page,
+        timeout_ms=5000,
+        automation_page=automation_page,
+    )
+
+    assert automation_page.scrolls == [1200, 1600, 2000]
+    assert page.evaluate_calls == 0
 
 
 def test_screenshot_capture_fails_closed_when_sensitive_masking_fails() -> None:
@@ -1313,7 +1432,7 @@ def test_terminal_page_errors_upload_sanitized_html_and_screenshot(
             "html": _fixture("product_detail_blocked.html")
             + '<div data-token="secret-token-must-not-leak"></div>',
             "resolved_url": "https://www.amazon.com/errors/validateCaptcha",
-            "browser_target_digest": "target-digest",
+            "browser_target_digest": RUNTIME_TARGET_DIGEST,
             "screenshot_bytes": b"png-evidence",
             "error": error,
         },
@@ -1560,13 +1679,13 @@ class ArtifactIndexStore:
         self.existing = [
             ArtifactObjectRecord(
                 artifact_id="existing",
-                request_id="request-1",
+                request_id=RUNTIME_REQUEST_ID,
                 execution_id="older-execution",
-                run_id="run-1",
+                run_id=STABLE_CAPTURE_RUN_ID,
                 step_id="older-step",
                 kind="older",
                 bucket="artifacts",
-                object_key="dev/runs/run-1/older.json",
+                object_key=f"dev/runs/{STABLE_CAPTURE_RUN_ID}/older.json",
                 etag="etag",
                 size=1,
                 content_type="application/json",
@@ -1579,7 +1698,7 @@ class ArtifactIndexStore:
         self.marked: tuple[str, dict[str, object]] | None = None
 
     def list_artifacts(self, *, run_id: str) -> list[ArtifactObjectRecord]:
-        assert run_id == "run-1"
+        assert run_id == STABLE_CAPTURE_RUN_ID
         return list(self.existing)
 
     def replace_artifacts(self, *, run_id: str, records: list[ArtifactObjectRecord]) -> None:
@@ -1601,21 +1720,94 @@ class ArtifactIndexStore:
 
 
 def _artifact_outcome(*, failed: bool = False) -> ExecutionSupervisorOutcome:
-    context = _context(store=FakeArtifactStore())
+    base_context = _context(
+        store=FakeArtifactStore(),
+        payload_overrides={"run_id": STABLE_CAPTURE_RUN_ID},
+    )
+    context = HandlerContext(
+        **{
+            **base_context.to_dict(),
+            "request_id": RUNTIME_REQUEST_ID,
+            "job_id": RUNTIME_EXECUTION_ID,
+            "resource_code": f"browser:amazon:{RUNTIME_TARGET_DIGEST}",
+        }
+    )
     content_digest = "a" * 64
     artifact_ref = {
         "capture_kind": "html",
         "bucket": "artifacts",
         "object_key": (
-            f"dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{content_digest}/page.html.gz"
+            "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/"
+            f"{STABLE_CAPTURE_RUN_ID}/{content_digest}/page.html.gz"
         ),
         "etag": "etag-new",
         "size": 123,
         "content_type": "application/gzip",
         "content_digest": content_digest,
         "sanitization_status": "sanitized",
+        "request_id": context.request_id,
+        "execution_id": context.job_id,
+        "run_id": STABLE_CAPTURE_RUN_ID,
+        "collected_at": "2026-07-14T00:00:00Z",
+        "created_at": "2026-07-14T00:00:00Z",
         "created_at_epoch": 2.0,
         "remote_uri": "s3://artifacts/dev/raw/page.html.gz",
+    }
+    normalized_digest = "b" * 64
+    normalized_ref = {
+        "capture_kind": "normalized_capture",
+        "bucket": "artifacts",
+        "object_key": (
+            "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/"
+            f"{STABLE_CAPTURE_RUN_ID}/{normalized_digest}/normalized.json"
+        ),
+        "etag": "etag-normalized",
+        "size": 321,
+        "content_type": "application/json",
+        "content_digest": normalized_digest,
+        "sanitization_status": "normalized",
+        "request_id": context.request_id,
+        "execution_id": context.job_id,
+        "run_id": STABLE_CAPTURE_RUN_ID,
+        "collected_at": "2026-07-14T00:00:00Z",
+        "created_at": "2026-07-14T00:00:00Z",
+        "created_at_epoch": 2.0,
+    }
+    screenshot_digest = "c" * 64
+    screenshot_ref = {
+        "capture_kind": "screenshot",
+        "bucket": "artifacts",
+        "object_key": (
+            "dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/"
+            f"{STABLE_CAPTURE_RUN_ID}/{screenshot_digest}/page.png"
+        ),
+        "etag": "etag-screenshot",
+        "size": 456,
+        "content_type": "image/png",
+        "content_digest": screenshot_digest,
+        "sanitization_status": "not_applicable",
+        "request_id": context.request_id,
+        "execution_id": context.job_id,
+        "run_id": STABLE_CAPTURE_RUN_ID,
+        "collected_at": "2026-07-14T00:00:00Z",
+        "created_at": "2026-07-14T00:00:00Z",
+        "created_at_epoch": 2.0,
+    }
+    artifact_refs = [normalized_ref, artifact_ref]
+    if failed:
+        artifact_refs.append(screenshot_ref)
+    result_payload = {
+        "marketplace_code": "US",
+        "requested_asin": "B0CHILD001",
+        "resolved_asin": "B0CHILD001",
+        "canonical_url": "https://www.amazon.com/dp/B0CHILD001",
+        "collection_status": "blocked" if failed else "success",
+        "field_coverage": {"total": 1, "observed": 1},
+        "normalized_capture_ref": normalized_ref,
+        "raw_capture_refs": artifact_refs,
+        "artifact_refs": artifact_refs,
+        "media_source_refs": [],
+        "browser_target_digest": RUNTIME_TARGET_DIGEST,
     }
     if failed:
         worker_result = HandlerResult.failed(
@@ -1626,7 +1818,7 @@ def _artifact_outcome(*, failed: bool = False) -> ExecutionSupervisorOutcome:
                 message="blocked",
                 retryable=False,
             ),
-            result={"artifact_refs": [artifact_ref]},
+            result=result_payload,
         )
         supervisor_error = ExecutionSupervisorError(
             error_type="browser_failure",
@@ -1638,7 +1830,7 @@ def _artifact_outcome(*, failed: bool = False) -> ExecutionSupervisorOutcome:
     else:
         worker_result = HandlerResult.success(
             context,
-            result={"artifact_refs": [artifact_ref]},
+            result=result_payload,
         )
         supervisor_error = None
     return ExecutionSupervisorOutcome(
@@ -1650,6 +1842,123 @@ def _artifact_outcome(*, failed: bool = False) -> ExecutionSupervisorOutcome:
         heartbeat_count=0,
         error=supervisor_error,
     )
+
+
+def test_browser_worker_once_does_not_return_or_persist_raw_amazon_child_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid_outcome = _artifact_outcome()
+    secret = "Bearer must-not-cross-runtime-or-log-boundary"
+    progress_updates: list[dict[str, object]] = []
+    claimed = SimpleNamespace(
+        request_id=valid_outcome.context.request_id,
+        execution_id=valid_outcome.context.job_id,
+        item_code=valid_outcome.context.handler_code,
+        payload=valid_outcome.context.payload,
+        run_id="claim-run-1",
+        workflow_code=valid_outcome.context.workflow_code,
+        business_key="amazon:US:B0CHILD001",
+        dedupe_key="amazon-browser-1",
+        resource_code=f"browser:amazon:{RUNTIME_TARGET_DIGEST}",
+        attempt_count=1,
+        max_attempts=1,
+        max_execution_seconds=30,
+    )
+
+    class StoredExecution:
+        def __init__(self, kwargs: dict[str, object]) -> None:
+            self.result_status = "success"
+            self.status = "finished"
+            self.summary = kwargs["summary"]
+            self.result = kwargs["result"]
+            self.error_type = ""
+            self.error_code = ""
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "execution_id": claimed.execution_id,
+                "request_id": claimed.request_id,
+                "item_code": claimed.item_code,
+                "status": self.status,
+                "result_status": self.result_status,
+                "summary": self.summary,
+                "result": self.result,
+                "error_type": self.error_type,
+                "error_code": self.error_code,
+            }
+
+    class Store(ArtifactIndexStore):
+        def claim_next_browser_execution(self, **_kwargs):
+            return claimed
+
+        def update_task_execution_progress(self, **kwargs):
+            progress_updates.append(dict(kwargs))
+            return claimed
+
+        def heartbeat_browser_execution(self, **_kwargs):
+            return True
+
+        def mark_browser_execution_success(self, **kwargs):
+            self.marked = ("success", kwargs)
+            return StoredExecution(kwargs)
+
+    def supervised(**kwargs):
+        runtime_context = kwargs["context"]
+        kwargs["callbacks"].on_progress(
+            ExecutionProgressEvent(
+                progress_stage="xBearer-runtime-secret",
+                message=secret,
+                details={"cookie": secret},
+            )
+        )
+        return ExecutionSupervisorOutcome(
+            context=runtime_context,
+            worker_result=HandlerResult.success(
+                runtime_context,
+                summary={"cookie": secret},
+                result={**valid_outcome.worker_result.result, "cookie": secret},
+                warnings=(secret,),
+            ),
+            supervisor_status="handler_completed",
+            started_at=1.0,
+            finished_at=2.0,
+            heartbeat_count=0,
+            progress_events=(
+                ExecutionProgressEvent(
+                    progress_stage="parse",
+                    message=secret,
+                    details={"cookie": secret},
+                ),
+            ),
+        )
+
+    store = Store()
+    monkeypatch.setattr(
+        worker_dispatch,
+        "build_runtime_settings",
+        lambda _params: SimpleNamespace(
+            worker_id="browser-worker-1",
+            lease_seconds=30,
+            heartbeat_interval_seconds=1,
+            retry_delay_seconds=5,
+        ),
+    )
+    monkeypatch.setattr(worker_dispatch, "create_runtime_store", lambda _settings: store)
+    monkeypatch.setattr(worker_dispatch, "run_supervised_handler", supervised)
+    monkeypatch.setattr(
+        worker_dispatch,
+        "build_runtime_request_payload",
+        lambda **_kwargs: {},
+    )
+
+    payload = worker_dispatch.execute_browser_once({})
+
+    assert secret not in repr(progress_updates)
+    assert secret not in repr(payload)
+    assert progress_updates[-1]["progress_stage"] == "handler_progress"
+    assert progress_updates[-1]["message"] == "Amazon browser collection progress updated."
+    assert payload["worker_result"]["result"]["requested_asin"] == "B0CHILD001"
+    assert "progress_events" not in payload["supervisor"]
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -1666,22 +1975,55 @@ def test_browser_outcome_indexes_amazon_artifacts_without_deleting_existing_reco
         retry_delay_seconds=5,
     )
 
-    assert {record.artifact_id for record in store.replaced} == {
+    expected_artifact_ids = {
         "existing",
         hashlib.sha256(
             (
-                "run-1:artifacts:dev/raw-captures/amazon/us/B0CHILD001/2026/07/14/"
-                f"run-1/{'a' * 64}/page.html.gz"
+                f"{STABLE_CAPTURE_RUN_ID}:artifacts:dev/raw-captures/amazon/us/"
+                "B0CHILD001/2026/07/14/"
+                f"{STABLE_CAPTURE_RUN_ID}/{'b' * 64}/normalized.json"
+            ).encode("utf-8")
+        ).hexdigest(),
+        hashlib.sha256(
+            (
+                f"{STABLE_CAPTURE_RUN_ID}:artifacts:dev/raw-captures/amazon/us/"
+                "B0CHILD001/2026/07/14/"
+                f"{STABLE_CAPTURE_RUN_ID}/{'a' * 64}/page.html.gz"
             ).encode("utf-8")
         ).hexdigest(),
     }
-    new_record = next(record for record in store.replaced if record.artifact_id != "existing")
-    assert new_record.request_id == "request-1"
-    assert new_record.execution_id == "execution-1"
-    assert new_record.run_id == "run-1"
-    assert new_record.step_id == "collect_amazon_product_detail"
     if failed:
-        assert store.marked is not None
+        expected_artifact_ids.add(
+            hashlib.sha256(
+                (
+                    f"{STABLE_CAPTURE_RUN_ID}:artifacts:dev/raw-captures/amazon/us/"
+                    "B0CHILD001/2026/07/14/"
+                    f"{STABLE_CAPTURE_RUN_ID}/{'c' * 64}/page.png"
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+    assert {record.artifact_id for record in store.replaced} == expected_artifact_ids
+    new_record = next(record for record in store.replaced if record.artifact_id != "existing")
+    assert new_record.request_id == RUNTIME_REQUEST_ID
+    assert new_record.execution_id == RUNTIME_EXECUTION_ID
+    assert new_record.run_id == STABLE_CAPTURE_RUN_ID
+    assert new_record.step_id == "collect_amazon_product_detail"
+    assert store.marked is not None
+    stored_ref = store.marked[1]["result"]["artifact_refs"][0]
+    assert set(stored_ref) == {
+        "capture_kind",
+        "bucket",
+        "object_key",
+        "content_digest",
+        "content_type",
+        "sanitization_status",
+        "request_id",
+        "execution_id",
+        "run_id",
+        "collected_at",
+        "created_at",
+    }
+    if failed:
         assert store.marked[0] == "terminal"
         assert store.marked[1]["run_id"] == "claim-run-1"
 
@@ -1701,6 +2043,623 @@ def test_non_retryable_amazon_failure_finishes_on_the_first_attempt() -> None:
     assert (success_count, failed_count) == (0, 1)
     assert store.marked is not None
     assert store.marked[0] == "terminal"
+
+
+def test_browser_storage_rejects_foreign_capture_before_runtime_or_index_write() -> None:
+    valid_outcome = _artifact_outcome()
+    foreign_ref = {
+        **valid_outcome.worker_result.result["artifact_refs"][0],
+        "request_id": "foreign-request",
+        "access_token": "must-not-cross-runtime-boundary",
+    }
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.success(
+            valid_outcome.context,
+            result={"artifact_refs": [foreign_ref]},
+        ),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[0] == "terminal"
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+    assert "collection_status" not in store.marked[1]["result"]
+    assert "foreign-request" not in repr(store.marked[1]["result"])
+    assert "must-not-cross-runtime-boundary" not in repr(store.marked[1]["result"])
+
+
+def test_browser_storage_projects_nested_values_before_first_runtime_write() -> None:
+    valid_outcome = _artifact_outcome()
+    secret = "Bearer must-not-cross-runtime-boundary"
+    worker_result = HandlerResult.success(
+        valid_outcome.context,
+        summary={"collection_status": "success", "cookie": secret},
+        result={
+            **valid_outcome.worker_result.result,
+            "marketplace_code": "US",
+            "requested_asin": "B0CHILD001",
+            "resolved_asin": "B0CHILD001",
+            "canonical_url": "https://www.amazon.com/dp/B0CHILD001",
+            "collection_status": "success",
+            "field_coverage": {"total": 2, "observed": 1, "cookie": secret},
+            "media_source_refs": [
+                {
+                    "source_url": "https://m.media-amazon.com/images/I/main.jpg?token=drop",
+                    "source_platform": "amazon",
+                    "marketplace_code": "US",
+                    "product_id": "B0CHILD001",
+                    "media_role": "main_image",
+                    "position": 0,
+                    "cookie": secret,
+                },
+                {
+                    "source_url": "https://m.media-amazon.com/images/token=secret.jpg",
+                    "source_platform": "amazon",
+                    "marketplace_code": "US",
+                    "product_id": "B0CHILD001",
+                    "media_role": "gallery_image",
+                    "position": 1,
+                },
+            ],
+            "browser_target_digest": RUNTIME_TARGET_DIGEST,
+            "browser_provider_name": "roxy",
+            "stage_durations_ms": {"navigation": 1.25, "cookie": secret},
+        },
+        warnings=(secret,),
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=worker_result,
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        progress_events=(
+            ExecutionProgressEvent(
+                progress_stage="parse",
+                message=secret,
+                details={"cookie": secret},
+            ),
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "success"
+    assert (success_count, failed_count) == (1, 0)
+    assert store.marked is not None
+    stored = store.marked[1]
+    assert secret not in repr(stored["result"])
+    assert secret not in repr(stored["summary"])
+    assert "warnings" not in stored["result"]["handler_result"]
+    assert "progress_events" not in stored["result"]["supervisor"]
+    assert stored["result"]["handler_result"]["status"] == "partial_success"
+    assert stored["result"]["handler_result"]["contract_revision"] == "runtime_contract"
+    assert stored["summary"]["handler_status"] == "partial_success"
+    assert stored["result"]["collection_status"] == "partial_success"
+    assert stored["result"]["field_coverage"] == {
+        "total": 2,
+        "observed": 1,
+        "explicitly_unavailable": 0,
+        "missing": 1,
+        "percentage": 50.0,
+    }
+    assert stored["result"]["media_source_refs"] == [
+        {
+            "source_url": "https://m.media-amazon.com/images/I/main.jpg",
+            "source_platform": "amazon",
+            "marketplace_code": "US",
+            "product_id": "B0CHILD001",
+            "media_role": "main_image",
+            "position": 0,
+        }
+    ]
+    assert stored["result"]["stage_durations_ms"] == {"navigation": 1.25}
+
+
+def test_browser_storage_requires_submit_time_artifact_coordinate_snapshot() -> None:
+    valid_outcome = _artifact_outcome()
+    context = _context(
+        store=FakeArtifactStore(),
+        payload_overrides={"artifact_object_prefix": None},
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=context,
+        worker_result=HandlerResult.success(
+            context,
+            result={"artifact_refs": valid_outcome.worker_result.result["artifact_refs"]},
+        ),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_storage_rejects_incomplete_success_result_before_runtime_write() -> None:
+    valid_outcome = _artifact_outcome()
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.success(
+            valid_outcome.context,
+            result={"collection_status": "success"},
+        ),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[0] == "terminal"
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_storage_rejects_target_digest_not_bound_to_resource_lane() -> None:
+    outcome = _artifact_outcome()
+    foreign_digest = "e" * 64
+    outcome.worker_result.result["browser_target_digest"] = foreign_digest
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+    assert foreign_digest not in repr(store.marked[1])
+
+
+def test_browser_storage_rejects_empty_digest_from_invalid_resource_lane() -> None:
+    valid_outcome = _artifact_outcome()
+    context = HandlerContext(
+        **{
+            **valid_outcome.context.to_dict(),
+            "resource_code": "browser:amazon:",
+        }
+    )
+    result = dict(valid_outcome.worker_result.result)
+    result["browser_target_digest"] = ""
+    outcome = ExecutionSupervisorOutcome(
+        context=context,
+        worker_result=HandlerResult.success(context, result=result),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_storage_rejects_blocked_result_without_target_digest() -> None:
+    outcome = _artifact_outcome(failed=True)
+    outcome.worker_result.result.pop("browser_target_digest")
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_artifact_index_drops_child_controlled_etag() -> None:
+    outcome = _artifact_outcome()
+    secret = "Bearer-runtime-index-secret"
+    for ref in outcome.worker_result.result["artifact_refs"]:
+        ref["etag"] = secret
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "success"
+    assert (success_count, failed_count) == (1, 0)
+    new_records = [record for record in store.replaced if record.artifact_id != "existing"]
+    assert new_records
+    assert all(record.etag == "" for record in new_records)
+    assert secret not in repr(store.replaced)
+    assert secret not in repr(store.marked)
+
+
+def test_browser_storage_rejects_blocked_failure_without_screenshot_evidence() -> None:
+    valid_outcome = _artifact_outcome(failed=True)
+    result = dict(valid_outcome.worker_result.result)
+    for field in ("normalized_capture_ref", "raw_capture_refs", "artifact_refs"):
+        result.pop(field, None)
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.failed(
+            valid_outcome.context,
+            error=valid_outcome.worker_result.error,
+            result=result,
+        ),
+        supervisor_status=valid_outcome.supervisor_status,
+        started_at=valid_outcome.started_at,
+        finished_at=valid_outcome.finished_at,
+        heartbeat_count=valid_outcome.heartbeat_count,
+        error=valid_outcome.error,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[0] == "terminal"
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_storage_rejects_foreign_identity_in_blocked_result() -> None:
+    outcome = _artifact_outcome(failed=True)
+    foreign_asin = "B0OTHER001"
+    outcome.worker_result.result.update(
+        {
+            "requested_asin": foreign_asin,
+            "resolved_asin": foreign_asin,
+            "canonical_url": f"https://www.amazon.com/dp/{foreign_asin}",
+        }
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+    assert foreign_asin not in repr(store.marked[1])
+
+
+def test_browser_storage_converges_extreme_capture_timestamp_to_terminal_failure() -> None:
+    outcome = _artifact_outcome()
+    outcome.worker_result.result["normalized_capture_ref"]["collected_at"] = (
+        "0001-01-01T00:00:00+23:59"
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[0] == "terminal"
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_projection_exception_is_safely_terminalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "Bearer projection-internal-secret"
+    actual_projection = worker_dispatch.get_runtime_result_projection(
+        "amazon_product_browser_fetch"
+    )
+    assert actual_projection is not None
+
+    class ExplodingProjection:
+        def project_storage(self, outcome: ExecutionSupervisorOutcome):
+            del outcome
+            raise OverflowError(secret)
+
+        def projection_failure(
+            self,
+            outcome: ExecutionSupervisorOutcome,
+            error: Exception,
+            *,
+            phase: str,
+        ):
+            return actual_projection.projection_failure(
+                outcome,
+                error,
+                phase=phase,
+            )
+
+    monkeypatch.setattr(
+        worker_dispatch,
+        "get_runtime_result_projection",
+        lambda handler_code: (
+            ExplodingProjection()
+            if handler_code == "amazon_product_browser_fetch"
+            else None
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=_artifact_outcome(),
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+    assert secret not in repr(store.marked[1])
+
+
+def test_browser_storage_allows_pre_navigation_failure_without_evidence() -> None:
+    valid_outcome = _artifact_outcome()
+    error = HandlerError(
+        error_type="amazon_browser_failure",
+        error_code="transient_page_failure",
+        message="navigation failed",
+        retryable=True,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.failed(
+            valid_outcome.context,
+            error=error,
+            result={
+                "collection_status": "failed",
+                "browser_target_digest": RUNTIME_TARGET_DIGEST,
+            },
+        ),
+        supervisor_status="handler_failed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        error=ExecutionSupervisorError(
+            error_type=error.error_type,
+            error_code=error.error_code,
+            message=error.message,
+            retryable=True,
+            terminal=False,
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "waiting"
+    assert (success_count, failed_count) == (0, 0)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[0] == "failed"
+    assert store.marked[1]["error_code"] == "transient_page_failure"
+
+
+@pytest.mark.parametrize("error_code", ["navigation_timeout", "rate_limited"])
+def test_browser_storage_preserves_governed_retryable_error_codes(error_code: str) -> None:
+    valid_outcome = _artifact_outcome()
+    error = HandlerError(
+        error_type="amazon_browser_failure",
+        error_code=error_code,
+        message="temporary navigation failure",
+        retryable=True,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.failed(
+            valid_outcome.context,
+            error=error,
+            result={
+                "collection_status": "failed",
+                "browser_target_digest": RUNTIME_TARGET_DIGEST,
+            },
+        ),
+        supervisor_status="handler_failed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        error=ExecutionSupervisorError(
+            error_type=error.error_type,
+            error_code=error.error_code,
+            message=error.message,
+            retryable=True,
+            terminal=False,
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "waiting"
+    assert (success_count, failed_count) == (0, 0)
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == error_code
+
+
+@pytest.mark.parametrize(
+    "identity_overrides",
+    [
+        {"resolved_asin": "B0OTHER001"},
+        {
+            "resolved_asin": "B0OTHER001",
+            "parent_asin": "B0CHILD001",
+            "collection_status": "success",
+        },
+    ],
+)
+def test_browser_storage_rejects_unrelated_resolved_asin_before_runtime_write(
+    identity_overrides: dict[str, object],
+) -> None:
+    valid_outcome = _artifact_outcome()
+    result = {**valid_outcome.worker_result.result, **identity_overrides}
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.success(valid_outcome.context, result=result),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, _, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert failed_count == 1
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+
+
+def test_browser_storage_rejects_noncanonical_bound_runtime_identifier() -> None:
+    valid_outcome = _artifact_outcome()
+    context = HandlerContext(
+        **{
+            **valid_outcome.context.to_dict(),
+            "request_id": "request-1",
+        }
+    )
+    result = json.loads(json.dumps(valid_outcome.worker_result.result))
+    result["normalized_capture_ref"]["request_id"] = "request-1"
+    for field in ("raw_capture_refs", "artifact_refs"):
+        for ref in result[field]:
+            ref["request_id"] = "request-1"
+    outcome = ExecutionSupervisorOutcome(
+        context=context,
+        worker_result=HandlerResult.success(context, result=result),
+        supervisor_status="handler_completed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.replaced == []
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_validation_failed"
+    assert "request-1" not in repr(store.marked[1]["result"])
 
 
 def test_artifact_retry_uses_stable_capture_run_id_across_claim_attempts() -> None:
@@ -1724,7 +2683,7 @@ def test_artifact_retry_uses_stable_capture_run_id_across_claim_attempts() -> No
         record for record in second_store.replaced if record.artifact_id != "existing"
     )
     assert first_new.artifact_id == second_new.artifact_id
-    assert first_new.run_id == second_new.run_id == "run-1"
+    assert first_new.run_id == second_new.run_id == STABLE_CAPTURE_RUN_ID
 
 
 def test_browser_artifact_index_failure_retries_before_marking_success() -> None:
@@ -1743,6 +2702,90 @@ def test_browser_artifact_index_failure_retries_before_marking_success() -> None
     assert store.marked is not None
     assert store.marked[0] == "failed"
     assert store.marked[1]["error_code"] == "artifact_index_failed"
+
+
+def test_browser_artifact_index_failure_does_not_store_provider_error_text() -> None:
+    secret = "Bearer must-not-cross-runtime-boundary"
+
+    class SecretFailureStore(ArtifactIndexStore):
+        def replace_artifacts(
+            self,
+            *,
+            run_id: str,
+            records: list[ArtifactObjectRecord],
+        ) -> None:
+            del run_id, records
+            raise RuntimeError(secret)
+
+    store = SecretFailureStore()
+
+    worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=_artifact_outcome(),
+        retry_delay_seconds=5,
+    )
+
+    assert store.marked is not None
+    assert store.marked[1]["error_code"] == "artifact_index_failed"
+    assert secret not in repr(store.marked[1])
+
+
+@pytest.mark.parametrize(
+    "secret_code",
+    [
+        "xBearer-runtime-secret",
+        "sk_live_51ABCxyz",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ghp_abcdefghijklmnopqrstuvwxyz123456",
+    ],
+)
+def test_browser_failure_sanitizes_error_columns_and_nested_envelope(
+    secret_code: str,
+) -> None:
+    valid_outcome = _artifact_outcome(failed=True)
+    worker_result = HandlerResult.failed(
+        valid_outcome.context,
+        error=HandlerError(
+            error_type=secret_code,
+            error_code=secret_code,
+            message="Bearer must-not-cross-runtime-boundary",
+            retryable=False,
+        ),
+        result=valid_outcome.worker_result.result,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=worker_result,
+        supervisor_status="handler_failed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        error=ExecutionSupervisorError(
+            error_type=secret_code,
+            error_code=secret_code,
+            message="Bearer must-not-cross-runtime-boundary",
+            retryable=False,
+            terminal=True,
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert store.marked is not None
+    stored = store.marked[1]
+    assert stored["error_type"] == "amazon_browser_failure"
+    assert stored["error_code"] == "amazon_browser_collection_failed"
+    assert secret_code not in repr(stored)
+    assert "must-not-cross-runtime-boundary" not in repr(stored)
 
 
 def _claimed_runtime_execution(
@@ -1799,7 +2842,38 @@ def _runtime_failure_outcome(
         workflow_code=claimed.workflow_code,
         stage_code=str(claimed.payload.get("stage_code") or "browser_stage"),
         item_code=claimed.item_code,
+        resource_code=claimed.resource_code,
     )
+    result: dict[str, object] = {"artifact_refs": []}
+    if claimed.item_code == "amazon_product_browser_fetch" and error_code in {
+        "access_blocked",
+        "captcha_required",
+    }:
+        stable_run_id = str(claimed.payload["run_id"])
+        requested_asin = str(claimed.payload["requested_asin"])
+        content_digest = "c" * 64
+        screenshot_ref = {
+            "capture_kind": "screenshot",
+            "bucket": str(claimed.payload["artifact_bucket"]),
+            "object_key": (
+                f"{claimed.payload['artifact_object_prefix']}/raw-captures/amazon/us/"
+                f"{requested_asin}/2026/07/14/{stable_run_id}/{content_digest}/page.png"
+            ),
+            "content_digest": content_digest,
+            "content_type": "image/png",
+            "sanitization_status": "not_applicable",
+            "request_id": claimed.request_id,
+            "execution_id": claimed.execution_id,
+            "run_id": stable_run_id,
+            "collected_at": "2026-07-14T00:00:00Z",
+            "created_at": "2026-07-14T00:00:00Z",
+        }
+        result = {
+            "collection_status": "blocked",
+            "artifact_refs": [screenshot_ref],
+            "raw_capture_refs": [screenshot_ref],
+            "browser_target_digest": RUNTIME_TARGET_DIGEST,
+        }
     worker_result = HandlerResult.failed(
         context,
         error=HandlerError(
@@ -1808,7 +2882,7 @@ def _runtime_failure_outcome(
             message=error_code,
             retryable=retryable,
         ),
-        result={"artifact_refs": []},
+        result=result,
     )
     return ExecutionSupervisorOutcome(
         context=context,
@@ -1836,10 +2910,12 @@ def test_real_runtime_terminal_amazon_failure_preserves_error_audit_and_releases
         payload={
             "requested_asin": "B0BLOCK001",
             "source_record_id": "record-1",
-            "run_id": "capture-run-1",
+            "run_id": STABLE_CAPTURE_RUN_ID,
             "stage_code": "collect_amazon_product_detail",
+            "artifact_bucket": "artifacts",
+            "artifact_object_prefix": "dev",
         },
-        resource_code="browser:amazon-us-profile",
+        resource_code=f"browser:amazon:{RUNTIME_TARGET_DIGEST}",
     )
 
     execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(

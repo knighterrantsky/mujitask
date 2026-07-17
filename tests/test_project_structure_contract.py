@@ -126,6 +126,23 @@ def test_agent_skill_bundle_source_exists() -> None:
     assert missing == [], f"{skill_code} skill bundle is missing files:\n" + "\n".join(missing)
 
 
+def test_amazon_agent_skill_bundle_source_exists() -> None:
+    skill_code = "mujitask-amazon-feishu-sync"
+    skill_root = SKILLS_ROOT / skill_code
+    required_files = (
+        "SKILL.md",
+        "skill.spec.yaml",
+        "examples.eval.yaml",
+        "skill.local.env.example",
+        "run_task.sh",
+        "run_skill_step.py",
+        "lightweight_submit.py",
+    )
+
+    missing = [path for path in required_files if not (skill_root / path).is_file()]
+    assert missing == [], f"{skill_code} skill bundle is missing files:\n" + "\n".join(missing)
+
+
 def test_domain_structure_entrypoint_files_exist() -> None:
     required_files = (
         "tasks/refresh_current_competitor_table.py",

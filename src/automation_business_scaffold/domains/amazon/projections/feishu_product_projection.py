@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     InvalidASINError,
@@ -16,6 +20,13 @@ AMAZON_PRODUCT_MANUAL_PRESERVE_FIELDS = (
     "来源关键词",
     "强制刷新",
 )
+AMAZON_PRODUCT_FEISHU_WRITE_FIELDS = (
+    "主图",
+    "侧边栏图片",
+    "送达日期",
+    "包装规格",
+    "促销活动记录",
+)
 AMAZON_PRODUCT_PROJECTION_FIELDS = (
     "商品链接",
     "采集状态",
@@ -27,7 +38,7 @@ AMAZON_PRODUCT_PROJECTION_FIELDS = (
     "卖点",
     "描述",
     "主图",
-    "图库",
+    "侧边栏图片",
     "当前价格",
     "原价",
     "币种",
@@ -39,10 +50,12 @@ AMAZON_PRODUCT_PROJECTION_FIELDS = (
     "变体属性",
     "卖家",
     "配送方式",
+    "送达日期",
+    "包装规格",
     "Buy Box卖家",
     "Buy Box价格",
     "优惠券",
-    "促销",
+    "促销活动记录",
     "BSR排名",
     "技术参数",
     "页面ASIN",
@@ -50,13 +63,18 @@ AMAZON_PRODUCT_PROJECTION_FIELDS = (
 )
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _TERMINAL_FACT_STATUSES = {"success", "partial_success", "unavailable"}
+_SENSITIVE_PROMOTION_TEXT = re.compile(
+    r"(?:anti-csrf|offerlistingid|promotionid|window\.location|document\.cookie|"
+    r"authorization|bearer\s|(?:access[_-]?token|token|cookie|password|credential)\s*[=:])",
+    re.IGNORECASE,
+)
 _OFFER_PROJECTION_FIELDS = {
     "commerce.featured_offer.price_amount": "当前价格",
     "commerce.featured_offer.list_price_amount": "原价",
     "commerce.featured_offer.currency": "币种",
     "commerce.featured_offer.seller_name": "卖家",
     "commerce.featured_offer.coupon_text": "优惠券",
-    "commerce.featured_offer.promotions": "促销",
+    "commerce.featured_offer.promotions": "促销活动记录",
 }
 
 
@@ -161,6 +179,12 @@ def amazon_product_projection_mapper(
         "product.technical_details",
         _stable_json(product.get("technical_details")),
     )
+    number_of_items = ""
+    for name, value in _mapping(product.get("technical_details")).items():
+        if _text(name).casefold() == "number of items":
+            number_of_items = _text(value)
+            break
+    fields["包装规格"] = number_of_items or "没有包装规格"
     _project_evidenced(
         fields,
         "评分",
@@ -184,9 +208,21 @@ def amazon_product_projection_mapper(
 
     for evidence_path, field_name in _OFFER_PROJECTION_FIELDS.items():
         value = offer.get(evidence_path.rsplit(".", 1)[-1])
-        if field_name == "促销":
-            value = _join_lines(value)
+        if field_name == "促销活动记录":
+            value = _promotion_summary(
+                value,
+                captured_at=collected_at,
+                current_price=offer.get("price_amount"),
+            )
         _project_evidenced(fields, field_name, evidence, evidence_path, value)
+
+    _project_evidenced(
+        fields,
+        "送达日期",
+        evidence,
+        "commerce.featured_offer.delivery_text",
+        offer.get("delivery_text"),
+    )
 
     _project_fulfillment(fields, evidence, offer)
     _project_buy_box(fields, evidence, offer)
@@ -342,7 +378,7 @@ def _project_media(
             key=lambda item: (int(item.get("position") or 0), _text(item.get("source_url"))),
         )
         if gallery:
-            fields["图库"] = [_attachment_item(item) for item in gallery]
+            fields["侧边栏图片"] = [_attachment_item(item) for item in gallery]
 
 
 def _attachment_item(asset: Mapping[str, Any]) -> dict[str, str]:
@@ -379,7 +415,7 @@ def _write_command(
         "record_id": source_record_id,
         "business_entity_key": business_key,
         "update_excluded_fields": list(AMAZON_PRODUCT_MANUAL_PRESERVE_FIELDS),
-        "update_replace_fields": ["主图", "图库"],
+        "update_replace_fields": ["主图", "侧边栏图片"],
         "clear_fields": clear_fields,
         "fields": dict(fields),
         "source_context": {
@@ -455,6 +491,90 @@ def _join_lines(value: Any) -> str:
     return "\n".join(_text_list(value))
 
 
+def _promotion_summary(
+    value: Any,
+    *,
+    captured_at: Any,
+    current_price: Any,
+) -> str:
+    timestamp = _promotion_timestamp(captured_at)
+    if not timestamp:
+        return ""
+    values = value if isinstance(value, (list, tuple)) else [value]
+    lines: list[str] = []
+    for item in values:
+        if not isinstance(item, Mapping):
+            continue
+        raw_text = _text(item.get("raw_text"))
+        if not raw_text or len(raw_text) > 500 or _SENSITIVE_PROMOTION_TEXT.search(raw_text):
+            continue
+        promotion_type = _text(item.get("promotion_type"))
+        if promotion_type == "coupon":
+            discount = _promotion_discount_text(item)
+            calculated_price = _coupon_calculated_price(current_price, item)
+            if not discount or calculated_price is None:
+                continue
+            line = f"{timestamp} | coupon | {discount} | ${calculated_price:.2f}"
+        elif promotion_type == "limited_time_deal":
+            deal_price = _decimal_value(item.get("deal_price"))
+            if deal_price is None:
+                continue
+            line = f"{timestamp} | Limited time deal | ${deal_price:.2f}"
+        else:
+            continue
+        if line not in lines:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _promotion_timestamp(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _promotion_discount_text(item: Mapping[str, Any]) -> str:
+    discount = _decimal_value(item.get("discount_value"))
+    if discount is None:
+        return ""
+    normalized = format(discount.normalize(), "f")
+    if item.get("discount_type") == "percentage":
+        return f"{normalized}%"
+    if item.get("discount_type") == "amount":
+        return f"${normalized}"
+    return ""
+
+
+def _coupon_calculated_price(current_price: Any, item: Mapping[str, Any]) -> Decimal | None:
+    price = _decimal_value(current_price)
+    discount = _decimal_value(item.get("discount_value"))
+    if price is None or discount is None:
+        return None
+    if item.get("discount_type") == "percentage":
+        calculated = price * (Decimal("1") - discount / Decimal("100"))
+    elif item.get("discount_type") == "amount":
+        calculated = price - discount
+    else:
+        return None
+    return max(calculated, Decimal("0")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value).replace(",", "").replace("$", "").strip())
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _text_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [_text(item) for item in value if _text(item)]
@@ -514,6 +634,7 @@ def _text(value: Any) -> str:
 
 
 __all__ = [
+    "AMAZON_PRODUCT_FEISHU_WRITE_FIELDS",
     "AMAZON_PRODUCT_MANUAL_PRESERVE_FIELDS",
     "AMAZON_PRODUCT_PROJECTION_FIELDS",
     "amazon_product_projection_mapper",

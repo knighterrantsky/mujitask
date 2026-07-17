@@ -5,9 +5,10 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 
 _ASIN_PATTERN = re.compile(r"^[A-Z0-9]{10}$")
@@ -79,6 +80,57 @@ _AMAZON_MEDIA_HOST_SUFFIXES = (
     "media-amazon.com",
     "ssl-images-amazon.com",
 )
+_AMAZON_MEDIA_UNSAFE_PATH = re.compile(
+    r"(?:[<>{}\\\x00-\x1f\x7f]|(?:(?<![A-Za-z0-9])(?:authorization|bearer|cookie|"
+    r"token|access[_-]?token|api[_-]?key|secret[_-]?key|session[_-]?secret|password|"
+    r"credential)(?![A-Za-z0-9])|(?:authorization|bearer|cookie|token|access[_-]?token|"
+    r"api[_-]?key|secret[_-]?key|session[_-]?secret|password|credential)(?=[=:])))",
+    re.IGNORECASE,
+)
+_PROMOTION_EXCLUDED_TAGS = {"script", "style", "noscript", "template"}
+_PROMOTION_TYPES = {
+    "coupon",
+    "limited_time_deal",
+}
+_PROMOTION_DISCOUNT_TYPES = {"percentage", "amount", "price_override"}
+_PROMOTION_EXACT_KEYS = {
+    "promotion_type",
+    "label",
+    "discount_type",
+    "discount_value",
+    "deal_price",
+    "reference_price",
+    "reference_price_type",
+    "currency",
+    "prime_only",
+    "claim_required",
+    "raw_text",
+}
+_PROMOTION_SENSITIVE_TEXT = re.compile(
+    r"(?:anti-csrf|offerlistingid|promotionid|window\.location|document\.cookie|"
+    r"authorization|bearer\s|(?:access[_-]?token|token|cookie|password|credential)\s*[=:])",
+    re.IGNORECASE,
+)
+_COUPON_PATTERNS = (
+    re.compile(r"\bApply\s+(?P<value>\$[\d,.]+|[\d.]+%)\s+coupon\b", re.IGNORECASE),
+    re.compile(
+        r"\bSave\s+(?P<value>\$[\d,.]+|[\d.]+%)\s+(?:with\s+)?coupon\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<value>[\d.]+%)\s+off\s+coupon(?:\s+applied)?\b",
+        re.IGNORECASE,
+    ),
+)
+_PROMOTION_ZONE_IDS = {
+    "apex_desktop",
+    "apex_offerdisplay_desktop",
+    "corepricedisplay_desktop_feature_div",
+    "coreprice_feature_div",
+    "desktop_buybox",
+    "buybox",
+    "buyboxaccordion",
+}
 
 
 class AmazonProductExtractionError(RuntimeError):
@@ -181,11 +233,20 @@ def normalize_amazon_media_url(value: object) -> str:
     if not isinstance(value, str) or not value or any(character.isspace() for character in value):
         return ""
     try:
-        parsed = urlparse(value)
+        parsed = urlsplit(value)
         port = parsed.port
     except ValueError:
         return ""
     hostname = (parsed.hostname or "").lower()
+    decoded_path = parsed.path
+    for _ in range(8):
+        next_path = unescape(unquote(decoded_path))
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    else:
+        if unescape(unquote(decoded_path)) != decoded_path:
+            return ""
     allowed_host = any(
         hostname == suffix or hostname.endswith(f".{suffix}")
         for suffix in _AMAZON_MEDIA_HOST_SUFFIXES
@@ -196,6 +257,8 @@ def normalize_amazon_media_url(value: object) -> str:
         or parsed.username is not None
         or parsed.password is not None
         or port not in (None, 443)
+        or any(character.isspace() for character in decoded_path)
+        or _AMAZON_MEDIA_UNSAFE_PATH.search(decoded_path)
     ):
         return ""
     return parsed._replace(
@@ -280,11 +343,18 @@ def extract_amazon_product_capture(
     network_product = _mapping(network.get("product"))
     commerce_state = _mapping(state.get("commerce"))
     network_commerce = _mapping(network.get("commerce"))
-    offer_state = _mapping(commerce_state.get("featured_offer"))
-    network_offer = _mapping(network_commerce.get("featured_offer"))
+    offer_state = _offer_source_with_promotions(
+        _mapping(commerce_state.get("featured_offer"))
+    )
+    network_offer = _offer_source_with_promotions(
+        _mapping(network_commerce.get("featured_offer"))
+    )
     media_state = _mapping(state.get("media"))
     network_media = _mapping(network.get("media"))
-    structured_offer = _mapping(structured.get("featured_offer"))
+    structured_offer = _offer_source_with_promotions(
+        _mapping(structured.get("featured_offer"))
+    )
+    dom = _offer_source_with_promotions(dom)
 
     product = {
         "title": _choose(
@@ -810,7 +880,7 @@ def extract_amazon_product_capture(
         collection_status = "success"
 
     capture = {
-        "contract_revision": 1,
+        "contract_revision": 2,
         "source_platform": "amazon",
         "marketplace_code": "US",
         "requested_asin": requested,
@@ -1117,7 +1187,10 @@ def _network_offer_value(source: Mapping[str, Any], field_name: str) -> Any:
     raw = _network_pick(source, *aliases[field_name])
     value = _network_scalar(raw)
     if field_name == "promotions":
-        return _network_collection_value(raw, _network_text_list(value))
+        return _network_collection_value(
+            raw,
+            _normalize_promotions(_network_text_list(value)),
+        )
     if field_name in {
         "seller_id",
         "seller_name",
@@ -1206,7 +1279,7 @@ def _network_delivery_text(value: Any) -> str | None:
         flags=re.IGNORECASE,
     ):
         return None
-    return text
+    return _free_delivery_text(text)
 
 
 def _network_text_list(value: Any) -> list[str]:
@@ -1262,11 +1335,9 @@ def _normalize_network_media_item(value: Any) -> dict[str, str] | None:
 def _normalize_network_media_list(value: Any) -> list[dict[str, str]]:
     values = value if isinstance(value, list) else [value]
     result: list[dict[str, str]] = []
-    seen: set[str] = set()
     for raw in values[:_NETWORK_MAX_LIST_ITEMS]:
         item = _normalize_network_media_item(raw)
-        if item and item["url"] not in seen:
-            seen.add(item["url"])
+        if item:
             result.append(item)
     return result
 
@@ -1371,6 +1442,17 @@ def _node_text(node: _Node | None) -> str | None:
     return text or None
 
 
+def _promotion_node_text(node: _Node | None) -> str | None:
+    if node is None or node.tag in _PROMOTION_EXCLUDED_TAGS:
+        return None
+    chunks = list(node.text_parts)
+    for child in node.children:
+        child_text = _promotion_node_text(child)
+        if child_text:
+            chunks.append(child_text)
+    return _safe_promotion_text(" ".join(chunks), max_length=20_000)
+
+
 def _load_json(text: str | None) -> Any:
     if not text:
         return None
@@ -1453,7 +1535,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
     )
     bullets = _texts_for_descendants(_node_by_id(document, "feature-bullets"), tags={"li"})
     description = _node_text(_node_by_id(document, "productDescription"))
-    technical_details = _table_mapping(_node_by_id(document, "productDetails_techSpec_section_1"))
+    technical_details = _dom_technical_details(document)
 
     price_root = _node_by_id(document, "corePrice_feature_div")
     price_node = next(
@@ -1504,6 +1586,9 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
             ]
         )
 
+    coupon_text = _dom_coupon_text(document)
+    promotions = _dom_promotions(document, coupon_text=coupon_text)
+
     return {
         "title": title,
         "brand": brand,
@@ -1521,11 +1606,9 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "list_price_amount": list_price,
         "currency": "USD" if price is not None or list_price is not None else None,
         "fulfillment_channel": fulfillment,
-        "delivery_text": _node_text(_node_by_id(document, "deliveryBlockMessage")),
-        "coupon_text": _node_text(_node_by_id(document, "couponText")),
-        "promotions": _texts_for_descendants(
-            _node_by_id(document, "promoPriceBlockMessage_feature_div"), tags={"span", "li"}
-        ),
+        "delivery_text": _dom_free_delivery_text(document),
+        "coupon_text": coupon_text,
+        "promotions": promotions,
         "parent_asin": _optional_asin(twister.attrs.get("data-parent-asin")) if twister else None,
         "child_asins": child_asins,
         "current_attributes": _json_string_mapping(
@@ -1551,6 +1634,102 @@ def _texts_for_descendants(node: _Node | None, *, tags: set[str]) -> list[str]:
         if text and text not in values:
             values.append(text)
     return values
+
+
+def _dom_technical_details(document: _DocumentParser) -> dict[str, str]:
+    details = _table_mapping(_node_by_id(document, "productDetails_techSpec_section_1"))
+    for node in _iter_nodes(document.roots):
+        if node.tag == "table" and _has_class(node, "prodDetTable"):
+            details.update(_table_mapping(node))
+    return details
+
+
+def _dom_free_delivery_text(document: _DocumentParser) -> str | None:
+    for element_id in (
+        "mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE",
+        "deliveryBlockMessage",
+    ):
+        value = _free_delivery_text(_node_text(_node_by_id(document, element_id)))
+        if value:
+            return value
+    return None
+
+
+def _dom_coupon_text(document: _DocumentParser) -> str | None:
+    for node in _iter_nodes(document.roots):
+        element_id = node.attrs.get("id", "").lower()
+        if element_id == "coupontext" or element_id.startswith("coupontext"):
+            coupon_text = _concise_coupon_text(_promotion_node_text(node))
+            if coupon_text:
+                return coupon_text
+    return None
+
+
+def _dom_promotions(
+    document: _DocumentParser,
+    *,
+    coupon_text: str | None,
+) -> list[dict[str, Any]]:
+    promotions: list[dict[str, Any]] = []
+    if coupon_text:
+        promotions.extend(_promotion_objects_from_text(coupon_text))
+
+    promotion_root = _node_by_id(document, "promoPriceBlockMessage_feature_div")
+    if promotion_root is not None:
+        promotions.extend(
+            _promotion_objects_from_text(_promotion_node_text(promotion_root))
+        )
+
+    for node in _iter_nodes(document.roots):
+        if node.attrs.get("id", "").lower() not in _PROMOTION_ZONE_IDS:
+            continue
+        text = _promotion_node_text(node)
+        if not text:
+            continue
+        if "limited time deal" in text.lower():
+            promotion = _limited_time_deal_promotion(node, text=text)
+            if promotion:
+                promotions.append(promotion)
+    return _dedupe_promotions(promotions)
+
+
+def _limited_time_deal_promotion(
+    node: _Node,
+    *,
+    text: str,
+) -> dict[str, Any] | None:
+    amounts = [
+        amount
+        for child in _iter_nodes([node])
+        if _has_class(child, "a-offscreen")
+        and (amount := _as_float(_promotion_node_text(child))) is not None
+    ]
+    marker_match = re.search(r"Limited time deal", text, re.IGNORECASE)
+    offer_text = text[marker_match.end() :] if marker_match else text
+    price_after_marker = None
+    price_match = re.search(r"\$\s*([\d,.]+)", offer_text)
+    if price_match:
+        price_after_marker = _as_float(price_match.group(1))
+    deal_price = price_after_marker if price_after_marker is not None else (
+        amounts[0] if amounts else None
+    )
+    if deal_price is None:
+        return None
+    raw_parts = ["Limited time deal"]
+    raw_parts.append(f"${deal_price:.2f}")
+    return _promotion_object(
+        promotion_type="limited_time_deal",
+        label="Limited time deal",
+        discount_type="price_override",
+        discount_value=None,
+        deal_price=deal_price,
+        reference_price=None,
+        reference_price_type=None,
+        currency="USD",
+        prime_only=False,
+        claim_required=False,
+        raw_text=" | ".join(raw_parts),
+    )
 
 
 def _table_mapping(table: _Node | None) -> dict[str, str]:
@@ -1864,9 +2043,280 @@ def _text_list(value: Any) -> list[str]:
     return [text for item in values if (text := _clean_text(item))]
 
 
+def _safe_promotion_text(value: Any, *, max_length: int = 500) -> str | None:
+    text = _clean_text(value)
+    if (
+        not text
+        or len(text) > max_length
+        or _PROMOTION_SENSITIVE_TEXT.search(text)
+        or re.search(
+            r"(?:delivering\s+to|update\s+location|account\s*&\s*lists)",
+            text,
+            re.IGNORECASE,
+        )
+    ):
+        return None
+    return text
+
+
+def _free_delivery_text(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    match = re.search(r"\bFREE\s+delivery\b", text, re.IGNORECASE)
+    if not match:
+        return None
+    candidate = "FREE delivery" + text[match.end() :]
+    candidate = re.split(
+        r"\s+(?:to|Or\s+fastest\s+delivery|Order\s+within|Delivering\s+to|Update\s+location)\b",
+        candidate,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    candidate = _clean_text(candidate)
+    if not candidate or len(candidate) > 200:
+        return None
+    return candidate
+
+
+def _concise_coupon_text(value: Any) -> str | None:
+    text = _safe_promotion_text(value, max_length=4_000)
+    if not text:
+        return None
+    for pattern in _COUPON_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return " ".join(match.group(0).split())
+    return None
+
+
+def _offer_source_with_promotions(source: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(source)
+    coupon_text = _concise_coupon_text(result.get("coupon_text"))
+    if "coupon_text" in result:
+        result["coupon_text"] = coupon_text
+    if "promotions" not in result and not coupon_text:
+        return result
+    promotions = _normalize_promotions(result.get("promotions"))
+    if coupon_text:
+        promotions.extend(_promotion_objects_from_text(coupon_text))
+    result["promotions"] = _dedupe_promotions(promotions)
+    return result
+
+
+def _normalize_promotions(value: Any) -> list[dict[str, Any]]:
+    values = value if isinstance(value, list) else [value]
+    promotions: list[dict[str, Any]] = []
+    for item in values:
+        if isinstance(item, Mapping):
+            normalized = _normalize_promotion_mapping(item)
+            if normalized:
+                promotions.append(normalized)
+        else:
+            promotions.extend(_promotion_objects_from_text(item))
+    return _dedupe_promotions(promotions)
+
+
+def _normalize_promotion_mapping(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    raw_text = _safe_promotion_text(value.get("raw_text"))
+    if not raw_text:
+        return None
+    promotion_type = _clean_text(value.get("promotion_type"))
+    if promotion_type not in _PROMOTION_TYPES:
+        return None
+    discount_type = _clean_text(value.get("discount_type"))
+    currency = _clean_text(value.get("currency")) or None
+    if currency:
+        currency = currency.upper()
+    if promotion_type == "limited_time_deal":
+        deal_price = _as_float(value.get("deal_price"))
+        if deal_price is None:
+            marker = re.search(r"Limited time deal", raw_text, re.IGNORECASE)
+            price_match = re.search(
+                r"\$\s*([\d,.]+)",
+                raw_text[marker.end() :] if marker else raw_text,
+            )
+            deal_price = _as_float(price_match.group(1)) if price_match else None
+        if deal_price is None:
+            return None
+        return _promotion_object(
+            promotion_type="limited_time_deal",
+            label="Limited time deal",
+            discount_type="price_override",
+            discount_value=None,
+            deal_price=deal_price,
+            reference_price=None,
+            reference_price_type=None,
+            currency="USD",
+            prime_only=False,
+            claim_required=False,
+            raw_text=f"Limited time deal | ${deal_price:.2f}",
+        )
+    discount_value = _as_float(value.get("discount_value"))
+    if discount_type not in {"percentage", "amount"} or discount_value is None:
+        return next(
+            (
+                item
+                for item in _promotion_objects_from_text(raw_text)
+                if item["promotion_type"] == "coupon"
+            ),
+            None,
+        )
+    return _promotion_object(
+        promotion_type="coupon",
+        label="Coupon",
+        discount_type=discount_type,
+        discount_value=discount_value,
+        deal_price=None,
+        reference_price=None,
+        reference_price_type=None,
+        currency=currency,
+        prime_only=False,
+        claim_required=_as_bool(value.get("claim_required")) is True,
+        raw_text=raw_text,
+    )
+
+
+def _promotion_objects_from_text(value: Any) -> list[dict[str, Any]]:
+    text = _safe_promotion_text(value, max_length=4_000)
+    if not text:
+        return []
+    promotions: list[dict[str, Any]] = []
+    for pattern in _COUPON_PATTERNS:
+        for match in pattern.finditer(text):
+            raw_text = " ".join(match.group(0).split())
+            discount_type, discount_value = _discount_value(match.group("value"))
+            promotions.append(
+                _promotion_object(
+                    promotion_type="coupon",
+                    label="Coupon",
+                    discount_type=discount_type,
+                    discount_value=discount_value,
+                    deal_price=None,
+                    reference_price=None,
+                    reference_price_type=None,
+                    currency="USD" if discount_type == "amount" else None,
+                    prime_only=False,
+                    claim_required="applied" not in raw_text.lower(),
+                    raw_text=raw_text,
+                )
+            )
+
+    limited_marker = re.search(r"\bLimited time deal\b", text, re.IGNORECASE)
+    if limited_marker:
+        price_match = re.search(r"\$\s*([\d,.]+)", text[limited_marker.end() :])
+        deal_price = _as_float(price_match.group(1)) if price_match else None
+        if deal_price is not None:
+            promotions.append(
+                _promotion_object(
+                    promotion_type="limited_time_deal",
+                    label="Limited time deal",
+                    discount_type="price_override",
+                    discount_value=None,
+                    deal_price=deal_price,
+                    reference_price=None,
+                    reference_price_type=None,
+                    currency="USD",
+                    prime_only=False,
+                    claim_required=False,
+                    raw_text=f"Limited time deal | ${deal_price:.2f}",
+                )
+            )
+    return _dedupe_promotions(promotions)
+
+
+def _discount_value(value: str) -> tuple[str, float | None]:
+    discount_value = _as_float(value)
+    return ("amount" if value.strip().startswith("$") else "percentage", discount_value)
+
+
+def _promotion_object(
+    *,
+    promotion_type: str,
+    label: str,
+    discount_type: str,
+    discount_value: float | None,
+    deal_price: float | None,
+    reference_price: float | None,
+    reference_price_type: str | None,
+    currency: str | None,
+    prime_only: bool,
+    claim_required: bool,
+    raw_text: str,
+) -> dict[str, Any]:
+    return {
+        "promotion_type": promotion_type,
+        "label": label,
+        "discount_type": discount_type,
+        "discount_value": discount_value,
+        "deal_price": deal_price,
+        "reference_price": reference_price,
+        "reference_price_type": reference_price_type,
+        "currency": currency,
+        "prime_only": prime_only,
+        "claim_required": claim_required,
+        "raw_text": raw_text,
+    }
+
+
+def _dedupe_promotions(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw in values:
+        item = dict(raw)
+        if set(item) != _PROMOTION_EXACT_KEYS:
+            continue
+        promotion_type = item["promotion_type"]
+        if promotion_type not in _PROMOTION_TYPES:
+            continue
+        if promotion_type == "limited_time_deal":
+            duplicate_index = next(
+                (
+                    index
+                    for index, current in enumerate(result)
+                    if current["promotion_type"] == promotion_type
+                ),
+                None,
+            )
+        else:
+            duplicate_index = next(
+                (
+                    index
+                    for index, current in enumerate(result)
+                    if current["promotion_type"] == promotion_type
+                    and current["discount_type"] == item["discount_type"]
+                    and current["discount_value"] == item["discount_value"]
+                ),
+                None,
+            )
+        if duplicate_index is None:
+            result.append(item)
+            continue
+        current = result[duplicate_index]
+        current_score = _promotion_completeness_score(current)
+        item_score = _promotion_completeness_score(item)
+        if item_score > current_score:
+            result[duplicate_index] = item
+    return result
+
+
+def _promotion_completeness_score(value: Mapping[str, Any]) -> int:
+    return sum(
+        value.get(key) not in (None, "", "unknown")
+        for key in (
+            "discount_value",
+            "deal_price",
+            "currency",
+        )
+    )
+
+
 def _normalize_offer_value(field_name: str, value: Any) -> Any:
-    if field_name in {"seller_id", "seller_name", "delivery_text", "coupon_text"}:
+    if field_name in {"seller_id", "seller_name"}:
         return _clean_text(value)
+    if field_name == "delivery_text":
+        return _free_delivery_text(value)
+    if field_name == "coupon_text":
+        return _concise_coupon_text(value)
     if field_name == "is_buy_box":
         return _as_bool(value)
     if field_name in {"price_amount", "list_price_amount"}:
@@ -1877,7 +2327,7 @@ def _normalize_offer_value(field_name: str, value: Any) -> Any:
     if field_name == "fulfillment_channel":
         return _normalize_fulfillment(value)
     if field_name == "promotions":
-        return _text_list(value)
+        return _normalize_promotions(value)
     return value
 
 
@@ -1953,11 +2403,9 @@ def _normalize_media_list(value: Any) -> list[dict[str, str]]:
     else:
         return []
     result: list[dict[str, str]] = []
-    seen: set[str] = set()
     for raw in values:
         item = _normalize_media_item(raw)
-        if item and item["url"] not in seen:
-            seen.add(item["url"])
+        if item:
             result.append(item)
     return result
 

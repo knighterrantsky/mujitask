@@ -480,6 +480,16 @@ def _resolve_artifact_policy(context: HandlerContext) -> dict[str, Any] | None:
         or getattr(store, "artifact_object_prefix", "")
         or defaults.artifact_object_prefix
     ).strip("/")
+    expected_bucket = _clean_text(context.payload.get("artifact_bucket"))
+    expected_prefix_value = context.payload.get("artifact_object_prefix")
+    if (
+        not expected_bucket
+        or not isinstance(expected_prefix_value, str)
+        or expected_prefix_value != expected_prefix_value.strip("/")
+        or bucket != expected_bucket
+        or object_prefix != expected_prefix_value.strip("/")
+    ):
+        return None
     return {"store": store, "bucket": bucket, "object_prefix": object_prefix}
 
 
@@ -546,7 +556,11 @@ def _collect_browser_page(
                             "screenshot_bytes": _page_screenshot(page),
                             "error": navigation_error,
                         }
-                    _wait_for_amazon_page(page, timeout_ms=timeout_ms)
+                    _wait_for_amazon_page(
+                        page,
+                        timeout_ms=timeout_ms,
+                        automation_page=automation_page,
+                    )
                     _settle_network_responses(page)
                 finally:
                     stage_durations_ms["navigation"] = _elapsed_ms(navigation_started_at)
@@ -827,7 +841,12 @@ def _settle_network_responses(page: Any) -> None:
         pass
 
 
-def _wait_for_amazon_page(page: Any, *, timeout_ms: int) -> None:
+def _wait_for_amazon_page(
+    page: Any,
+    *,
+    timeout_ms: int,
+    automation_page: Any | None = None,
+) -> None:
     wait_for_load_state = getattr(page, "wait_for_load_state", None)
     if callable(wait_for_load_state):
         try:
@@ -843,22 +862,32 @@ def _wait_for_amazon_page(page: Any, *, timeout_ms: int) -> None:
             )
         except Exception:
             pass
-    evaluate = getattr(page, "evaluate", None)
-    if callable(evaluate):
-        wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    humanized_scroll_by = getattr(automation_page, "scroll_by", None)
+    if callable(humanized_scroll_by):
+        previous_checkpoint = 0
         for checkpoint in _SCROLL_CHECKPOINTS:
             try:
-                evaluate(
-                    "window.scrollTo(0, Math.min(document.documentElement.scrollHeight, "
-                    f"{checkpoint}))"
-                )
+                humanized_scroll_by(checkpoint - previous_checkpoint)
+                previous_checkpoint = checkpoint
             except Exception:
                 continue
-            if callable(wait_for_timeout):
+    else:
+        evaluate = getattr(page, "evaluate", None)
+        wait_for_timeout = getattr(page, "wait_for_timeout", None)
+        if callable(evaluate):
+            for checkpoint in _SCROLL_CHECKPOINTS:
                 try:
-                    wait_for_timeout(_SCROLL_SETTLE_MS)
+                    evaluate(
+                        "window.scrollTo(0, Math.min(document.documentElement.scrollHeight, "
+                        f"{checkpoint}))"
+                    )
                 except Exception:
-                    pass
+                    continue
+                if callable(wait_for_timeout):
+                    try:
+                        wait_for_timeout(_SCROLL_SETTLE_MS)
+                    except Exception:
+                        pass
     locator = getattr(page, "locator", None)
     if callable(locator):
         try:
@@ -1339,13 +1368,11 @@ def _media_source_refs(capture: Mapping[str, Any]) -> list[dict[str, Any]]:
     media = media if isinstance(media, dict) else {}
     requested_asin = _clean_text(capture.get("requested_asin"))
     refs: list[dict[str, Any]] = []
-    seen: set[str] = set()
 
     def append(item: Any, *, role: str, position: int) -> None:
         source_url = normalize_amazon_media_url(_media_url(item))
-        if not source_url or source_url in seen:
+        if not source_url:
             return
-        seen.add(source_url)
         refs.append(
             {
                 "source_url": source_url,

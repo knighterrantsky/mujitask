@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.control_plane.executor.looping import run_control_loop
 from automation_business_scaffold.control_plane.runtime_config.settings import (
+    AMAZON_PRODUCT_BATCH_TASK_CODE,
     AMAZON_PRODUCT_ROW_TASK_CODE,
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
@@ -94,7 +95,11 @@ FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS = FORMAL_SUBMIT_RUNTIME_CONFIG_FIELDS | {
     TEST_PERSISTENCE_OVERRIDE_FLAG,
     "run_mode",
 }
-AMAZON_FORMAL_BUSINESS_FIELDS = {"table_ref", "source_record_id"}
+AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK = {
+    AMAZON_PRODUCT_ROW_TASK_CODE: {"table_ref", "source_record_id"},
+    AMAZON_PRODUCT_BATCH_TASK_CODE: {"table_ref"},
+}
+AMAZON_TASK_CODES = set(AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK)
 AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS = {
     "BROWSER_PROFILE_ID",
     "BROWSER_PROFILE_REF",
@@ -148,9 +153,12 @@ def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any
             result=amazon_preflight,
         )
     amazon_runtime_context: dict[str, str] = {}
-    if normalized_task_code == AMAZON_PRODUCT_ROW_TASK_CODE:
+    if normalized_task_code in AMAZON_TASK_CODES:
         try:
-            amazon_runtime_context = _amazon_product_runtime_context()
+            amazon_runtime_context = _amazon_product_runtime_context(
+                params=params,
+                settings=settings,
+            )
         except Exception:
             return _rejected_submit_payload(
                 task_code=normalized_task_code,
@@ -306,6 +314,12 @@ def run_refresh_amazon_product_row_by_asin_request(
     return run_task_request(AMAZON_PRODUCT_ROW_TASK_CODE, params)
 
 
+def run_refresh_current_amazon_product_table_request(
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return run_task_request(AMAZON_PRODUCT_BATCH_TASK_CODE, params)
+
+
 def run_refresh_competitor_row_by_url_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(REFRESH_COMPETITOR_ROW_BY_URL_TASK_CODE, params)
 
@@ -433,10 +447,10 @@ def _sanitize_task_payload(
     task_code: str = "",
     settings: Any | None = None,
 ) -> dict[str, Any]:
-    if task_code == AMAZON_PRODUCT_ROW_TASK_CODE:
+    if task_code in AMAZON_TASK_CODES:
         return {
-            "table_ref": str(params.get("table_ref") or "").strip(),
-            "source_record_id": str(params.get("source_record_id") or "").strip(),
+            field: str(params.get(field) or "").strip()
+            for field in sorted(AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK[task_code])
         }
     sanitized = dict(params)
     sanitized.pop("control_action", None)
@@ -454,18 +468,23 @@ def _amazon_product_submit_preflight(
     task_code: str,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if task_code != AMAZON_PRODUCT_ROW_TASK_CODE:
+    business_fields = AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK.get(task_code)
+    if business_fields is None:
         return {}
     missing = [
         field
-        for field in sorted(AMAZON_FORMAL_BUSINESS_FIELDS)
+        for field in sorted(business_fields)
         if not str(params.get(field) or "").strip()
     ]
     if missing:
         return {
             "error_type": "invalid_input",
             "error_code": "invalid_amazon_task_payload",
-            "message": "Amazon product row submit requires table_ref and source_record_id.",
+            "message": (
+                "Amazon product row submit requires table_ref and source_record_id."
+                if task_code == AMAZON_PRODUCT_ROW_TASK_CODE
+                else "Amazon competitor-table batch submit requires table_ref."
+            ),
             "missing_business_fields": missing,
         }
     if str(params.get("table_ref") or "").strip() != "AMAZON_PRODUCTS":
@@ -497,7 +516,7 @@ def _amazon_product_submit_preflight(
     unexpected = sorted(
         str(key)
         for key, value in params.items()
-        if key not in AMAZON_FORMAL_BUSINESS_FIELDS
+        if key not in business_fields
         and key not in ignored_control_fields
         and value not in (None, "", [], {})
     )
@@ -506,8 +525,7 @@ def _amazon_product_submit_preflight(
             "error_type": "invalid_input",
             "error_code": "invalid_amazon_task_payload",
             "message": (
-                "Amazon product row business payload accepts only table_ref and "
-                "source_record_id."
+                "Amazon business payload contains unsupported fields."
             ),
             "unexpected_business_fields": unexpected,
         }
@@ -527,7 +545,11 @@ def _amazon_product_submit_preflight(
     return {}
 
 
-def _amazon_product_runtime_context() -> dict[str, str]:
+def _amazon_product_runtime_context(
+    *,
+    params: Mapping[str, Any],
+    settings: Any,
+) -> dict[str, str]:
     profile_ref = str(
         os.environ.get("AMAZON_US_BROWSER_PROFILE_REF")
         or os.environ.get("DEFAULT_PROFILE_REF")
@@ -536,9 +558,18 @@ def _amazon_product_runtime_context() -> dict[str, str]:
     digest = resolve_automation_browser_target_digest(profile_ref=profile_ref)
     if not digest:
         raise ValueError("Amazon browser target digest is unavailable.")
+    persistence = _resolve_submit_persistence_config(
+        params,
+        settings=settings,
+        allow_test_overrides=_test_persistence_overrides_allowed(params),
+    )
     return {
         "browser_target_digest": digest,
         "browser_resource_code": f"browser:amazon:{digest}",
+        "artifact_bucket": str(persistence["artifact_bucket"] or "").strip(),
+        "artifact_object_prefix": str(
+            persistence["artifact_object_prefix"] or ""
+        ).strip("/"),
     }
 
 
@@ -666,7 +697,7 @@ def _amazon_fact_schema_submit_preflight(
     params: Mapping[str, Any],
     settings: Any,
 ) -> dict[str, Any]:
-    if task_code != AMAZON_PRODUCT_ROW_TASK_CODE:
+    if task_code not in AMAZON_TASK_CODES:
         return {}
     resolved = _resolve_submit_persistence_config(
         params,
@@ -1051,6 +1082,7 @@ __all__ = [
     "run_outbox_dispatcher",
     "run_refresh_current_competitor_table_request",
     "run_refresh_amazon_product_row_by_asin_request",
+    "run_refresh_current_amazon_product_table_request",
     "run_search_keyword_competitor_products_request",
     "run_sync_tk_influencer_pool_request",
     "run_task_request",

@@ -55,10 +55,14 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
 当前仓库内源目录:
 
 - `skills/mujitask-tiktok-feishu-sync/`
+- `skills/mujitask-amazon-feishu-sync/`
 
-部署目标:
+部署目标必须分离:
 
-- `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
+- `MUJITASK_TIKTOK_SKILLS_DIR/mujitask-tiktok-feishu-sync`
+- `MUJITASK_AMAZON_SKILLS_DIR/mujitask-amazon-feishu-sync`
+
+Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-ops` / `workspace-tiktok`。两个 workspace 不得交叉安装对方 Skill。二者共用飞书账号 `default`，Amazon 通过新建群聊的 `oc_*` peer binding 精确路由；飞书机器人密钥仍只由 OpenClaw secret 配置管理。
 
 部署脚本负责:
 
@@ -83,6 +87,10 @@ Agent skill bundle 是部署给 OpenClaw、Hermes 或其他目标 agent workspac
   - `skills/mujitask-tiktok-feishu-sync/run_competitor_row_by_url_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_product_url_complete_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh`
+  - `skills/mujitask-amazon-feishu-sync/skill.spec.yaml`
+  - `skills/mujitask-amazon-feishu-sync/examples.eval.yaml`
+  - `skills/mujitask-amazon-feishu-sync/SKILL.md`
+  - `skills/mujitask-amazon-feishu-sync/run_task.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh`
   - `skills/mujitask-tiktok-feishu-sync/run_skill_step.py`
   - `skills/mujitask-tiktok-feishu-sync/lightweight_submit.py`
@@ -268,12 +276,13 @@ Runtime 权限模型已经治理完成。
 
 当前标准交付先收窄为 `macOS + launchd + Homebrew 本机 Postgres/MinIO`。
 运行前需要 Homebrew 已安装；`deploy.sh` 会安装缺失的 `postgresql@17` / `minio` / `node` formula，`preflight.sh` 会提前检查端口、Node.js/npm 和必填配置。
-现场实施必须显式设定两个目录：
+现场实施必须显式设定三个目录：
 
 - `MUJITASK_INSTALL_DIR`：项目安装路径，例如 `$HOME/apps/mujitask`
-- `MUJITASK_SKILLS_DIR`：目标 agent 读取 skills 的根目录，例如 OpenClaw 的 `$HOME/.openclaw/workspace/skills`，或 Hermes Agent 在现场约定的 skills 目录
+- `MUJITASK_TIKTOK_SKILLS_DIR`：TikTok agent 的 skills 根目录，例如 `$HOME/.openclaw/workspace-tiktok/skills`
+- `MUJITASK_AMAZON_SKILLS_DIR`：Amazon agent 的 skills 根目录，例如 `$HOME/.openclaw/workspace-amazon/skills`
 
-部署脚本只负责把 skill bundle 安装到 `MUJITASK_SKILLS_DIR/mujitask-tiktok-feishu-sync`，不再推断任何 agent workspace。
+部署脚本把两个 skill bundle 分别安装到显式目录，并拒绝两个目录相同。OpenClaw agent 与飞书账号的机器绑定以 `contracts/agents/business-agent-bindings.yaml` 为准；创建飞书应用、保存 App Secret 和给机器人授权仍属于现场 secret 配置，不由仓库写入。
 
 本机 Postgres Runtime 连接默认使用 `mujitask`，Fact 连接使用显式配置的
 `MUJITASK_FACT_RUNTIME_ROLE`。Native 部署会创建独立的 Fact login，拒绝把 Runtime DB owner

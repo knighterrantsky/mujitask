@@ -99,7 +99,11 @@ require_feishu_table_config() {
 require_feishu_table_route() {
   local env_slug="$1"
   local base_url table_id view_id
-  base_url="$(config_value MUJITASK_FEISHU_BASE_URL "" "")"
+  if [[ "${env_slug}" == "AMAZON_PRODUCTS" ]]; then
+    base_url="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL MUJITASK_FEISHU_BASE_URL "")"
+  else
+    base_url="$(config_value MUJITASK_FEISHU_BASE_URL "" "")"
+  fi
   table_id="$(config_value "MUJITASK_FEISHU_${env_slug}_TABLE_ID" "" "")"
   view_id="$(config_value "MUJITASK_FEISHU_${env_slug}_VIEW_ID" "" "")"
   if [[ -z "${base_url}" || -z "${table_id}" || -z "${view_id}" ]]; then
@@ -181,7 +185,11 @@ fi
 
 if [[ "${MUJITASK_PREFLIGHT_REQUIRE_ENV:-0}" == "1" ]]; then
   require_config_value MUJITASK_INSTALL_DIR INSTALL_DIR
-  require_config_value MUJITASK_SKILLS_DIR SKILLS_INSTALL_DIR
+  require_config_value MUJITASK_TIKTOK_SKILLS_DIR MUJITASK_SKILLS_DIR
+  require_config_value MUJITASK_AMAZON_SKILLS_DIR
+  require_config_value MUJITASK_TIKTOK_OPENCLAW_AGENT_ID MUJITASK_OPENCLAW_AGENT_ID
+  require_config_value MUJITASK_AMAZON_OPENCLAW_AGENT_ID
+  require_config_value MUJITASK_AMAZON_FEISHU_ACCOUNT_ID
   require_feishu_table_config
   require_config_value MUJITASK_FEISHU_ACCESS_TOKEN
   require_config_value MUJITASK_FASTMOSS_PHONE FASTMOSS_PHONE
@@ -198,14 +206,20 @@ else
 fi
 
 INSTALL_TARGET="$(config_value MUJITASK_INSTALL_DIR INSTALL_DIR "${HOME}/apps/mujitask")"
-SKILLS_TARGET="$(config_value MUJITASK_SKILLS_DIR SKILLS_INSTALL_DIR "")"
+TIKTOK_SKILLS_TARGET="$(config_value MUJITASK_TIKTOK_SKILLS_DIR MUJITASK_SKILLS_DIR "")"
+AMAZON_SKILLS_TARGET="$(config_value MUJITASK_AMAZON_SKILLS_DIR "" "")"
 AGENT_TYPE="$(config_value MUJITASK_AGENT_TYPE AGENT_TYPE "generic")"
 log "Project install target: ${INSTALL_TARGET}"
 log "Agent type: ${AGENT_TYPE}"
-if [[ -n "${SKILLS_TARGET}" ]]; then
-  log "Skills install target: ${SKILLS_TARGET}"
+if [[ -n "${TIKTOK_SKILLS_TARGET}" ]]; then
+  log "TikTok skills install target: ${TIKTOK_SKILLS_TARGET}"
 else
-  warn "Skills install target is not set yet. Set MUJITASK_SKILLS_DIR to the skills root used by the target agent."
+  warn "TikTok skills install target is not set yet."
+fi
+if [[ -n "${AMAZON_SKILLS_TARGET}" ]]; then
+  log "Amazon skills install target: ${AMAZON_SKILLS_TARGET}"
+else
+  warn "Amazon skills install target is not set yet."
 fi
 
 if [[ "${STATUS}" -eq 0 ]]; then

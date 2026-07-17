@@ -13,20 +13,49 @@ def map_write_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
         records = selection_writeback_records(payload)
     mapper_code = text(payload.get("mapper_code"))
+    field_allowlist = set(
+        list_text(mapping(payload.get("write_policy")).get("field_allowlist"))
+    )
     mapped: list[dict[str, Any]] = []
     for record in records:
         if text(record.get("op")) == "delete":
             mapped.append(normalize_write_record(record, payload))
             continue
         if mapping(record.get("fields")):
-            mapped.append(normalize_write_record(record, payload))
+            item = normalize_write_record(record, payload)
+            mapped.append(_filter_write_fields(item, field_allowlist))
             continue
         from automation_business_scaffold.contracts.handler.domain_mapping import (
             map_projection_record,
         )
 
-        mapped.append(map_projection_record(mapper_code, record, payload))
-    return [record for record in mapped if mapping(record.get("fields")) or text(record.get("op")) == "delete"]
+        item = map_projection_record(mapper_code, record, payload)
+        mapped.append(_filter_write_fields(item, field_allowlist))
+    return [
+        record
+        for record in mapped
+        if mapping(record.get("fields"))
+        or text(record.get("op")) == "delete"
+        or (field_allowlist and text(record.get("record_id")))
+    ]
+
+
+def _filter_write_fields(
+    record: Mapping[str, Any],
+    field_allowlist: set[str],
+) -> dict[str, Any]:
+    if not field_allowlist:
+        return dict(record)
+    item = dict(record)
+    item["fields"] = {
+        name: value
+        for name, value in mapping(item.get("fields")).items()
+        if name in field_allowlist
+    }
+    item["clear_fields"] = [
+        name for name in list_text(item.get("clear_fields")) if name in field_allowlist
+    ]
+    return item
 
 
 def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -44,6 +44,7 @@
 - [达人同步 Workflow 设计](./workflow-influencer-pool-sync-design.md)
 - [达人建联检查 Workflow 设计](./workflow-influencer-outreach-design.md)
 - [竞品采集与关键词搜索竞品写入 Workflow 设计](./workflow-competitor-table-design.md)
+- [Amazon 竞品表商品详情采集 Workflow 与事实存储设计](./workflow-amazon-product-detail-design.md)（已批准，实施中）
 
 阶段性 refactor 说明完成后不再保留为 active 架构文档；当前 workflow / Runtime 事实只从上面的 workflow 文档、Runtime 文档和 `contracts/**` 读取。
 
@@ -56,6 +57,8 @@
 | 关键词搜索竞品写入 | `search_keyword_competitor_products` | [workflow-competitor-table-design.md](./workflow-competitor-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | [workflow-selection-table-design.md](./workflow-selection-table-design.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | [workflow-influencer-outreach-design.md](./workflow-influencer-outreach-design.md) |
+| Amazon 竞品表单商品采集（实施中） | `refresh_amazon_product_row_by_asin` | [workflow-amazon-product-detail-design.md](./workflow-amazon-product-detail-design.md) |
+| Amazon 竞品表批量采集（实施中） | `refresh_current_amazon_product_table` | [workflow-amazon-product-detail-design.md](./workflow-amazon-product-detail-design.md) |
 
 ## 策略与设计草案
 
@@ -63,7 +66,6 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [Amazon 商品详情采集 Workflow 与事实存储设计](./workflow-amazon-product-detail-design.md) | 待用户审阅、尚未实现的 Amazon 美国站单商品、批量和搜索采集目标设计 |
 | [数据采集策略与频率设计](./data-collection-strategy-design.md) | 采集频率、窗口数据和事实沉淀策略 |
 | [Interactive Staged Workflow Runtime 设计草案](./interactive-staged-workflow-runtime-design.md) | 节点化、标准输入输出、Agent Catalog 编排和交互式 Runtime 的目标设计 |
 | [TK 综合数据表设计](./future-tk-comprehensive-table-design.md) | 未来飞书业务数据模型草案，不替代当前飞书表事实或 Fact DB schema |

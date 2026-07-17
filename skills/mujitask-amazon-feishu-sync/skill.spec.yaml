@@ -1,0 +1,146 @@
+schema_version: 1
+kind: skill
+
+metadata:
+  name: mujitask-amazon-feishu-sync
+  title: Amazon竞品表采集
+  description: >-
+    Submits confirmed single-row or T-tagged batch collection tasks for Amazon竞品表.
+    Use when the user identifies one Feishu source record or asks to collect table rows
+    whose 采集标签 is T, and explicitly confirms submission.
+  short_description: Amazon竞品表任务提交
+  owner: domains/amazon
+  side_effects: true
+  render_mode: compact
+
+source_of_truth:
+  business_overview: docs/business/business-requirements.md
+  requirements_index: docs/business/requirements/README.md
+
+formal_task_codes:
+  - refresh_amazon_product_row_by_asin
+  - refresh_current_amazon_product_table
+
+purpose:
+  - Submit confirmed Amazon竞品表 single-row or 采集标签=T batch tasks.
+
+when_to_use:
+  - The user asks to collect or refresh one identified Amazon竞品表 record.
+  - The user asks to collect Amazon竞品表 rows whose 采集标签 is T.
+  - The user asks to batch-collect or refresh the Amazon竞品表; always apply the fixed 采集标签=T selector.
+
+execution_actions:
+  - 采集
+  - 更新
+
+do_not_use:
+  - Conceptual, deployment, TikTok, or keyword-search requests.
+  - ASIN-only single-row requests without a Feishu source_record_id.
+
+inputs:
+  confirmation:
+    description: Explicit confirmation of the latest preview.
+    extraction_rules:
+      - Require confirmation before submission.
+  source_record_id:
+    description: Feishu record id in Amazon竞品表.
+    extraction_rules:
+      - Require an explicit record id; never substitute ASIN or URL.
+
+intents:
+  - id: amazon_product_row_refresh
+    kind: formal_workflow
+    title: Amazon竞品表单行采集
+    business_flow_name: Amazon竞品表采集
+    task_code: refresh_amazon_product_row_by_asin
+    target_tables:
+      - Amazon竞品表
+    trigger_mode_from_requirements: OpenClaw conversation input
+    conversation_activation: explicit confirmed submission only
+    source_documents:
+      requirements:
+        - docs/business/requirements/amazon-product-detail-collection.md
+      design:
+        - docs/arch/workflow-amazon-product-detail-design.md
+    description: Collect and write back one identified Amazon竞品表 row.
+    do_not_use: Do not use for whole-table, keyword, ASIN-only, or TikTok requests.
+    command: bash skills/mujitask-amazon-feishu-sync/run_task.sh --intent "amazon_product_row_refresh" --source-record-id "<source_record_id>"
+    required_inputs:
+      - source_record_id
+      - confirmation
+    optional_inputs: []
+    default_values: {}
+    side_effects:
+      - submit runtime task_request
+      - update the same Amazon竞品表 record through Runtime
+
+  - id: amazon_product_table_refresh
+    kind: formal_workflow
+    title: Amazon竞品表批量采集
+    business_flow_name: Amazon竞品表批量采集
+    task_code: refresh_current_amazon_product_table
+    target_tables:
+      - Amazon竞品表
+    trigger_mode_from_requirements: OpenClaw conversation input
+    conversation_activation: explicit confirmed submission only
+    source_documents:
+      requirements:
+        - docs/business/requirements/amazon-product-detail-collection.md
+      design:
+        - docs/arch/workflow-amazon-product-detail-design.md
+    description: Collect only Amazon竞品表 records whose 采集标签 is exactly T.
+    do_not_use: Do not use for custom filters, keyword search, or TikTok requests.
+    command: bash skills/mujitask-amazon-feishu-sync/run_task.sh --intent "amazon_product_table_refresh"
+    required_inputs:
+      - confirmation
+    optional_inputs: []
+    default_values:
+      collection_tag: T
+    side_effects:
+      - submit one batch runtime task_request
+      - create one single-row child request per valid T-tagged record
+
+workflow:
+  - Select the single-row or fixed T-tagged batch intent and show a one-line preview.
+  - Submit only after explicit confirmation.
+  - Run the command once and return its request_id.
+
+intent_precedence:
+  - Use the single-row intent only when source_record_id is present.
+  - Use the batch intent only for the fixed 采集标签=T table collection.
+  - Otherwise do not submit.
+
+output_format:
+  success: "request_id: <request_id>"
+  failure: "任务提交失败：<short safe reason>"
+  missing_input_examples:
+    - 请提供 Amazon竞品表记录的 source_record_id。
+
+guardrails:
+  - Require explicit confirmation.
+  - Never accept ASIN or URL as source_record_id.
+  - Never change the batch selector from 采集标签=T.
+  - Require the bound amazon-ops Feishu group context.
+  - Do not expose credentials or internal configuration.
+
+edge_cases:
+  - "Missing source_record_id: ask for it and stop."
+  - "Unexpected command result: return the fixed failure format."
+
+final_checks:
+  - confirmation is present, and source_record_id is present for the single-row intent.
+  - Exactly one task was submitted.
+  - The response uses the fixed output format.
+
+examples:
+  - user: 采集 Amazon竞品表记录 recABC123
+    intent: amazon_product_row_refresh
+    inputs:
+      source_record_id: recABC123
+    reply: "确认后提交并回复 `request_id: <request_id>`."
+
+negative_activation_examples:
+  - user: 帮我采集 B0D9JMW97T
+    reason: ASIN is not a source_record_id.
+  - user: 采集 Amazon竞品表里采集标签为 A 的数据
+    reason: The registered batch selector is fixed to 采集标签=T.

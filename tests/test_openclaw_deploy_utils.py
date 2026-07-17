@@ -208,6 +208,32 @@ def test_macos_deploy_runs_alembic_before_launchd_restart() -> None:
     assert text.index(migration_command) < text.index(launchd_command)
 
 
+def test_macos_deploy_installs_tiktok_and_amazon_skills_into_distinct_workspaces() -> None:
+    deploy_script = (ROOT / "scripts" / "deploy" / "macos" / "deploy.sh").read_text(
+        encoding="utf-8"
+    )
+    preflight = (ROOT / "scripts" / "deploy" / "macos" / "preflight.sh").read_text(
+        encoding="utf-8"
+    )
+    template = (ROOT / "scripts" / "deploy" / "macos" / "deploy.local.env.example").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "MUJITASK_TIKTOK_SKILLS_DIR",
+        "MUJITASK_AMAZON_SKILLS_DIR",
+        "MUJITASK_TIKTOK_OPENCLAW_AGENT_ID",
+        "MUJITASK_AMAZON_OPENCLAW_AGENT_ID",
+        "MUJITASK_AMAZON_FEISHU_ACCOUNT_ID",
+    ):
+        assert token in template
+    assert "install_amazon_agent_skill" in deploy_script
+    assert 'skills/mujitask-tiktok-feishu-sync' in deploy_script
+    assert 'skills/mujitask-amazon-feishu-sync' in deploy_script
+    assert 'require_config_value MUJITASK_TIKTOK_SKILLS_DIR' in preflight
+    assert 'require_config_value MUJITASK_AMAZON_SKILLS_DIR' in preflight
+
+
 def test_smoke_check_requires_current_public_tasks() -> None:
     common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
     text = common_script.read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-05-22`
+更新时间：`2026-07-15`
 
 ## 1. 文档目的
 
@@ -13,18 +13,19 @@
 
 客户当前希望通过 `OpenClaw` 驱动自动化流程，持续抓取 `TK` 和 `AWS` 的商业数据，并把结果沉淀到现有飞书多维表中，用于后续选品、竞品分析、达人运营和业务决策。
 
-当前阶段已经明确的业务目标主要有四类：
+当前阶段已经明确的业务目标主要有五类：
 
 1. 通过定时任务持续更新飞书中的 `TK竞品收集` 数据，保证已有竞品信息保持最新。
 2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品或选品数据。
 3. 通过定时任务把 `TK竞品收集` 中的商品继续扩展到 `TK达人池`，形成达人画像与运营沉淀。
 4. 通过定时或手动检查 `TK达人建联表`，跟踪达人是否已为对应商品发布视频，并回写视频链接与发布时间。
+5. 以飞书 `AMAZON_PRODUCTS` 来源行中的美国站 ASIN 为入口，采集 Amazon 商品详情、变体、Offer、媒体和排名事实，并把受控字段写回同一来源行。
 
 ## 3. 客户当前飞书多维表
 
 本节字段信息不再引用本地分析文档，而是基于飞书 `table URL + FEISHU_ACCESS_TOKEN` 实时拉取当前 Base 的最新 schema 后整理。
 
-### 3.1 需求范围内的 5 张飞书表
+### 3.1 当前已实时验证的 5 张 TikTok 飞书表
 
 - 飞书 Base 链接：`https://ecncxlbv3k1g.feishu.cn/base/KzJXbZWunalHHVs4OkYcvk5gnxc`
 - 当前 Base 实时返回了 10 张表；本需求当前只覆盖以下 5 张：
@@ -36,6 +37,8 @@
 | `TK达人池` | `tblwLYl59TkfVFLe` | 达人画像池与合作沉淀 |
 | `TK达人建联表` | `tblpK4zCGaaL6h6v` | 达人建联执行台账 |
 | `TK合作爆款视频` | `tblP9S5mRrirutDT` | 爆款视频案例库 |
+
+Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户侧表名为 `Amazon竞品表`。其 `table_id/view_id` 由部署环境显式配置，当前未把它计入上述 TikTok Base 的 5 张实时 schema 快照；字段口径以 [feishu-amazon-products.yaml](../../contracts/fields/feishu-amazon-products.yaml) 为机器事实来源。
 
 ### 3.2 五张表的当前字段
 
@@ -347,6 +350,8 @@
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | [workflow-influencer-outreach-design.md](../arch/workflow-influencer-outreach-design.md) |
+| Amazon 竞品表单商品采集（实施中） | `refresh_amazon_product_row_by_asin` | 指定飞书来源行手动/自动触发 | `Amazon竞品表`（`AMAZON_PRODUCTS`） | [requirements/amazon-product-detail-collection.md](./requirements/amazon-product-detail-collection.md) | [workflow-amazon-product-detail-design.md](../arch/workflow-amazon-product-detail-design.md) |
+| Amazon 竞品表批量采集（实施中） | `refresh_current_amazon_product_table` | OpenClaw 手动触发，只处理 `采集标签=T` | `Amazon竞品表`（`AMAZON_PRODUCTS`） | [requirements/amazon-product-detail-collection.md](./requirements/amazon-product-detail-collection.md) | [workflow-amazon-product-detail-design.md](../arch/workflow-amazon-product-detail-design.md) |
 
 ### 4.2 变更隔离规则
 
@@ -383,10 +388,10 @@
 
 ## 7. 版本信息
 
-- 需求版本：`v3.3`
-- 文档版本：`v3.6.1`
-- 版本日期：`2026-05-22`
-- 本次变更：补充达人建联检查设计文档入口；确定 task_code 为 `tiktok_influencer_outreach_sync`。
+- 需求版本：`v3.4`
+- 文档版本：`v3.7.0`
+- 版本日期：`2026-07-15`
+- 本次变更：纳入 Amazon 美国站单商品采集正式需求索引，并区分已实时验证的 TikTok 表与部署配置的 `AMAZON_PRODUCTS` 路由。
 
 ## 8. 关联文档
 
@@ -397,4 +402,5 @@
 - [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)
 - [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)
 - [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md)
+- [requirements/amazon-product-detail-collection.md](./requirements/amazon-product-detail-collection.md)
 - [../arch/README.md](../arch/README.md)

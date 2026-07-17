@@ -512,7 +512,7 @@ def test_shared_fact_role_contract_excludes_runtime_tables() -> None:
     assert "不含 Runtime 表权限或 DDL" in deployment_doc
 
 
-def test_deploy_writes_amazon_route_to_skill_and_worker_runtime() -> None:
+def test_deploy_keeps_amazon_route_in_worker_runtime_only() -> None:
     deploy = _read(DEPLOY)
     preflight = _read(PREFLIGHT)
     deploy_example = _read(DEPLOY_ENV_EXAMPLE)
@@ -535,8 +535,8 @@ def test_deploy_writes_amazon_route_to_skill_and_worker_runtime() -> None:
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID",
     ):
         assert key in deploy_example
-        assert key in skill_example
-        assert key in skill_merge
+        assert key not in skill_example
+        assert key not in skill_merge
     assert "MUJITASK_AMAZON_US_BROWSER_PROFILE_REF" in deploy_example
     assert "AMAZON_US_BROWSER_PROFILE_REF" not in skill_example
     assert "AMAZON_US_BROWSER_PROFILE_REF" not in skill_merge
