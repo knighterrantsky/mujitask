@@ -64,7 +64,7 @@ refresh_current_amazon_product_table
 
 - TikTok Skill 的 `metadata.owner` 必须是 `domains/tiktok`，不得列出 Amazon task 或 intent。
 - Amazon Skill 的 `metadata.owner` 必须是 `domains/amazon`，不得列出 TikTok 或 FastMoss task/intent。
-- 每个业务域使用的 Skill、OpenClaw agent/workspace 和飞书账号/会话路由以 `contracts/agents/business-agent-bindings.yaml` 为准。
+- 每个业务域使用的 Skill、OpenClaw agent/workspace 和飞书账号/会话路由以 `contracts/agents/business-agent-bindings.yaml` 为准；本地飞书 account ID 必须来自部署配置，不得在 skill 代码中固定为 `default` 等字面量。
 - Skill bundle 不保存飞书 App ID、App Secret、token 真值或 OpenClaw 配置文件。
 
 不允许再使用 generic `keyword_search` 同时代表竞品和选品。关键词搜索竞品写入必须使用 `keyword_competitor_search`，关键词搜索选品写入必须使用 `keyword_selection_search`。

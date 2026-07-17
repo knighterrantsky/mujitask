@@ -14,7 +14,7 @@
 
 - 本文中的 Amazon 业务不得通过 TikTok 对话或 `mujitask-tiktok-feishu-sync` 接收指令。
 - 当前及后续所有 Amazon workflow 统一由独立 Skill `mujitask-amazon-feishu-sync` 暴露，并部署到独立 OpenClaw agent `amazon-ops` 的 `workspace-amazon`。
-- TikTok 与 Amazon 复用同一个飞书机器人账号 `default`。Amazon 必须使用独立飞书群聊，并由精确 `peer.kind=group` / `peer.id=oc_*` 绑定路由到 `amazon-ops`；不得落入 TikTok 的账号级兜底路由。
+- Amazon 使用部署配置 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID` 指向客户本地实际存在的飞书机器人账号，不固定账号别名。Amazon 必须使用独立飞书群聊，并由精确 `peer.kind=group` / `peer.id=oc_*` 绑定路由到 `amazon-ops`；不得落入 TikTok 的账号级兜底路由。
 - Amazon workspace 只安装 Amazon Skill，不安装 TikTok Skill；TikTok workspace 同样不得安装 Amazon Skill。
 - 飞书对话、Skill 和 OpenClaw workspace 独立不等于复制后台运行系统。Runtime DB、executor、worker、watchdog、Fact DB 实例和对象存储 bucket 继续按既有架构共享，并通过 Amazon 独立事实表和对象前缀隔离。
 - 飞书机器人 App ID、App Secret 和访问令牌属于部署密钥，只能保存在 OpenClaw/部署 secret 配置中，不能进入需求文档、机器契约、Skill 生成产物、任务 payload、日志或通知。
@@ -40,8 +40,9 @@
 
 - `包装规格` 只取 Product information → Item details 中 `Number of Items` 的可见值，不使用 `Unit Count`、变体标题或商品数量选择器替代；页面没有该字段或值为空时写固定文本 `没有包装规格`。
 - `送达日期` 只取当前 Featured Offer / Buy Box 主配送消息中以 `FREE delivery` 开头的可见文案。
-- `送达日期` 保留免费配送标签和日期/日期范围，移除 `to <address>` 配送目的地、邮编、`Or fastest delivery` 次级配送文案、倒计时和账户相关文本。
-- 页面未观察到合格的 `FREE delivery` 文案时不写 `送达日期`，保留飞书原值。
+- Fact DB 保留已移除地址、邮编、`Or fastest delivery`、倒计时和账户文本的主配送文案；飞书 `送达日期` 再移除 `FREE delivery` 标签和订单门槛，仅写英文日期或日期范围。
+- 单日格式为 `Wednesday, July 22`，日期范围格式为 `August 3 - 18` 或 `July 29 - August 2`。例如 `FREE delivery on orders shipped by Amazon over $35 Wednesday, July 22` 写为 `Wednesday, July 22`。
+- 页面未观察到合格的 `FREE delivery` 文案，或净化后的文案无法提取日期时，不写 `送达日期`，保留飞书原值。
 
 ### 2.1 促销活动口径
 
@@ -63,6 +64,8 @@
 - `source_record_id`：本次读取和写回的飞书来源行。
 
 批量正式任务业务输入仅包含 `table_ref=AMAZON_PRODUCTS`。筛选字段和值固定为 `采集标签=T`，不允许用户从对话中改成其他字段或其他值；字段缺失、空值或不是严格大写 `T` 的记录一律不进入采集。
+
+Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，提交时必须把拼接后的无密钥表 URL 作为 `table_refs.AMAZON_PRODUCTS` 配置快照写入任务 payload。该快照不是用户业务输入；飞书 access token 不进入 payload。worker 只消费任务快照，缺失时 fail closed，不得从项目 `.env`、`executor.local.env` 或进程环境解析 `AMAZON_PRODUCTS` 表路由。
 
 浏览器 profile、Runtime DB、Fact DB、对象存储地址及密钥不得进入正式任务 payload，由项目运行配置解析。系统根据规范化 ASIN 构造 `https://www.amazon.com/dp/{asin}`，不信任飞书链接中的跟踪参数。
 
@@ -118,10 +121,10 @@
 11. Coupon 写回值包含北京时间、英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价；Limited Time Deal 写回值只包含北京时间、英文类型和页面活动价。
 12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时清空旧值，不追加历史记录。
 13. Product information → Item details 中 `Number of Items=1` 时写回 `包装规格=1`；字段缺失时写回 `包装规格=没有包装规格`。
-14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，`送达日期` 只写 `FREE delivery August 6 - 19`，capture 和写回值均不包含地址或次级配送文案。
+14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `August 6 - 19`；两者均不包含地址或次级配送文案。
 15. Amazon `#altImages` 中明确观察到的有效图库图片按页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段，并覆盖该字段旧附件。
 16. 任意 Amazon 单行或批量终态写入发送给飞书的字段集合必须是 `主图`、`侧边栏图片`、`送达日期`、`包装规格`、`促销活动记录` 的子集；状态、错误、标题、品牌、价格及其他商品字段不得写入。
-17. Amazon 指令只能由 `amazon-ops` workspace 中的 `mujitask-amazon-feishu-sync` 接收；受理回执和最终通知的 `reply_target.accountId` 必须为共享机器人账号 `default`，不得使用 TikTok workspace。
+17. Amazon 指令只能由 `amazon-ops` workspace 中的 `mujitask-amazon-feishu-sync` 接收；受理回执和最终通知的 `reply_target.accountId` 必须等于部署配置 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID`，不得在代码中固定本地账号别名，也不得使用 TikTok workspace。
 18. 批量任务只为 `采集标签=T` 的记录创建行级主 Job；`t`、空值、其他标签和字段缺失均不采集。
 19. 同一批量请求内，每个 `source_record_id` 最多创建一个 `amazon_product_row_refresh` Job；所有 Job 与父任务使用同一个 `request_id`，父任务只发送一次汇总通知。
 20. 生产 daemon 不指定 `request_id` 时，也必须能够领取批量 Request 下的行级 Job 并完成浏览器执行、恢复、持久化和汇总；禁止通过测试专用定向 claim 绕过该验收。

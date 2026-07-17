@@ -79,7 +79,10 @@ TikTok skill env 应该放：
 
 Amazon skill env 只应放 `INSTALL_DIR`、`NOTIFICATION_CHANNEL_CODE`、
 `OPENCLAW_AGENT_ID=amazon-ops`、`OPENCLAW_STATE_DIR` 和
-`OPENCLAW_DELIVERY_ACCOUNT_ID=amazon`。Amazon 表路由、表访问 token、浏览器和持久化配置全部属于项目运行配置。
+`OPENCLAW_DELIVERY_ACCOUNT_ID`。`OPENCLAW_DELIVERY_ACCOUNT_ID` 填客户 OpenClaw 本地实际配置的
+飞书 account ID，不要求名为 `default` 或 `amazon`。Amazon skill env 还保存
+`MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL/TABLE_ID/VIEW_ID`，用于提交无密钥表路由快照；
+表访问 token、浏览器和持久化配置仍属于项目运行配置。
 
 说明：
 
@@ -88,19 +91,19 @@ Amazon skill env 只应放 `INSTALL_DIR`、`NOTIFICATION_CHANNEL_CODE`、
 - Runtime DB / Fact DB / MinIO/S3 / 浏览器 profile 的正式默认配置必须放在项目运行配置中，不能由 skill env 或 skill submit payload 透传。
 - 旧 `skill.local.env` 中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键会被项目配置加载器忽略。
 
-Amazon 单商品任务的正式 payload 只传 `table_ref=AMAZON_PRODUCTS` 和
-`source_record_id`。运行时优先使用 Amazon 表专属的
-`MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL`、
-`MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN`，未配置时回退到全局
-`MUJITASK_FEISHU_BASE_URL`、`MUJITASK_FEISHU_ACCESS_TOKEN`；表与视图由
-`MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID`、可选的
-`MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 解析。URL、token 和表身份都不进入正式任务输入。
+Amazon 单商品任务的正式业务输入只包含 `table_ref=AMAZON_PRODUCTS` 和
+`source_record_id`。skill 必须从自身 `skill.local.env` 生成
+`table_refs.AMAZON_PRODUCTS` 无密钥配置快照；Runtime 与 worker 只消费该快照，缺失时 fail closed，
+不得从项目 `.env` 或 `executor.local.env` 解析 Amazon 表路由。表访问 token 仍由 worker 安全配置
+提供，始终不进入 payload。
 submit 会解析 `AMAZON_US_BROWSER_PROFILE_REF` 指向的 browser target，并只把 target key digest
 作为 Browser Worker 资源 lane 写入 Runtime context；profile、workspace 与 provider credential
 不会进入业务 payload。
 
-Amazon 飞书机器人 App ID / App Secret 由 OpenClaw 的 `channels.feishu.accounts.amazon`
-secret 配置持有，不等同于多维表格 access token，也不得写入任何 skill env 模板。
+Amazon 飞书机器人 App ID / App Secret 由 OpenClaw 的
+`channels.feishu.accounts.<MUJITASK_AMAZON_FEISHU_ACCOUNT_ID>` secret 配置持有；account ID
+使用客户本地实际配置，不固定为 `amazon` 或 `default`。该 secret 不等同于多维表格 access token，
+也不得写入任何 skill env 模板。
 
 ### 2.3 `.env`
 

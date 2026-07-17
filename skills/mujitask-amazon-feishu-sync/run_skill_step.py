@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -17,7 +18,7 @@ LIGHTWEIGHT_SUBMIT = SCRIPT_DIR / "lightweight_submit.py"
 ROW_TASK_CODE = "refresh_amazon_product_row_by_asin"
 BATCH_TASK_CODE = "refresh_current_amazon_product_table"
 EXPECTED_AGENT_ID = "amazon-ops"
-EXPECTED_FEISHU_ACCOUNT_ID = "default"
+AMAZON_TABLE_REF = "AMAZON_PRODUCTS"
 
 
 def _normalize_env_value(value: str) -> str:
@@ -49,6 +50,29 @@ def _required(env: dict[str, str], key: str) -> str:
     if not value:
         raise ValueError(f"Amazon skill configuration is missing {key}.")
     return value
+
+
+def _amazon_table_refs(env: dict[str, str]) -> dict[str, str]:
+    base_url = str(env.get("MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL") or "").strip()
+    if not base_url:
+        raise ValueError(
+            "Amazon skill configuration is missing "
+            "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL."
+        )
+    table_id = _required(env, "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID")
+    view_id = str(env.get("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID") or "").strip()
+    parsed = urlparse(base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["table"] = table_id
+    if view_id:
+        query["view"] = view_id
+    else:
+        query.pop("view", None)
+    path = parsed.path.rstrip("/") or parsed.path
+    table_url = urlunparse(
+        (parsed.scheme, parsed.netloc, path, parsed.params, urlencode(query), parsed.fragment)
+    )
+    return {AMAZON_TABLE_REF: table_url}
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -143,8 +167,6 @@ def _latest_agent_delivery_context(env: dict[str, str]) -> dict[str, Any]:
 
 def _amazon_delivery_context(env: dict[str, str]) -> dict[str, Any]:
     configured_account_id = _required(env, "OPENCLAW_DELIVERY_ACCOUNT_ID")
-    if configured_account_id != EXPECTED_FEISHU_ACCOUNT_ID:
-        raise ValueError("Amazon skill must use the shared default Feishu bot account.")
     delivery = _explicit_delivery_context(env) or _latest_agent_delivery_context(env)
     channel = str(delivery.get("channel") or "").strip().lower()
     target = str(delivery.get("to") or delivery.get("target") or "").strip()
@@ -152,13 +174,13 @@ def _amazon_delivery_context(env: dict[str, str]) -> dict[str, Any]:
     if (
         channel != "feishu"
         or not target.startswith("chat:oc_")
-        or account_id != EXPECTED_FEISHU_ACCOUNT_ID
+        or account_id != configured_account_id
     ):
         raise ValueError("Amazon task delivery must come from the bound Amazon Feishu group session.")
     return {
         "channel": "feishu",
         "to": target,
-        "accountId": EXPECTED_FEISHU_ACCOUNT_ID,
+        "accountId": configured_account_id,
         **({"sessionId": str(delivery["sessionId"])} if delivery.get("sessionId") else {}),
     }
 
@@ -176,7 +198,8 @@ def _submit(*, task_code: str, source_record_id: str = "") -> dict[str, Any]:
     delivery = _amazon_delivery_context(env)
     params: dict[str, Any] = {
         "control_action": "submit",
-        "table_ref": "AMAZON_PRODUCTS",
+        "table_ref": AMAZON_TABLE_REF,
+        "table_refs": _amazon_table_refs(env),
         "notification_channel_code": str(env.get("NOTIFICATION_CHANNEL_CODE") or "feishu_bot_api"),
         "source_channel_code": "feishu",
         "reply_target": json.dumps(delivery, ensure_ascii=False, separators=(",", ":")),

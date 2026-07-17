@@ -420,7 +420,7 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
     }
     assert fields["卖家"] == "Structured Seller"
     assert fields["配送方式"] == "Amazon | FREE delivery Friday, July 17"
-    assert fields["送达日期"] == "FREE delivery Friday, July 17"
+    assert fields["送达日期"] == "Friday, July 17"
     assert fields["包装规格"] == "没有包装规格"
     assert fields["Buy Box卖家"] == "Structured Seller"
     assert fields["Buy Box价格"] == 29.99
@@ -637,6 +637,47 @@ def test_composite_projection_omits_entire_field_when_any_component_is_missing()
 
     assert "变体属性" not in fields
     assert "配送方式" not in fields
+    assert "送达日期" not in fields
+
+
+@pytest.mark.parametrize(
+    ("delivery_text", "expected"),
+    [
+        (
+            "FREE delivery on orders shipped by Amazon over $35 Wednesday, July 22",
+            "Wednesday, July 22",
+        ),
+        ("FREE delivery Thursday July 23", "Thursday, July 23"),
+        ("FREE delivery August 3 - 18", "August 3 - 18"),
+        ("FREE delivery July 29 - August 2", "July 29 - August 2"),
+        ("FREE delivery Saturday, July 25", "Saturday, July 25"),
+    ],
+)
+def test_delivery_date_projection_writes_only_date_or_range(
+    delivery_text: str,
+    expected: str,
+) -> None:
+    capture = _capture()
+    capture["commerce"]["featured_offer"]["delivery_text"] = delivery_text
+    capture["field_evidence"]["commerce.featured_offer.delivery_text"][
+        "value"
+    ] = delivery_text
+
+    fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
+
+    assert fields["送达日期"] == expected
+
+
+def test_delivery_date_projection_preserves_existing_value_when_date_is_unparseable() -> None:
+    capture = _capture()
+    delivery_text = "FREE delivery with qualifying orders"
+    capture["commerce"]["featured_offer"]["delivery_text"] = delivery_text
+    capture["field_evidence"]["commerce.featured_offer.delivery_text"][
+        "value"
+    ] = delivery_text
+
+    fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
+
     assert "送达日期" not in fields
 
 
@@ -908,7 +949,7 @@ def test_feishu_write_only_transports_five_active_amazon_projection_fields(
         {"file_token": "new-asset-2.jpg"},
     ]
     assert set(written["fields"]) == set(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS)
-    assert written["fields"]["送达日期"] == "FREE delivery Friday, July 17"
+    assert written["fields"]["送达日期"] == "Friday, July 17"
     assert written["fields"]["包装规格"] == "没有包装规格"
     assert written["fields"]["促销活动记录"] == (
         "2026-07-14 16:00:00 | coupon | 10% | $26.99"

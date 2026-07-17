@@ -28,7 +28,7 @@
 
 每个 bundle 都应独立描述触发条件、参数提取、提交入口和首条回执契约；共同复用后台 Runtime DB、executor、worker、outbox 和项目安装配置。
 
-业务域入口还必须遵守 `contracts/agents/business-agent-bindings.yaml`。当前 Amazon 固定部署到 `amazon-ops` / `workspace-amazon`，只加载 `mujitask-amazon-feishu-sync`；TikTok 与 Amazon 共用飞书账号 `default`，但 Amazon 使用精确群聊 peer binding，二者不共用对话路由、Skill、agent 或 workspace。
+业务域入口还必须遵守 `contracts/agents/business-agent-bindings.yaml`。当前 Amazon 固定部署到 `amazon-ops` / `workspace-amazon`，只加载 `mujitask-amazon-feishu-sync`；Amazon 使用部署配置的本地飞书 account ID 和精确群聊 peer binding，不固定账号别名，并且不与 TikTok 共用对话路由、Skill、agent 或 workspace。
 
 对外暴露两类业务语义：
 

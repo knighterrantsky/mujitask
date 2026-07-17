@@ -36,6 +36,11 @@ def build_refresh_current_amazon_product_table_definition() -> WorkflowDefinitio
         payload_contract=contract(
             "refresh_current_amazon_product_table_payload",
             required_field("table_ref", "Configured Amazon Feishu table alias.", type_hint="str"),
+            required_field(
+                "table_refs",
+                "Required secret-free Amazon table route snapshot from the skill.",
+                type_hint="dict[str, str]",
+            ),
             notes=("The batch selector is fixed to 采集标签 = T and is not user-configurable.",),
         ),
         stages=(

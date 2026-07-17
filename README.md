@@ -90,7 +90,7 @@ bash scripts/deploy/macos/deploy.sh
 
 `deploy.sh` 会在启动或重启 `launchd` 守护进程前执行 Alembic migration，避免新代码访问旧 schema。
 
-飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`、`AMAZON_PRODUCTS`），运行时从 `MUJITASK_FEISHU_BASE_URL` 和每张表的 `TABLE_ID` / `VIEW_ID` 拼出完整 table URL。Amazon 路由由 `MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID` 和可选的 `MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID` 显式配置。
+飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`、`AMAZON_PRODUCTS`）。Amazon Skill 只从自身 `skill.local.env` 读取 `MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL/TABLE_ID/VIEW_ID` 并提交必填的无密钥表路由快照；worker 只消费该 Task 快照，项目 `.env` 与 `executor.local.env` 都不是 Amazon 表路由来源或回退。
 
 ## 4. 本地开发运行
 
@@ -228,7 +228,7 @@ automation-business-scaffold-run run \
 | `scripts/deploy/macos/deploy.local.env` | macOS 部署输入配置 |
 | `scripts/execution_control/executor.local.env` | Runtime DB、Fact DB、MinIO、lease、heartbeat、worker 等执行控制主配置 |
 | `skills/mujitask-tiktok-feishu-sync/skill.local.env` | TikTok workspace 的 skill 固定业务输入配置 |
-| `skills/mujitask-amazon-feishu-sync/skill.local.env` | Amazon workspace 的 agent/飞书回复路由配置；不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
+| `skills/mujitask-amazon-feishu-sync/skill.local.env` | Amazon workspace 的表路由快照源与 agent/飞书回复路由配置；不承载 Runtime DB / Fact DB / MinIO/S3 运行配置 |
 
 当前代码自动加载的优先级是：
 

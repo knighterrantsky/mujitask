@@ -14,7 +14,7 @@ FACT_RUNNER = REPO_ROOT / "scripts/execution_control/run_fact_alembic_upgrade.sh
 INSTALL_LAUNCH_AGENTS = REPO_ROOT / "scripts/execution_control/install_launch_agents.sh"
 EXECUTOR_ENV_EXAMPLE = REPO_ROOT / "scripts/execution_control/executor.local.env.example"
 LAUNCHD_DIR = REPO_ROOT / "config/deployment/launchd"
-SKILL_ENV_EXAMPLE = REPO_ROOT / "skills/mujitask-tiktok-feishu-sync/skill.local.env.example"
+AMAZON_SKILL_ENV_EXAMPLE = REPO_ROOT / "skills/mujitask-amazon-feishu-sync/skill.local.env.example"
 ARCHITECTURE_OWNERSHIP = REPO_ROOT / "contracts/harness/architecture-ownership.yaml"
 CODE_ROADMAP = REPO_ROOT / "contracts/harness/code-roadmap.yaml"
 FACT_SCHEMA_DESIGN = REPO_ROOT / "docs/arch/fact-db-schema-design.md"
@@ -477,6 +477,7 @@ def test_fact_privilege_gate_checks_identity_tk_tables_and_actual_revision() -> 
     assert "AMAZON_FACT_SCHEMA_REVISION" in fact_gate
     assert "TK_FACT_SCHEMA_STATEMENTS" in fact_grant
     assert "TK_FACT_SCHEMA_STATEMENTS" in fact_gate
+    assert "from sqlalchemy import create_engine, inspect, text" in fact_grant
     assert 'statement))' in fact_grant
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA" in fact_grant
     assert "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA" in fact_grant
@@ -512,33 +513,36 @@ def test_shared_fact_role_contract_excludes_runtime_tables() -> None:
     assert "不含 Runtime 表权限或 DDL" in deployment_doc
 
 
-def test_deploy_keeps_amazon_route_in_worker_runtime_only() -> None:
+def test_deploy_writes_amazon_route_only_to_skill_and_cleans_worker_fallback() -> None:
     deploy = _read(DEPLOY)
     preflight = _read(PREFLIGHT)
     deploy_example = _read(DEPLOY_ENV_EXAMPLE)
-    skill_example = _read(SKILL_ENV_EXAMPLE)
+    amazon_skill_example = _read(AMAZON_SKILL_ENV_EXAMPLE)
     executor_example = _read(EXECUTOR_ENV_EXAMPLE)
     launchd_sources = "\n".join(
         _read(path) for path in sorted(LAUNCHD_DIR.glob("*.plist.template"))
     )
-    install_skill = deploy[deploy.index("install_agent_skill() {") : deploy.index("main() {")]
-    skill_merge = install_skill[
-        install_skill.index("merge_key_value_file") : install_skill.index(
-            'INSTALLED_SKILL_DIR="${target_skill_dir}"'
+    install_amazon_skill = deploy[
+        deploy.index("install_amazon_agent_skill() {") : deploy.index("main() {")
+    ]
+    skill_merge = install_amazon_skill[
+        install_amazon_skill.index("merge_key_value_file") : install_amazon_skill.index(
+            'INSTALLED_AMAZON_SKILL_DIR="${target_skill_dir}"'
         )
     ]
 
     assert 'require_feishu_table_route "AMAZON_PRODUCTS"' in preflight
     assert "require_config_value MUJITASK_AMAZON_US_BROWSER_PROFILE_REF" in preflight
     for key in (
+        "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID",
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID",
     ):
         assert key in deploy_example
-        assert key not in skill_example
-        assert key not in skill_merge
+        assert key in amazon_skill_example
+        assert key in skill_merge
     assert "MUJITASK_AMAZON_US_BROWSER_PROFILE_REF" in deploy_example
-    assert "AMAZON_US_BROWSER_PROFILE_REF" not in skill_example
+    assert "AMAZON_US_BROWSER_PROFILE_REF" not in amazon_skill_example
     assert "AMAZON_US_BROWSER_PROFILE_REF" not in skill_merge
     assert "AMAZON_US_BROWSER_PROFILE_REF" not in launchd_sources
     assert (
@@ -548,13 +552,15 @@ def test_deploy_keeps_amazon_route_in_worker_runtime_only() -> None:
     executor_merge = deploy[
         deploy.index("write_executor_local_env \\") : deploy.index("local migration_env_file=")
     ]
+    assert "MUJITASK_FEISHU_BASE_URL" in executor_merge
     for key in (
-        "MUJITASK_FEISHU_BASE_URL",
+        "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID",
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID",
     ):
-        assert key in executor_merge
-        assert key in executor_example
+        assert key not in executor_example
+        assert f'"{key}"' in executor_merge
+        assert f'"{key}=$(quote_env_value' not in executor_merge
     assert "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL" in executor_example
     assert "TK_FACT_DB_URL" not in executor_example
 

@@ -8,7 +8,7 @@ principles:
   - Amazon media materialization may persist a validated subset of observed media; missing observed media makes the handler partial_success, while unexpected or duplicate media remains invalid
   - formal workflows that use fact_bundle_upsert or media_asset_sync must declare requires_fact_db=true and requires_object_storage=true
   - missing Fact DB or object storage configuration must fail fast during submit or handler execution
-  - formal skill payloads carry business inputs only; project runtime config resolves Runtime DB, Fact DB, and object storage
+  - formal skill payloads carry business inputs plus explicitly governed secret-free routing snapshots only; project runtime config resolves Runtime DB, Fact DB, object storage, browser profiles, and credentials
   - business flows decide what products to collect and which projection mapper to use
   - fact collection does not decide Feishu fields
   - Feishu projection does not decide fact persistence
@@ -288,7 +288,10 @@ platform_contracts:
           required_prefix: FREE delivery
           source: featured_offer_primary_delivery_message
           projection_field: 送达日期
+          projection_format: english_date_or_date_range_only
           strip_segments:
+            - free_delivery_label
+            - order_threshold
             - destination_address_and_postcode
             - fastest_delivery
             - order_countdown
@@ -356,7 +359,16 @@ formal_workflow_persistence_contract:
       marker: allow_test_persistence_overrides
       purpose: isolate pytest/integration fixtures from local project config
   formal_skill_payload_boundary:
-    carries_business_inputs_only: true
+    carries_business_inputs_only: false
+    allowed_non_business_snapshots:
+      - field: table_refs
+        content: secret_free_feishu_table_urls
+        source: amazon_skill_local_env
+        required: true
+        runtime_route_fallback: forbidden
+        allowed_workflows:
+          - refresh_amazon_product_row_by_asin
+          - refresh_current_amazon_product_table
     run_mode_policy: forbidden_in_formal_skill_payload
     forbidden_fields:
       - run_mode

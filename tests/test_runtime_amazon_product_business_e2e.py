@@ -35,6 +35,12 @@ SOURCE_APP_TOKEN = "appAmazonToken"
 SOURCE_TABLE_ID = "tblAmazon"
 SOURCE_VIEW_ID = "vewAmazon"
 TABLE_REF = "AMAZON_PRODUCTS"
+TABLE_REFS = {
+    TABLE_REF: (
+        f"https://muji.feishu.cn/base/{SOURCE_APP_TOKEN}"
+        f"?table={SOURCE_TABLE_ID}&view={SOURCE_VIEW_ID}"
+    )
+}
 SOURCE_RECORD_ID = "rec-amazon-business-e2e"
 ASIN = "B0CHILD001"
 CANONICAL_URL = f"https://www.amazon.com/dp/{ASIN}"
@@ -157,17 +163,10 @@ def _configure_runtime(
 ) -> None:
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("MUJITASK_FEISHU_ACCESS_TOKEN", "test-feishu-token")
-    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", f"https://muji.feishu.cn/base/{SOURCE_APP_TOKEN}")
     monkeypatch.setenv(
         "MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN",
         "test-feishu-token",
     )
-    monkeypatch.setenv(
-        "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL",
-        f"https://muji.feishu.cn/base/{SOURCE_APP_TOKEN}",
-    )
-    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID", SOURCE_TABLE_ID)
-    monkeypatch.setenv("MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID", SOURCE_VIEW_ID)
     monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-us-e2e-profile")
     monkeypatch.setenv("AMAZON_US_LOCALE", "en_US")
     monkeypatch.setenv("AMAZON_US_DELIVERY_REGION", "US")
@@ -384,6 +383,7 @@ def _submit(runtime_db_url: str) -> str:
             runtime_db_url,
             control_action="submit",
             table_ref=TABLE_REF,
+            table_refs=TABLE_REFS,
             source_record_id=SOURCE_RECORD_ID,
         ),
     )
@@ -485,6 +485,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     store = RuntimeStore(db_url=runtime_db_url)
     assert store.load_task_request(request_id=request_id).payload == {
         "table_ref": TABLE_REF,
+        "table_refs": TABLE_REFS,
         "source_record_id": SOURCE_RECORD_ID,
     }
     assert store.load_task_request(request_id=request_id).stage_cursor[
@@ -574,7 +575,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
         {"file_token": "feishu-2"},
         {"file_token": "feishu-3"},
     ]
-    assert written_fields["送达日期"] == "FREE delivery Friday, July 17"
+    assert written_fields["送达日期"] == "Friday, July 17"
     assert written_fields["包装规格"] == "没有包装规格"
     assert written_fields["促销活动记录"].endswith(
         " | coupon | 10% | $26.99"

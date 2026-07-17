@@ -111,7 +111,7 @@ CLI 参数 > 环境变量 > executor.local.env > skill.local.env > .env
 - `config.py` 负责把环境变量解析成 typed defaults，例如 `BusinessDefaults`、`ExecutionControlDefaults` 和 `get_execution_control_defaults()`。
 - `scripts/execution_control/executor.local.env` 是 Runtime DB、Fact DB、Object Store、lease、heartbeat、worker poll、daemon stop idle 等运行配置的主入口。
 - `skills/{skill_code}/skill.local.env` 是 agent skill 固定输入和部署到 agent workspace 后的 skill 配置入口。
-- TikTok 与 Amazon 使用不同的 skill env 和 OpenClaw workspace；Amazon 固定为 `amazon-ops` / `workspace-amazon`，并通过默认飞书账号下的精确群聊 peer binding 隔离。该入口隔离不复制飞书机器人、Runtime DB 或 daemon。
+- TikTok 与 Amazon 使用不同的 skill env 和 OpenClaw workspace；Amazon 固定为 `amazon-ops` / `workspace-amazon`，并通过部署配置的飞书 account ID 与精确群聊 peer binding 隔离。account ID 只要求与当前 session 一致，不固定本地别名；该入口隔离不复制 Runtime DB 或 daemon。
 - `skills/{skill_code}/skill.local.env` 不得提供 Runtime DB、Fact DB、Object Store 或 browser profile 配置；加载器必须忽略其中残留的 `EXECUTION_CONTROL_*`、`BUSINESS_EXECUTION_CONTROL_*`、`TK_FACT_DB_URL`、`BROWSER_*`、`DEFAULT_PROFILE_REF` 等运行资源键。
 - `.env` 是本地默认配置入口，适合浏览器 profile、agent host/port、通用本地变量。
 - `*.env.example` 必须跟实际读取文件保持同名示例关系；新增必填配置时要同步示例、部署脚本、配置文档和测试。

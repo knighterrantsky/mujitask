@@ -100,7 +100,7 @@ require_feishu_table_route() {
   local env_slug="$1"
   local base_url table_id view_id
   if [[ "${env_slug}" == "AMAZON_PRODUCTS" ]]; then
-    base_url="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL MUJITASK_FEISHU_BASE_URL "")"
+    base_url="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL "" "")"
   else
     base_url="$(config_value MUJITASK_FEISHU_BASE_URL "" "")"
   fi

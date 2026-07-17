@@ -808,7 +808,7 @@ grant_native_fact_runtime_compatibility() {
 import os
 import re
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
     AMAZON_FACT_TABLES,
@@ -1363,6 +1363,9 @@ install_amazon_agent_skill() {
   local openclaw_agent_id="$4"
   local openclaw_state_dir="$5"
   local feishu_account_id="$6"
+  local feishu_base_url="$7"
+  local table_id="$8"
+  local view_id="$9"
 
   local source_skill_dir="${install_dir}/skills/mujitask-amazon-feishu-sync"
   local target_skill_dir="${skills_dir}/mujitask-amazon-feishu-sync"
@@ -1394,7 +1397,10 @@ install_amazon_agent_skill() {
     "NOTIFICATION_CHANNEL_CODE=$(quote_env_value "${notification_channel_code}")" \
     "OPENCLAW_AGENT_ID=$(quote_env_value "${openclaw_agent_id}")" \
     "OPENCLAW_STATE_DIR=$(quote_env_value "${openclaw_state_dir}")" \
-    "OPENCLAW_DELIVERY_ACCOUNT_ID=$(quote_env_value "${feishu_account_id}")"
+    "OPENCLAW_DELIVERY_ACCOUNT_ID=$(quote_env_value "${feishu_account_id}")" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL=$(quote_env_value "${feishu_base_url}")" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID=$(quote_env_value "${table_id}")" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID=$(quote_env_value "${view_id}")"
   umask "${previous_umask}"
   seal_private_file "${skill_env_file}" "Amazon skill environment file"
   INSTALLED_AMAZON_SKILL_DIR="${target_skill_dir}"
@@ -1447,7 +1453,7 @@ main() {
   tk_influencer_outreach_view_id="$(require_config_value MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID)"
   tk_hot_video_table_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID)"
   tk_hot_video_view_id="$(require_config_value MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID)"
-  amazon_products_base_url="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL MUJITASK_FEISHU_BASE_URL "${feishu_base_url}")"
+  amazon_products_base_url="$(require_config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL)"
   amazon_products_table_id="$(require_config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID)"
   amazon_products_view_id="$(require_config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID)"
   amazon_products_access_token="$(config_value MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN MUJITASK_FEISHU_ACCESS_TOKEN "${token}")"
@@ -1506,7 +1512,7 @@ main() {
   notification_channel_code="$(config_value MUJITASK_NOTIFICATION_CHANNEL_CODE NOTIFICATION_CHANNEL_CODE "feishu_bot_api")"
   tiktok_openclaw_agent_id="$(config_value MUJITASK_TIKTOK_OPENCLAW_AGENT_ID MUJITASK_OPENCLAW_AGENT_ID "tiktok-ops")"
   amazon_openclaw_agent_id="$(config_value MUJITASK_AMAZON_OPENCLAW_AGENT_ID "" "amazon-ops")"
-  amazon_feishu_account_id="$(config_value MUJITASK_AMAZON_FEISHU_ACCOUNT_ID "" "default")"
+  amazon_feishu_account_id="$(require_config_value MUJITASK_AMAZON_FEISHU_ACCOUNT_ID)"
   openclaw_state_dir="$(config_value MUJITASK_OPENCLAW_STATE_DIR OPENCLAW_STATE_DIR "${HOME}/.openclaw")"
 
   prepare_project_tree "${install_dir}"
@@ -1545,9 +1551,6 @@ main() {
     "${executor_env_file}" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
     "MUJITASK_FEISHU_BASE_URL=$(quote_env_value "${feishu_base_url}")" \
-    "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL=$(quote_env_value "${amazon_products_base_url}")" \
-    "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID=$(quote_env_value "${amazon_products_table_id}")" \
-    "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID=$(quote_env_value "${amazon_products_view_id}")" \
     "MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN=$(quote_env_value "${amazon_products_access_token}")" \
     "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL=$(quote_env_value "${fact_db_url}")" \
     "AMAZON_US_BROWSER_PROFILE_REF=$(quote_env_value "${amazon_us_browser_profile_ref}")"
@@ -1563,7 +1566,10 @@ main() {
     "MUJITASK_FACT_MIGRATION_DB_URL" \
     "MUJITASK_FACT_RUNTIME_ROLE" \
     "MUJITASK_FACT_RUNTIME_PASSWORD" \
-    "MUJITASK_AMAZON_US_BROWSER_PROFILE_REF"
+    "MUJITASK_AMAZON_US_BROWSER_PROFILE_REF" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_TABLE_ID" \
+    "MUJITASK_FEISHU_AMAZON_PRODUCTS_VIEW_ID"
   seal_private_file "${executor_env_file}" "Executor environment file"
 
   local migration_env_file="${install_dir}/runtime/deployment/migration.local.env"
@@ -1642,7 +1648,10 @@ main() {
     "${notification_channel_code}" \
     "${amazon_openclaw_agent_id}" \
     "${openclaw_state_dir}" \
-    "${amazon_feishu_account_id}"
+    "${amazon_feishu_account_id}" \
+    "${amazon_products_base_url}" \
+    "${amazon_products_table_id}" \
+    "${amazon_products_view_id}"
   amazon_target_skill_dir="${INSTALLED_AMAZON_SKILL_DIR}"
   [[ -n "${amazon_target_skill_dir}" ]] || fail_deploy "Amazon skill installation did not return a target directory."
 

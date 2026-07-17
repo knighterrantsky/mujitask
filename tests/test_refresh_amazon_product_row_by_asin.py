@@ -96,8 +96,13 @@ def test_amazon_single_product_workflow_has_exact_four_stage_contract() -> None:
     assert definition.payload_contract.field_names(required_only=True) == (
         "table_ref",
         "source_record_id",
+        "table_refs",
     )
-    assert definition.payload_contract.field_names() == ("table_ref", "source_record_id")
+    assert definition.payload_contract.field_names() == (
+        "table_ref",
+        "source_record_id",
+        "table_refs",
+    )
     assert [transition.from_stage_code for transition in definition.transitions] == list(
         EXPECTED_STAGES[:-1]
     )
