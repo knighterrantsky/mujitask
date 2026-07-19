@@ -184,6 +184,43 @@ features:
       - Branch names must use the project type prefixes rather than Codex app default prefixes.
       - Branch creation or rename must be followed by a current-branch verification command.
 
+  - feature_code: framework_dependency_upgrade
+    status: complete
+    feature_type: platform_upgrade
+    default_context:
+      - .platform/platform-manifest.yaml
+      - .platform/model-rules.yaml
+      - docs/dev/dependencies.md
+      - pyproject.toml
+      - tests/test_framework_dependency.py
+    source_contracts:
+      - .platform/platform-manifest.yaml
+      - .platform/model-rules.yaml
+      - docs/dev/dependencies.md
+    allowed_paths:
+      - README.md
+      - pyproject.toml
+      - contracts/harness/code-roadmap.yaml
+      - tests/test_framework_dependency.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_framework_dependency.py
+        - tests/test_tiktok_product_browser_fetch_handler.py
+        - tests/test_browser_fallback_boundary.py
+      commands:
+        - uv run --extra dev pytest tests/test_framework_dependency.py tests/test_tiktok_product_browser_fetch_handler.py tests/test_browser_fallback_boundary.py
+    completion_rules:
+      - Framework dependency pin must come from pyproject.toml.
+      - Framework public API and migration guidance remain sourced from the framework package or repository.
+      - Browser capability smoke tests must pass after the framework upgrade.
+
   - feature_code: ops_deployment_migration_flow
     status: complete
     feature_type: ops_runbook
