@@ -157,10 +157,12 @@ platform_contracts:
         materialized_media_bytes: 26214400
     raw_capture_key_collision: reject_changed_immutable_evidence
     field_evidence_policy:
-      contract_revision: 2
+      contract_revision: 4
       accepted_capture_revisions:
         - 1
         - 2
+        - 3
+        - 4
       coverage: exact_target_field_set
       target_fields:
         - product.title
@@ -200,11 +202,13 @@ platform_contracts:
       success_allows_missing: false
       partial_success_requires_missing: false
     normalized_capture_contract:
-      current_revision: 2
+      current_revision: 4
       accepted_revisions:
         - 1
         - 2
-      new_browser_output_revision: 2
+        - 3
+        - 4
+      new_browser_output_revision: 4
       revision_1_promotions: text_array
       revision_2_promotions:
         type: object_array
@@ -231,9 +235,30 @@ platform_contracts:
           - null
         observation_time_binding: parent_capture.captured_at
         profile_context_binding: parent_capture.profile_context_digest
+      revision_3_media_resolution:
+        inherits_revision_2_promotions: true
+        amazon_media_url: original_resource_url_without_image_transform_segment
+        thumbnail_derivative: forbidden
+      revision_4_gallery_binding:
+        inherits_revision_3_media_url_normalization: true
+        ordered_source: ImageBlockATF.colorImages.initial
+        item_binding: sidebar_thumbnail_to_same_item_hires_asset
+        candidate_priority:
+          - hiRes
+          - data-old-hires
+          - largest_dynamic_image
+          - large
+        thumbnail_asset_id_inference: forbidden
+        video_thumbnail: excluded
       compatibility:
         persistence_reads_revision_1: true
+        persistence_reads_revision_2: true
+        persistence_reads_revision_3: true
         revision_1_rewrite_required: false
+        revision_2_rewrite_required: false
+        revision_3_rewrite_required: false
+        revision_1_2_media_adapter: canonicalize_derivative_before_validation_and_materialization
+        revision_3_high_resolution_guarantee: requires_recollection
         fact_schema_ddl_required: false
         legacy_coupon_text_preserved: true
       dom_text_policy:
@@ -302,7 +327,29 @@ platform_contracts:
       persisted_body: capture_field_allowlist_only
       runtime_body: forbidden
     media_source_url_policy:
-      enforcement_owner: media_asset_sync
+      resolution_owner: amazon_product_browser_fetch
+      gallery_binding_owner: amazon_product_browser_fetch
+      download_enforcement_owner: media_asset_sync
+      source_candidate_priority:
+        - hiRes
+        - data-old-hires
+        - largest_dynamic_image
+        - large
+      ordered_gallery_source: ImageBlockATF.colorImages.initial
+      thumbnail_to_hires_binding: required_before_normalized_capture
+      thumbnail_asset_id_inference: forbidden
+      amazon_cdn_derivative_normalization: remove_filename_image_transform_segment
+      normalized_capture_resolution: original_resource_url_without_image_transform_segment
+      thumbnail_derivative_upload: forbidden
+      unresolved_original_policy: remove_and_mark_partial_success
+      compatibility:
+        payload_shape_change: false
+        fact_schema_migration_required: false
+        old_browser_derivative_output: canonicalized_by_media_sync_adapter
+        old_capture_revision_1_2: canonicalized_by_persistence_adapter
+        old_capture_revision_3: accepted_but_requires_recollection_for_high_resolution_guarantee
+        old_job_terminal_effect: unchanged_when_original_resource_materializes
+        deployment: rolling_worker_upgrade_compatible
       caller_override_policy: may_only_tighten
       download_size_limit_bytes: 26214400
       identity_conflict_policy: reject

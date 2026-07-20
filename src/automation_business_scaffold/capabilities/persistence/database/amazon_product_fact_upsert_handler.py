@@ -813,10 +813,7 @@ class _SanitizedHTMLPolicyValidator(HTMLParser):
             normalized_value = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
             if (
                 normalized_name.startswith("on")
-                or any(
-                    marker in normalized_name
-                    for marker in _HTML_SENSITIVE_JSON_KEYS
-                )
+                or any(marker in normalized_name for marker in _HTML_SENSITIVE_JSON_KEYS)
                 or any(marker in normalized_value for marker in _HTML_SENSITIVE_MARKERS)
             ):
                 self.violation = True
@@ -893,13 +890,17 @@ def _contains_sensitive_json_key(value: Any) -> bool:
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _HTML_SENSITIVE_JSON_KEYS or normalized.endswith("token") or any(
-                marker in normalized
-                for marker in (
-                    "authorization",
-                    "cookie",
-                    "localstorage",
-                    "requestheader",
+            if (
+                normalized in _HTML_SENSITIVE_JSON_KEYS
+                or normalized.endswith("token")
+                or any(
+                    marker in normalized
+                    for marker in (
+                        "authorization",
+                        "cookie",
+                        "localstorage",
+                        "requestheader",
+                    )
                 )
             ):
                 return True
@@ -1028,8 +1029,8 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         raise _InvalidCapture("Normalized capture must be a JSON object.")
     capture = dict(decoded)
     contract_revision = capture.get("contract_revision")
-    if isinstance(contract_revision, bool) or contract_revision not in {1, 2}:
-        raise _InvalidCapture("Normalized capture contract_revision must equal 1 or 2.")
+    if isinstance(contract_revision, bool) or contract_revision not in {1, 2, 3, 4}:
+        raise _InvalidCapture("Normalized capture contract_revision must equal 1, 2, 3, or 4.")
     if capture.get("source_platform") != "amazon":
         raise _InvalidCapture("Normalized capture source_platform must equal amazon.")
     if capture.get("marketplace_code") != "US":
@@ -1057,6 +1058,8 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         capture.get("profile_context"), dict
     ):
         raise _InvalidCapture("Normalized capture profile_context must be an object.")
+    if contract_revision in {1, 2}:
+        _adapt_legacy_capture_media_urls(capture)
 
     evidence = capture["field_evidence"]
     evidence_paths = set(evidence)
@@ -1076,6 +1079,38 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         raise _InvalidCapture("collection_status=success cannot contain missing field evidence.")
     _validate_capture_sections(capture, contract_revision=contract_revision)
     return capture
+
+
+def _adapt_legacy_capture_media_urls(capture: dict[str, Any]) -> None:
+    def adapt_item(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        source_url = value.get("url")
+        normalized_url = normalize_amazon_media_url(source_url)
+        if not normalized_url:
+            return value
+        adapted = dict(value)
+        adapted["url"] = normalized_url
+        return adapted
+
+    media = dict(capture["media"])
+    media["main_image"] = adapt_item(media.get("main_image"))
+    gallery = media.get("gallery_images")
+    if isinstance(gallery, list):
+        media["gallery_images"] = [adapt_item(item) for item in gallery]
+    capture["media"] = media
+
+    evidence = dict(capture["field_evidence"])
+    for path, value in (
+        ("media.main_image", media.get("main_image")),
+        ("media.gallery_images", media.get("gallery_images")),
+    ):
+        item = evidence.get(path)
+        if isinstance(item, dict):
+            adapted_evidence = dict(item)
+            adapted_evidence["value"] = value
+            evidence[path] = adapted_evidence
+    capture["field_evidence"] = evidence
 
 
 def _validate_field_evidence_item(
@@ -1253,7 +1288,7 @@ def _validate_materialized_media_assets(
     payload: dict[str, Any],
     capture: dict[str, Any],
     artifact_policy: Mapping[str, str],
-    ) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
+) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
     required_media = _required_materialized_media(capture)
     assets = coerce_mapping_list(payload.get("materialized_media_assets"))
     expected_bucket = artifact_policy["bucket"]
@@ -1269,9 +1304,7 @@ def _validate_materialized_media_assets(
         remote_uri = _required_text(asset.get("remote_uri"), "materialized media remote_uri")
         source_url = _required_text(asset.get("source_url"), "materialized media source_url")
         if normalize_amazon_media_url(source_url) != source_url:
-            raise ValueError(
-                "Materialized media source_url must be a normalized Amazon CDN URL."
-            )
+            raise ValueError("Materialized media source_url must be a normalized Amazon CDN URL.")
         media_role = _required_text(asset.get("media_role"), "materialized media role")
         position = _validate_required_integer(
             asset.get("position"),
@@ -1336,8 +1369,7 @@ def _validate_materialized_media_assets(
     extra = sorted(provided_media - required_media)
     if extra:
         raise ValueError(
-            "Materialized media contains images not observed in the Amazon capture: "
-            f"extra={extra}."
+            f"Materialized media contains images not observed in the Amazon capture: extra={extra}."
         )
     missing_count = len(required_media - provided_media)
     return assets, {
@@ -1898,13 +1930,9 @@ def _validate_structured_promotions(value: Any) -> None:
             raise _InvalidCapture(f"Normalized capture {field_name} currency is invalid.")
         for key in ("prime_only", "claim_required"):
             if not isinstance(item.get(key), bool):
-                raise _InvalidCapture(
-                    f"Normalized capture {field_name} {key} must be boolean."
-                )
+                raise _InvalidCapture(f"Normalized capture {field_name} {key} must be boolean.")
         if item.get("prime_only") is not False:
-            raise _InvalidCapture(
-                f"Normalized capture {field_name} prime_only must be false."
-            )
+            raise _InvalidCapture(f"Normalized capture {field_name} prime_only must be false.")
         if item.get("promotion_type") == "coupon" and any(
             item.get(key) is not None
             for key in ("deal_price", "reference_price", "reference_price_type")
@@ -1916,9 +1944,7 @@ def _validate_structured_promotions(value: Any) -> None:
             item.get("discount_type") not in {"percentage", "amount"}
             or item.get("discount_value") is None
         ):
-            raise _InvalidCapture(
-                f"Normalized capture {field_name} coupon discount is invalid."
-            )
+            raise _InvalidCapture(f"Normalized capture {field_name} coupon discount is invalid.")
         if item.get("promotion_type") == "limited_time_deal" and any(
             item.get(key) is not None
             for key in ("discount_value", "reference_price", "reference_price_type")
@@ -1927,8 +1953,7 @@ def _validate_structured_promotions(value: Any) -> None:
                 f"Normalized capture {field_name} limited time deal comparison fields must be null."
             )
         if item.get("promotion_type") == "limited_time_deal" and (
-            item.get("discount_type") != "price_override"
-            or item.get("deal_price") is None
+            item.get("discount_type") != "price_override" or item.get("deal_price") is None
         ):
             raise _InvalidCapture(
                 f"Normalized capture {field_name} limited time deal price is invalid."

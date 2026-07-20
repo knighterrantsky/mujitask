@@ -136,6 +136,7 @@ fields:
     type: attachment
     owner: amazon_projection
     write_policy: observed_materialized_media_only
+    media_resolution: amazon_gallery_item_bound_hires_original_resource
 
   - name: 当前价格
     canonical_name: current_price

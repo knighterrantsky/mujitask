@@ -31,8 +31,12 @@
 
 ### 2.3 侧边栏图片口径
 
-- `侧边栏图片` 对应 Amazon 商品页左侧缩略图栏 `#altImages` 暴露的有序图库，内部标准字段仍为 `media.gallery_images`。
-- 图片必须先下载为可验证的图片文件，再上传为飞书附件；不得将 Amazon 远程 URL 直接写入附件字段。
+- `侧边栏图片` 的顺序对应 Amazon 商品页左侧缩略图栏 `#altImages` 暴露的有序图库，但附件内容必须使用每个图库项对应的高清原图，内部标准字段仍为 `media.gallery_images`；不得把缩略图栏当前渲染的低分辨率 `img.src` 直接作为最终媒体。
+- Browser 必须先从当前商品图片块的 `ImageBlockATF.colorImages.initial` 读取图库项，按该数组顺序绑定侧边栏项与同一项的高清候选；候选优先级为 `hiRes`、`data-old-hires`、最大尺寸动态图片、`large`，视频项必须排除。
+- `thumb` / `#altImages img.src` 只用于识别侧边栏顺序，不能用于推断高清资源。缩略图与 `hiRes` 可能使用不同 Amazon 资产 ID，例如同一图库项的缩略图为 `51…`，高清图为 `71…`；因此禁止仅移除缩略图 URL 的 `._AC_..._`、`._US..._` 等变换段后当作高清原图。
+- 只有已由同一图库项绑定得到的高清候选才执行 Amazon CDN URL 规范化：移除 `._AC_..._`、`._SX..._`、`._SY..._`、`._SR..._`、`._SL..._`、`._UF..._`、`._QL..._` 等尺寸、裁剪、质量或格式变换段，并下载对应原始资源。
+- 图片必须使用解析后的高清原图 URL 先下载为可验证的图片文件，再写入对象存储并上传为飞书附件；不得将 Amazon 远程 URL 直接写入附件字段，也不得下载后上传仍可识别为缩略图派生 URL 的文件。
+- 无法解析或下载高清原图时，该图片按媒体缺失处理并使本次采集进入 `partial_success`；不得回退上传缩略图充当成功结果。
 - 同一条商品记录按页面顺序保留全部可规范化的 Amazon 图片 URL，并去除重复 URL。
 - 本次明确观察到有效侧边栏图片时，飞书 `侧边栏图片` 使用附件数组覆盖旧值；字段缺失或采集失败时保留旧值。
 
@@ -117,12 +121,12 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 7. 动态 Coupon ID 和 Limited Time Deal 能生成结构化促销；同页同时存在 Coupon 与结账折扣时只保留 Coupon。
 8. 无白名单促销页面返回空数组；结账折扣、Prime 会员价、Prime Day Deal、Subscribe & Save、数量/条件购买折扣、普通划线价、促销解释文本、Prime 配送宣传和页面导航不得误判为促销。
 9. 结构化促销不得含有隐藏脚本、样式、兑换 URL/参数、token、Cookie 或其他敏感内容。
-10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 新 capture 只产生结构化促销对象。
+10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 及后续 capture 只产生结构化促销对象。revision 4 新 capture 必须按 `colorImages.initial` 绑定高清图库；revision 3 仍可读取，但只有重新采集后才具备高清资产 ID 保证。
 11. Coupon 写回值包含北京时间、英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价；Limited Time Deal 写回值只包含北京时间、英文类型和页面活动价。
 12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时清空旧值，不追加历史记录。
 13. Product information → Item details 中 `Number of Items=1` 时写回 `包装规格=1`；字段缺失时写回 `包装规格=没有包装规格`。
 14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `August 6 - 19`；两者均不包含地址或次级配送文案。
-15. Amazon `#altImages` 中明确观察到的有效图库图片按页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段，并覆盖该字段旧附件。
+15. Amazon `#altImages` 中明确观察到的有效图库项，必须按 `ImageBlockATF.colorImages.initial` 的同项 `hiRes` 映射和页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段；缩略图资产 ID 与高清资产 ID 不同时必须使用高清资产，并覆盖该字段旧附件。
 16. 任意 Amazon 单行或批量终态写入发送给飞书的字段集合必须是 `主图`、`侧边栏图片`、`送达日期`、`包装规格`、`促销活动记录` 的子集；状态、错误、标题、品牌、价格及其他商品字段不得写入。
 17. Amazon 指令只能由 `amazon-ops` workspace 中的 `mujitask-amazon-feishu-sync` 接收；受理回执和最终通知的 `reply_target.accountId` 必须等于部署配置 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID`，不得在代码中固定本地账号别名，也不得使用 TikTok workspace。
 18. 批量任务只为 `采集标签=T` 的记录创建行级主 Job；`t`、空值、其他标签和字段缺失均不采集。
