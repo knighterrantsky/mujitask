@@ -1494,6 +1494,77 @@ features:
       - amazon_product_row_refresh uses browser_required for the primary browser handoff, Runtime requeues the same row job after task_execution terminal, and fallback_required remains reserved for fallback semantics.
       - The row job does not duplicate browser parsing, Fact persistence, media sync, or Feishu projection; it delegates to the existing governed handlers.
       - Missing optional Amazon projection fields are filtered against the live Feishu schema before transport; skipped status-only writes do not block the row browser handoff.
-      - Feishu transport is restricted to 主图, 侧边栏图片, 送达日期, 包装规格, and 促销活动记录; every other parsed field remains Fact-only.
+      - Feishu transport is restricted to 主图, 侧边栏图片, 30天购买人数, 送达日期, 包装规格, and 促销活动记录; every other parsed field remains Fact-only.
       - Production-style unfiltered daemon claims must complete the row-job/browser-resume lifecycle, and the parent sends exactly one final batch notification.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
+  - feature_code: amazon_bought_past_month_writeback
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/domains/amazon-product-detail/README.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/workflow/refresh_amazon_product_row_by_asin.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/capabilities/browser/amazon/product_page.py
+      - src/automation_business_scaffold/domains/amazon/projections/feishu_product_projection.py
+      - tests/test_amazon_product_page.py
+      - tests/test_feishu_amazon_product_mapping.py
+    source_contracts:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/workflow/refresh_amazon_product_row_by_asin.yaml
+    allowed_paths:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/workflow/refresh_amazon_product_row_by_asin.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/capabilities/browser/amazon/product_page.py
+      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
+      - src/automation_business_scaffold/domains/amazon/projections/feishu_product_projection.py
+      - tests/fixtures/amazon/product_detail_child.html
+      - tests/test_amazon_product_contracts.py
+      - tests/test_amazon_product_page.py
+      - tests/test_amazon_product_fact_upsert_handler.py
+      - tests/test_feishu_amazon_product_mapping.py
+      - tests/test_amazon_product_row_persist.py
+      - tests/test_runtime_amazon_product_ingest.py
+      - tests/test_runtime_amazon_product_business_e2e.py
+      - tests/test_harness_code_roadmap.py
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/infrastructure/schemas/**
+    done_gate:
+      tests:
+        - tests/test_amazon_product_contracts.py
+        - tests/test_amazon_product_page.py
+        - tests/test_amazon_product_fact_upsert_handler.py
+        - tests/test_feishu_amazon_product_mapping.py
+        - tests/test_amazon_product_row_persist.py
+        - tests/test_runtime_amazon_product_ingest.py
+        - tests/test_runtime_amazon_product_business_e2e.py
+        - tests/test_harness_code_roadmap.py
+      commands:
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_amazon_product_page.py tests/test_amazon_product_fact_upsert_handler.py tests/test_feishu_amazon_product_mapping.py
+        - uv run --extra dev pytest tests/test_amazon_product_row_persist.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py
+    completion_rules:
+      - Amazon page text 500+ bought in past month is normalized to commerce.bought_past_month=500+ without numeric coercion or the trailing English phrase.
+      - Only the controlled #social-proofing-faceout-title-tk_bought node may provide the value; missing or non-matching text preserves the existing Feishu field and does not alone downgrade collection status.
+      - Normalized capture revision 5 adds exact field evidence for commerce.bought_past_month while revisions 1 through 4 remain readable without rewriting historical captures.
+      - Amazon Fact persistence records the observed display value in amazon_product_snapshots.payload_json without a schema migration.
+      - Single-row and batch row persistence share the same six-field Feishu allowlist, including 30天购买人数.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.

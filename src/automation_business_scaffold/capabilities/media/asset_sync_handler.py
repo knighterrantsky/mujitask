@@ -34,9 +34,14 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     create_store_from_settings,
     sync_artifact_specs,
 )
-from automation_business_scaffold.infrastructure.artifacts.artifact_store import normalize_artifact_store_provider
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import (
+    normalize_artifact_store_provider,
+)
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
-from automation_business_scaffold.infrastructure.rate_limit import RequestPacer, resolve_api_request_pacer_config
+from automation_business_scaffold.infrastructure.rate_limit import (
+    RequestPacer,
+    resolve_api_request_pacer_config,
+)
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +58,12 @@ _AMAZON_MEDIA_UNSAFE_PATH = re.compile(
     r"token|access[_-]?token|api[_-]?key|secret[_-]?key|session[_-]?secret|password|"
     r"credential)(?![A-Za-z0-9])|(?:authorization|bearer|cookie|token|access[_-]?token|"
     r"api[_-]?key|secret[_-]?key|session[_-]?secret|password|credential)(?=[=:])))",
+    re.IGNORECASE,
+)
+_AMAZON_IMAGE_TRANSFORM_SEGMENT = re.compile(
+    r"\._(?:AC|SL|SX|SY|SR|US|UL|UX|UY|QL|UF|CR|FM|AA|SS|SC|PK|PI|PA)"
+    r"[A-Za-z0-9,+.-]*(?:_[A-Za-z0-9,+.-]+)*_\."
+    r"(?P<extension>jpe?g|png|webp|gif|avif)$",
     re.IGNORECASE,
 )
 _AMAZON_CALLER_MATERIALIZED_FIELDS = (
@@ -110,9 +121,7 @@ class _GovernedMediaRedirectHandler(HTTPRedirectHandler):
         headers: Any,
     ) -> Any:
         bounded_fp = (
-            _BoundedRedirectResponse(fp, max_bytes=self._max_bytes)
-            if self._max_bytes > 0
-            else fp
+            _BoundedRedirectResponse(fp, max_bytes=self._max_bytes) if self._max_bytes > 0 else fp
         )
         try:
             return super().http_error_302(req, bounded_fp, code, msg, headers)
@@ -152,7 +161,11 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         return skipped_result(
             context,
             summary={"asset_count": 0, "synced_count": 0},
-            result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+            result={
+                "synced_assets": [],
+                "artifact_refs": [],
+                "media_fact_bundle": new_fact_bundle(),
+            },
         )
 
     try:
@@ -184,7 +197,11 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                 "synced_count": 0,
                 "artifact_count": 0,
             },
-            result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+            result={
+                "synced_assets": [],
+                "artifact_refs": [],
+                "media_fact_bundle": new_fact_bundle(),
+            },
         )
     rejected_count = len(rejected_url_warnings)
     if not normalized_asset_refs:
@@ -225,7 +242,11 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     artifact_settings.get("artifact_store_provider")
                 ),
             },
-            result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+            result={
+                "synced_assets": [],
+                "artifact_refs": [],
+                "media_fact_bundle": new_fact_bundle(),
+            },
         )
     try:
         artifact_store = create_store_from_settings(artifact_settings)
@@ -252,11 +273,19 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                         artifact_settings.get("artifact_store_provider")
                     ),
                 },
-                result={"synced_assets": [], "artifact_refs": [], "media_fact_bundle": new_fact_bundle()},
+                result={
+                    "synced_assets": [],
+                    "artifact_refs": [],
+                    "media_fact_bundle": new_fact_bundle(),
+                },
             )
         raise
     artifact_root = Path(first_non_empty(payload.get("artifact_root"), tempfile.gettempdir()))
-    artifact_bucket = first_non_empty(payload.get("artifact_bucket"), artifact_settings.get("artifact_bucket"), "runtime-artifacts")
+    artifact_bucket = first_non_empty(
+        payload.get("artifact_bucket"),
+        artifact_settings.get("artifact_bucket"),
+        "runtime-artifacts",
+    )
     artifact_object_prefix = first_non_empty(
         payload.get("artifact_object_prefix"),
         artifact_settings.get("artifact_object_prefix"),
@@ -335,7 +364,9 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     synced_assets_by_ref[asset_ref_key] = pending_asset
                 continue
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"Referenced asset download failed: {normalized_asset.get('source_url')} ({exc})")
+                warnings.append(
+                    f"Referenced asset download failed: {normalized_asset.get('source_url')} ({exc})"
+                )
         normalized_asset["sync_state"] = "referenced"
         synced_assets.append(normalized_asset)
         if asset_ref_key:
@@ -387,7 +418,9 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "synced_count": len(synced_assets),
         "artifact_count": len(artifact_refs),
         "rejected_count": rejected_count,
-        "artifact_store_provider": getattr(artifact_store, "provider_code", "local") if artifact_store else "local",
+        "artifact_store_provider": getattr(artifact_store, "provider_code", "local")
+        if artifact_store
+        else "local",
     }
     result = {
         "synced_assets": synced_assets,
@@ -395,7 +428,9 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "media_fact_bundle": media_bundle,
     }
     if strict_storage_required or _coerce_bool(payload.get("require_materialized_assets")):
-        referenced_assets = [asset for asset in synced_assets if asset.get("sync_state") == "referenced"]
+        referenced_assets = [
+            asset for asset in synced_assets if asset.get("sync_state") == "referenced"
+        ]
         if referenced_assets:
             return failed_result(
                 context,
@@ -453,11 +488,12 @@ def _create_fact_store(
         return None
 
 
-def _find_reusable_media_asset(fact_store: TKFactStore | None, asset: dict[str, Any]) -> dict[str, Any]:
+def _find_reusable_media_asset(
+    fact_store: TKFactStore | None, asset: dict[str, Any]
+) -> dict[str, Any]:
     if (
         fact_store is None
-        or coerce_str(asset.get("source_platform")).lower()
-        not in _TK_MEDIA_CACHE_PLATFORMS
+        or coerce_str(asset.get("source_platform")).lower() not in _TK_MEDIA_CACHE_PLATFORMS
     ):
         return {}
     cached = fact_store.find_media_asset(
@@ -486,7 +522,9 @@ def _reused_media_asset(asset: dict[str, Any], cached: dict[str, Any]) -> dict[s
             "object_key": first_non_empty(cached.get("object_key"), asset.get("object_key")),
             "file_name": first_non_empty(cached.get("file_name"), asset.get("file_name")),
             "mime_type": first_non_empty(cached.get("mime_type"), asset.get("mime_type")),
-            "source_platform": first_non_empty(asset.get("source_platform"), cached.get("source_platform")),
+            "source_platform": first_non_empty(
+                asset.get("source_platform"), cached.get("source_platform")
+            ),
         }
     )
 
@@ -509,7 +547,9 @@ def _reused_in_run_media_asset(asset: dict[str, Any], existing: dict[str, Any]) 
             "mime_type": first_non_empty(existing.get("mime_type"), asset.get("mime_type")),
             "content_digest": existing.get("content_digest"),
             "size_bytes": existing.get("size_bytes"),
-            "source_platform": first_non_empty(asset.get("source_platform"), existing.get("source_platform")),
+            "source_platform": first_non_empty(
+                asset.get("source_platform"), existing.get("source_platform")
+            ),
             "metadata": asset.get("metadata"),
         }
     )
@@ -526,8 +566,7 @@ def _asset_ref_keys(asset: dict[str, Any]) -> list[str]:
     duplicate_scope = source_platform
     if source_platform == "amazon":
         duplicate_scope = (
-            f"{source_platform}:"
-            f"{coerce_str(asset.get('media_role')).lower() or 'asset'}"
+            f"{source_platform}:{coerce_str(asset.get('media_role')).lower() or 'asset'}"
         )
     for prefix, value in (
         ("file_token", asset.get("file_token")),
@@ -559,7 +598,10 @@ def _resolve_artifact_settings(payload: dict[str, Any]) -> dict[str, Any]:
             "minio_create_bucket": defaults.minio_create_bucket,
         }
     )
-    for source in (coerce_mapping(request_payload.get("artifact_store")), coerce_mapping(payload.get("artifact_store"))):
+    for source in (
+        coerce_mapping(request_payload.get("artifact_store")),
+        coerce_mapping(payload.get("artifact_store")),
+    ):
         if not source:
             continue
         for source_key, target_key in (
@@ -658,7 +700,9 @@ def _object_storage_requirement_error(
     missing: list[str] = []
     if provider == "local":
         missing.append("object storage provider")
-    if not first_non_empty(payload.get("artifact_bucket"), artifact_settings.get("artifact_bucket")):
+    if not first_non_empty(
+        payload.get("artifact_bucket"), artifact_settings.get("artifact_bucket")
+    ):
         missing.append("artifact bucket")
     if provider == "minio":
         for key, label in (
@@ -722,8 +766,12 @@ def _normalize_media_asset(
             "entity_key": asset.get("entity_key"),
             "entity_type": entity_type,
             "entity_external_id": entity_external_id,
-            "product_id": first_non_empty(asset.get("product_id"), entity_external_id if entity_type == "product" else ""),
-            "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type"), "asset"),
+            "product_id": first_non_empty(
+                asset.get("product_id"), entity_external_id if entity_type == "product" else ""
+            ),
+            "media_role": first_non_empty(
+                asset.get("media_role"), asset.get("media_type"), "asset"
+            ),
             "source_url": asset.get("source_url"),
             "file_token": asset.get("file_token"),
             "local_path": asset.get("local_path"),
@@ -766,7 +814,9 @@ def _resolve_media_asset_identity(
             and asset_marketplace_code
             and payload_marketplace_code != asset_marketplace_code
         ):
-            raise ValueError("payload and asset marketplace_code must not conflict for Amazon media")
+            raise ValueError(
+                "payload and asset marketplace_code must not conflict for Amazon media"
+            )
 
     source_platform = first_non_empty(
         asset_source_platform,
@@ -801,18 +851,27 @@ def _govern_amazon_media_source_urls(
             _require_governed_media_url(
                 asset.get("source_url"),
                 allowed_host_suffixes=allowed_host_suffixes,
+                allow_amazon_derivative=True,
+            )
+            parsed_source_url = urlparse(coerce_str(asset.get("source_url")))
+            original_path = _AMAZON_IMAGE_TRANSFORM_SEGMENT.sub(
+                lambda match: f".{match.group('extension').lower()}",
+                parsed_source_url.path,
+            )
+            original_url = parsed_source_url._replace(
+                path=original_path,
+                query="",
+                fragment="",
+            ).geturl()
+            _require_governed_media_url(
+                original_url,
+                allowed_host_suffixes=allowed_host_suffixes,
             )
         except ValueError:
-            warnings.append(
-                f"Amazon media asset at index {index} was rejected by URL policy."
-            )
+            warnings.append(f"Amazon media asset at index {index} was rejected by URL policy.")
             continue
         governed_asset = dict(asset)
-        parsed_source_url = urlparse(coerce_str(asset.get("source_url")))
-        governed_asset["source_url"] = parsed_source_url._replace(
-            query="",
-            fragment="",
-        ).geturl()
+        governed_asset["source_url"] = original_url
         governed_assets.append(governed_asset)
     return governed_assets, warnings
 
@@ -911,7 +970,9 @@ def _sha256_of_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def _sync_referenced_files_enabled(payload: dict[str, Any], artifact_settings: dict[str, Any]) -> bool:
+def _sync_referenced_files_enabled(
+    payload: dict[str, Any], artifact_settings: dict[str, Any]
+) -> bool:
     for source in (payload, artifact_settings):
         value = source.get("sync_referenced_files") if isinstance(source, dict) else None
         if value not in (None, ""):
@@ -929,7 +990,9 @@ def _download_referenced_asset(
 ) -> dict[str, Any]:
     source_url = coerce_str(asset.get("source_url"))
     timeout_seconds = _coerce_int(
-        first_non_empty(payload.get("media_download_timeout_seconds"), payload.get("download_timeout_seconds")),
+        first_non_empty(
+            payload.get("media_download_timeout_seconds"), payload.get("download_timeout_seconds")
+        ),
         default=30,
     )
     max_bytes, allowed_host_suffixes = _resolve_media_download_policy(
@@ -1006,12 +1069,16 @@ def _download_referenced_asset(
     downloaded = dict(asset)
     downloaded["local_path"] = str(target_path)
     downloaded["file_name"] = target_path.name
-    downloaded["mime_type"] = first_non_empty(asset.get("mime_type"), _normalize_content_type(content_type, suffix))
+    downloaded["mime_type"] = first_non_empty(
+        asset.get("mime_type"), _normalize_content_type(content_type, suffix)
+    )
     return downloaded
 
 
 def _guess_media_suffix(source_url: str, content_type: str) -> str:
-    guessed = mimetypes.guess_extension(str(content_type).split(";")[0].strip()) if content_type else ""
+    guessed = (
+        mimetypes.guess_extension(str(content_type).split(";")[0].strip()) if content_type else ""
+    )
     if guessed:
         return ".jpg" if guessed == ".jpe" else guessed
     suffix = Path(urlparse(source_url).path).suffix.lower()
@@ -1029,12 +1096,22 @@ def _normalize_content_type(content_type: str, suffix: str) -> str:
 
 def _safe_file_name(value: str) -> str:
     name = Path(str(value or "").strip()).name
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in name).strip("-") or "asset.bin"
+    return (
+        "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in name).strip(
+            "-"
+        )
+        or "asset.bin"
+    )
 
 
 def _safe_segment(value: Any) -> str:
     text = coerce_str(value)
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in text).strip("-") or "unknown"
+    return (
+        "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in text).strip(
+            "-"
+        )
+        or "unknown"
+    )
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -1062,7 +1139,9 @@ def _media_download_host_suffixes(value: Any) -> tuple[str, ...]:
             not suffix
             or suffix.startswith("-")
             or suffix.endswith(("-", "."))
-            or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-." for character in suffix)
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789-." for character in suffix
+            )
         ):
             raise ValueError("media_download_allowed_host_suffixes contains an invalid DNS suffix")
         if suffix not in suffixes:
@@ -1117,6 +1196,7 @@ def _require_governed_media_url(
     value: Any,
     *,
     allowed_host_suffixes: tuple[str, ...],
+    allow_amazon_derivative: bool = False,
 ) -> None:
     if not isinstance(value, str) or not value or any(character.isspace() for character in value):
         raise ValueError("media download requires a governed HTTPS media host")
@@ -1136,8 +1216,11 @@ def _require_governed_media_url(
         if unescape(unquote(decoded_path)) != decoded_path:
             raise ValueError("media download requires a governed HTTPS media host")
     allowed_host = any(
+        hostname == suffix or hostname.endswith(f".{suffix}") for suffix in allowed_host_suffixes
+    )
+    amazon_media_host = any(
         hostname == suffix or hostname.endswith(f".{suffix}")
-        for suffix in allowed_host_suffixes
+        for suffix in _AMAZON_US_MEDIA_ALLOWED_HOST_SUFFIXES
     )
     if (
         parsed.scheme.lower() != "https"
@@ -1147,6 +1230,11 @@ def _require_governed_media_url(
         or port not in (None, 443)
         or any(character.isspace() for character in decoded_path)
         or _AMAZON_MEDIA_UNSAFE_PATH.search(decoded_path)
+        or (
+            amazon_media_host
+            and not allow_amazon_derivative
+            and _AMAZON_IMAGE_TRANSFORM_SEGMENT.search(decoded_path)
+        )
     ):
         raise ValueError("media download requires a governed HTTPS media host")
 

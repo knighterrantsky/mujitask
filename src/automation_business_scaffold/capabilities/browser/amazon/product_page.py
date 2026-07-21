@@ -87,6 +87,17 @@ _AMAZON_MEDIA_UNSAFE_PATH = re.compile(
     r"api[_-]?key|secret[_-]?key|session[_-]?secret|password|credential)(?=[=:])))",
     re.IGNORECASE,
 )
+_AMAZON_IMAGE_TRANSFORM_SEGMENT = re.compile(
+    r"\._(?:AC|SL|SX|SY|SR|US|UL|UX|UY|QL|UF|CR|FM|AA|SS|SC|PK|PI|PA)"
+    r"[A-Za-z0-9,+.-]*(?:_[A-Za-z0-9,+.-]+)*_\."
+    r"(?P<extension>jpe?g|png|webp|gif|avif)$",
+    re.IGNORECASE,
+)
+_IMAGE_BLOCK_COLOR_IMAGES = re.compile(r"[\"']colorImages[\"']\s*:")
+_IMAGE_BLOCK_INITIAL = re.compile(r"[\"']initial[\"']\s*:\s*\[")
+_MAX_IMAGE_BLOCK_ARRAY_CHARS = 1024 * 1024
+_MAX_GALLERY_IMAGES = 100
+_VIDEO_MEDIA_MARKERS = ("video", "play-button", "spin", "360")
 _PROMOTION_EXCLUDED_TAGS = {"script", "style", "noscript", "template"}
 _PROMOTION_TYPES = {
     "coupon",
@@ -130,6 +141,14 @@ _PROMOTION_ZONE_IDS = {
     "desktop_buybox",
     "buybox",
     "buyboxaccordion",
+}
+_BOUGHT_PAST_MONTH_PATTERN = re.compile(
+    r"^(?P<display_value>[0-9][0-9,]*(?:\.[0-9]+)?[KkMm]?\+?)\s+"
+    r"bought\s+in\s+past\s+month$",
+    re.IGNORECASE,
+)
+_COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS = {
+    "commerce.bought_past_month",
 }
 
 
@@ -261,9 +280,14 @@ def normalize_amazon_media_url(value: object) -> str:
         or _AMAZON_MEDIA_UNSAFE_PATH.search(decoded_path)
     ):
         return ""
+    original_path = _AMAZON_IMAGE_TRANSFORM_SEGMENT.sub(
+        lambda match: f".{match.group('extension').lower()}",
+        parsed.path,
+    )
     return parsed._replace(
         scheme="https",
         netloc=hostname,
+        path=original_path,
         query="",
         fragment="",
     ).geturl()
@@ -302,6 +326,7 @@ def extract_amazon_product_capture(
     document = _parse_document(html)
     structured = _extract_structured_product(document)
     state = _extract_embedded_state(document)
+    image_block_media = _extract_image_block_media(document)
     dom = _extract_dom_values(document)
     network = _validated_network_product_data(
         network_product_data,
@@ -343,17 +368,11 @@ def extract_amazon_product_capture(
     network_product = _mapping(network.get("product"))
     commerce_state = _mapping(state.get("commerce"))
     network_commerce = _mapping(network.get("commerce"))
-    offer_state = _offer_source_with_promotions(
-        _mapping(commerce_state.get("featured_offer"))
-    )
-    network_offer = _offer_source_with_promotions(
-        _mapping(network_commerce.get("featured_offer"))
-    )
+    offer_state = _offer_source_with_promotions(_mapping(commerce_state.get("featured_offer")))
+    network_offer = _offer_source_with_promotions(_mapping(network_commerce.get("featured_offer")))
     media_state = _mapping(state.get("media"))
     network_media = _mapping(network.get("media"))
-    structured_offer = _offer_source_with_promotions(
-        _mapping(structured.get("featured_offer"))
-    )
+    structured_offer = _offer_source_with_promotions(_mapping(structured.get("featured_offer")))
     dom = _offer_source_with_promotions(dom)
 
     product = {
@@ -624,6 +643,17 @@ def extract_amazon_product_capture(
             ),
             _candidate(dom.get("review_count"), "stable_dom", "#acrCustomerReviewText", 0.82),
         ),
+        "bought_past_month": _choose(
+            "commerce.bought_past_month",
+            evidence,
+            None,
+            _candidate(
+                dom.get("bought_past_month"),
+                "stable_dom",
+                "#social-proofing-faceout-title-tk_bought",
+                0.9,
+            ),
+        ),
         "featured_offer": featured_offer,
     }
 
@@ -747,11 +777,18 @@ def extract_amazon_product_capture(
 
     structured_images = _normalize_media_list(structured.get("images"))
     state_gallery = _normalize_media_list(media_state.get("gallery_images"))
+    image_block_gallery = _normalize_media_list(image_block_media.get("gallery_images"))
     media = {
         "main_image": _choose(
             "media.main_image",
             evidence,
             None,
+            _candidate(
+                _normalize_media_item(image_block_media.get("main_image")),
+                "embedded_state",
+                "ImageBlockATF.colorImages.initial[0]",
+                0.99,
+            ),
             _candidate(
                 structured_images[0] if structured_images else None,
                 "structured_data",
@@ -775,6 +812,12 @@ def extract_amazon_product_capture(
             "media.gallery_images",
             evidence,
             [],
+            _candidate(
+                image_block_gallery,
+                "embedded_state",
+                "ImageBlockATF.colorImages.initial",
+                0.99,
+            ),
             _candidate(
                 structured_images,
                 "structured_data",
@@ -837,6 +880,13 @@ def extract_amazon_product_capture(
             status="missing",
             reason="parent_redirect",
         )
+        commerce["bought_past_month"] = _policy_default(
+            evidence,
+            "commerce.bought_past_month",
+            None,
+            status="missing",
+            reason="parent_redirect",
+        )
         featured_offer = _suppress_offer(evidence, status="missing", reason="parent_redirect")
         commerce["featured_offer"] = featured_offer
         rankings = _policy_default(
@@ -874,13 +924,17 @@ def extract_amazon_product_capture(
         collection_status = "partial_success"
     elif availability == "unavailable":
         collection_status = "unavailable"
-    elif any(item["status"] == "missing" for item in evidence.values()):
+    elif any(
+        item["status"] == "missing"
+        for path, item in evidence.items()
+        if path not in _COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS
+    ):
         collection_status = "partial_success"
     else:
         collection_status = "success"
 
     capture = {
-        "contract_revision": 2,
+        "contract_revision": 5,
         "source_platform": "amazon",
         "marketplace_code": "US",
         "requested_asin": requested,
@@ -1069,9 +1123,7 @@ def _normalize_network_product_object(value: Mapping[str, Any]) -> dict[str, Any
 
     product = _compact_network_mapping(
         {
-            "title": _network_text(
-                _network_pick(product_source, "title", "product_title")
-            ),
+            "title": _network_text(_network_pick(product_source, "title", "product_title")),
             "brand": _network_text(brand_value),
             "category_path": _network_collection_value(
                 category_path_value,
@@ -1354,8 +1406,7 @@ def _normalize_network_rankings(value: Any) -> list[dict[str, Any]]:
             result.append(
                 {
                     "category_name": name,
-                    "category_path": _network_text_list(source.get("category_path"))
-                    or [name],
+                    "category_path": _network_text_list(source.get("category_path")) or [name],
                     "rank": rank,
                 }
             )
@@ -1507,6 +1558,79 @@ def _extract_structured_product(document: _DocumentParser) -> dict[str, Any]:
     }
 
 
+def _extract_image_block_media(document: _DocumentParser) -> dict[str, Any]:
+    for node in _iter_nodes(document.roots):
+        if node.tag != "script":
+            continue
+        script = "".join(node.text_parts)
+        if "ImageBlockATF" not in script or "colorImages" not in script:
+            continue
+        for color_match in _IMAGE_BLOCK_COLOR_IMAGES.finditer(script):
+            initial_window = script[color_match.end() : color_match.end() + 512]
+            initial_match = _IMAGE_BLOCK_INITIAL.search(initial_window)
+            if initial_match is None:
+                continue
+            array_start = (
+                color_match.end() + initial_match.start() + initial_match.group(0).rfind("[")
+            )
+            raw_array = _balanced_json_array(script, array_start)
+            value = _load_json(raw_array)
+            if not isinstance(value, list):
+                continue
+            gallery = _normalize_media_list(
+                [
+                    item
+                    for item in value[:_MAX_GALLERY_IMAGES]
+                    if isinstance(item, Mapping) and not _is_video_media_item(item)
+                ]
+            )
+            if gallery:
+                return {
+                    "main_image": gallery[0],
+                    "gallery_images": gallery,
+                }
+    return {}
+
+
+def _balanced_json_array(text: str, start: int) -> str:
+    if start < 0 or start >= len(text) or text[start] != "[":
+        return ""
+    depth = 0
+    quote = ""
+    escaped = False
+    end_limit = min(len(text), start + _MAX_IMAGE_BLOCK_ARRAY_CHARS)
+    for index in range(start, end_limit):
+        character = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return ""
+
+
+def _is_video_media_item(value: Mapping[Any, Any]) -> bool:
+    for key in ("isVideo", "is_video"):
+        if _as_bool(value.get(key)) is True:
+            return True
+    marker_text = " ".join(
+        str(value.get(key) or "").lower()
+        for key in ("mediaType", "type", "variant", "thumb", "thumbnail")
+    )
+    return any(marker in marker_text for marker in _VIDEO_MEDIA_MARKERS)
+
+
 def _find_jsonld_product(value: Any) -> Mapping[str, Any] | None:
     if isinstance(value, Mapping):
         item_type = value.get("@type")
@@ -1538,20 +1662,23 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
     technical_details = _dom_technical_details(document)
 
     price_root = _node_by_id(document, "corePrice_feature_div")
-    price_node = next(
-        (
-            node
-            for node in _descendants(price_root)
-            if _has_class(node, "a-offscreen")
-        ),
-        None,
-    ) if price_root else None
+    price_node = (
+        next(
+            (node for node in _descendants(price_root) if _has_class(node, "a-offscreen")),
+            None,
+        )
+        if price_root
+        else None
+    )
     price = _as_float(_node_text(price_node))
     list_price = _as_float(_node_text(_node_by_id(document, "priceblock_listprice")))
 
     rating_node = _node_by_id(document, "acrPopover")
     rating = _as_float(rating_node.attrs.get("title") if rating_node else None)
     review_count = _as_int(_node_text(_node_by_id(document, "acrCustomerReviewText")))
+    bought_past_month = _bought_past_month_text(
+        _node_text(_node_by_id(document, "social-proofing-faceout-title-tk_bought"))
+    )
     availability = _normalize_availability(_node_text(_node_by_id(document, "availability")))
 
     seller = _node_by_id(document, "sellerProfileTriggerId")
@@ -1573,14 +1700,21 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
     main_image = None
     if main_image_node:
         main_image = _normalize_media_item(
-            main_image_node.attrs.get("data-old-hires") or main_image_node.attrs.get("src")
+            {
+                "data-old-hires": main_image_node.attrs.get("data-old-hires"),
+                "data-a-dynamic-image": main_image_node.attrs.get("data-a-dynamic-image"),
+                "src": main_image_node.attrs.get("src"),
+            }
         )
     gallery = []
     gallery_root = _node_by_id(document, "altImages")
     if gallery_root:
         gallery = _normalize_media_list(
             [
-                node.attrs.get("data-old-hires") or node.attrs.get("src")
+                {
+                    "data-old-hires": node.attrs.get("data-old-hires"),
+                    "data-a-dynamic-image": node.attrs.get("data-a-dynamic-image"),
+                }
                 for node in _descendants(gallery_root)
                 if node.tag == "img"
             ]
@@ -1588,6 +1722,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
 
     coupon_text = _dom_coupon_text(document)
     promotions = _dom_promotions(document, coupon_text=coupon_text)
+    promotions_observed = _dom_promotions_observed(document)
 
     return {
         "title": title,
@@ -1599,6 +1734,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "availability_status": availability,
         "rating": rating,
         "review_count": review_count,
+        "bought_past_month": bought_past_month,
         "seller_id": seller.attrs.get("data-seller-id") if seller else None,
         "seller_name": _node_text(seller),
         "is_buy_box": _as_bool(merchant.attrs.get("data-buy-box")) if merchant else None,
@@ -1609,6 +1745,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "delivery_text": _dom_free_delivery_text(document),
         "coupon_text": coupon_text,
         "promotions": promotions,
+        "promotions_observed": promotions_observed,
         "parent_asin": _optional_asin(twister.attrs.get("data-parent-asin")) if twister else None,
         "child_asins": child_asins,
         "current_attributes": _json_string_mapping(
@@ -1621,6 +1758,14 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "main_image": main_image,
         "gallery_images": gallery,
     }
+
+
+def _bought_past_month_text(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    match = _BOUGHT_PAST_MONTH_PATTERN.fullmatch(text)
+    return match.group("display_value") if match else None
 
 
 def _texts_for_descendants(node: _Node | None, *, tags: set[str]) -> list[str]:
@@ -1676,9 +1821,7 @@ def _dom_promotions(
 
     promotion_root = _node_by_id(document, "promoPriceBlockMessage_feature_div")
     if promotion_root is not None:
-        promotions.extend(
-            _promotion_objects_from_text(_promotion_node_text(promotion_root))
-        )
+        promotions.extend(_promotion_objects_from_text(_promotion_node_text(promotion_root)))
 
     for node in _iter_nodes(document.roots):
         if node.attrs.get("id", "").lower() not in _PROMOTION_ZONE_IDS:
@@ -1691,6 +1834,19 @@ def _dom_promotions(
             if promotion:
                 promotions.append(promotion)
     return _dedupe_promotions(promotions)
+
+
+def _dom_promotions_observed(document: _DocumentParser) -> bool:
+    for node in _iter_nodes(document.roots):
+        element_id = node.attrs.get("id", "").lower()
+        if (
+            element_id == "coupontext"
+            or element_id.startswith("coupontext")
+            or element_id == "promopriceblockmessage_feature_div"
+            or element_id in _PROMOTION_ZONE_IDS
+        ):
+            return True
+    return False
 
 
 def _limited_time_deal_promotion(
@@ -1710,8 +1866,8 @@ def _limited_time_deal_promotion(
     price_match = re.search(r"\$\s*([\d,.]+)", offer_text)
     if price_match:
         price_after_marker = _as_float(price_match.group(1))
-    deal_price = price_after_marker if price_after_marker is not None else (
-        amounts[0] if amounts else None
+    deal_price = (
+        price_after_marker if price_after_marker is not None else (amounts[0] if amounts else None)
     )
     if deal_price is None:
         return None
@@ -1783,7 +1939,7 @@ def _raise_if_access_blocked(html: str) -> None:
         marker in lower
         for marker in (
             "/errors/validatecaptcha",
-            "id=\"captchacharacters\"",
+            'id="captchacharacters"',
             "id='captchacharacters'",
             "enter the characters you see below",
         )
@@ -1828,9 +1984,7 @@ def _choose_offer_field(
             "embedded_state",
             f"state.commerce.featured_offer.{field_name}",
             0.95,
-            accept_empty=(
-                field_name == "promotions" and _explicit_empty_list(state, field_name)
-            ),
+            accept_empty=(field_name == "promotions" and _explicit_empty_list(state, field_name)),
         ),
         _network_candidate(
             network,
@@ -1843,6 +1997,9 @@ def _choose_offer_field(
             "stable_dom",
             f"dom.featured_offer.{field_name}",
             0.8,
+            accept_empty=(
+                field_name == "promotions" and bool(dom.get("promotions_observed"))
+            ),
         ),
     )
 
@@ -1949,7 +2106,9 @@ def _policy_default(
 
 
 def _explicit_empty_list(source: Mapping[str, Any], field_name: str) -> bool:
-    return field_name in source and isinstance(source.get(field_name), list) and not source[field_name]
+    return (
+        field_name in source and isinstance(source.get(field_name), list) and not source[field_name]
+    )
 
 
 def _explicit_empty_mapping(source: Mapping[str, Any], field_name: str) -> bool:
@@ -2379,19 +2538,86 @@ def _normalize_availability(value: Any) -> str | None:
 
 
 def _availability_evidence_status(value: Any) -> str:
-    return "explicitly_unavailable" if _normalize_availability(value) == "unavailable" else "observed"
+    return (
+        "explicitly_unavailable" if _normalize_availability(value) == "unavailable" else "observed"
+    )
 
 
 def _normalize_media_item(value: Any) -> dict[str, str] | None:
-    if isinstance(value, Mapping):
-        value = value.get("url") or value.get("contentUrl")
-    text = _clean_text(value)
-    if not text:
-        return None
-    parsed = urlparse(text)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return None
-    return {"url": text}
+    for candidate in _media_source_candidates(value):
+        text = _clean_text(candidate)
+        if not text:
+            continue
+        parsed = urlparse(text)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            continue
+        hostname = (parsed.hostname or "").lower()
+        if any(
+            hostname == suffix or hostname.endswith(f".{suffix}")
+            for suffix in _AMAZON_MEDIA_HOST_SUFFIXES
+        ):
+            text = normalize_amazon_media_url(text)
+            if not text:
+                continue
+        return {"url": text}
+    return None
+
+
+def _media_source_candidates(value: Any) -> list[Any]:
+    if not isinstance(value, Mapping):
+        return [value]
+
+    normalized = {re.sub(r"[^a-z0-9]", "", str(key).lower()): item for key, item in value.items()}
+    candidates: list[Any] = []
+    for key in (
+        "hires",
+        "highresolution",
+        "highresolutionurl",
+        "dataoldhires",
+        "dataadynamicimage",
+        "main",
+        "large",
+        "url",
+        "contenturl",
+        "src",
+    ):
+        candidate = normalized.get(key)
+        if isinstance(candidate, str):
+            dynamic_value = _load_json(candidate)
+            if isinstance(dynamic_value, Mapping):
+                dynamic_candidate = _largest_dynamic_image_url(dynamic_value)
+                if dynamic_candidate:
+                    candidates.append(dynamic_candidate)
+            else:
+                candidates.append(candidate)
+        elif isinstance(candidate, Mapping):
+            dynamic_candidate = _largest_dynamic_image_url(candidate)
+            if dynamic_candidate:
+                candidates.append(dynamic_candidate)
+
+    dynamic_candidate = _largest_dynamic_image_url(value)
+    if dynamic_candidate:
+        candidates.append(dynamic_candidate)
+    return candidates
+
+
+def _largest_dynamic_image_url(value: Mapping[Any, Any]) -> str:
+    ranked: list[tuple[int, int, str]] = []
+    for index, (raw_url, raw_dimensions) in enumerate(value.items()):
+        url = _clean_text(raw_url)
+        if not url:
+            continue
+        area = 0
+        if (
+            isinstance(raw_dimensions, Sequence)
+            and not isinstance(raw_dimensions, (str, bytes))
+            and len(raw_dimensions) >= 2
+        ):
+            width = _as_int(raw_dimensions[0]) or 0
+            height = _as_int(raw_dimensions[1]) or 0
+            area = max(width, 0) * max(height, 0)
+        ranked.append((area, -index, url))
+    return max(ranked, default=(0, 0, ""))[2]
 
 
 def _normalize_media_list(value: Any) -> list[dict[str, str]]:

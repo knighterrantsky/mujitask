@@ -73,6 +73,9 @@ _PROMOTION_SENSITIVE_PATTERN = re.compile(
     r"authorization|bearer\s|(?:access[_-]?token|token|cookie|password|credential)\s*[=:])",
     re.IGNORECASE,
 )
+_BOUGHT_PAST_MONTH_VALUE_PATTERN = re.compile(
+    r"^[0-9][0-9,]*(?:\.[0-9]+)?[KkMm]?\+?$"
+)
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _MATERIALIZED_MEDIA_ROLES = {"main_image", "gallery_image"}
 _MATERIALIZED_MEDIA_MIME_TYPES = {
@@ -141,7 +144,7 @@ _RAW_CAPTURE_POLICIES = {
     "network_data": ("application/json", "allowlisted"),
     "screenshot": ("image/png", "not_applicable"),
 }
-_REQUIRED_FIELD_EVIDENCE_PATHS = frozenset(
+_LEGACY_FIELD_EVIDENCE_PATHS = frozenset(
     {
         "product.title",
         "product.brand",
@@ -171,6 +174,12 @@ _REQUIRED_FIELD_EVIDENCE_PATHS = frozenset(
         "media.gallery_images",
     }
 )
+_REQUIRED_FIELD_EVIDENCE_PATHS = _LEGACY_FIELD_EVIDENCE_PATHS | {
+    "commerce.bought_past_month",
+}
+_COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS = {
+    "commerce.bought_past_month",
+}
 
 
 class _InvalidCapture(ValueError):
@@ -813,10 +822,7 @@ class _SanitizedHTMLPolicyValidator(HTMLParser):
             normalized_value = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
             if (
                 normalized_name.startswith("on")
-                or any(
-                    marker in normalized_name
-                    for marker in _HTML_SENSITIVE_JSON_KEYS
-                )
+                or any(marker in normalized_name for marker in _HTML_SENSITIVE_JSON_KEYS)
                 or any(marker in normalized_value for marker in _HTML_SENSITIVE_MARKERS)
             ):
                 self.violation = True
@@ -893,13 +899,17 @@ def _contains_sensitive_json_key(value: Any) -> bool:
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _HTML_SENSITIVE_JSON_KEYS or normalized.endswith("token") or any(
-                marker in normalized
-                for marker in (
-                    "authorization",
-                    "cookie",
-                    "localstorage",
-                    "requestheader",
+            if (
+                normalized in _HTML_SENSITIVE_JSON_KEYS
+                or normalized.endswith("token")
+                or any(
+                    marker in normalized
+                    for marker in (
+                        "authorization",
+                        "cookie",
+                        "localstorage",
+                        "requestheader",
+                    )
                 )
             ):
                 return True
@@ -1028,8 +1038,8 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         raise _InvalidCapture("Normalized capture must be a JSON object.")
     capture = dict(decoded)
     contract_revision = capture.get("contract_revision")
-    if isinstance(contract_revision, bool) or contract_revision not in {1, 2}:
-        raise _InvalidCapture("Normalized capture contract_revision must equal 1 or 2.")
+    if isinstance(contract_revision, bool) or contract_revision not in {1, 2, 3, 4, 5}:
+        raise _InvalidCapture("Normalized capture contract_revision must equal 1, 2, 3, 4, or 5.")
     if capture.get("source_platform") != "amazon":
         raise _InvalidCapture("Normalized capture source_platform must equal amazon.")
     if capture.get("marketplace_code") != "US":
@@ -1057,12 +1067,19 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         capture.get("profile_context"), dict
     ):
         raise _InvalidCapture("Normalized capture profile_context must be an object.")
+    if contract_revision in {1, 2}:
+        _adapt_legacy_capture_media_urls(capture)
 
     evidence = capture["field_evidence"]
     evidence_paths = set(evidence)
-    if evidence_paths != _REQUIRED_FIELD_EVIDENCE_PATHS:
-        missing = sorted(_REQUIRED_FIELD_EVIDENCE_PATHS - evidence_paths)
-        unexpected = sorted(evidence_paths - _REQUIRED_FIELD_EVIDENCE_PATHS)
+    expected_evidence_paths = (
+        _REQUIRED_FIELD_EVIDENCE_PATHS
+        if contract_revision >= 5
+        else _LEGACY_FIELD_EVIDENCE_PATHS
+    )
+    if evidence_paths != expected_evidence_paths:
+        missing = sorted(expected_evidence_paths - evidence_paths)
+        unexpected = sorted(evidence_paths - expected_evidence_paths)
         raise _InvalidCapture(
             "Normalized capture field_evidence must exactly cover its contract revision; "
             f"missing={missing}, unexpected={unexpected}."
@@ -1071,11 +1088,47 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         if not isinstance(path, str) or not isinstance(item, dict):
             raise _InvalidCapture("Every field_evidence entry must be an object keyed by path.")
         _validate_field_evidence_item(capture, path, item)
-    missing_evidence = any(item["status"] == "missing" for item in evidence.values())
+    missing_evidence = any(
+        item["status"] == "missing"
+        for path, item in evidence.items()
+        if path not in _COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS
+    )
     if collection_status == "success" and missing_evidence:
         raise _InvalidCapture("collection_status=success cannot contain missing field evidence.")
     _validate_capture_sections(capture, contract_revision=contract_revision)
     return capture
+
+
+def _adapt_legacy_capture_media_urls(capture: dict[str, Any]) -> None:
+    def adapt_item(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        source_url = value.get("url")
+        normalized_url = normalize_amazon_media_url(source_url)
+        if not normalized_url:
+            return value
+        adapted = dict(value)
+        adapted["url"] = normalized_url
+        return adapted
+
+    media = dict(capture["media"])
+    media["main_image"] = adapt_item(media.get("main_image"))
+    gallery = media.get("gallery_images")
+    if isinstance(gallery, list):
+        media["gallery_images"] = [adapt_item(item) for item in gallery]
+    capture["media"] = media
+
+    evidence = dict(capture["field_evidence"])
+    for path, value in (
+        ("media.main_image", media.get("main_image")),
+        ("media.gallery_images", media.get("gallery_images")),
+    ):
+        item = evidence.get(path)
+        if isinstance(item, dict):
+            adapted_evidence = dict(item)
+            adapted_evidence["value"] = value
+            evidence[path] = adapted_evidence
+    capture["field_evidence"] = evidence
 
 
 def _validate_field_evidence_item(
@@ -1172,6 +1225,17 @@ def _validate_capture_sections(
         raise _InvalidCapture("Normalized capture commerce.availability_status is invalid.")
     _validate_optional_number(commerce.get("rating"), "commerce.rating", minimum=0, maximum=5)
     _validate_optional_integer(commerce.get("review_count"), "commerce.review_count", minimum=0)
+    _validate_optional_text(
+        commerce.get("bought_past_month"),
+        "commerce.bought_past_month",
+    )
+    bought_past_month = commerce.get("bought_past_month")
+    if bought_past_month is not None and not _BOUGHT_PAST_MONTH_VALUE_PATTERN.fullmatch(
+        bought_past_month
+    ):
+        raise _InvalidCapture(
+            "Normalized capture commerce.bought_past_month must contain only the Amazon display value."
+        )
     if not isinstance(commerce.get("featured_offer"), dict):
         raise _InvalidCapture("Normalized capture commerce.featured_offer must be an object.")
     featured_offer = dict(commerce["featured_offer"])
@@ -1253,7 +1317,7 @@ def _validate_materialized_media_assets(
     payload: dict[str, Any],
     capture: dict[str, Any],
     artifact_policy: Mapping[str, str],
-    ) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
+) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
     required_media = _required_materialized_media(capture)
     assets = coerce_mapping_list(payload.get("materialized_media_assets"))
     expected_bucket = artifact_policy["bucket"]
@@ -1269,9 +1333,7 @@ def _validate_materialized_media_assets(
         remote_uri = _required_text(asset.get("remote_uri"), "materialized media remote_uri")
         source_url = _required_text(asset.get("source_url"), "materialized media source_url")
         if normalize_amazon_media_url(source_url) != source_url:
-            raise ValueError(
-                "Materialized media source_url must be a normalized Amazon CDN URL."
-            )
+            raise ValueError("Materialized media source_url must be a normalized Amazon CDN URL.")
         media_role = _required_text(asset.get("media_role"), "materialized media role")
         position = _validate_required_integer(
             asset.get("position"),
@@ -1336,8 +1398,7 @@ def _validate_materialized_media_assets(
     extra = sorted(provided_media - required_media)
     if extra:
         raise ValueError(
-            "Materialized media contains images not observed in the Amazon capture: "
-            f"extra={extra}."
+            f"Materialized media contains images not observed in the Amazon capture: extra={extra}."
         )
     missing_count = len(required_media - provided_media)
     return assets, {
@@ -1512,6 +1573,12 @@ def _persist_capture(
     )
     product_id = identity_row["id"]
     field_coverage = _field_coverage(evidence)
+    snapshot_payload = {
+        "collection_status": capture["collection_status"],
+        "profile_context": _safe_profile_context(capture.get("profile_context")),
+    }
+    if _is_strictly_observed(evidence, "commerce.bought_past_month"):
+        snapshot_payload["bought_past_month"] = commerce.get("bought_past_month")
     snapshot = fact_store.record_product_snapshot(
         product_id=product_id,
         marketplace_code="US",
@@ -1533,10 +1600,7 @@ def _persist_capture(
         variant_attributes=_mapping_value(variants.get("current_attributes")),
         child_asins=_asin_list(variants.get("child_asins")),
         field_coverage=field_coverage,
-        payload={
-            "collection_status": capture["collection_status"],
-            "profile_context": _safe_profile_context(capture.get("profile_context")),
-        },
+        payload=snapshot_payload,
         content_digest=capture_digest,
         collected_at=observed_at,
     )
@@ -1898,13 +1962,9 @@ def _validate_structured_promotions(value: Any) -> None:
             raise _InvalidCapture(f"Normalized capture {field_name} currency is invalid.")
         for key in ("prime_only", "claim_required"):
             if not isinstance(item.get(key), bool):
-                raise _InvalidCapture(
-                    f"Normalized capture {field_name} {key} must be boolean."
-                )
+                raise _InvalidCapture(f"Normalized capture {field_name} {key} must be boolean.")
         if item.get("prime_only") is not False:
-            raise _InvalidCapture(
-                f"Normalized capture {field_name} prime_only must be false."
-            )
+            raise _InvalidCapture(f"Normalized capture {field_name} prime_only must be false.")
         if item.get("promotion_type") == "coupon" and any(
             item.get(key) is not None
             for key in ("deal_price", "reference_price", "reference_price_type")
@@ -1916,9 +1976,7 @@ def _validate_structured_promotions(value: Any) -> None:
             item.get("discount_type") not in {"percentage", "amount"}
             or item.get("discount_value") is None
         ):
-            raise _InvalidCapture(
-                f"Normalized capture {field_name} coupon discount is invalid."
-            )
+            raise _InvalidCapture(f"Normalized capture {field_name} coupon discount is invalid.")
         if item.get("promotion_type") == "limited_time_deal" and any(
             item.get(key) is not None
             for key in ("discount_value", "reference_price", "reference_price_type")
@@ -1927,8 +1985,7 @@ def _validate_structured_promotions(value: Any) -> None:
                 f"Normalized capture {field_name} limited time deal comparison fields must be null."
             )
         if item.get("promotion_type") == "limited_time_deal" and (
-            item.get("discount_type") != "price_override"
-            or item.get("deal_price") is None
+            item.get("discount_type") != "price_override" or item.get("deal_price") is None
         ):
             raise _InvalidCapture(
                 f"Normalized capture {field_name} limited time deal price is invalid."

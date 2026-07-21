@@ -39,7 +39,9 @@ def _context(payload: dict[str, Any]) -> HandlerContext:
     )
 
 
-def test_media_asset_sync_downloads_referenced_source_url_before_upload(monkeypatch, tmp_path) -> None:
+def test_media_asset_sync_downloads_referenced_source_url_before_upload(
+    monkeypatch, tmp_path
+) -> None:
     requested_urls: list[str] = []
 
     def fake_urlopen(request, timeout: int):
@@ -256,6 +258,50 @@ def test_amazon_valid_source_url_strips_query_and_fragment_before_output(tmp_pat
     expected_url = "https://m.media-amazon.com/images/I/main.webp"
     assert result.result["synced_assets"][0]["source_url"] == expected_url
     assert result.result["media_fact_bundle"]["media_assets"][0]["source_url"] == expected_url
+
+
+def test_amazon_thumbnail_derivative_is_canonicalized_before_download(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    requested_urls: list[str] = []
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            requested_urls.append(request.full_url)
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        asset_sync_handler,
+        "build_opener",
+        lambda handler: FakeOpener(),
+    )
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(
+            {
+                "artifact_root": str(tmp_path / "artifacts"),
+                "artifact_store_provider": "local",
+                "sync_referenced_files": True,
+                "asset_refs": [
+                    {
+                        "entity_type": "product",
+                        "entity_external_id": "B0ABC12345",
+                        "media_role": "gallery_image",
+                        "source_url": ("https://m.media-amazon.com/images/I/gallery._AC_US40_.jpg"),
+                        "source_platform": "amazon",
+                        "marketplace_code": "US",
+                    }
+                ],
+            }
+        )
+    )
+
+    expected_url = "https://m.media-amazon.com/images/I/gallery.jpg"
+    assert result.status == "success"
+    assert requested_urls == [expected_url]
+    assert result.result["synced_assets"][0]["source_url"] == expected_url
 
 
 def test_non_amazon_asset_identity_overrides_payload_fallback(tmp_path) -> None:
@@ -577,6 +623,7 @@ def test_amazon_media_rejects_caller_materialized_refs_before_storage(
         "https://m.media-amazon.com/images/%253Cscript%253E.jpg",
         "https://m.media-amazon.com/images/%2563ookie%253Dsecret.jpg",
         "https://m.media-amazon.com/images/%250Aheader.jpg",
+        "https://m.media-amazon.com/images/I/target._AC_US40_.jpg",
     ],
 )
 def test_governed_media_redirect_rejects_urls_outside_allowed_cdn(
@@ -585,9 +632,7 @@ def test_governed_media_redirect_rejects_urls_outside_allowed_cdn(
     handler = asset_sync_handler._GovernedMediaRedirectHandler(
         ("media-amazon.com", "ssl-images-amazon.com")
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     with pytest.raises(ValueError, match="governed HTTPS media host"):
         handler.redirect_request(
@@ -604,9 +649,7 @@ def test_governed_media_redirect_allows_https_redirect_within_cdn() -> None:
     handler = asset_sync_handler._GovernedMediaRedirectHandler(
         ("media-amazon.com", "ssl-images-amazon.com")
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     redirected = handler.redirect_request(
         request,
@@ -634,9 +677,7 @@ def test_governed_media_http_redirect_rejection_closes_response() -> None:
     handler = asset_sync_handler._GovernedMediaRedirectHandler(
         ("media-amazon.com", "ssl-images-amazon.com")
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     with pytest.raises(ValueError, match="governed HTTPS media host"):
         handler.http_error_302(
@@ -665,9 +706,7 @@ def test_governed_media_redirect_aliases_close_response_when_location_is_missing
         ("media-amazon.com", "ssl-images-amazon.com"),
         max_bytes=4,
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     result = getattr(handler, f"http_error_{redirect_code}")(
         request,
@@ -693,9 +732,7 @@ def test_governed_media_redirect_closes_response_for_forbidden_scheme() -> None:
         ("media-amazon.com", "ssl-images-amazon.com"),
         max_bytes=4,
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     with pytest.raises(HTTPError, match="Redirection to url"):
         handler.http_error_302(
@@ -722,9 +759,7 @@ def test_governed_media_redirect_closes_response_on_in_policy_loop() -> None:
         ("media-amazon.com", "ssl-images-amazon.com"),
         max_bytes=4,
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
     request.redirect_dict = {target_url: handler.max_repeats}
 
     with pytest.raises(HTTPError, match="redirect error"):
@@ -772,9 +807,7 @@ def test_governed_media_redirect_does_not_close_final_response() -> None:
         max_bytes=4,
     )
     handler.add_parent(ParentOpener(final_response))
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
     request.timeout = 7
 
     result = handler.http_error_302(
@@ -812,9 +845,7 @@ def test_governed_media_allowed_redirect_rejects_oversized_body_with_bounded_rea
         ("media-amazon.com", "ssl-images-amazon.com"),
         max_bytes=4,
     )
-    request = asset_sync_handler.Request(
-        "https://m.media-amazon.com/images/I/source.jpg"
-    )
+    request = asset_sync_handler.Request("https://m.media-amazon.com/images/I/source.jpg")
 
     with pytest.raises(ValueError, match="redirect response exceeds"):
         getattr(handler, f"http_error_{redirect_code}")(
@@ -869,7 +900,9 @@ def test_media_asset_sync_uses_product_entity_key_for_download_path(monkeypatch,
     assert "unknown-product" not in asset["local_path"]
 
 
-def test_media_asset_sync_reuses_duplicate_source_url_within_same_run(monkeypatch, tmp_path) -> None:
+def test_media_asset_sync_reuses_duplicate_source_url_within_same_run(
+    monkeypatch, tmp_path
+) -> None:
     requested_urls: list[str] = []
 
     def fake_urlopen(request, timeout: int):
@@ -907,8 +940,14 @@ def test_media_asset_sync_reuses_duplicate_source_url_within_same_run(monkeypatc
     assert result.status == "success"
     assert requested_urls == ["https://cdn.example.com/shared.webp"]
     assert len(result.result["artifact_refs"]) == 1
-    assert [asset["sync_state"] for asset in result.result["synced_assets"]] == ["linked_local", "reused_in_run"]
-    assert result.result["synced_assets"][0]["object_key"] == result.result["synced_assets"][1]["object_key"]
+    assert [asset["sync_state"] for asset in result.result["synced_assets"]] == [
+        "linked_local",
+        "reused_in_run",
+    ]
+    assert (
+        result.result["synced_assets"][0]["object_key"]
+        == result.result["synced_assets"][1]["object_key"]
+    )
     assert result.result["synced_assets"][1]["media_role"] == "product_sku_image"
 
 
@@ -942,7 +981,9 @@ def test_media_asset_sync_can_leave_referenced_url_unmaterialized(monkeypatch, t
     assert result.result["artifact_refs"] == []
 
 
-def test_media_asset_sync_can_require_referenced_assets_to_materialize(monkeypatch, tmp_path) -> None:
+def test_media_asset_sync_can_require_referenced_assets_to_materialize(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(
         asset_sync_handler,
         "urlopen",
@@ -974,7 +1015,9 @@ def test_media_asset_sync_can_require_referenced_assets_to_materialize(monkeypat
     assert result.result["synced_assets"][0]["sync_state"] == "referenced"
 
 
-def test_media_asset_sync_fails_when_object_storage_is_required_with_local_provider(tmp_path) -> None:
+def test_media_asset_sync_fails_when_object_storage_is_required_with_local_provider(
+    tmp_path,
+) -> None:
     media_file = tmp_path / "main.webp"
     media_file.write_bytes(b"fake-webp")
 
@@ -1158,14 +1201,8 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
     assert first.status == "success"
     assert second.status == "success"
     expected_keys = [
-        (
-            "dev/product-media/amazon/us/B0CHILD001/main_image/"
-            f"{content_digest}.webp"
-        ),
-        (
-            "dev/product-media/amazon/us/B0CHILD001/gallery_image/"
-            f"{content_digest}.webp"
-        ),
+        (f"dev/product-media/amazon/us/B0CHILD001/main_image/{content_digest}.webp"),
+        (f"dev/product-media/amazon/us/B0CHILD001/gallery_image/{content_digest}.webp"),
     ]
     assert [asset["object_key"] for asset in first.result["synced_assets"]] == expected_keys
     assert [asset["object_key"] for asset in second.result["synced_assets"]] == expected_keys

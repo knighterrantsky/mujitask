@@ -23,6 +23,7 @@ AMAZON_PRODUCT_MANUAL_PRESERVE_FIELDS = (
 AMAZON_PRODUCT_FEISHU_WRITE_FIELDS = (
     "主图",
     "侧边栏图片",
+    "30天购买人数",
     "送达日期",
     "包装规格",
     "促销活动记录",
@@ -44,6 +45,7 @@ AMAZON_PRODUCT_PROJECTION_FIELDS = (
     "币种",
     "评分",
     "评论数",
+    "30天购买人数",
     "库存状态",
     "Parent ASIN",
     "Child ASIN列表",
@@ -209,6 +211,13 @@ def amazon_product_projection_mapper(
         evidence,
         "commerce.review_count",
         commerce.get("review_count"),
+    )
+    _project_evidenced(
+        fields,
+        "30天购买人数",
+        evidence,
+        "commerce.bought_past_month",
+        commerce.get("bought_past_month"),
     )
     availability_evidence = _evidence_status(evidence, "commerce.availability_status")
     if availability_evidence in {"observed", "explicitly_unavailable"}:
@@ -540,6 +549,8 @@ def _promotion_summary(
     if not timestamp:
         return ""
     values = value if isinstance(value, (list, tuple)) else [value]
+    if not values:
+        return f"{timestamp} | 当前没有促销活动"
     lines: list[str] = []
     for item in values:
         if not isinstance(item, Mapping):

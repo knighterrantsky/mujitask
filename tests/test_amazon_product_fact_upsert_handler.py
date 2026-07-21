@@ -117,9 +117,7 @@ def _capture_bytes(name: str, *, asin: str, resolved_url: str) -> bytes:
             return {"url": governed_url}
 
         media["main_image"] = governed_media(media.get("main_image"))
-        media["gallery_images"] = [
-            governed_media(item) for item in media.get("gallery_images", [])
-        ]
+        media["gallery_images"] = [governed_media(item) for item in media.get("gallery_images", [])]
         if isinstance(evidence.get("media.main_image"), dict):
             evidence["media.main_image"]["value"] = media["main_image"]
         if isinstance(evidence.get("media.gallery_images"), dict):
@@ -286,10 +284,7 @@ def test_handler_is_allowlisted_bound_and_has_a_strict_job_contract() -> None:
 
 def test_field_evidence_paths_match_the_machine_fact_contract() -> None:
     contract_path = (
-        Path(__file__).resolve().parents[1]
-        / "contracts"
-        / "facts"
-        / "product-fact-collection.yaml"
+        Path(__file__).resolve().parents[1] / "contracts" / "facts" / "product-fact-collection.yaml"
     )
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     target_fields = contract["platform_contracts"]["amazon_us"]["field_evidence_policy"][
@@ -679,8 +674,7 @@ def test_handler_rejects_invalid_or_unsanitized_html_before_any_fact_write(
     html_digest = hashlib.sha256(html_bytes).hexdigest()
     html_ref["content_digest"] = html_digest
     html_ref["object_key"] = (
-        "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
-        f"{html_digest}/page.html.gz"
+        f"raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{html_digest}/page.html.gz"
     )
     artifact_store = FakeArtifactStore(
         {
@@ -725,8 +719,7 @@ def test_handler_rejects_html_that_expands_beyond_the_decompressed_limit(
     html_digest = hashlib.sha256(oversized_html).hexdigest()
     html_ref["content_digest"] = html_digest
     html_ref["object_key"] = (
-        "raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/"
-        f"{html_digest}/page.html.gz"
+        f"raw-captures/amazon/us/B0CHILD001/2026/07/14/run-1/{html_digest}/page.html.gz"
     )
     normalized_ref = payload["normalized_capture_ref"]
     artifact_store = FakeArtifactStore(
@@ -806,9 +799,7 @@ def test_handler_rejects_inconsistent_raw_capture_provenance_before_fact_write(
     payload = _payload(capture_bytes)
     payload["raw_capture_refs"][1][field_name] = invalid_value
     normalized_ref = payload["normalized_capture_ref"]
-    artifact_store = FakeArtifactStore(
-        {("artifacts", normalized_ref["object_key"]): capture_bytes}
-    )
+    artifact_store = FakeArtifactStore({("artifacts", normalized_ref["object_key"]): capture_bytes})
 
     result = amazon_product_fact_upsert_handler(
         _context(
@@ -968,14 +959,13 @@ def test_capture_validator_accepts_legacy_revision_1_promotion_texts() -> None:
         )
     )
     legacy_promotions = [
-        item["raw_text"]
-        for item in capture["commerce"]["featured_offer"]["promotions"]
+        item["raw_text"] for item in capture["commerce"]["featured_offer"]["promotions"]
     ]
     capture["contract_revision"] = 1
+    capture["commerce"].pop("bought_past_month")
+    capture["field_evidence"].pop("commerce.bought_past_month")
     capture["commerce"]["featured_offer"]["promotions"] = legacy_promotions
-    capture["field_evidence"]["commerce.featured_offer.promotions"][
-        "value"
-    ] = legacy_promotions
+    capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = legacy_promotions
 
     validated = fact_handler_module._decode_and_validate_capture(
         json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -983,6 +973,31 @@ def test_capture_validator_accepts_legacy_revision_1_promotion_texts() -> None:
 
     assert validated["contract_revision"] == 1
     assert validated["commerce"]["featured_offer"]["promotions"] == legacy_promotions
+
+
+def test_capture_validator_adapts_legacy_revision_2_thumbnail_urls() -> None:
+    capture = json.loads(
+        _capture_bytes(
+            "product_detail_child.html",
+            asin="B0CHILD001",
+            resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        )
+    )
+    derivative_url = "https://m.media-amazon.com/images/I/legacy-gallery._AC_US40_.jpg"
+    capture["contract_revision"] = 2
+    capture["commerce"].pop("bought_past_month")
+    capture["field_evidence"].pop("commerce.bought_past_month")
+    capture["media"]["gallery_images"][0]["url"] = derivative_url
+    capture["field_evidence"]["media.gallery_images"]["value"][0]["url"] = derivative_url
+
+    validated = fact_handler_module._decode_and_validate_capture(
+        json.dumps(capture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+    expected_url = "https://m.media-amazon.com/images/I/legacy-gallery.jpg"
+    assert validated["contract_revision"] == 2
+    assert validated["media"]["gallery_images"][0]["url"] == expected_url
+    assert validated["field_evidence"]["media.gallery_images"]["value"][0]["url"] == expected_url
 
 
 def test_capture_validator_rejects_sensitive_revision_2_promotion_text() -> None:
@@ -1374,10 +1389,7 @@ def test_handler_accepts_partial_capture_with_observed_subset_and_no_missing_evi
         resolved_url="https://www.amazon.com/dp/B0CHILD001",
     )
     capture = json.loads(capture_bytes)
-    assert all(
-        item["status"] != "missing"
-        for item in capture["field_evidence"].values()
-    )
+    assert all(item["status"] != "missing" for item in capture["field_evidence"].values())
     capture["collection_status"] = "partial_success"
     partial_bytes = json.dumps(capture, sort_keys=True, separators=(",", ":")).encode()
     payload = _payload(partial_bytes)
@@ -1779,6 +1791,7 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert "Structured product title" not in json.dumps(stored_runtime_result)
     projection = transient.result["projection_facts"]
     assert projection["product"]["title"] == "Structured product title"
+    assert projection["commerce"]["bought_past_month"] == "500+"
     assert projection["commerce"]["featured_offer"]["price_amount"] == 29.99
     assert projection["source_record_id"] == "record-1"
     assert "artifact_refs" not in projection
@@ -1791,6 +1804,13 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert _count(runtime_db_url, "amazon_product_media_assets") == 4
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
+    snapshot_payload = json.loads(
+        _scalar(
+            runtime_db_url,
+            "SELECT payload_json FROM amazon_product_snapshots WHERE asin = 'B0CHILD001'",
+        )
+    )
+    assert snapshot_payload["bought_past_month"] == "500+"
 
 
 def test_handler_rolls_back_the_fact_bundle_when_final_publish_fails(
@@ -1804,9 +1824,7 @@ def test_handler_rolls_back_the_fact_bundle_when_final_publish_fails(
     )
     payload = _payload(capture_bytes)
     normalized_ref = payload["normalized_capture_ref"]
-    artifact_store = FakeArtifactStore(
-        {("artifacts", normalized_ref["object_key"]): capture_bytes}
-    )
+    artifact_store = FakeArtifactStore({("artifacts", normalized_ref["object_key"]): capture_bytes})
     fact_store = AmazonFactStore(db_url=runtime_db_url)
 
     def fail_final_publish(*_args, **_kwargs):

@@ -26,6 +26,7 @@ writeback_rules:
   active_write_fields:
     - 主图
     - 侧边栏图片
+    - 30天购买人数
     - 送达日期
     - 包装规格
     - 促销活动记录
@@ -136,6 +137,7 @@ fields:
     type: attachment
     owner: amazon_projection
     write_policy: observed_materialized_media_only
+    media_resolution: amazon_gallery_item_bound_hires_original_resource
 
   - name: 当前价格
     canonical_name: current_price
@@ -166,6 +168,20 @@ fields:
     type: number
     owner: amazon_projection
     write_policy: observed_only
+
+  - name: 30天购买人数
+    canonical_name: bought_past_month
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+    fact_source: commerce.bought_past_month
+    value_policy:
+      source_node: "#social-proofing-faceout-title-tk_bought"
+      source_text_pattern: "<display_value> bought in past month"
+      output: display_value_only
+      example: "500+"
+      numeric_coercion: forbidden
+      missing: preserve_existing
 
   - name: 库存状态
     canonical_name: availability_status
@@ -265,10 +281,11 @@ fields:
       timestamp_format: "%Y-%m-%d %H:%M:%S"
       coupon: "采集时间 | coupon | 折扣 | 折后价"
       limited_time_deal: "采集时间 | Limited time deal | 活动价"
+      no_promotion: "采集时间 | 当前没有促销活动"
       coupon_price_basis: commerce.featured_offer.price_amount
       coupon_rounding: usd_half_up_2_decimals
       limited_time_deal_price_basis: promotion.deal_price
-      empty_observed_promotions: clear_field
+      empty_observed_promotions: write_no_promotion_snapshot
       missing_promotions: preserve_existing
     forbidden_content:
       - stable_json_dump
