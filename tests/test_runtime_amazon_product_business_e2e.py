@@ -248,6 +248,7 @@ def _bind_fake_boundaries(
             return [
                 {"field_name": "主图", "type": 17},
                 {"field_name": "侧边栏图片", "type": 17},
+                {"field_name": "30天购买人数", "type": 1},
                 {"field_name": "送达日期", "type": 1},
                 {"field_name": "包装规格", "type": 1},
                 {"field_name": "促销活动记录", "type": 1},
@@ -560,6 +561,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
     assert set(feishu_state["updates"][0]["fields"]) == {
         "主图",
         "侧边栏图片",
+        "30天购买人数",
         "送达日期",
         "包装规格",
         "促销活动记录",
@@ -575,6 +577,7 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
         {"file_token": "feishu-2"},
         {"file_token": "feishu-3"},
     ]
+    assert written_fields["30天购买人数"] == "500+"
     assert written_fields["送达日期"] == "Friday, July 17"
     assert written_fields["包装规格"] == "没有包装规格"
     assert written_fields["促销活动记录"].endswith(

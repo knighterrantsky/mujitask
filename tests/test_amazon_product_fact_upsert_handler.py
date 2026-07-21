@@ -962,6 +962,8 @@ def test_capture_validator_accepts_legacy_revision_1_promotion_texts() -> None:
         item["raw_text"] for item in capture["commerce"]["featured_offer"]["promotions"]
     ]
     capture["contract_revision"] = 1
+    capture["commerce"].pop("bought_past_month")
+    capture["field_evidence"].pop("commerce.bought_past_month")
     capture["commerce"]["featured_offer"]["promotions"] = legacy_promotions
     capture["field_evidence"]["commerce.featured_offer.promotions"]["value"] = legacy_promotions
 
@@ -983,6 +985,8 @@ def test_capture_validator_adapts_legacy_revision_2_thumbnail_urls() -> None:
     )
     derivative_url = "https://m.media-amazon.com/images/I/legacy-gallery._AC_US40_.jpg"
     capture["contract_revision"] = 2
+    capture["commerce"].pop("bought_past_month")
+    capture["field_evidence"].pop("commerce.bought_past_month")
     capture["media"]["gallery_images"][0]["url"] = derivative_url
     capture["field_evidence"]["media.gallery_images"]["value"][0]["url"] = derivative_url
 
@@ -1787,6 +1791,7 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert "Structured product title" not in json.dumps(stored_runtime_result)
     projection = transient.result["projection_facts"]
     assert projection["product"]["title"] == "Structured product title"
+    assert projection["commerce"]["bought_past_month"] == "500+"
     assert projection["commerce"]["featured_offer"]["price_amount"] == 29.99
     assert projection["source_record_id"] == "record-1"
     assert "artifact_refs" not in projection
@@ -1799,6 +1804,13 @@ def test_handler_persists_capture_facts_and_retries_idempotently(runtime_db_url)
     assert _count(runtime_db_url, "amazon_product_media_assets") == 4
     assert _count(runtime_db_url, "amazon_raw_captures") == 2
     assert _count(runtime_db_url, "amazon_feishu_bindings") == 1
+    snapshot_payload = json.loads(
+        _scalar(
+            runtime_db_url,
+            "SELECT payload_json FROM amazon_product_snapshots WHERE asin = 'B0CHILD001'",
+        )
+    )
+    assert snapshot_payload["bought_past_month"] == "500+"
 
 
 def test_handler_rolls_back_the_fact_bundle_when_final_publish_fails(

@@ -139,7 +139,7 @@ def test_extract_asin_rejects_non_us_marketplaces(url: str) -> None:
     assert error.value.error_code == "unsupported_marketplace"
 
 
-def test_extract_full_capture_uses_layered_precedence_and_all_v4_fields() -> None:
+def test_extract_full_capture_uses_layered_precedence_and_all_v5_fields() -> None:
     capture = extract_amazon_product_capture(
         _fixture("product_detail_child.html"),
         requested_asin="B0CHILD001",
@@ -147,7 +147,7 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v4_fields() -> Non
         observed_at=OBSERVED_AT,
     )
 
-    assert capture["contract_revision"] == 4
+    assert capture["contract_revision"] == 5
     assert capture["source_platform"] == "amazon"
     assert capture["marketplace_code"] == "US"
     assert capture["requested_asin"] == "B0CHILD001"
@@ -172,6 +172,7 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v4_fields() -> Non
         "availability_status": "in_stock",
         "rating": 4.7,
         "review_count": 1234,
+        "bought_past_month": "500+",
         "featured_offer": {
             "seller_id": "SELLER123",
             "seller_name": "Structured Seller",
@@ -235,6 +236,13 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v4_fields() -> Non
     assert evidence["product.bullet_points"]["source_kind"] == "embedded_state"
     assert evidence["commerce.featured_offer.price_amount"]["source_kind"] == ("structured_data")
     assert evidence["commerce.featured_offer.coupon_text"]["source_kind"] == ("embedded_state")
+    assert evidence["commerce.bought_past_month"] == {
+        "value": "500+",
+        "status": "observed",
+        "source_kind": "stable_dom",
+        "source_locator": "#social-proofing-faceout-title-tk_bought",
+        "confidence": 0.9,
+    }
     assert all(
         set(item) == {"value", "status", "source_kind", "source_locator", "confidence"}
         for item in evidence.values()
@@ -266,10 +274,29 @@ def test_dom_is_used_when_structured_layers_are_absent() -> None:
     assert capture["product"]["bullet_points"] == ["DOM bullet one", "DOM bullet two"]
     assert capture["commerce"]["featured_offer"]["price_amount"] == 32.5
     assert capture["commerce"]["featured_offer"]["seller_id"] == "DOMSELLER"
+    assert capture["commerce"]["bought_past_month"] == "500+"
     assert capture["variants"]["parent_asin"] == "B0PARENT01"
     assert capture["media"]["main_image"] == {"url": "https://images.example.test/dom-main.jpg"}
     assert capture["field_evidence"]["product.title"]["source_kind"] == "stable_dom"
     assert capture["field_evidence"]["variants.parent_asin"]["source_kind"] == "stable_dom"
+
+
+def test_bought_past_month_requires_the_controlled_amazon_phrase() -> None:
+    html = _fixture("product_detail_child.html").replace(
+        "500+ bought in past month",
+        "500 bought last month",
+    )
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["commerce"]["bought_past_month"] is None
+    assert capture["field_evidence"]["commerce.bought_past_month"]["status"] == "missing"
+    assert capture["collection_status"] == "success"
 
 
 def test_dom_gallery_does_not_infer_hires_asset_from_thumbnail_asset_id() -> None:
@@ -1061,6 +1088,7 @@ def test_parent_redirect_to_child_is_partial_and_does_not_expose_child_offer() -
     assert capture["variants"]["parent_asin"] == "B0PARENT01"
     assert capture["product"]["title"] is None
     assert capture["commerce"]["rating"] is None
+    assert capture["commerce"]["bought_past_month"] is None
     assert capture["rankings"] == []
     assert capture["media"] == {"main_image": None, "gallery_images": []}
     assert capture["field_evidence"]["product.title"]["status"] == "missing"

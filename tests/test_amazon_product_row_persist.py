@@ -369,6 +369,7 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
         "field_allowlist": [
             "主图",
             "侧边栏图片",
+            "30天购买人数",
             "送达日期",
             "包装规格",
             "促销活动记录",

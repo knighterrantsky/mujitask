@@ -175,6 +175,7 @@ def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
     assert AMAZON_PRODUCT_FEISHU_WRITE_FIELDS == (
         "主图",
         "侧边栏图片",
+        "30天购买人数",
         "送达日期",
         "包装规格",
         "促销活动记录",
@@ -196,6 +197,7 @@ def test_amazon_mapping_modules_declare_complete_owned_field_sets() -> None:
         "币种",
         "评分",
         "评论数",
+        "30天购买人数",
         "库存状态",
         "Parent ASIN",
         "Child ASIN列表",
@@ -408,6 +410,7 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
     assert fields["币种"] == "USD"
     assert fields["评分"] == 4.7
     assert fields["评论数"] == 1234
+    assert fields["30天购买人数"] == "500+"
     assert fields["库存状态"] == "in_stock"
     assert fields["Parent ASIN"] == "B0PARENT01"
     assert fields["Child ASIN列表"] == "B0CHILD001\nB0CHILD002"
@@ -631,6 +634,7 @@ def test_missing_evidence_preserves_existing_fields_even_when_values_are_present
         "source_locator": "test",
         "confidence": 0,
     }
+    capture["field_evidence"]["commerce.bought_past_month"]["status"] = "missing"
     capture["field_evidence"]["media.main_image"]["status"] = "missing"
 
     fields = amazon_product_projection_mapper(
@@ -640,6 +644,7 @@ def test_missing_evidence_preserves_existing_fields_even_when_values_are_present
 
     assert "标题" not in fields
     assert "当前价格" not in fields
+    assert "30天购买人数" not in fields
     assert "主图" not in fields
     assert fields["品牌"] == "Structured Brand"
     assert fields["字段完整度"] < 100
@@ -863,7 +868,7 @@ def test_materialized_object_attachment_can_replace_and_upload_after_local_file_
     assert refs == [{"file_token": "new-feishu-token"}]
 
 
-def test_feishu_write_only_transports_five_active_amazon_projection_fields(
+def test_feishu_write_only_transports_six_active_amazon_projection_fields(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -879,6 +884,7 @@ def test_feishu_write_only_transports_five_active_amazon_projection_fields(
             return [
                 {"field_name": "主图", "type": 17},
                 {"field_name": "侧边栏图片", "type": 17},
+                {"field_name": "30天购买人数", "type": 1},
                 {"field_name": "送达日期", "type": 1},
                 {"field_name": "包装规格", "type": 1},
                 {"field_name": "促销活动记录", "type": 1},
@@ -969,6 +975,7 @@ def test_feishu_write_only_transports_five_active_amazon_projection_fields(
     ]
     assert set(written["fields"]) == set(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS)
     assert written["fields"]["送达日期"] == "Friday, July 17"
+    assert written["fields"]["30天购买人数"] == "500+"
     assert written["fields"]["包装规格"] == "没有包装规格"
     assert written["fields"]["促销活动记录"] == (
         "2026-07-14 16:00:00 | coupon | 10% | $26.99"

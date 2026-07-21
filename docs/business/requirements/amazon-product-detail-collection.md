@@ -2,6 +2,8 @@
 
 日期: 2026-07-14
 
+更新: 2026-07-21
+
 状态: 已批准，实施中
 
 ## 1. 业务目标
@@ -25,9 +27,16 @@
 - 商品身份使用 ASIN，不使用 Seller SKU。
 - ASIN 先去除首尾空格并转大写，再按 `^[A-Z0-9]{10}$` 校验。
 - 系统只完整采集来源行对应的当前 ASIN；保存 Parent ASIN、页面暴露的 Child ASIN 和变体属性，但不逐个访问其他 Child ASIN。
-- 采集内容包括标题、品牌、类目、卖点、描述、主图/侧边栏图片、价格、评分、评论数、库存状态、Parent/Child ASIN、变体属性、卖家、配送方式、送达日期、包装规格、Buy Box、优惠券、促销、BSR 排名和技术参数。
-- 当前飞书最终写回白名单固定为 `主图`、`侧边栏图片`、`送达日期`、`包装规格`、`促销活动记录` 五个字段；其余采集结果继续进入 Amazon Fact DB，但不得发送到飞书字段写入接口。
+- 采集内容包括标题、品牌、类目、卖点、描述、主图/侧边栏图片、价格、评分、评论数、过去一个月购买人数页面展示值、库存状态、Parent/Child ASIN、变体属性、卖家、配送方式、送达日期、包装规格、Buy Box、优惠券、促销、BSR 排名和技术参数。
+- 当前飞书最终写回白名单固定为 `主图`、`侧边栏图片`、`30天购买人数`、`送达日期`、`包装规格`、`促销活动记录` 六个字段；其余采集结果继续进入 Amazon Fact DB，但不得发送到飞书字段写入接口。
 - 不采集评论明细、问答明细、A+ Content 或全部第三方 Offer。
+
+### 2.4 30天购买人数口径
+
+- `30天购买人数` 只取 Amazon 商品页受控节点 `#social-proofing-faceout-title-tk_bought` 中符合 `<展示值> bought in past month` 的可见英文文案。
+- 飞书只写文案中的展示值。例如页面显示 `500+ bought in past month` 时，写入文本 `500+`。
+- `500+` 是 Amazon 页面给出的区间展示值，系统不得转换为精确数值 `500`，不得去掉 `+`，也不得与订单量、销量或评论数混用。
+- 页面没有该节点、节点不可见或文案不匹配时，证据状态为 `missing`，不写该字段并保留飞书原值；该可选指标缺失不应单独把整行降级为 `partial_success`。
 
 ### 2.3 侧边栏图片口径
 
@@ -84,7 +93,7 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 3. 按页面内嵌数据、同源页面响应、稳定语义 DOM、受控文本区块的顺序解析字段，并保存字段来源与完整度。
 4. 将完整 capture、HTML、允许的数据片段和必要截图写入对象存储；Runtime DB 只保存紧凑引用。
 5. 将商品、快照、Offer、变体、BSR、媒体和原始 capture 索引写入 Amazon 独立事实表。
-6. 只从五字段写回白名单中投影本次明确观察到的字段；`missing` 字段保留飞书旧值。
+6. 只从六字段写回白名单中投影本次明确观察到的字段；`missing` 字段保留飞书旧值。
 7. `采集状态`、`上次采集时间`、`字段完整度`、脱敏错误摘要及其他非白名单字段一律不写入飞书，也不得阻断浏览器采集和事实持久化。
 
 ### 4.2 批量流程
@@ -121,16 +130,17 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 7. 动态 Coupon ID 和 Limited Time Deal 能生成结构化促销；同页同时存在 Coupon 与结账折扣时只保留 Coupon。
 8. 无白名单促销页面返回空数组；结账折扣、Prime 会员价、Prime Day Deal、Subscribe & Save、数量/条件购买折扣、普通划线价、促销解释文本、Prime 配送宣传和页面导航不得误判为促销。
 9. 结构化促销不得含有隐藏脚本、样式、兑换 URL/参数、token、Cookie 或其他敏感内容。
-10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 及后续 capture 只产生结构化促销对象。revision 4 新 capture 必须按 `colorImages.initial` 绑定高清图库；revision 3 仍可读取，但只有重新采集后才具备高清资产 ID 保证。
+10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 及后续 capture 只产生结构化促销对象。revision 4 新 capture 必须按 `colorImages.initial` 绑定高清图库；revision 3 仍可读取，但只有重新采集后才具备高清资产 ID 保证。revision 5 新 capture 新增可选 `commerce.bought_past_month` 文本及对应字段证据，revision 1–4 继续兼容读取且无需重写。
 11. Coupon 写回值包含北京时间、英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价；Limited Time Deal 写回值只包含北京时间、英文类型和页面活动价。
 12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时写入 `采集时间 | 当前没有促销活动`，覆盖旧值且不追加历史记录；只有证据状态为 `missing` 时保留旧值。
 13. Product information → Item details 中 `Number of Items=1` 时写回 `包装规格=1`；字段缺失时写回 `包装规格=没有包装规格`。
 14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `August 6 - 19`；两者均不包含地址或次级配送文案。
 15. Amazon `#altImages` 中明确观察到的有效图库项，必须按 `ImageBlockATF.colorImages.initial` 的同项 `hiRes` 映射和页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段；缩略图资产 ID 与高清资产 ID 不同时必须使用高清资产，并覆盖该字段旧附件。
-16. 任意 Amazon 单行或批量终态写入发送给飞书的字段集合必须是 `主图`、`侧边栏图片`、`送达日期`、`包装规格`、`促销活动记录` 的子集；状态、错误、标题、品牌、价格及其他商品字段不得写入。
+16. 任意 Amazon 单行或批量终态写入发送给飞书的字段集合必须是 `主图`、`侧边栏图片`、`30天购买人数`、`送达日期`、`包装规格`、`促销活动记录` 的子集；状态、错误、标题、品牌、价格及其他商品字段不得写入。
 17. Amazon 指令只能由 `amazon-ops` workspace 中的 `mujitask-amazon-feishu-sync` 接收；受理回执和最终通知的 `reply_target.accountId` 必须等于部署配置 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID`，不得在代码中固定本地账号别名，也不得使用 TikTok workspace。
 18. 批量任务只为 `采集标签=T` 的记录创建行级主 Job；`t`、空值、其他标签和字段缺失均不采集。
 19. 同一批量请求内，每个 `source_record_id` 最多创建一个 `amazon_product_row_refresh` Job；所有 Job 与父任务使用同一个 `request_id`，父任务只发送一次汇总通知。
 20. 生产 daemon 不指定 `request_id` 时，也必须能够领取批量 Request 下的行级 Job 并完成浏览器执行、恢复、持久化和汇总；禁止通过测试专用定向 claim 绕过该验收。
+21. 页面显示 `500+ bought in past month` 时，飞书同一来源行必须写入 `30天购买人数=500+`；不得写为数值 `500` 或完整英文句子。页面未观察到合格文案时保留飞书原值，且不因该可选字段缺失单独降低采集状态。
 
 架构与机器契约以 [Amazon 商品详情采集 Workflow 与事实存储设计](../../arch/workflow-amazon-product-detail-design.md) 及 `contracts/**` 为准；在相关 completion gate 通过前，不得声明首期能力完成。

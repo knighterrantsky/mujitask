@@ -50,7 +50,7 @@
 - 标题、品牌、类目路径、卖点、描述。
 - 主图和图库。
 - 当前价格、原价、币种。
-- 评分、评论数、库存状态。
+- 评分、评论数、过去一个月购买人数页面展示值、库存状态。
 - Parent ASIN、Child ASIN 列表、当前 ASIN 的变体属性。
 - 卖家、配送方式、Featured Offer / Buy Box。
 - 优惠券、促销。
@@ -254,6 +254,9 @@ requested ASIN 或当前页面 resolved ASIN，并包含 capture contract allowl
 
 商品信息与配送文案还必须满足以下约束:
 
+- `commerce.bought_past_month` 只从稳定 DOM 节点 `#social-proofing-faceout-title-tk_bought` 的可见文本提取；不得对全页文本做模糊搜索。
+- 节点文本必须匹配 `<展示值> bought in past month`。capture 与飞书只保留展示值，例如 `500+`；不得转成数值 `500`、去掉 `+` 或保存完整英文句子。
+- `commerce.bought_past_month` 是可选页面指标；证据缺失时 projection 保留飞书 `30天购买人数` 原值，且该字段单独缺失不改变 collection status。
 - Product information 的 `prodDetTable` 属于受控技术参数区域；`Number of Items` 以原始可见文本进入 `product.technical_details`，由飞书 projection 生成 `包装规格`。
 - `包装规格` 不从 `Unit Count`、Quantity 选择器或标题推导；`Number of Items` 缺失时 projection 写固定文本 `没有包装规格`。
 - `commerce.featured_offer.delivery_text` 只允许以 `FREE delivery` 开头的主配送文案，并在进入 capture 前移除配送地址、邮编、`Or fastest delivery`、倒计时和账户文本。
@@ -274,7 +277,7 @@ Projection 只写 `observed` 或 `explicitly_unavailable` 字段；`missing` 不
 完整 capture 不进入 Runtime DB，而是写为对象并通过 `normalized_capture_ref` 传递。逻辑结构如下:
 
 ```yaml
-contract_revision: 4
+contract_revision: 5
 source_platform: amazon
 marketplace_code: US
 requested_asin: B0XXXXXXXX
@@ -297,6 +300,7 @@ commerce:
   availability_status: in_stock | out_of_stock | unavailable | unknown
   rating: decimal
   review_count: integer
+  bought_past_month: text | null
   featured_offer:
     seller_id: text
     seller_name: text
@@ -335,9 +339,9 @@ field_evidence: object
 artifact_refs: [object]
 ```
 
-revision 2 只产生上述固定 key 的促销对象，每条促销的时间和非敏感浏览器上下文继承自父 capture 的 `captured_at` 和 `profile_context_digest`，不在每条对象中重复。revision 3 继承 revision 2 的促销结构，并把 Amazon 主图和图库 URL 收紧为不含 CDN 图像变换段的原始资源 URL。revision 4 进一步要求 Browser 从当前商品图片块的 `ImageBlockATF.colorImages.initial` 取得有序图库，按同一图库项选择 `hiRes`，禁止从可能具有不同资产 ID 的 `thumb` URL 推断高清图。
+revision 2 只产生上述固定 key 的促销对象，每条促销的时间和非敏感浏览器上下文继承自父 capture 的 `captured_at` 和 `profile_context_digest`，不在每条对象中重复。revision 3 继承 revision 2 的促销结构，并把 Amazon 主图和图库 URL 收紧为不含 CDN 图像变换段的原始资源 URL。revision 4 进一步要求 Browser 从当前商品图片块的 `ImageBlockATF.colorImages.initial` 取得有序图库，按同一图库项选择 `hiRes`，禁止从可能具有不同资产 ID 的 `thumb` URL 推断高清图。revision 5 继承 revision 4，并新增可选 `commerce.bought_past_month` 文本和同路径 evidence；Browser 只输出 `bought in past month` 前面的展示值。
 
-兼容策略是持久化边界同时接受 revision 1、2、3 与 4：revision 1 的 `promotions: [text]` 仍按历史原文保存，revision 2/3/4 必须通过结构化促销校验；revision 1/2 capture 中的 Amazon CDN 派生图片 URL 在内存兼容 adapter 中转换为无变换段 URL，并同步更新对应 field evidence 后再验证和物化，不重写已存 raw capture。revision 3 可继续消费，但它无法从既有缩略图 URL 恢复不同的高清资产 ID，必须重新采集才具备 revision 4 的高清保证。新 Browser worker 只生成 revision 4；该变化不需要 Fact DB DDL 或重写历史数据。
+兼容策略是持久化边界同时接受 revision 1、2、3、4 与 5：revision 1 的 `promotions: [text]` 仍按历史原文保存，revision 2–5 必须通过结构化促销校验；revision 1/2 capture 中的 Amazon CDN 派生图片 URL 在内存兼容 adapter 中转换为无变换段 URL，并同步更新对应 field evidence 后再验证和物化，不重写已存 raw capture。revision 3 可继续消费，但它无法从既有缩略图 URL 恢复不同的高清资产 ID，必须重新采集才具备 revision 4 的高清保证。revision 1–4 没有 `commerce.bought_past_month`，继续按旧 evidence 集合读取；新 Browser worker 只生成 revision 5。该变化使用既有 snapshot JSON 与 raw capture，不需要 Fact DB DDL 或重写历史数据。
 
 ## 7. Workflow 设计
 
@@ -385,11 +389,11 @@ stateDiagram-v2
 和脱敏 `采集错误`。该写回不新增第五个 stage，不进入媒体或 Fact persistence，也不得携带
 页面商品字段；写回完成或重试耗尽后才允许父任务失败收敛。来源行不存在时不执行写回。
 
-Amazon 飞书写入使用固定五字段白名单：`主图`、`侧边栏图片`、`送达日期`、`包装规格`、
+Amazon 飞书写入使用固定六字段白名单：`主图`、`侧边栏图片`、`30天购买人数`、`送达日期`、`包装规格`、
 `促销活动记录`。`collecting`、`persisting`、`failed` 等 status-only projection 仍可沿用统一
 handler contract，但映射后的字段会在发送请求前被白名单过滤为空，并以受控的
 `skipped/empty_fields` 收敛；它不写飞书、不阻断浏览器或 Fact 副作用。终态商品投影只发送
-五字段白名单与目标 schema 的交集，并仍须精确更新原 `source_record_id`。字段白名单不放宽
+六字段白名单与目标 schema 的交集，并仍须精确更新原 `source_record_id`。字段白名单不放宽
 来源行、ASIN、目标表身份或实际终态写回记录数校验。
 
 ```mermaid
@@ -791,9 +795,10 @@ Runtime 证据写入 `artifact_object`；业务媒体写入 `amazon_media_assets
   不能把任意 child 文本写入 `artifact_object.etag`。
 - `blocked`、`captcha_required` 或 `access_blocked` 在首次 Runtime 写入前必须包含按同一坐标规则
   校验通过的 screenshot artifact；预导航配置或连接失败没有页面证据时不套用该规则。
-- `field_evidence` 必须精确覆盖 capture contract revision 1/2/3/4 共用的目标字段，并包含
+- `field_evidence` 必须精确覆盖对应 capture revision 的目标字段，并包含
   `value/status/source_kind/source_locator/confidence`；evidence value 必须与 normalized
-  capture 对应字段一致，`missing` 不得指向非空值。
+  capture 对应字段一致，`missing` 不得指向非空值。revision 1–4 使用既有字段集合；revision 5
+  额外要求 `commerce.bought_past_month` evidence。该字段允许 `missing` 且不影响 collection status。
 - 同一 `(bucket, object_key)` 只能对应相同商品、快照、run、kind、digest 与脱敏状态；
   重试发现不可变证据变化时必须失败，不能把新对象内容与旧 Fact digest 静默拼接。
 - Raw capture key 中的 `<sha256>` 必须是实际上传字节的 digest。相同内容重试复用同一
@@ -817,9 +822,9 @@ Runtime 证据写入 `artifact_object`；业务媒体写入 `amazon_media_assets
   `25 MiB` 下载 hard cap；调用 payload 只能进一步收紧 host 或字节上限，不能通过缺省、扩大
   allowlist 或提高上限绕过治理。
 - 该高清原图规则不改变 handler payload/result 或 Fact schema 的字段形状，但把 revision 3 的
-  “同资产去变换段”语义收紧为“图库项绑定高清资产”，因此新 Browser 输出使用 revision 4，
+  “同资产去变换段”语义收紧为“图库项绑定高清资产”；revision 4 承载该媒体保证，当前新 Browser 输出使用 revision 5，
   不需要数据库 migration。`media_asset_sync` 继续负责 URL/重定向/正文安全与下载上限，不负责从
-  缩略图猜测高清资产 ID。Fact persistence 继续接受 revision 1/2/3；revision 1/2 的派生 URL
+  缩略图猜测高清资产 ID。Fact persistence 继续接受 revision 1/2/3/4/5；revision 1/2 的派生 URL
   adapter 只提供历史兼容，revision 3 只有重新采集才能获得高清资产 ID 保证。
 - payload 与 asset ref 的平台/marketplace 身份不得冲突；Amazon 媒体必须显式收敛到美国站，
   缺失或非 `US` marketplace 均在对象存储副作用前拒绝。Amazon caller 不得注入
@@ -859,7 +864,7 @@ AMAZON_PRODUCTS
 ### 12.2 字段字典与当前写回范围
 
 下表保留完整采集字段字典，供页面解析与 Fact DB 使用。当前飞书 active projection 仅包含
-`主图`、`侧边栏图片`、`送达日期`、`包装规格`、`促销活动记录`；表中其他字段即使存在也不写入。
+`主图`、`侧边栏图片`、`30天购买人数`、`送达日期`、`包装规格`、`促销活动记录`；表中其他字段即使存在也不写入。
 
 | 飞书字段 | 类型 | Owner | 语义 |
 | --- | --- | --- | --- |
@@ -882,6 +887,7 @@ AMAZON_PRODUCTS
 | 币种 | 单行文本 | Amazon projection | 首期固定为 USD，但仍显式保存 |
 | 评分 | 数字 | Amazon projection | 当前评分 |
 | 评论数 | 数字 | Amazon projection | 当前评论总数 |
+| 30天购买人数 | 单行文本 | Amazon projection | `#social-proofing-faceout-title-tk_bought` 中 `bought in past month` 前的页面展示值，例如 `500+` |
 | 库存状态 | 单选 | Amazon projection | in_stock / out_of_stock / unavailable / unknown |
 | Parent ASIN | 单行文本 | Amazon projection | 页面明确识别的 parent |
 | Child ASIN列表 | 多行文本 | Amazon projection | 页面暴露的 child，换行分隔 |
@@ -907,7 +913,7 @@ AMAZON_PRODUCTS
 - 最终写回 handler 必须返回 `written_count=1`、`failed_count=0`、`skipped_count=0`，且
   `target_record_ids` 精确等于当前 `source_record_id`；否则按写回未收敛失败，不能完成行任务。
 - `ASIN` 是业务输入字段，projection 不改写。
-- 飞书写入前必须执行固定五字段 allowlist；`fields_written` 也只能报告实际通过 allowlist 的字段。
+- 飞书写入前必须执行固定六字段 allowlist；`fields_written` 也只能报告实际通过 allowlist 的字段。
 - Search seed 创建前按 ASIN 查询，存在则复用原 record。
 - Amazon-owned 字段采用 refresh 语义，可覆盖旧的已观察值。
 - 解析状态为 `missing` 的字段不写回，也不清空旧值。
@@ -1086,6 +1092,7 @@ Browser task success 只表示采集能力完成，不等于商品行成功。
 离线 fixture 至少覆盖:
 
 - 正常有货、Featured Offer、主图和图库。
+- `500+ bought in past month` 只解析并投影为文本 `500+`；节点缺失或文案不匹配时保持 missing。
 - Coupon 和白名单 promotion。
 - 动态 Coupon ID、固定金额/百分比 Coupon、Limited Time Deal，以及 Coupon 折后价计算和北京时间格式。
 - 同页多条白名单促销共存；checkout、Prime、Subscribe & Save、数量/条件购买折扣和普通划线价被排除。
