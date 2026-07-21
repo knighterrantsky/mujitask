@@ -26,6 +26,7 @@ writeback_rules:
   active_write_fields:
     - 主图
     - 侧边栏图片
+    - 30天购买人数
     - 送达日期
     - 包装规格
     - 促销活动记录
@@ -167,6 +168,20 @@ fields:
     type: number
     owner: amazon_projection
     write_policy: observed_only
+
+  - name: 30天购买人数
+    canonical_name: bought_past_month
+    type: single_line_text
+    owner: amazon_projection
+    write_policy: observed_only
+    fact_source: commerce.bought_past_month
+    value_policy:
+      source_node: "#social-proofing-faceout-title-tk_bought"
+      source_text_pattern: "<display_value> bought in past month"
+      output: display_value_only
+      example: "500+"
+      numeric_coercion: forbidden
+      missing: preserve_existing
 
   - name: 库存状态
     canonical_name: availability_status

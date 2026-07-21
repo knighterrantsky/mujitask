@@ -73,6 +73,9 @@ _PROMOTION_SENSITIVE_PATTERN = re.compile(
     r"authorization|bearer\s|(?:access[_-]?token|token|cookie|password|credential)\s*[=:])",
     re.IGNORECASE,
 )
+_BOUGHT_PAST_MONTH_VALUE_PATTERN = re.compile(
+    r"^[0-9][0-9,]*(?:\.[0-9]+)?[KkMm]?\+?$"
+)
 _MATERIALIZED_MEDIA_STATES = {"uploaded", "reused", "reused_in_run"}
 _MATERIALIZED_MEDIA_ROLES = {"main_image", "gallery_image"}
 _MATERIALIZED_MEDIA_MIME_TYPES = {
@@ -141,7 +144,7 @@ _RAW_CAPTURE_POLICIES = {
     "network_data": ("application/json", "allowlisted"),
     "screenshot": ("image/png", "not_applicable"),
 }
-_REQUIRED_FIELD_EVIDENCE_PATHS = frozenset(
+_LEGACY_FIELD_EVIDENCE_PATHS = frozenset(
     {
         "product.title",
         "product.brand",
@@ -171,6 +174,12 @@ _REQUIRED_FIELD_EVIDENCE_PATHS = frozenset(
         "media.gallery_images",
     }
 )
+_REQUIRED_FIELD_EVIDENCE_PATHS = _LEGACY_FIELD_EVIDENCE_PATHS | {
+    "commerce.bought_past_month",
+}
+_COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS = {
+    "commerce.bought_past_month",
+}
 
 
 class _InvalidCapture(ValueError):
@@ -1029,8 +1038,8 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         raise _InvalidCapture("Normalized capture must be a JSON object.")
     capture = dict(decoded)
     contract_revision = capture.get("contract_revision")
-    if isinstance(contract_revision, bool) or contract_revision not in {1, 2, 3, 4}:
-        raise _InvalidCapture("Normalized capture contract_revision must equal 1, 2, 3, or 4.")
+    if isinstance(contract_revision, bool) or contract_revision not in {1, 2, 3, 4, 5}:
+        raise _InvalidCapture("Normalized capture contract_revision must equal 1, 2, 3, 4, or 5.")
     if capture.get("source_platform") != "amazon":
         raise _InvalidCapture("Normalized capture source_platform must equal amazon.")
     if capture.get("marketplace_code") != "US":
@@ -1063,9 +1072,14 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
 
     evidence = capture["field_evidence"]
     evidence_paths = set(evidence)
-    if evidence_paths != _REQUIRED_FIELD_EVIDENCE_PATHS:
-        missing = sorted(_REQUIRED_FIELD_EVIDENCE_PATHS - evidence_paths)
-        unexpected = sorted(evidence_paths - _REQUIRED_FIELD_EVIDENCE_PATHS)
+    expected_evidence_paths = (
+        _REQUIRED_FIELD_EVIDENCE_PATHS
+        if contract_revision >= 5
+        else _LEGACY_FIELD_EVIDENCE_PATHS
+    )
+    if evidence_paths != expected_evidence_paths:
+        missing = sorted(expected_evidence_paths - evidence_paths)
+        unexpected = sorted(evidence_paths - expected_evidence_paths)
         raise _InvalidCapture(
             "Normalized capture field_evidence must exactly cover its contract revision; "
             f"missing={missing}, unexpected={unexpected}."
@@ -1074,7 +1088,11 @@ def _decode_and_validate_capture(capture_bytes: bytes) -> dict[str, Any]:
         if not isinstance(path, str) or not isinstance(item, dict):
             raise _InvalidCapture("Every field_evidence entry must be an object keyed by path.")
         _validate_field_evidence_item(capture, path, item)
-    missing_evidence = any(item["status"] == "missing" for item in evidence.values())
+    missing_evidence = any(
+        item["status"] == "missing"
+        for path, item in evidence.items()
+        if path not in _COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS
+    )
     if collection_status == "success" and missing_evidence:
         raise _InvalidCapture("collection_status=success cannot contain missing field evidence.")
     _validate_capture_sections(capture, contract_revision=contract_revision)
@@ -1207,6 +1225,17 @@ def _validate_capture_sections(
         raise _InvalidCapture("Normalized capture commerce.availability_status is invalid.")
     _validate_optional_number(commerce.get("rating"), "commerce.rating", minimum=0, maximum=5)
     _validate_optional_integer(commerce.get("review_count"), "commerce.review_count", minimum=0)
+    _validate_optional_text(
+        commerce.get("bought_past_month"),
+        "commerce.bought_past_month",
+    )
+    bought_past_month = commerce.get("bought_past_month")
+    if bought_past_month is not None and not _BOUGHT_PAST_MONTH_VALUE_PATTERN.fullmatch(
+        bought_past_month
+    ):
+        raise _InvalidCapture(
+            "Normalized capture commerce.bought_past_month must contain only the Amazon display value."
+        )
     if not isinstance(commerce.get("featured_offer"), dict):
         raise _InvalidCapture("Normalized capture commerce.featured_offer must be an object.")
     featured_offer = dict(commerce["featured_offer"])
@@ -1544,6 +1573,12 @@ def _persist_capture(
     )
     product_id = identity_row["id"]
     field_coverage = _field_coverage(evidence)
+    snapshot_payload = {
+        "collection_status": capture["collection_status"],
+        "profile_context": _safe_profile_context(capture.get("profile_context")),
+    }
+    if _is_strictly_observed(evidence, "commerce.bought_past_month"):
+        snapshot_payload["bought_past_month"] = commerce.get("bought_past_month")
     snapshot = fact_store.record_product_snapshot(
         product_id=product_id,
         marketplace_code="US",
@@ -1565,10 +1600,7 @@ def _persist_capture(
         variant_attributes=_mapping_value(variants.get("current_attributes")),
         child_asins=_asin_list(variants.get("child_asins")),
         field_coverage=field_coverage,
-        payload={
-            "collection_status": capture["collection_status"],
-            "profile_context": _safe_profile_context(capture.get("profile_context")),
-        },
+        payload=snapshot_payload,
         content_digest=capture_digest,
         collected_at=observed_at,
     )

@@ -157,12 +157,13 @@ platform_contracts:
         materialized_media_bytes: 26214400
     raw_capture_key_collision: reject_changed_immutable_evidence
     field_evidence_policy:
-      contract_revision: 4
+      contract_revision: 5
       accepted_capture_revisions:
         - 1
         - 2
         - 3
         - 4
+        - 5
       coverage: exact_target_field_set
       target_fields:
         - product.title
@@ -174,6 +175,7 @@ platform_contracts:
         - commerce.availability_status
         - commerce.rating
         - commerce.review_count
+        - commerce.bought_past_month
         - commerce.featured_offer.seller_id
         - commerce.featured_offer.seller_name
         - commerce.featured_offer.is_buy_box
@@ -200,15 +202,18 @@ platform_contracts:
       value_binding: exact_normalized_capture_field_value
       missing_requires_empty_capture_value: true
       success_allows_missing: false
+      collection_status_optional_fields:
+        - commerce.bought_past_month
       partial_success_requires_missing: false
     normalized_capture_contract:
-      current_revision: 4
+      current_revision: 5
       accepted_revisions:
         - 1
         - 2
         - 3
         - 4
-      new_browser_output_revision: 4
+        - 5
+      new_browser_output_revision: 5
       revision_1_promotions: text_array
       revision_2_promotions:
         type: object_array
@@ -250,13 +255,25 @@ platform_contracts:
           - large
         thumbnail_asset_id_inference: forbidden
         video_thumbnail: excluded
+      revision_5_bought_past_month:
+        inherits_revision_4_gallery_binding: true
+        capture_field: commerce.bought_past_month
+        evidence_path: commerce.bought_past_month
+        source_node: "#social-proofing-faceout-title-tk_bought"
+        source_text_pattern: "<display_value> bought in past month"
+        normalized_value: display_value_only
+        example: "500+"
+        numeric_coercion: forbidden
+        collection_status_optional: true
       compatibility:
         persistence_reads_revision_1: true
         persistence_reads_revision_2: true
         persistence_reads_revision_3: true
+        persistence_reads_revision_4: true
         revision_1_rewrite_required: false
         revision_2_rewrite_required: false
         revision_3_rewrite_required: false
+        revision_4_rewrite_required: false
         revision_1_2_media_adapter: canonicalize_derivative_before_validation_and_materialization
         revision_3_high_resolution_guarantee: requires_recollection
         fact_schema_ddl_required: false
@@ -274,6 +291,16 @@ platform_contracts:
           - cookie
           - account_or_address_text
       field_semantics:
+        commerce.bought_past_month:
+          source: stable_dom.#social-proofing-faceout-title-tk_bought
+          required_suffix: bought in past month
+          fact_projection: amazon_product_snapshots.payload_json.bought_past_month
+          projection_field: 30天购买人数
+          projection_format: display_value_only
+          example: "500+"
+          numeric_coercion: forbidden
+          missing_projection: preserve_existing
+          collection_status_optional: true
         commerce.featured_offer.promotions:
           allowed_types:
             - coupon

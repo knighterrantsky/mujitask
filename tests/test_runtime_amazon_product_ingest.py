@@ -1269,6 +1269,7 @@ def test_invalid_source_asin_writes_status_then_fails_without_browser_or_persist
                 "field_allowlist": [
                     "主图",
                     "侧边栏图片",
+                    "30天购买人数",
                     "送达日期",
                     "包装规格",
                     "促销活动记录",

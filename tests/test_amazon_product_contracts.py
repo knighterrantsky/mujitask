@@ -35,6 +35,7 @@ def test_formal_requirement_and_domain_route_are_declared() -> None:
         "同一飞书 record_id",
         "refresh_current_amazon_product_table",
         "采集标签=T",
+        "30天购买人数=500+",
     )
     assert all(token in requirement for token in required_requirement_tokens)
 
@@ -252,6 +253,22 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     assert fields["强制刷新"]["owner"] == "business_input"
     assert fields["来源关键词"]["owner"] == "amazon_search_workflow"
     assert fields["采集状态"]["owner"] == "amazon_workflow"
+    assert fields["30天购买人数"] == {
+        "name": "30天购买人数",
+        "canonical_name": "bought_past_month",
+        "type": "single_line_text",
+        "owner": "amazon_projection",
+        "write_policy": "observed_only",
+        "fact_source": "commerce.bought_past_month",
+        "value_policy": {
+            "source_node": "#social-proofing-faceout-title-tk_bought",
+            "source_text_pattern": "<display_value> bought in past month",
+            "output": "display_value_only",
+            "example": "500+",
+            "numeric_coercion": "forbidden",
+            "missing": "preserve_existing",
+        },
+    }
     assert fields["侧边栏图片"]["media_resolution"] == (
         "amazon_gallery_item_bound_hires_original_resource"
     )
@@ -279,6 +296,7 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
         "品牌",
         "主图",
         "侧边栏图片",
+        "30天购买人数",
         "当前价格",
         "库存状态",
         "Parent ASIN",
@@ -296,6 +314,7 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     assert fields_contract["writeback_rules"]["active_write_fields"] == [
         "主图",
         "侧边栏图片",
+        "30天购买人数",
         "送达日期",
         "包装规格",
         "促销活动记录",
@@ -406,8 +425,8 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
     }
     assert amazon["raw_capture_key_collision"] == "reject_changed_immutable_evidence"
     assert amazon["field_evidence_policy"] == {
-        "contract_revision": 4,
-        "accepted_capture_revisions": [1, 2, 3, 4],
+        "contract_revision": 5,
+        "accepted_capture_revisions": [1, 2, 3, 4, 5],
         "coverage": "exact_target_field_set",
         "target_fields": [
             "product.title",
@@ -419,6 +438,7 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
             "commerce.availability_status",
             "commerce.rating",
             "commerce.review_count",
+            "commerce.bought_past_month",
             "commerce.featured_offer.seller_id",
             "commerce.featured_offer.seller_name",
             "commerce.featured_offer.is_buy_box",
@@ -447,12 +467,13 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "value_binding": "exact_normalized_capture_field_value",
         "missing_requires_empty_capture_value": True,
         "success_allows_missing": False,
+        "collection_status_optional_fields": ["commerce.bought_past_month"],
         "partial_success_requires_missing": False,
     }
     assert amazon["normalized_capture_contract"] == {
-        "current_revision": 4,
-        "accepted_revisions": [1, 2, 3, 4],
-        "new_browser_output_revision": 4,
+        "current_revision": 5,
+        "accepted_revisions": [1, 2, 3, 4, 5],
+        "new_browser_output_revision": 5,
         "revision_1_promotions": "text_array",
         "revision_2_promotions": {
             "type": "object_array",
@@ -500,13 +521,26 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
             "thumbnail_asset_id_inference": "forbidden",
             "video_thumbnail": "excluded",
         },
+        "revision_5_bought_past_month": {
+            "inherits_revision_4_gallery_binding": True,
+            "capture_field": "commerce.bought_past_month",
+            "evidence_path": "commerce.bought_past_month",
+            "source_node": "#social-proofing-faceout-title-tk_bought",
+            "source_text_pattern": "<display_value> bought in past month",
+            "normalized_value": "display_value_only",
+            "example": "500+",
+            "numeric_coercion": "forbidden",
+            "collection_status_optional": True,
+        },
         "compatibility": {
             "persistence_reads_revision_1": True,
             "persistence_reads_revision_2": True,
             "persistence_reads_revision_3": True,
+            "persistence_reads_revision_4": True,
             "revision_1_rewrite_required": False,
             "revision_2_rewrite_required": False,
             "revision_3_rewrite_required": False,
+            "revision_4_rewrite_required": False,
             "revision_1_2_media_adapter": (
                 "canonicalize_derivative_before_validation_and_materialization"
             ),
@@ -525,6 +559,19 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
             ],
         },
         "field_semantics": {
+            "commerce.bought_past_month": {
+                "source": "stable_dom.#social-proofing-faceout-title-tk_bought",
+                "required_suffix": "bought in past month",
+                "fact_projection": (
+                    "amazon_product_snapshots.payload_json.bought_past_month"
+                ),
+                "projection_field": "30天购买人数",
+                "projection_format": "display_value_only",
+                "example": "500+",
+                "numeric_coercion": "forbidden",
+                "missing_projection": "preserve_existing",
+                "collection_status_optional": True,
+            },
             "commerce.featured_offer.promotions": {
                 "allowed_types": ["coupon", "limited_time_deal"],
                 "excluded_page_offers": [

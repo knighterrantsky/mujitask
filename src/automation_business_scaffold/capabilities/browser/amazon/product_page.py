@@ -142,6 +142,14 @@ _PROMOTION_ZONE_IDS = {
     "buybox",
     "buyboxaccordion",
 }
+_BOUGHT_PAST_MONTH_PATTERN = re.compile(
+    r"^(?P<display_value>[0-9][0-9,]*(?:\.[0-9]+)?[KkMm]?\+?)\s+"
+    r"bought\s+in\s+past\s+month$",
+    re.IGNORECASE,
+)
+_COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS = {
+    "commerce.bought_past_month",
+}
 
 
 class AmazonProductExtractionError(RuntimeError):
@@ -635,6 +643,17 @@ def extract_amazon_product_capture(
             ),
             _candidate(dom.get("review_count"), "stable_dom", "#acrCustomerReviewText", 0.82),
         ),
+        "bought_past_month": _choose(
+            "commerce.bought_past_month",
+            evidence,
+            None,
+            _candidate(
+                dom.get("bought_past_month"),
+                "stable_dom",
+                "#social-proofing-faceout-title-tk_bought",
+                0.9,
+            ),
+        ),
         "featured_offer": featured_offer,
     }
 
@@ -861,6 +880,13 @@ def extract_amazon_product_capture(
             status="missing",
             reason="parent_redirect",
         )
+        commerce["bought_past_month"] = _policy_default(
+            evidence,
+            "commerce.bought_past_month",
+            None,
+            status="missing",
+            reason="parent_redirect",
+        )
         featured_offer = _suppress_offer(evidence, status="missing", reason="parent_redirect")
         commerce["featured_offer"] = featured_offer
         rankings = _policy_default(
@@ -898,13 +924,17 @@ def extract_amazon_product_capture(
         collection_status = "partial_success"
     elif availability == "unavailable":
         collection_status = "unavailable"
-    elif any(item["status"] == "missing" for item in evidence.values()):
+    elif any(
+        item["status"] == "missing"
+        for path, item in evidence.items()
+        if path not in _COLLECTION_STATUS_OPTIONAL_EVIDENCE_PATHS
+    ):
         collection_status = "partial_success"
     else:
         collection_status = "success"
 
     capture = {
-        "contract_revision": 4,
+        "contract_revision": 5,
         "source_platform": "amazon",
         "marketplace_code": "US",
         "requested_asin": requested,
@@ -1646,6 +1676,9 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
     rating_node = _node_by_id(document, "acrPopover")
     rating = _as_float(rating_node.attrs.get("title") if rating_node else None)
     review_count = _as_int(_node_text(_node_by_id(document, "acrCustomerReviewText")))
+    bought_past_month = _bought_past_month_text(
+        _node_text(_node_by_id(document, "social-proofing-faceout-title-tk_bought"))
+    )
     availability = _normalize_availability(_node_text(_node_by_id(document, "availability")))
 
     seller = _node_by_id(document, "sellerProfileTriggerId")
@@ -1701,6 +1734,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "availability_status": availability,
         "rating": rating,
         "review_count": review_count,
+        "bought_past_month": bought_past_month,
         "seller_id": seller.attrs.get("data-seller-id") if seller else None,
         "seller_name": _node_text(seller),
         "is_buy_box": _as_bool(merchant.attrs.get("data-buy-box")) if merchant else None,
@@ -1724,6 +1758,14 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "main_image": main_image,
         "gallery_images": gallery,
     }
+
+
+def _bought_past_month_text(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    match = _BOUGHT_PAST_MONTH_PATTERN.fullmatch(text)
+    return match.group("display_value") if match else None
 
 
 def _texts_for_descendants(node: _Node | None, *, tags: set[str]) -> list[str]:
