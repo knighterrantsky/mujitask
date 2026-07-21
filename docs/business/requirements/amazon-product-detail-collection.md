@@ -56,7 +56,7 @@
 - `coupon` 必须来自页面明确的 `Coupon` / `Apply ... coupon` / `Save ... with coupon` 可见文案，并保存百分比或固定金额折扣。飞书折后价以同一 Featured Offer 当前价格为基数计算：百分比 Coupon 使用 `price * (1 - discount / 100)`，固定金额 Coupon 使用 `price - discount`，结果按美元四舍五入保留两位小数且不得小于 0。
 - `limited_time_deal` 必须存在明确的 `Limited time deal` 英文活动标志；只保存活动标志和该报价区的页面活动价，不保存页面折扣百分比或 List/Typical/Regular Price 等对比价。
 - 每条活动的采集时间统一使用父 capture 的 `captured_at`。飞书展示时转换为北京时间 `YYYY-MM-DD HH:mm:ss`。
-- 飞书 `促销活动记录` 每次写入当前采集快照并覆盖旧值，不做历史追加。输出格式分别为 `采集时间 | coupon | 折扣 | 折后价` 和 `采集时间 | Limited time deal | 活动价`；本次明确观察到无白名单促销时清空旧值。
+- 飞书 `促销活动记录` 每次写入当前采集快照并覆盖旧值，不做历史追加。输出格式分别为 `采集时间 | coupon | 折扣 | 折后价` 和 `采集时间 | Limited time deal | 活动价`；本次明确观察到无白名单促销时写入 `采集时间 | 当前没有促销活动`，覆盖旧促销记录。
 - 促销原始文案只能来自当前报价区的可见语义文本；`script`、`style`、隐藏兑换参数、token、Cookie 或账户/地址文本不得进入 capture、Fact DB、飞书、日志或通知。
 - `coupon_text` 作为旧投影的精简兼容字段保留；完整促销事实以结构化 `promotions[]` 为准，其时间统一绑定父 capture 的 `captured_at`。
 
@@ -123,7 +123,7 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 9. 结构化促销不得含有隐藏脚本、样式、兑换 URL/参数、token、Cookie 或其他敏感内容。
 10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 及后续 capture 只产生结构化促销对象。revision 4 新 capture 必须按 `colorImages.initial` 绑定高清图库；revision 3 仍可读取，但只有重新采集后才具备高清资产 ID 保证。
 11. Coupon 写回值包含北京时间、英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价；Limited Time Deal 写回值只包含北京时间、英文类型和页面活动价。
-12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时清空旧值，不追加历史记录。
+12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时写入 `采集时间 | 当前没有促销活动`，覆盖旧值且不追加历史记录；只有证据状态为 `missing` 时保留旧值。
 13. Product information → Item details 中 `Number of Items=1` 时写回 `包装规格=1`；字段缺失时写回 `包装规格=没有包装规格`。
 14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `August 6 - 19`；两者均不包含地址或次级配送文案。
 15. Amazon `#altImages` 中明确观察到的有效图库项，必须按 `ImageBlockATF.colorImages.initial` 的同项 `hiRes` 映射和页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段；缩略图资产 ID 与高清资产 ID 不同时必须使用高清资产，并覆盖该字段旧附件。

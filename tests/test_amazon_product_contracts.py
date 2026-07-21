@@ -266,10 +266,11 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
         "timestamp_format": "%Y-%m-%d %H:%M:%S",
         "coupon": "采集时间 | coupon | 折扣 | 折后价",
         "limited_time_deal": "采集时间 | Limited time deal | 活动价",
+        "no_promotion": "采集时间 | 当前没有促销活动",
         "coupon_price_basis": "commerce.featured_offer.price_amount",
         "coupon_rounding": "usd_half_up_2_decimals",
         "limited_time_deal_price_basis": "promotion.deal_price",
-        "empty_observed_promotions": "clear_field",
+        "empty_observed_promotions": "write_no_promotion_snapshot",
         "missing_promotions": "preserve_existing",
     }
     projection_fields = {
@@ -547,7 +548,7 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
                 },
                 "projection_field": "促销活动记录",
                 "projection_write_policy": "overwrite_current_snapshot",
-                "projection_empty_observation": "clear_field",
+                "projection_empty_observation": "write_timestamped_no_promotion_snapshot",
                 "projection_timestamp_timezone": "Asia/Shanghai",
                 "coupon_calculated_price_source": ("commerce.featured_offer.price_amount"),
             },

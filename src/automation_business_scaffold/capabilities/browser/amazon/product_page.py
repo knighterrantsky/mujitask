@@ -1689,6 +1689,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
 
     coupon_text = _dom_coupon_text(document)
     promotions = _dom_promotions(document, coupon_text=coupon_text)
+    promotions_observed = _dom_promotions_observed(document)
 
     return {
         "title": title,
@@ -1710,6 +1711,7 @@ def _extract_dom_values(document: _DocumentParser) -> dict[str, Any]:
         "delivery_text": _dom_free_delivery_text(document),
         "coupon_text": coupon_text,
         "promotions": promotions,
+        "promotions_observed": promotions_observed,
         "parent_asin": _optional_asin(twister.attrs.get("data-parent-asin")) if twister else None,
         "child_asins": child_asins,
         "current_attributes": _json_string_mapping(
@@ -1790,6 +1792,19 @@ def _dom_promotions(
             if promotion:
                 promotions.append(promotion)
     return _dedupe_promotions(promotions)
+
+
+def _dom_promotions_observed(document: _DocumentParser) -> bool:
+    for node in _iter_nodes(document.roots):
+        element_id = node.attrs.get("id", "").lower()
+        if (
+            element_id == "coupontext"
+            or element_id.startswith("coupontext")
+            or element_id == "promopriceblockmessage_feature_div"
+            or element_id in _PROMOTION_ZONE_IDS
+        ):
+            return True
+    return False
 
 
 def _limited_time_deal_promotion(
@@ -1940,6 +1955,9 @@ def _choose_offer_field(
             "stable_dom",
             f"dom.featured_offer.{field_name}",
             0.8,
+            accept_empty=(
+                field_name == "promotions" and bool(dom.get("promotions_observed"))
+            ),
         ),
     )
 

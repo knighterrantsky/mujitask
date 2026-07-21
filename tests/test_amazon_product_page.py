@@ -829,6 +829,31 @@ def test_dom_fixed_amount_coupon_records_usd_amount() -> None:
     assert promotion["claim_required"] is True
 
 
+def test_empty_dom_promotion_node_is_observed_as_no_promotions() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="apex_desktop">
+            <span class="a-price"><span class="a-offscreen">$29.99</span></span>
+            <div id="couponTextpctch-dynamic-id"></div>
+          </div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["commerce"]["featured_offer"]["promotions"] == []
+    assert capture["field_evidence"]["commerce.featured_offer.promotions"] == {
+        "value": [],
+        "status": "observed",
+        "source_kind": "stable_dom",
+        "source_locator": "dom.featured_offer.promotions",
+        "confidence": 0.8,
+    }
+
+
 def test_dom_limited_time_deal_keeps_only_label_and_activity_price() -> None:
     html = """
     <html><body>
@@ -967,6 +992,9 @@ def test_offerless_available_page_is_partial_without_inventing_buy_box_or_price(
     assert capture["commerce"]["featured_offer"]["price_amount"] is None
     assert capture["commerce"]["featured_offer"]["is_buy_box"] is None
     assert capture["field_evidence"]["commerce.featured_offer.price_amount"]["status"] == (
+        "missing"
+    )
+    assert capture["field_evidence"]["commerce.featured_offer.promotions"]["status"] == (
         "missing"
     )
 

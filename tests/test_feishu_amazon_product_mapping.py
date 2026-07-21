@@ -528,7 +528,7 @@ def test_projection_formats_limited_time_deal_without_discount_or_reference_pric
     )
 
 
-def test_projection_clears_observed_empty_promotion_snapshot() -> None:
+def test_projection_writes_dated_no_promotion_snapshot_for_observed_empty_promotions() -> None:
     capture = _capture()
     capture["commerce"]["featured_offer"]["promotions"] = []
     capture["field_evidence"]["commerce.featured_offer.promotions"] = {
@@ -541,8 +541,27 @@ def test_projection_clears_observed_empty_promotion_snapshot() -> None:
 
     command = amazon_product_projection_mapper(_projection_record(capture), {})
 
-    assert command["fields"]["促销活动记录"] == ""
-    assert "促销活动记录" in command["clear_fields"]
+    assert command["fields"]["促销活动记录"] == (
+        "2026-07-14 16:00:00 | 当前没有促销活动"
+    )
+    assert "促销活动记录" not in command["clear_fields"]
+
+
+def test_projection_preserves_existing_promotion_when_empty_snapshot_is_missing() -> None:
+    capture = _capture()
+    capture["commerce"]["featured_offer"]["promotions"] = []
+    capture["field_evidence"]["commerce.featured_offer.promotions"] = {
+        "value": [],
+        "status": "missing",
+        "source_kind": None,
+        "source_locator": None,
+        "confidence": 0.0,
+    }
+
+    command = amazon_product_projection_mapper(_projection_record(capture), {})
+
+    assert "促销活动记录" not in command["fields"]
+    assert "促销活动记录" not in command["clear_fields"]
 
 
 def test_common_write_mapping_routes_amazon_projection_mapper() -> None:

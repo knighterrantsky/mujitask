@@ -298,7 +298,7 @@ platform_contracts:
               - reference_price_type
           projection_field: 促销活动记录
           projection_write_policy: overwrite_current_snapshot
-          projection_empty_observation: clear_field
+          projection_empty_observation: write_timestamped_no_promotion_snapshot
           projection_timestamp_timezone: Asia/Shanghai
           coupon_calculated_price_source: commerce.featured_offer.price_amount
         product.technical_details.Number of Items:

@@ -250,7 +250,7 @@ requested ASIN 或当前页面 resolved ASIN，并包含 capture contract allowl
 - Limited Time Deal 只保留 `Limited time deal` 标签和同一报价区的页面活动价；其折扣百分比和 List/Typical/Regular Price 不进入促销对象。
 - DOM 文本收集必须递归排除 `script`、`style`、`noscript` 和 `template`。无法安全缩减为促销短文本的节点不进入 capture。
 - 飞书 `促销活动记录` 由 projection 使用父 capture 的 `captured_at` 和 Featured Offer 当前价格生成。Coupon 折后价在 projection 边界以 Decimal 计算并按美元四舍五入保留两位小数；Limited Time Deal 直接使用 `deal_price`。
-- `promotions[]` 被明确观察为空数组时，projection 覆盖清空 `促销活动记录`；`missing` 仍保留旧值。
+- `promotions[]` 被明确观察为空数组时，projection 写入 `采集时间 | 当前没有促销活动` 并覆盖 `促销活动记录`；`missing` 仍保留旧值。
 
 商品信息与配送文案还必须满足以下约束:
 
@@ -893,7 +893,7 @@ AMAZON_PRODUCTS
 | Buy Box卖家 | 单行文本 | Amazon projection | 当前 Buy Box 卖家 |
 | Buy Box价格 | 数字 | Amazon projection | 当前 Buy Box 价格 |
 | 优惠券 | 多行文本 | Amazon projection | 页面明确观察到的 coupon |
-| 促销活动记录 | 多行文本 | Amazon projection | 白名单 promotion 的当前快照，按北京时间换行覆盖；空数组清空旧值 |
+| 促销活动记录 | 多行文本 | Amazon projection | 白名单 promotion 的当前快照，按北京时间换行覆盖；明确观察到空数组时写 `采集时间 | 当前没有促销活动` |
 | BSR排名 | 多行文本 | Amazon projection | `#rank - category`，一行一个 |
 | 技术参数 | 多行文本 | Amazon projection | 排序后的稳定 JSON 文本 |
 | 页面ASIN | 单行文本 | Amazon projection | resolved ASIN，用于身份审计 |
