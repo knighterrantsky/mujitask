@@ -540,6 +540,8 @@ def _promotion_summary(
     if not timestamp:
         return ""
     values = value if isinstance(value, (list, tuple)) else [value]
+    if not values:
+        return f"{timestamp} | 当前没有促销活动"
     lines: list[str] = []
     for item in values:
         if not isinstance(item, Mapping):

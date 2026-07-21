@@ -288,6 +288,7 @@ protected_invariants:
   - 飞书投影只更新 source_record_id，且字段集合只能是主图、侧边栏图片、送达日期、包装规格、促销活动记录的子集；missing 字段必须保留已有值。
   - 最终投影只有在 written_count=1、failed_count=0、skipped_count=0 且 target_record_ids 精确等于 source_record_id 时才算收敛。
   - media_source_ref 的 percent-decoded path 不得含 HTML/token/cookie；重复 media_role/position 必须在 persist 派发和媒体下载前拒绝。
+  - media_source_ref 必须是 Browser 按 ImageBlockATF.colorImages.initial 的侧边栏顺序，从同一图库项的 hiRes/data-old-hires/largest dynamic image/large 候选解析出的高清资源 URL，文件名不得保留已知尺寸、裁剪、质量或格式变换段；禁止仅删除缩略图 URL 的变换段后推断高清资产，因为缩略图与 hiRes 可以使用不同资产 ID；视频缩略图必须排除，media_asset_sync 不得回退上传缩略图。
   - 相同 source URL 对应不同 media_role/position 时必须保留每条商品媒体关系，不得按 URL 全局去重。
   - blocked/captcha 在首次 Runtime 写入前必须带受控 screenshot artifact evidence，并失败收敛；预导航配置或连接失败可无页面证据，不新增绕过路径。
   - 已定位来源行的 blocked/failed 不写飞书字段，也不进入商品 Fact persistence；兼容 status-only handler 必须以 skipped_empty_fields 收敛。

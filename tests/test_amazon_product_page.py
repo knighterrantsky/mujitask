@@ -82,7 +82,19 @@ def test_amazon_media_url_rejects_sensitive_or_html_path(url: str) -> None:
     [
         (
             "https://m.media-amazon.com/images/I/example._SL1500_.jpg",
-            "https://m.media-amazon.com/images/I/example._SL1500_.jpg",
+            "https://m.media-amazon.com/images/I/example.jpg",
+        ),
+        (
+            "https://m.media-amazon.com/images/I/example._AC_US40_FMwebp_.webp",
+            "https://m.media-amazon.com/images/I/example.webp",
+        ),
+        (
+            "https://images-na.ssl-images-amazon.com/images/I/example._SX38_SY50_CR,0,0,38,50_.jpg",
+            "https://images-na.ssl-images-amazon.com/images/I/example.jpg",
+        ),
+        (
+            "https://m.media-amazon.com/images/I/example._UF894,1000_QL80_.jpg",
+            "https://m.media-amazon.com/images/I/example.jpg",
         ),
         (
             "https://m.media-amazon.com/images/I/tokenized-cookiecrumb.jpg",
@@ -94,7 +106,7 @@ def test_amazon_media_url_rejects_sensitive_or_html_path(url: str) -> None:
         ),
     ],
 )
-def test_amazon_media_url_preserves_safe_path_and_strips_query_fragment(
+def test_amazon_media_url_resolves_original_path_and_strips_query_fragment(
     url: str,
     expected: str,
 ) -> None:
@@ -127,7 +139,7 @@ def test_extract_asin_rejects_non_us_marketplaces(url: str) -> None:
     assert error.value.error_code == "unsupported_marketplace"
 
 
-def test_extract_full_capture_uses_layered_precedence_and_all_v2_fields() -> None:
+def test_extract_full_capture_uses_layered_precedence_and_all_v4_fields() -> None:
     capture = extract_amazon_product_capture(
         _fixture("product_detail_child.html"),
         requested_asin="B0CHILD001",
@@ -135,7 +147,7 @@ def test_extract_full_capture_uses_layered_precedence_and_all_v2_fields() -> Non
         observed_at=OBSERVED_AT,
     )
 
-    assert capture["contract_revision"] == 2
+    assert capture["contract_revision"] == 4
     assert capture["source_platform"] == "amazon"
     assert capture["marketplace_code"] == "US"
     assert capture["requested_asin"] == "B0CHILD001"
@@ -260,6 +272,112 @@ def test_dom_is_used_when_structured_layers_are_absent() -> None:
     assert capture["field_evidence"]["variants.parent_asin"]["source_kind"] == "stable_dom"
 
 
+def test_dom_gallery_does_not_infer_hires_asset_from_thumbnail_asset_id() -> None:
+    html = """
+    <html><body>
+      <h1><span id="productTitle">Thumbnail gallery product</span></h1>
+      <div id="altImages">
+        <img src="https://m.media-amazon.com/images/I/gallery-one._AC_US40_.jpg" />
+        <img src="https://images-na.ssl-images-amazon.com/images/I/gallery-two._SX38_SY50_.jpg" />
+      </div>
+    </body></html>
+    """
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["media"]["gallery_images"] == []
+    assert capture["field_evidence"]["media.gallery_images"] == {
+        "value": [],
+        "status": "missing",
+        "source_kind": None,
+        "source_locator": None,
+        "confidence": 0.0,
+    }
+
+
+def test_image_block_gallery_binds_thumbnail_order_to_different_hires_asset_ids() -> None:
+    html = """
+    <html><body>
+      <script>
+        P.when('A').register('ImageBlockATF', function(A) {
+          var data = {
+            'asin': 'B0CHILD001',
+            'colorImages': { 'initial': [
+              {"hiRes":"https://m.media-amazon.com/images/I/71SbE0DzOwL._AC_SL1500_.jpg","thumb":"https://m.media-amazon.com/images/I/41-thumb-one._AC_US100_.jpg","large":"https://m.media-amazon.com/images/I/41-thumb-one._AC_.jpg","main":{"https://m.media-amazon.com/images/I/71SbE0DzOwL._AC_SX679_.jpg":[679,679]},"variant":"MAIN"},
+              {"hiRes":"https://m.media-amazon.com/images/I/71HAS52mB9L._AC_SL1500_.jpg","thumb":"https://m.media-amazon.com/images/I/51-thumb-two._AC_US100_.jpg","large":"https://m.media-amazon.com/images/I/51-thumb-two._AC_.jpg","main":{"https://m.media-amazon.com/images/I/71HAS52mB9L._AC_SX679_.jpg":[679,679]},"variant":"PT01"},
+              {"isVideo":true,"thumb":"https://m.media-amazon.com/images/I/video.SS125_PKplay-button-mb-image-grid-small_.jpg","variant":"MAIN"}
+            ]}
+          };
+          return data;
+        });
+      </script>
+      <h1><span id="productTitle">High resolution gallery product</span></h1>
+      <div id="altImages">
+        <img src="https://m.media-amazon.com/images/I/41-thumb-one._AC_US100_.jpg" />
+        <img src="https://m.media-amazon.com/images/I/51-thumb-two._AC_US100_.jpg" />
+        <img src="https://m.media-amazon.com/images/I/video.SS125_PKplay-button-mb-image-grid-small_.jpg" />
+      </div>
+    </body></html>
+    """
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["media"]["main_image"] == {
+        "url": "https://m.media-amazon.com/images/I/71SbE0DzOwL.jpg"
+    }
+    assert capture["media"]["gallery_images"] == [
+        {"url": "https://m.media-amazon.com/images/I/71SbE0DzOwL.jpg"},
+        {"url": "https://m.media-amazon.com/images/I/71HAS52mB9L.jpg"},
+    ]
+    assert capture["field_evidence"]["media.gallery_images"]["source_kind"] == ("embedded_state")
+    assert capture["field_evidence"]["media.gallery_images"]["source_locator"] == (
+        "ImageBlockATF.colorImages.initial"
+    )
+
+
+def test_media_mapping_prefers_hires_over_thumbnail_candidate() -> None:
+    html = """
+    <html><body>
+      <script id="amazon-product-state" type="application/json">
+        {
+          "asin": "B0CHILD001",
+          "product": {"title": "High resolution gallery product"},
+          "media": {
+            "gallery_images": [
+              {
+                "hiRes": "https://m.media-amazon.com/images/I/high-resolution._SL1500_.jpg",
+                "large": "https://m.media-amazon.com/images/I/large._AC_SL1000_.jpg",
+                "thumb": "https://m.media-amazon.com/images/I/thumb._AC_US40_.jpg"
+              }
+            ]
+          }
+        }
+      </script>
+    </body></html>
+    """
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["media"]["gallery_images"] == [
+        {"url": "https://m.media-amazon.com/images/I/high-resolution.jpg"}
+    ]
+
+
 def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -> None:
     observations = [
         {
@@ -332,7 +450,7 @@ def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -
     assert network_data["variants"]["current_attributes"] == {"Color": "Blue"}
     assert network_data["media"]["gallery_images"] == [
         {"url": "https://m.media-amazon.com/images/I/safe.jpg"},
-        {"url": "https://m.media-amazon.com/images/I/safe.jpg"}
+        {"url": "https://m.media-amazon.com/images/I/safe.jpg"},
     ]
     assert "delivery_text" not in network_data["commerce"]["featured_offer"]
     assert network_data["source_locator"].startswith("/gp/aod/ajax#sha256=")
@@ -350,9 +468,7 @@ def test_same_origin_response_is_between_embedded_and_dom_and_is_allowlisted() -
                         "title": "Initial network title",
                         "technicalDetails": {"Material": "Oak"},
                     },
-                    "commerce": {
-                        "featuredOffer": {"promotions": ["Initial promotion"]}
-                    },
+                    "commerce": {"featuredOffer": {"promotions": ["Initial promotion"]}},
                     "variants": {
                         "childAsins": ["B0CHILD002"],
                         "currentAttributes": {"Color": "Blue"},
@@ -571,9 +687,7 @@ def test_dom_extracts_number_of_items_and_only_primary_free_delivery_text() -> N
 
     assert capture["product"]["technical_details"]["Number of Items"] == "1"
     assert capture["product"]["technical_details"]["Unit Count"] == "1 Count"
-    assert capture["commerce"]["featured_offer"]["delivery_text"] == (
-        "FREE delivery August 6 - 19"
-    )
+    assert capture["commerce"]["featured_offer"]["delivery_text"] == ("FREE delivery August 6 - 19")
     assert "Los Angeles 90001" not in json.dumps(capture, ensure_ascii=False)
     assert "fastest delivery" not in json.dumps(capture, ensure_ascii=False)
 
@@ -591,9 +705,9 @@ def test_stable_dom_precedes_controlled_text_and_controlled_text_is_final_fallba
         observed_at=OBSERVED_AT,
     )
     assert dom_capture["commerce"]["availability_status"] == "in_stock"
-    assert dom_capture["field_evidence"]["commerce.availability_status"][
-        "source_kind"
-    ] == "stable_dom"
+    assert (
+        dom_capture["field_evidence"]["commerce.availability_status"]["source_kind"] == "stable_dom"
+    )
 
     controlled_capture = extract_amazon_product_capture(
         '<html><body><div id="outOfStock">Currently unavailable</div></body></html>',
@@ -602,9 +716,10 @@ def test_stable_dom_precedes_controlled_text_and_controlled_text_is_final_fallba
         observed_at=OBSERVED_AT,
     )
     assert controlled_capture["commerce"]["availability_status"] == "unavailable"
-    assert controlled_capture["field_evidence"]["commerce.availability_status"][
-        "source_kind"
-    ] == "controlled_text"
+    assert (
+        controlled_capture["field_evidence"]["commerce.availability_status"]["source_kind"]
+        == "controlled_text"
+    )
 
 
 def test_embedded_state_scalar_values_are_normalized() -> None:
@@ -712,6 +827,31 @@ def test_dom_fixed_amount_coupon_records_usd_amount() -> None:
     assert promotion["discount_value"] == 10.0
     assert promotion["currency"] == "USD"
     assert promotion["claim_required"] is True
+
+
+def test_empty_dom_promotion_node_is_observed_as_no_promotions() -> None:
+    capture = extract_amazon_product_capture(
+        """
+        <html><body>
+          <div id="apex_desktop">
+            <span class="a-price"><span class="a-offscreen">$29.99</span></span>
+            <div id="couponTextpctch-dynamic-id"></div>
+          </div>
+        </body></html>
+        """,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["commerce"]["featured_offer"]["promotions"] == []
+    assert capture["field_evidence"]["commerce.featured_offer.promotions"] == {
+        "value": [],
+        "status": "observed",
+        "source_kind": "stable_dom",
+        "source_locator": "dom.featured_offer.promotions",
+        "confidence": 0.8,
+    }
 
 
 def test_dom_limited_time_deal_keeps_only_label_and_activity_price() -> None:
@@ -852,6 +992,9 @@ def test_offerless_available_page_is_partial_without_inventing_buy_box_or_price(
     assert capture["commerce"]["featured_offer"]["price_amount"] is None
     assert capture["commerce"]["featured_offer"]["is_buy_box"] is None
     assert capture["field_evidence"]["commerce.featured_offer.price_amount"]["status"] == (
+        "missing"
+    )
+    assert capture["field_evidence"]["commerce.featured_offer.promotions"]["status"] == (
         "missing"
     )
 
