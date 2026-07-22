@@ -325,8 +325,11 @@ platform_contracts:
               - reference_price_type
           projection_field: 促销活动记录
           projection_write_policy: overwrite_current_snapshot
-          projection_empty_observation: write_timestamped_no_promotion_snapshot
+          projection_empty_observation: write_content_then_timestamp_no_promotion_snapshot
           projection_timestamp_timezone: Asia/Shanghai
+          projection_timestamp_format: "M-D HH:mm"
+          projection_timestamp_position: second_line
+          projection_multiple_promotions: consecutive_two_line_blocks_without_blank_lines
           coupon_calculated_price_source: commerce.featured_offer.price_amount
         product.technical_details.Number of Items:
           source: Product information.Item details.Number of Items
@@ -340,7 +343,11 @@ platform_contracts:
           required_prefix: FREE delivery
           source: featured_offer_primary_delivery_message
           projection_field: 送达日期
-          projection_format: english_date_or_date_range_only
+          projection_format: chinese_date_or_date_range_only
+          single_date_format: "M月D号"
+          same_month_range_format: "M月D-D号"
+          cross_month_range_format: "M月D号-M月D号"
+          weekday: omit
           strip_segments:
             - free_delivery_label
             - order_threshold

@@ -250,7 +250,7 @@ requested ASIN 或当前页面 resolved ASIN，并包含 capture contract allowl
 - Limited Time Deal 只保留 `Limited time deal` 标签和同一报价区的页面活动价；其折扣百分比和 List/Typical/Regular Price 不进入促销对象。
 - DOM 文本收集必须递归排除 `script`、`style`、`noscript` 和 `template`。无法安全缩减为促销短文本的节点不进入 capture。
 - 飞书 `促销活动记录` 由 projection 使用父 capture 的 `captured_at` 和 Featured Offer 当前价格生成。Coupon 折后价在 projection 边界以 Decimal 计算并按美元四舍五入保留两位小数；Limited Time Deal 直接使用 `deal_price`。
-- `promotions[]` 被明确观察为空数组时，projection 写入 `采集时间 | 当前没有促销活动` 并覆盖 `促销活动记录`；`missing` 仍保留旧值。
+- `promotions[]` 被明确观察为空数组时，projection 写入两行文本 `当前没有促销活动\nM-D HH:mm` 并覆盖 `促销活动记录`；时间使用 `captured_at` 转换后的北京时间，`missing` 仍保留旧值。
 
 商品信息与配送文案还必须满足以下约束:
 
@@ -260,7 +260,7 @@ requested ASIN 或当前页面 resolved ASIN，并包含 capture contract allowl
 - Product information 的 `prodDetTable` 属于受控技术参数区域；`Number of Items` 以原始可见文本进入 `product.technical_details`，由飞书 projection 生成 `包装规格`。
 - `包装规格` 不从 `Unit Count`、Quantity 选择器或标题推导；`Number of Items` 缺失时 projection 写固定文本 `没有包装规格`。
 - `commerce.featured_offer.delivery_text` 只允许以 `FREE delivery` 开头的主配送文案，并在进入 capture 前移除配送地址、邮编、`Or fastest delivery`、倒计时和账户文本。
-- 飞书 `送达日期` 从净化后的 `delivery_text` 提取英文日期或日期范围，并去除 `FREE delivery` 标签和订单门槛；该证据为 `missing` 或无法提取日期时保留原值。
+- 飞书 `送达日期` 从净化后的英文 `delivery_text` 提取日期或日期范围，去除 `FREE delivery` 标签、订单门槛和英文星期，并投影为 `M月D号`、`M月D-D号` 或 `M月D号-M月D号`；该证据为 `missing` 或无法提取日期时保留原值。
 
 每个字段保存:
 
@@ -894,12 +894,12 @@ AMAZON_PRODUCTS
 | 变体属性 | 多行文本 | Amazon projection | 当前 ASIN 属性与变体维度的稳定 JSON 文本 |
 | 卖家 | 单行文本 | Amazon projection | Featured Offer 卖家 |
 | 配送方式 | 单行文本 | Amazon projection | Amazon / Merchant / unknown 及配送摘要 |
-| 送达日期 | 单行文本 | Amazon projection | 从净化后的主配送文案提取 `Weekday, Month D` 或英文日期范围，不含配送标签、订单门槛、地址和 fastest delivery |
+| 送达日期 | 单行文本 | Amazon projection | 从净化后的英文主配送文案提取日期并转换为 `M月D号`、`M月D-D号` 或 `M月D号-M月D号`，不含英文星期、配送标签、订单门槛、地址和 fastest delivery |
 | 包装规格 | 单行文本 | Amazon projection | Product information / Item details 的 `Number of Items`；缺失写 `没有包装规格` |
 | Buy Box卖家 | 单行文本 | Amazon projection | 当前 Buy Box 卖家 |
 | Buy Box价格 | 数字 | Amazon projection | 当前 Buy Box 价格 |
 | 优惠券 | 多行文本 | Amazon projection | 页面明确观察到的 coupon |
-| 促销活动记录 | 多行文本 | Amazon projection | 白名单 promotion 的当前快照，按北京时间换行覆盖；明确观察到空数组时写 `采集时间 | 当前没有促销活动` |
+| 促销活动记录 | 多行文本 | Amazon projection | 白名单 promotion 的当前快照；每条活动第一行写活动内容，第二行写北京时间 `M-D HH:mm` 并覆盖旧值；明确观察到空数组时写 `当前没有促销活动\nM-D HH:mm` |
 | BSR排名 | 多行文本 | Amazon projection | `#rank - category`，一行一个 |
 | 技术参数 | 多行文本 | Amazon projection | 排序后的稳定 JSON 文本 |
 | 页面ASIN | 单行文本 | Amazon projection | resolved ASIN，用于身份审计 |

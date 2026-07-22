@@ -2,7 +2,7 @@
 
 日期: 2026-07-14
 
-更新: 2026-07-21
+更新: 2026-07-22
 
 状态: 已批准，实施中
 
@@ -53,8 +53,8 @@
 
 - `包装规格` 只取 Product information → Item details 中 `Number of Items` 的可见值，不使用 `Unit Count`、变体标题或商品数量选择器替代；页面没有该字段或值为空时写固定文本 `没有包装规格`。
 - `送达日期` 只取当前 Featured Offer / Buy Box 主配送消息中以 `FREE delivery` 开头的可见文案。
-- Fact DB 保留已移除地址、邮编、`Or fastest delivery`、倒计时和账户文本的主配送文案；飞书 `送达日期` 再移除 `FREE delivery` 标签和订单门槛，仅写英文日期或日期范围。
-- 单日格式为 `Wednesday, July 22`，日期范围格式为 `August 3 - 18` 或 `July 29 - August 2`。例如 `FREE delivery on orders shipped by Amazon over $35 Wednesday, July 22` 写为 `Wednesday, July 22`。
+- Fact DB 保留已移除地址、邮编、`Or fastest delivery`、倒计时和账户文本的英文主配送文案；飞书 `送达日期` 再移除 `FREE delivery` 标签、订单门槛和英文星期，并将日期或日期范围转换为中文展示。
+- 单日格式为 `M月D号`，同月日期范围格式为 `M月D-D号`，跨月日期范围格式为 `M月D号-M月D号`。例如 `FREE delivery Saturday, July 25` 写为 `7月25号`，`FREE delivery July 25 - 26` 写为 `7月25-26号`，`FREE delivery July 29 - August 2` 写为 `7月29号-8月2号`。
 - 页面未观察到合格的 `FREE delivery` 文案，或净化后的文案无法提取日期时，不写 `送达日期`，保留飞书原值。
 
 ### 2.1 促销活动口径
@@ -64,8 +64,8 @@
 - `Save ... at checkout`、Prime Member Price、Exclusive Prime Price、Prime Day Deal、Subscribe & Save、数量折扣、条件购买折扣、普通降价、List Price、Typical Price、Regular Price 及无法明确归类的其他文案均不属于本业务的促销活动，不进入 `promotions[]` 或飞书 `促销活动记录`。
 - `coupon` 必须来自页面明确的 `Coupon` / `Apply ... coupon` / `Save ... with coupon` 可见文案，并保存百分比或固定金额折扣。飞书折后价以同一 Featured Offer 当前价格为基数计算：百分比 Coupon 使用 `price * (1 - discount / 100)`，固定金额 Coupon 使用 `price - discount`，结果按美元四舍五入保留两位小数且不得小于 0。
 - `limited_time_deal` 必须存在明确的 `Limited time deal` 英文活动标志；只保存活动标志和该报价区的页面活动价，不保存页面折扣百分比或 List/Typical/Regular Price 等对比价。
-- 每条活动的采集时间统一使用父 capture 的 `captured_at`。飞书展示时转换为北京时间 `YYYY-MM-DD HH:mm:ss`。
-- 飞书 `促销活动记录` 每次写入当前采集快照并覆盖旧值，不做历史追加。输出格式分别为 `采集时间 | coupon | 折扣 | 折后价` 和 `采集时间 | Limited time deal | 活动价`；本次明确观察到无白名单促销时写入 `采集时间 | 当前没有促销活动`，覆盖旧促销记录。
+- 每条活动的采集时间统一使用父 capture 的 `captured_at`。飞书展示时转换为北京时间 `M-D HH:mm`，不显示年份和秒。
+- 飞书 `促销活动记录` 每次写入当前采集快照并覆盖旧值，不做历史追加。每条活动使用连续两行展示：第一行是 `coupon | 折扣 | 折后价` 或 `Limited time deal | 活动价`，第二行是采集时间；多条活动连续写入各自的两行区块，不插入空行。本次明确观察到无白名单促销时写入第一行 `当前没有促销活动`、第二行采集时间，并覆盖旧促销记录。例如 Coupon 写为 `coupon | 10% | $35.99\n7-20 07:08`。
 - 促销原始文案只能来自当前报价区的可见语义文本；`script`、`style`、隐藏兑换参数、token、Cookie 或账户/地址文本不得进入 capture、Fact DB、飞书、日志或通知。
 - `coupon_text` 作为旧投影的精简兼容字段保留；完整促销事实以结构化 `promotions[]` 为准，其时间统一绑定父 capture 的 `captured_at`。
 
@@ -131,10 +131,10 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 8. 无白名单促销页面返回空数组；结账折扣、Prime 会员价、Prime Day Deal、Subscribe & Save、数量/条件购买折扣、普通划线价、促销解释文本、Prime 配送宣传和页面导航不得误判为促销。
 9. 结构化促销不得含有隐藏脚本、样式、兑换 URL/参数、token、Cookie 或其他敏感内容。
 10. revision 1 的历史文本促销仍可由持久化边界读取；revision 2 及后续 capture 只产生结构化促销对象。revision 4 新 capture 必须按 `colorImages.initial` 绑定高清图库；revision 3 仍可读取，但只有重新采集后才具备高清资产 ID 保证。revision 5 新 capture 新增可选 `commerce.bought_past_month` 文本及对应字段证据，revision 1–4 继续兼容读取且无需重写。
-11. Coupon 写回值包含北京时间、英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价；Limited Time Deal 写回值只包含北京时间、英文类型和页面活动价。
-12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时写入 `采集时间 | 当前没有促销活动`，覆盖旧值且不追加历史记录；只有证据状态为 `missing` 时保留旧值。
+11. Coupon 写回第一行包含英文类型、折扣和以当前 Featured Offer 价格计算的两位小数折后价，第二行包含北京时间 `M-D HH:mm`；Limited Time Deal 第一行只包含英文类型和页面活动价，第二行使用相同时间格式。
+12. `促销活动记录` 使用覆盖写入；本次明确观察到空数组时写入 `当前没有促销活动\nM-D HH:mm`，覆盖旧值且不追加历史记录；只有证据状态为 `missing` 时保留旧值。
 13. Product information → Item details 中 `Number of Items=1` 时写回 `包装规格=1`；字段缺失时写回 `包装规格=没有包装规格`。
-14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `August 6 - 19`；两者均不包含地址或次级配送文案。
+14. Buy Box 同时出现 `FREE delivery August 6 - 19 to Los Angeles 90001` 和 `Or fastest delivery August 6 - 17` 时，capture 保留 `FREE delivery August 6 - 19`，飞书 `送达日期` 只写 `8月6-19号`；两者均不包含地址或次级配送文案。
 15. Amazon `#altImages` 中明确观察到的有效图库项，必须按 `ImageBlockATF.colorImages.initial` 的同项 `hiRes` 映射和页面顺序上传到同一条飞书记录的 `侧边栏图片` 附件字段；缩略图资产 ID 与高清资产 ID 不同时必须使用高清资产，并覆盖该字段旧附件。
 16. 任意 Amazon 单行或批量终态写入发送给飞书的字段集合必须是 `主图`、`侧边栏图片`、`30天购买人数`、`送达日期`、`包装规格`、`促销活动记录` 的子集；状态、错误、标题、品牌、价格及其他商品字段不得写入。
 17. Amazon 指令只能由 `amazon-ops` workspace 中的 `mujitask-amazon-feishu-sync` 接收；受理回执和最终通知的 `reply_target.accountId` 必须等于部署配置 `MUJITASK_AMAZON_FEISHU_ACCOUNT_ID`，不得在代码中固定本地账号别名，也不得使用 TikTok workspace。

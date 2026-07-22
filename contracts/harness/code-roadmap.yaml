@@ -1531,3 +1531,64 @@ features:
       - Amazon Fact persistence records the observed display value in amazon_product_snapshots.payload_json without a schema migration.
       - Single-row and batch row persistence share the same six-field Feishu allowlist, including 30天购买人数.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
+  - feature_code: amazon_feishu_projection_display_format
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/amazon/projections/feishu_product_projection.py
+      - tests/test_amazon_product_contracts.py
+      - tests/test_feishu_amazon_product_mapping.py
+      - tests/test_runtime_amazon_product_business_e2e.py
+    source_contracts:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - contracts/fields/feishu-amazon-products.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/domains/amazon/projections/feishu_product_projection.py
+      - tests/test_amazon_product_contracts.py
+      - tests/test_feishu_amazon_product_mapping.py
+      - tests/test_amazon_product_row_persist.py
+      - tests/test_runtime_amazon_product_ingest.py
+      - tests/test_runtime_amazon_product_business_e2e.py
+      - tests/test_harness_code_roadmap.py
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/capabilities/browser/**
+      - src/automation_business_scaffold/capabilities/persistence/**
+      - src/automation_business_scaffold/infrastructure/schemas/**
+    done_gate:
+      tests:
+        - tests/test_amazon_product_contracts.py
+        - tests/test_feishu_amazon_product_mapping.py
+        - tests/test_amazon_product_row_persist.py
+        - tests/test_runtime_amazon_product_ingest.py
+        - tests/test_runtime_amazon_product_business_e2e.py
+        - tests/test_harness_code_roadmap.py
+      commands:
+        - uv run --extra dev pytest tests/test_amazon_product_contracts.py tests/test_feishu_amazon_product_mapping.py
+        - uv run --extra dev pytest tests/test_amazon_product_row_persist.py tests/test_runtime_amazon_product_ingest.py tests/test_runtime_amazon_product_business_e2e.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py
+    completion_rules:
+      - Feishu promotion content is written on the first line and the Asia/Shanghai captured_at timestamp is written on the second line as M-D HH:mm; calculation, allowlist, and overwrite semantics remain unchanged.
+      - Feishu delivery dates are localized as M月D号, M月D-D号, or M月D号-M月D号 while normalized capture and Fact data keep the source English delivery text.
+      - Missing or unparseable delivery evidence preserves the existing Feishu value, and missing promotion evidence preserves the existing promotion snapshot.
+      - Keyword counts and category ranking writeback are outside this bounded change.
+      - No Runtime DB or Fact DB schema migration is introduced.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
