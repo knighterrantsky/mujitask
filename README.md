@@ -284,7 +284,7 @@ uv run --extra dev pytest
 `automation-framework` 由 `pyproject.toml` 管理：
 
 ```toml
-automation-framework[captcha] @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.8
+automation-framework[captcha] @ git+https://github.com/knighterrantsky/automation-framework.git@v0.3.10
 ```
 
 升级 framework 时：
