@@ -81,6 +81,20 @@ _DELIVERY_DATE_PATTERN = re.compile(
     r"(?P<end_day>\d{1,2})(?:st|nd|rd|th)?)?\b",
     re.IGNORECASE,
 )
+_ENGLISH_MONTHS = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
 _OFFER_PROJECTION_FIELDS = {
     "commerce.featured_offer.price_amount": "当前价格",
     "commerce.featured_offer.list_price_amount": "原价",
@@ -309,19 +323,19 @@ def _delivery_date_text(value: Any) -> str:
     if match is None:
         return ""
 
-    weekday = match.group("weekday")
-    start_month = match.group("start_month").title()
-    start_day = str(int(match.group("start_day")))
-    result = f"{start_month} {start_day}"
-    if weekday:
-        result = f"{weekday.title()}, {result}"
+    start_month = _ENGLISH_MONTHS.index(match.group("start_month").lower()) + 1
+    start_day = int(match.group("start_day"))
 
     end_day = match.group("end_day")
-    if end_day:
-        end_month = match.group("end_month")
-        end = f"{end_month.title()} " if end_month else ""
-        result = f"{result} - {end}{int(end_day)}"
-    return result
+    if not end_day:
+        return f"{start_month}月{start_day}号"
+
+    end_month_name = match.group("end_month")
+    if not end_month_name:
+        return f"{start_month}月{start_day}-{int(end_day)}号"
+
+    end_month = _ENGLISH_MONTHS.index(end_month_name.lower()) + 1
+    return f"{start_month}月{start_day}号-{end_month}月{int(end_day)}号"
 
 
 def _project_fulfillment(
@@ -550,7 +564,7 @@ def _promotion_summary(
         return ""
     values = value if isinstance(value, (list, tuple)) else [value]
     if not values:
-        return f"{timestamp} | 当前没有促销活动"
+        return f"当前没有促销活动\n{timestamp}"
     lines: list[str] = []
     for item in values:
         if not isinstance(item, Mapping):
@@ -564,12 +578,12 @@ def _promotion_summary(
             calculated_price = _coupon_calculated_price(current_price, item)
             if not discount or calculated_price is None:
                 continue
-            line = f"{timestamp} | coupon | {discount} | ${calculated_price:.2f}"
+            line = f"coupon | {discount} | ${calculated_price:.2f}\n{timestamp}"
         elif promotion_type == "limited_time_deal":
             deal_price = _decimal_value(item.get("deal_price"))
             if deal_price is None:
                 continue
-            line = f"{timestamp} | Limited time deal | ${deal_price:.2f}"
+            line = f"Limited time deal | ${deal_price:.2f}\n{timestamp}"
         else:
             continue
         if line not in lines:
@@ -587,7 +601,8 @@ def _promotion_timestamp(value: Any) -> str:
         return ""
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    localized = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+    return f"{localized.month}-{localized.day} {localized.strftime('%H:%M')}"
 
 
 def _promotion_discount_text(item: Mapping[str, Any]) -> str:

@@ -423,13 +423,13 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
     }
     assert fields["卖家"] == "Structured Seller"
     assert fields["配送方式"] == "Amazon | FREE delivery Friday, July 17"
-    assert fields["送达日期"] == "Friday, July 17"
+    assert fields["送达日期"] == "7月17号"
     assert fields["包装规格"] == "没有包装规格"
     assert fields["Buy Box卖家"] == "Structured Seller"
     assert fields["Buy Box价格"] == 29.99
     assert fields["优惠券"] == "Save 10% with coupon"
     assert fields["促销活动记录"] == (
-        "2026-07-14 16:00:00 | coupon | 10% | $26.99"
+        "coupon | 10% | $26.99\n7-14 16:00"
     )
     assert fields["BSR排名"] == (
         "#7 - Home & Kitchen > Lighting > Table Lamps\n"
@@ -473,6 +473,17 @@ def test_projection_uses_number_of_items_for_packaging_specification() -> None:
     assert fields["包装规格"] == "2"
 
 
+def test_projection_places_beijing_promotion_timestamp_on_second_line() -> None:
+    record = _projection_record()
+    record["projection_facts"]["captured_at"] = "2026-07-19T23:08:00Z"
+
+    fields = amazon_product_projection_mapper(record, {})["fields"]
+
+    assert fields["促销活动记录"] == (
+        "coupon | 10% | $26.99\n7-20 07:08"
+    )
+
+
 def test_projection_formats_fixed_amount_coupon_with_calculated_price() -> None:
     capture = _capture()
     offer = capture["commerce"]["featured_offer"]
@@ -498,7 +509,7 @@ def test_projection_formats_fixed_amount_coupon_with_calculated_price() -> None:
     fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
 
     assert fields["促销活动记录"] == (
-        "2026-07-14 16:00:00 | coupon | $10 | $19.99"
+        "coupon | $10 | $19.99\n7-14 16:00"
     )
 
 
@@ -527,7 +538,7 @@ def test_projection_formats_limited_time_deal_without_discount_or_reference_pric
     fields = amazon_product_projection_mapper(_projection_record(capture), {})["fields"]
 
     assert fields["促销活动记录"] == (
-        "2026-07-14 16:00:00 | Limited time deal | $26.99"
+        "Limited time deal | $26.99\n7-14 16:00"
     )
 
 
@@ -545,7 +556,7 @@ def test_projection_writes_dated_no_promotion_snapshot_for_observed_empty_promot
     command = amazon_product_projection_mapper(_projection_record(capture), {})
 
     assert command["fields"]["促销活动记录"] == (
-        "2026-07-14 16:00:00 | 当前没有促销活动"
+        "当前没有促销活动\n7-14 16:00"
     )
     assert "促销活动记录" not in command["clear_fields"]
 
@@ -669,12 +680,12 @@ def test_composite_projection_omits_entire_field_when_any_component_is_missing()
     [
         (
             "FREE delivery on orders shipped by Amazon over $35 Wednesday, July 22",
-            "Wednesday, July 22",
+            "7月22号",
         ),
-        ("FREE delivery Thursday July 23", "Thursday, July 23"),
-        ("FREE delivery August 3 - 18", "August 3 - 18"),
-        ("FREE delivery July 29 - August 2", "July 29 - August 2"),
-        ("FREE delivery Saturday, July 25", "Saturday, July 25"),
+        ("FREE delivery Thursday July 23", "7月23号"),
+        ("FREE delivery August 3 - 18", "8月3-18号"),
+        ("FREE delivery July 29 - August 2", "7月29号-8月2号"),
+        ("FREE delivery Saturday, July 25", "7月25号"),
     ],
 )
 def test_delivery_date_projection_writes_only_date_or_range(
@@ -974,9 +985,9 @@ def test_feishu_write_only_transports_six_active_amazon_projection_fields(
         {"file_token": "new-asset-2.jpg"},
     ]
     assert set(written["fields"]) == set(AMAZON_PRODUCT_FEISHU_WRITE_FIELDS)
-    assert written["fields"]["送达日期"] == "Friday, July 17"
+    assert written["fields"]["送达日期"] == "7月17号"
     assert written["fields"]["30天购买人数"] == "500+"
     assert written["fields"]["包装规格"] == "没有包装规格"
     assert written["fields"]["促销活动记录"] == (
-        "2026-07-14 16:00:00 | coupon | 10% | $26.99"
+        "coupon | 10% | $26.99\n7-14 16:00"
     )

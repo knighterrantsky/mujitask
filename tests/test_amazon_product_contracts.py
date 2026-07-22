@@ -272,6 +272,16 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     assert fields["侧边栏图片"]["media_resolution"] == (
         "amazon_gallery_item_bound_hires_original_resource"
     )
+    assert fields["送达日期"]["value_policy"] == {
+        "input": "free_delivery_primary_message_without_destination_or_fastest_delivery",
+        "output": "chinese_date_or_date_range_only",
+        "weekday": "omit",
+        "single_date_format": "M月D号",
+        "same_month_range_format": "M月D-D号",
+        "cross_month_range_format": "M月D号-M月D号",
+        "strip_before_projection": ["free_delivery_label", "order_threshold"],
+        "unparseable_observed_value": "preserve_existing",
+    }
     promotion_field = fields["促销活动记录"]
     assert promotion_field["write_policy"] == "overwrite_current_snapshot"
     assert promotion_field["allowed_promotion_types"] == [
@@ -280,10 +290,12 @@ def test_feishu_field_and_state_ownership_is_explicit() -> None:
     ]
     assert promotion_field["value_policy"] == {
         "timestamp_timezone": "Asia/Shanghai",
-        "timestamp_format": "%Y-%m-%d %H:%M:%S",
-        "coupon": "采集时间 | coupon | 折扣 | 折后价",
-        "limited_time_deal": "采集时间 | Limited time deal | 活动价",
-        "no_promotion": "采集时间 | 当前没有促销活动",
+        "timestamp_format": "M-D HH:mm",
+        "timestamp_position": "second_line",
+        "coupon": "coupon | 折扣 | 折后价\n采集时间",
+        "limited_time_deal": "Limited time deal | 活动价\n采集时间",
+        "no_promotion": "当前没有促销活动\n采集时间",
+        "multiple_promotions": "consecutive_two_line_blocks_without_blank_lines",
         "coupon_price_basis": "commerce.featured_offer.price_amount",
         "coupon_rounding": "usd_half_up_2_decimals",
         "limited_time_deal_price_basis": "promotion.deal_price",
@@ -595,8 +607,15 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
                 },
                 "projection_field": "促销活动记录",
                 "projection_write_policy": "overwrite_current_snapshot",
-                "projection_empty_observation": "write_timestamped_no_promotion_snapshot",
+                "projection_empty_observation": (
+                    "write_content_then_timestamp_no_promotion_snapshot"
+                ),
                 "projection_timestamp_timezone": "Asia/Shanghai",
+                "projection_timestamp_format": "M-D HH:mm",
+                "projection_timestamp_position": "second_line",
+                "projection_multiple_promotions": (
+                    "consecutive_two_line_blocks_without_blank_lines"
+                ),
                 "coupon_calculated_price_source": ("commerce.featured_offer.price_amount"),
             },
             "product.technical_details.Number of Items": {
@@ -613,7 +632,11 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
                 "required_prefix": "FREE delivery",
                 "source": "featured_offer_primary_delivery_message",
                 "projection_field": "送达日期",
-                "projection_format": "english_date_or_date_range_only",
+                "projection_format": "chinese_date_or_date_range_only",
+                "single_date_format": "M月D号",
+                "same_month_range_format": "M月D-D号",
+                "cross_month_range_format": "M月D号-M月D号",
+                "weekday": "omit",
                 "strip_segments": [
                     "free_delivery_label",
                     "order_threshold",

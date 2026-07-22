@@ -578,11 +578,12 @@ def test_real_amazon_runtime_success_chain_persists_writes_back_and_replays_idem
         {"file_token": "feishu-3"},
     ]
     assert written_fields["30天购买人数"] == "500+"
-    assert written_fields["送达日期"] == "Friday, July 17"
+    assert written_fields["送达日期"] == "7月17号"
     assert written_fields["包装规格"] == "没有包装规格"
-    assert written_fields["促销活动记录"].endswith(
-        " | coupon | 10% | $26.99"
+    assert written_fields["促销活动记录"].splitlines()[0] == (
+        "coupon | 10% | $26.99"
     )
+    assert len(written_fields["促销活动记录"].splitlines()) == 2
 
     assert _fact_counts(runtime_db_url) == SUCCESS_FACT_COUNTS
     product = _fact_row(
