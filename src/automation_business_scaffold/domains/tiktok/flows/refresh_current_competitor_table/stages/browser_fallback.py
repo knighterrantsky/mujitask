@@ -32,40 +32,65 @@ def _advance_browser_fallback(
             "details": {"fallback_row_count": 0},
         }
 
-    dispatch_candidates = _fallback_candidates_needing_dispatch(
+    if _any_browser_executions_active(executions):
+        return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
+
+    requeued_jobs = _requeue_competitor_rows_after_browser(
+        store=store,
+        stage_code="collect_product_data",
         fallback_candidates=fallback_candidates,
         executions=executions,
     )
+    if requeued_jobs:
+        _update_request_cursor(
+            store=store,
+            request=request,
+            stage_code=stage_code,
+            payload={
+                "execution_count": len(executions),
+                "requeued_row_count": len(requeued_jobs),
+                "status": "success",
+            },
+        )
+        return _waiting(
+            stage_code="collect_product_data",
+            message="Requeued competitor row refresh after browser fallback.",
+            details={
+                "requeued_row_count": len(requeued_jobs),
+            },
+        )
+
+    dispatch_candidates = _fallback_candidates_needing_dispatch(
+        fallback_candidates=fallback_candidates,
+        executions=executions,
+    )[:1]
     if dispatch_candidates:
-        dispatches: dict[str, Any] = {}
-        for fallback_handler in sorted(
-            {str(candidate.get("fallback_handler") or "") for candidate in dispatch_candidates}
-        ):
-            if not fallback_handler:
-                continue
+        candidate = dispatch_candidates[0]
+        fallback_handler = str(candidate.get("fallback_handler") or "")
+        if fallback_handler:
             job_def = workflow.require_job(fallback_handler)
-            items: list[dict[str, Any]] = []
-            for candidate in dispatch_candidates:
-                if str(candidate.get("fallback_handler") or "") != fallback_handler:
-                    continue
-                payload = _browser_execution_payload(
-                    request=request,
-                    workflow=workflow,
-                    stage_code=stage_code,
-                    candidate=candidate,
-                )
-                keys = render_job_keys(
-                    job_def,
-                    request.payload,
-                    candidate,
-                    payload,
-                    request_id=request.request_id,
-                    task_code=request.task_code,
-                    workflow_code=workflow.workflow_code,
-                    stage_code=stage_code,
-                    item_code=job_def.job_code,
-                )
-                items.append(
+            payload = _browser_execution_payload(
+                request=request,
+                workflow=workflow,
+                stage_code=stage_code,
+                candidate=candidate,
+            )
+            keys = render_job_keys(
+                job_def,
+                request.payload,
+                candidate,
+                payload,
+                request_id=request.request_id,
+                task_code=request.task_code,
+                workflow_code=workflow.workflow_code,
+                stage_code=stage_code,
+                item_code=job_def.job_code,
+            )
+            dispatch = store.enqueue_task_executions(
+                request_id=request.request_id,
+                item_code=job_def.job_code,
+                workflow_code=workflow.workflow_code,
+                items=[
                     {
                         "business_key": keys["business_key"]
                         or str(candidate.get("business_entity_key") or ""),
@@ -82,59 +107,34 @@ def _advance_browser_fallback(
                         "payload": payload,
                         "max_execution_seconds": _timeout_seconds(workflow, job_def.job_code),
                     }
-                )
-            if not items:
-                continue
-            dispatches[fallback_handler] = store.enqueue_task_executions(
-                request_id=request.request_id,
-                item_code=job_def.job_code,
-                workflow_code=workflow.workflow_code,
-                items=items,
+                ],
             )
-        _update_request_cursor(
-            store=store,
-            request=request,
-            stage_code=stage_code,
-            payload={
-                "browser_dispatches": dispatches,
-                "fallback_row_count": len(fallback_candidates),
-                "dispatch_row_count": len(dispatch_candidates),
-            },
-        )
-        return _waiting(
-            stage_code=stage_code,
-            message="Enqueued browser fallback executions.",
-            details={
-                "created_count": sum(int(dispatch.get("created_count") or 0) for dispatch in dispatches.values())
-            },
-        )
+            _update_request_cursor(
+                store=store,
+                request=request,
+                stage_code=stage_code,
+                payload={
+                    "browser_dispatch": dispatch,
+                    "fallback_row_count": len(fallback_candidates),
+                    "dispatch_row_count": 1,
+                },
+            )
+            return _waiting(
+                stage_code=stage_code,
+                message="Enqueued browser fallback execution.",
+                details={"created_count": int(dispatch.get("created_count") or 0)},
+            )
 
-    if _any_browser_executions_active(executions):
-        return _waiting(stage_code=stage_code, message="Waiting for browser fallback executions to finish.")
-    requeued_jobs = _requeue_competitor_rows_after_browser(
-        store=store,
-        stage_code="collect_product_data",
-        fallback_candidates=fallback_candidates,
-        executions=executions,
-    )
     _update_request_cursor(
         store=store,
         request=request,
         stage_code=stage_code,
         payload={
             "execution_count": len(executions),
-            "requeued_row_count": len(requeued_jobs),
-            "status": "success" if requeued_jobs else "failed",
+            "requeued_row_count": 0,
+            "status": "failed" if fallback_candidates else "success",
         },
     )
-    if requeued_jobs:
-        return _waiting(
-            stage_code="collect_product_data",
-            message="Requeued competitor row refresh after browser fallback.",
-            details={
-                "requeued_row_count": len(requeued_jobs),
-            },
-        )
     return {
         "action": "advance",
         "next_stage": "collect_product_data",
@@ -175,7 +175,6 @@ def _requeue_competitor_rows_after_browser(
     fallback_candidates: list[dict[str, Any]],
     executions: list[Any],
 ) -> list[dict[str, Any]]:
-    requeued: list[dict[str, Any]] = []
     terminal_by_key: dict[str, Any] = {}
     for execution in executions:
         if str(getattr(execution, "status", "") or "") not in {"finished", "cancelled"}:
@@ -188,7 +187,7 @@ def _requeue_competitor_rows_after_browser(
         execution = terminal_by_key.get(str(candidate.get("fallback_key") or ""))
         if execution is None:
             continue
-        requeued.append(
+        return [
             store.requeue_waiting_api_worker_job(
                 job_id=str(candidate.get("row_job_id") or ""),
                 payload=_after_browser_row_payload(
@@ -201,9 +200,9 @@ def _requeue_competitor_rows_after_browser(
                     },
                 ),
                 stage=stage_code,
-            )
-        )
-    return requeued
+            ),
+        ]
+    return []
 
 
 def advance(*, store: Any, request: Any, workflow: Any) -> dict[str, Any]:

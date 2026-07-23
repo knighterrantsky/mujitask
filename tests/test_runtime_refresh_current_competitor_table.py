@@ -15,7 +15,10 @@ from automation_business_scaffold.domains.tiktok.projections.outbox_message_proj
     build_tiktok_outbox_message_text as build_outbox_message_text,
 )
 from automation_business_scaffold.domains.tiktok.workflows import get_workflow_definition
-from automation_business_scaffold.infrastructure.runtime.runtime_records import RuntimeTaskRequestRecord
+from automation_business_scaffold.infrastructure.runtime.runtime_records import (
+    RuntimeTaskExecutionRecord,
+    RuntimeTaskRequestRecord,
+)
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
 
 REFRESH_TASK_CODE = "refresh_current_competitor_table"
@@ -410,6 +413,312 @@ def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_d
     assert row_result["row_status"] == "success"
     assert row_result["tiktok_status"] == "success"
     assert row_result["writeback_status"] == "success"
+
+
+def test_refresh_runtime_dispatches_next_row_only_after_current_row_is_terminal(
+    runtime_db_url: str,
+) -> None:
+    store, request, workflow = _submit_refresh_request(runtime_db_url)
+
+    advance_stage(store=store, request=request, workflow=workflow, stage_code="read_competitor_rows")
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="read_competitor_rows",
+        job_code="feishu_table_read",
+        summary={"rows": 2},
+        result={
+            "source_rows": [
+                {
+                    "source_record_id": "row-1",
+                    "product_id": PRODUCT_ID,
+                    "product_url": PRODUCT_URL,
+                },
+                {
+                    "source_record_id": "row-2",
+                    "product_id": "987654321",
+                    "product_url": "https://www.tiktok.com/shop/pdp/987654321",
+                },
+            ]
+        },
+    )
+
+    request = store.load_task_request(request_id=request.request_id)
+    dispatch = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="dispatch_product_collection",
+    )
+    assert dispatch["details"]["row_refresh_created_count"] == 1
+    row_jobs = store.list_api_worker_jobs_for_request(
+        request_id=request.request_id,
+        job_code="competitor_row_refresh",
+    )
+    assert [job["payload"]["source_record_id"] for job in row_jobs] == ["row-1"]
+
+    request = store.load_task_request(request_id=request.request_id)
+    active_wait = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="collect_product_data",
+    )
+    assert active_wait["action"] == "waiting"
+    assert len(
+        store.list_api_worker_jobs_for_request(
+            request_id=request.request_id,
+            job_code="competitor_row_refresh",
+        )
+    ) == 1
+
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
+        summary={"row_status": "success"},
+        result={"row_status": "success"},
+    )
+    request = store.load_task_request(request_id=request.request_id)
+    next_row_wait = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code="collect_product_data",
+    )
+    assert next_row_wait["action"] == "waiting"
+    assert next_row_wait["details"]["created_count"] == 1
+    row_jobs = store.list_api_worker_jobs_for_request(
+        request_id=request.request_id,
+        job_code="competitor_row_refresh",
+    )
+    assert [job["payload"]["source_record_id"] for job in row_jobs] == ["row-1", "row-2"]
+
+
+def test_refresh_runtime_collect_routes_legacy_fallback_before_active_jobs() -> None:
+    request = RuntimeTaskRequestRecord(
+        request_id="req-legacy-mixed",
+        project_code="automation-business-scaffold",
+        task_code=REFRESH_TASK_CODE,
+        status="running",
+        current_stage="collect_product_data",
+        payload={"source_table_ref": SOURCE_TABLE_REF},
+    )
+
+    class LegacyMixedStore:
+        def __init__(self) -> None:
+            def active_job(job_id: str, status: str) -> dict:
+                return {
+                    "job_id": job_id,
+                    "job_code": "competitor_row_refresh",
+                    "status": status,
+                    "payload": {
+                        "stage_code": "collect_product_data",
+                        "source_record_id": job_id,
+                    },
+                }
+
+            self.jobs = [
+                {
+                    "job_id": "job-fallback",
+                    "job_code": "competitor_row_refresh",
+                    "business_key": "row-fallback",
+                    "status": "waiting",
+                    "payload": {
+                        "stage_code": "collect_product_data",
+                        "source_record_id": "row-fallback",
+                        "product_identity": {
+                            "product_id": PRODUCT_ID,
+                            "normalized_product_url": PRODUCT_URL,
+                        },
+                    },
+                    "result": {
+                        "handler_result": {
+                            "status": "fallback_required",
+                            "result": {
+                                "source_record_id": "row-fallback",
+                                "business_entity_key": "row-fallback",
+                                "fallback_required": True,
+                                "fallback_handler": "tiktok_product_browser_fetch",
+                                "fallback_reason": "request_blocked",
+                                "browser_fallback_payload": {
+                                    "normalized_product_url": PRODUCT_URL,
+                                },
+                            },
+                        }
+                    },
+                },
+                active_job("job-pending", "pending"),
+                active_job("job-running", "running"),
+            ]
+
+        def list_api_worker_jobs_for_request(
+            self,
+            *,
+            request_id: str,
+            job_code: str = "",
+        ) -> list[dict]:
+            assert request_id == request.request_id
+            assert not job_code
+            return self.jobs
+
+        def update_task_request(self, *, request_id: str, **updates: object) -> None:
+            assert request_id == request.request_id
+            assert updates
+
+    result = advance_stage(
+        store=LegacyMixedStore(),
+        request=request,
+        workflow=get_workflow_definition(REFRESH_TASK_CODE),
+        stage_code="collect_product_data",
+    )
+
+    assert result["action"] == "advance"
+    assert result["next_stage"] == "browser_fallback"
+    assert result["details"]["fallback_candidate_count"] == 1
+
+
+def test_refresh_runtime_browser_fallback_requeues_one_legacy_terminal_row_at_a_time() -> None:
+    request = RuntimeTaskRequestRecord(
+        request_id="req-legacy-terminal-fallbacks",
+        project_code="automation-business-scaffold",
+        task_code=REFRESH_TASK_CODE,
+        status="running",
+        current_stage="browser_fallback",
+        payload={"source_table_ref": SOURCE_TABLE_REF},
+    )
+
+    def waiting_row_job(source_record_id: str) -> dict:
+        return {
+            "job_id": f"job-{source_record_id}",
+            "job_code": "competitor_row_refresh",
+            "business_key": source_record_id,
+            "status": "waiting",
+            "payload": {
+                "stage_code": "collect_product_data",
+                "source_record_id": source_record_id,
+                "product_identity": {
+                    "product_id": source_record_id,
+                    "normalized_product_url": f"https://www.tiktok.com/shop/pdp/{source_record_id}",
+                },
+            },
+            "result": {
+                "handler_result": {
+                    "status": "fallback_required",
+                    "result": {
+                        "source_record_id": source_record_id,
+                        "business_entity_key": source_record_id,
+                        "fallback_required": True,
+                        "fallback_handler": "tiktok_product_browser_fetch",
+                        "fallback_reason": "request_blocked",
+                        "browser_fallback_payload": {
+                            "normalized_product_url": f"https://www.tiktok.com/shop/pdp/{source_record_id}",
+                        },
+                    },
+                }
+            },
+        }
+
+    def terminal_execution(source_record_id: str, queue_seq: int) -> RuntimeTaskExecutionRecord:
+        return RuntimeTaskExecutionRecord(
+            execution_id=f"exec-{source_record_id}",
+            request_id=request.request_id,
+            item_code="tiktok_product_browser_fetch",
+            workflow_code=REFRESH_TASK_CODE,
+            business_key=source_record_id,
+            dedupe_key=f"{request.request_id}:browser_fallback:{source_record_id}",
+            resource_code="browser:tiktok_product",
+            status="finished",
+            result_status="success",
+            queue_seq=queue_seq,
+            payload={
+                "stage_code": "browser_fallback",
+                "source_record_id": source_record_id,
+                "fallback_handler": "tiktok_product_browser_fetch",
+            },
+            result={
+                "handler_result": {
+                    "status": "success",
+                    "result": {
+                        "normalized_product_result": {
+                            "product_id": source_record_id,
+                            "source": "browser",
+                        }
+                    },
+                }
+            },
+        )
+
+    class LegacyTerminalFallbackStore:
+        def __init__(self) -> None:
+            source_rows = [
+                {
+                    "source_record_id": source_record_id,
+                    "product_id": source_record_id,
+                    "product_url": f"https://www.tiktok.com/shop/pdp/{source_record_id}",
+                }
+                for source_record_id in ("row-1", "row-2")
+            ]
+            self.jobs = [
+                {
+                    "job_id": "job-read",
+                    "job_code": "feishu_table_read",
+                    "status": "finished",
+                    "result_status": "success",
+                    "payload": {"stage_code": "read_competitor_rows"},
+                    "result": {"source_rows": source_rows},
+                },
+                *(waiting_row_job(source_record_id) for source_record_id in ("row-1", "row-2")),
+            ]
+            self.executions = [
+                terminal_execution(source_record_id, queue_seq)
+                for queue_seq, source_record_id in enumerate(("row-1", "row-2"), start=1)
+            ]
+            self.requeued_job_ids: list[str] = []
+
+        def list_api_worker_jobs_for_request(
+            self,
+            *,
+            request_id: str,
+            job_code: str = "",
+        ) -> list[dict]:
+            assert request_id == request.request_id
+            assert not job_code
+            return self.jobs
+
+        def list_task_executions(self, *, request_id: str) -> list[RuntimeTaskExecutionRecord]:
+            assert request_id == request.request_id
+            return self.executions
+
+        def requeue_waiting_api_worker_job(
+            self,
+            *,
+            job_id: str,
+            payload: dict,
+            stage: str,
+        ) -> dict:
+            assert payload["browser_fallback_resolved"] is True
+            assert stage == "collect_product_data"
+            self.requeued_job_ids.append(job_id)
+            return {"job_id": job_id, "status": "pending", "payload": payload}
+
+        def update_task_request(self, *, request_id: str, **updates: object) -> None:
+            assert request_id == request.request_id
+            assert updates
+
+    store = LegacyTerminalFallbackStore()
+    result = advance_stage(
+        store=store,
+        request=request,
+        workflow=get_workflow_definition(REFRESH_TASK_CODE),
+        stage_code="browser_fallback",
+    )
+
+    assert result["action"] == "waiting"
+    assert result["current_stage"] == "collect_product_data"
+    assert result["details"]["requeued_row_count"] == 1
+    assert store.requeued_job_ids == ["job-row-1"]
 
 
 def test_refresh_runtime_read_stage_deletes_rows_with_all_fields_empty(runtime_db_url: str) -> None:

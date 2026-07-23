@@ -105,23 +105,28 @@ def _stage_jobs(
     return jobs
 
 
-def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode: str) -> None:
+def _bind_refresh_api_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    request_mode: str,
+    source_rows: list[dict[str, object]] | None = None,
+    fallback_source_record_ids: set[str] | None = None,
+) -> None:
     registry = build_api_handler_registry()
+    source_rows = source_rows or [
+        {
+            "source_record_id": SOURCE_RECORD_ID,
+            "product_id": PRODUCT_ID,
+            "product_url": PRODUCT_URL,
+        }
+    ]
 
     def fake_feishu_table_read(context: HandlerContext) -> HandlerResult:
         _emit_progress(context, "feishu_table_read")
         return HandlerResult.success(
             context,
-            summary={"rows": 1},
-            result={
-                "source_rows": [
-                    {
-                        "source_record_id": SOURCE_RECORD_ID,
-                        "product_id": PRODUCT_ID,
-                        "product_url": PRODUCT_URL,
-                    }
-                ]
-            },
+            summary={"rows": len(source_rows)},
+            result={"source_rows": source_rows},
         )
 
     def fake_tiktok_product_request_fetch(context: HandlerContext) -> HandlerResult:
@@ -133,7 +138,17 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
                 summary={"transport": "browser_after_fallback"},
                 result={"normalized_product_result": normalized},
             )
-        if request_mode == "fallback":
+        source_record_id = str(context.payload.get("source_record_id") or "")
+        product_identity = dict(context.payload.get("product_identity") or {})
+        product_id = str(product_identity.get("product_id") or PRODUCT_ID)
+        product_url = str(
+            product_identity.get("normalized_product_url")
+            or product_identity.get("product_url")
+            or PRODUCT_URL
+        )
+        if request_mode == "fallback" and (
+            fallback_source_record_ids is None or source_record_id in fallback_source_record_ids
+        ):
             _emit_progress(context, "tiktok_request_blocked")
             error = HandlerError(
                 error_type="transport",
@@ -154,7 +169,7 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
                 next_action=HandlerNextAction(
                     type="browser_fallback",
                     payload={
-                        "product_identity": {"product_id": PRODUCT_ID, "product_url": PRODUCT_URL},
+                        "product_identity": {"product_id": product_id, "product_url": product_url},
                     },
                 ),
             )
@@ -165,8 +180,8 @@ def _bind_refresh_api_handlers(monkeypatch: pytest.MonkeyPatch, *, request_mode:
             summary={"transport": "request"},
             result={
                 "normalized_product_result": {
-                    "product_id": PRODUCT_ID,
-                    "product_url": PRODUCT_URL,
+                    "product_id": product_id,
+                    "product_url": product_url,
                     "source": "request",
                     "media_assets": [
                         {
@@ -422,6 +437,118 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert row_result["writeback_status"] == "success"
     assert status_payload["result"]["stage_summary"]["collect_product_data"]["total_count"] == 1
     assert status_payload["result"]["stage_summary"]["browser_fallback"]["total_count"] == 1
+
+
+def test_refresh_executor_integration_releases_second_row_after_first_fallback_finishes(
+    runtime_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_source_record_id = "row-2"
+    second_product_id = "987654321"
+    second_product_url = f"https://www.tiktok.com/shop/pdp/{second_product_id}"
+    _bind_refresh_api_handlers(
+        monkeypatch,
+        request_mode="fallback",
+        source_rows=[
+            {
+                "source_record_id": SOURCE_RECORD_ID,
+                "product_id": PRODUCT_ID,
+                "product_url": PRODUCT_URL,
+            },
+            {
+                "source_record_id": second_source_record_id,
+                "product_id": second_product_id,
+                "product_url": second_product_url,
+            },
+        ],
+        fallback_source_record_ids={SOURCE_RECORD_ID},
+    )
+    _bind_refresh_browser_handler(monkeypatch)
+
+    submitted = _submit_refresh_request(runtime_db_url, reply_target="reply://refresh-two-rows")
+    request_id = str(submitted["request_id"])
+
+    runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+
+    first_row_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    first_row_jobs = _stage_jobs(
+        first_row_wait,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
+    )
+    assert len(first_row_jobs) == 1
+    assert first_row_jobs[0]["payload"]["source_record_id"] == SOURCE_RECORD_ID
+    first_row_job_id = str(first_row_jobs[0]["job_id"])
+
+    first_row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert first_row_worker["api_worker_job"]["job_id"] == first_row_job_id
+    assert first_row_worker["api_worker_job"]["status"] == "waiting"
+
+    fallback_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert fallback_wait["current_stage"] == "browser_fallback"
+    assert len(
+        _stage_jobs(
+            fallback_wait,
+            stage_code="collect_product_data",
+            job_code="competitor_row_refresh",
+        )
+    ) == 1
+    fallback_executions = [
+        execution
+        for execution in fallback_wait.get("executions", [])
+        if str((execution.get("payload") or {}).get("stage_code") or "") == "browser_fallback"
+    ]
+    assert len(fallback_executions) == 1
+    assert fallback_executions[0]["payload"]["source_record_id"] == SOURCE_RECORD_ID
+
+    browser_worker = runtime_orchestrator.execute_browser_once(
+        _runtime_params(runtime_db_url, execution_child_runner_mode="inline")
+    )
+    assert browser_worker["execution_status"] == "success"
+
+    requeued_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    requeued_jobs = _stage_jobs(
+        requeued_wait,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
+    )
+    assert len(requeued_jobs) == 1
+    assert str(requeued_jobs[0]["job_id"]) == first_row_job_id
+    assert requeued_jobs[0]["status"] == "pending"
+    assert requeued_jobs[0]["payload"]["browser_fallback_resolved"] is True
+
+    first_row_finished = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert str(first_row_finished["api_worker_job"]["job_id"]) == first_row_job_id
+    assert first_row_finished["api_worker_job"]["status"] == "finished"
+    assert first_row_finished["api_worker_job"]["result_status"] == "success"
+
+    second_row_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    row_jobs = _stage_jobs(
+        second_row_wait,
+        stage_code="collect_product_data",
+        job_code="competitor_row_refresh",
+    )
+    assert len(row_jobs) == 2
+    assert str(row_jobs[0]["job_id"]) == first_row_job_id
+    assert row_jobs[0]["status"] == "finished"
+    assert row_jobs[1]["payload"]["source_record_id"] == second_source_record_id
+    assert row_jobs[1]["status"] == "pending"
+
+    second_row_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
+    assert second_row_worker["api_worker_job"]["payload"]["source_record_id"] == second_source_record_id
+    assert second_row_worker["api_worker_job"]["status"] == "finished"
+    assert second_row_worker["api_worker_job"]["result_status"] == "success"
+
+    finalized = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
+    assert finalized["request_id"] == request_id
+    assert finalized["request_status"] == "success"
+    assert finalized["current_stage"] == "ready_for_summary"
+    assert finalized["summary"]["final_status"] == "success"
+    assert finalized["result"]["row_total_count"] == 2
+    assert {
+        row_result["source_record_id"] for row_result in finalized["result"]["row_results"]
+    } == {SOURCE_RECORD_ID, second_source_record_id}
 
 
 def test_refresh_executor_real_business_e2e_with_bound_handlers(
