@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import math
@@ -142,11 +141,8 @@ _PRODUCT_DETAILS_TOGGLE_SELECTOR = (
     "#detailBullets_feature_div "
     "[data-action='a-expander-toggle'][aria-expanded='false']"
 )
-_MAX_DECOMPRESSED_HTML_BYTES = 8 * 1024 * 1024
 _RAW_CAPTURE_SIZE_LIMITS = {
     "normalized_capture": 2 * 1024 * 1024,
-    "html": 2 * 1024 * 1024,
-    "network_data": 512 * 1024,
     "screenshot": 10 * 1024 * 1024,
 }
 _BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -236,60 +232,60 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
     error = collection.get("error")
     if error is not None:
         error_code, message, retryable, collection_status = _page_error(error)
-        screenshot_bytes = _bytes_value(collection.get("screenshot_bytes"))
-        artifact_started_at = perf_counter()
-        try:
-            artifact_refs = _write_failure_artifacts(
-                context=context,
-                artifact_policy=artifact_policy,
-                requested_asin=requested_asin,
-                run_id=run_id,
-                observed_at=observed_at,
-                html=_clean_text(collection.get("html"), strip=False),
-                screenshot_bytes=screenshot_bytes,
-            )
-        except _ArtifactSizeLimitError as exc:
+        artifact_refs: list[dict[str, Any]] = []
+        if collection_status == "blocked":
+            screenshot_bytes = _bytes_value(collection.get("screenshot_bytes"))
+            if not screenshot_bytes:
+                return _failure(
+                    context,
+                    error_code="required_failure_evidence_missing",
+                    message="Amazon blocked page capture requires screenshot evidence.",
+                    retryable=True,
+                    collection_status="failed",
+                    browser_target_digest=browser_target_digest,
+                    requested_asin=requested_asin,
+                    canonical_url=canonical_url,
+                    browser_provider_name=browser_provider_name,
+                    stage_durations_ms=stage_durations_ms,
+                )
+            artifact_started_at = perf_counter()
+            try:
+                artifact_refs = _write_failure_artifacts(
+                    context=context,
+                    artifact_policy=artifact_policy,
+                    requested_asin=requested_asin,
+                    run_id=run_id,
+                    observed_at=observed_at,
+                    screenshot_bytes=screenshot_bytes,
+                )
+            except _ArtifactSizeLimitError as exc:
+                stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
+                return _failure(
+                    context,
+                    error_code="artifact_size_limit_exceeded",
+                    message=str(exc),
+                    retryable=False,
+                    collection_status="failed",
+                    browser_target_digest=browser_target_digest,
+                    browser_provider_name=browser_provider_name,
+                    stage_durations_ms=stage_durations_ms,
+                )
+            except Exception as exc:
+                stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
+                return _failure(
+                    context,
+                    error_code="artifact_write_failed",
+                    message=str(exc),
+                    retryable=True,
+                    collection_status="failed",
+                    browser_target_digest=browser_target_digest,
+                    artifact_refs=(
+                        exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []
+                    ),
+                    browser_provider_name=browser_provider_name,
+                    stage_durations_ms=stage_durations_ms,
+                )
             stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
-            return _failure(
-                context,
-                error_code="artifact_size_limit_exceeded",
-                message=str(exc),
-                retryable=False,
-                collection_status="failed",
-                browser_target_digest=browser_target_digest,
-                browser_provider_name=browser_provider_name,
-                stage_durations_ms=stage_durations_ms,
-            )
-        except Exception as exc:
-            stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
-            return _failure(
-                context,
-                error_code="artifact_write_failed",
-                message=str(exc),
-                retryable=True,
-                collection_status="failed",
-                browser_target_digest=browser_target_digest,
-                artifact_refs=(
-                    exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []
-                ),
-                browser_provider_name=browser_provider_name,
-                stage_durations_ms=stage_durations_ms,
-            )
-        stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
-        if not screenshot_bytes:
-            return _failure(
-                context,
-                error_code="required_failure_evidence_missing",
-                message="Amazon failed or blocked page capture requires screenshot evidence.",
-                retryable=True,
-                collection_status="failed",
-                browser_target_digest=browser_target_digest,
-                artifact_refs=artifact_refs,
-                requested_asin=requested_asin,
-                canonical_url=canonical_url,
-                browser_provider_name=browser_provider_name,
-                stage_durations_ms=stage_durations_ms,
-            )
         return _failure(
             context,
             error_code=error_code,
@@ -330,18 +326,6 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         )
     capture["profile_context"] = _profile_context(browser_target_digest)
     _normalize_capture_media_urls(capture)
-    try:
-        network_data = extract_amazon_network_product_data(
-            [
-                {
-                    "source_path": "/page-data",
-                    "payload": collection.get("network_data"),
-                }
-            ],
-            expected_asin=capture.get("resolved_asin"),
-        )
-    except InvalidASINError:
-        network_data = {}
     capture_bytes = json.dumps(
         capture,
         ensure_ascii=False,
@@ -349,18 +333,15 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    sanitized_html = _sanitize_amazon_html(_clean_text(collection.get("html"), strip=False))
     artifact_started_at = perf_counter()
     try:
-        normalized_ref, html_ref, network_ref = _write_success_artifacts(
+        normalized_ref = _write_success_artifacts(
             context=context,
             artifact_policy=artifact_policy,
             requested_asin=requested_asin,
             run_id=run_id,
             observed_at=observed_at,
             capture_bytes=capture_bytes,
-            sanitized_html=sanitized_html,
-            network_data=network_data,
         )
     except _ArtifactSizeLimitError as exc:
         stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
@@ -391,9 +372,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         )
     stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
 
-    artifact_refs = [normalized_ref, html_ref]
-    if network_ref:
-        artifact_refs.append(network_ref)
+    artifact_refs = [normalized_ref]
     coverage = _field_coverage(capture.get("field_evidence"))
     collection_status = _clean_text(capture.get("collection_status"))
     variants = capture.get("variants")
@@ -464,7 +443,11 @@ def _resolve_artifact_policy(context: HandlerContext) -> dict[str, Any] | None:
             )
         except (RuntimeError, ValueError):
             return None
-    if store is None or not callable(getattr(store, "upload_file", None)):
+    if (
+        store is None
+        or not callable(getattr(store, "upload_file", None))
+        or not callable(getattr(store, "read_bytes", None))
+    ):
         return None
     if normalize_artifact_store_provider(getattr(store, "provider_code", "")) == "local":
         return None
@@ -942,37 +925,14 @@ def _write_success_artifacts(
     run_id: str,
     observed_at: datetime,
     capture_bytes: bytes,
-    sanitized_html: str,
-    network_data: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+) -> dict[str, Any]:
     base_key = _raw_capture_base_key(
         artifact_policy,
         requested_asin=requested_asin,
         run_id=run_id,
         observed_at=observed_at,
     )
-    html_bytes = sanitized_html.encode("utf-8")
-    _require_artifact_payload_size(
-        capture_kind="decompressed_html",
-        payload=html_bytes,
-        max_bytes=_MAX_DECOMPRESSED_HTML_BYTES,
-    )
-    html_payload = gzip.compress(html_bytes, mtime=0)
-    network_payload = (
-        json.dumps(
-            network_data,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if network_data
-        else b""
-    )
     _require_raw_capture_size(capture_kind="normalized_capture", payload=capture_bytes)
-    _require_raw_capture_size(capture_kind="html", payload=html_payload)
-    if network_payload:
-        _require_raw_capture_size(capture_kind="network_data", payload=network_payload)
     refs: list[dict[str, Any]] = []
     try:
         normalized_ref = _upload_bytes(
@@ -987,38 +947,11 @@ def _write_success_artifacts(
             observed_at=observed_at,
         )
         refs.append(normalized_ref)
-        html_ref = _upload_bytes(
-            context=context,
-            artifact_policy=artifact_policy,
-            object_key=f"{base_key}/page.html.gz",
-            payload=html_payload,
-            capture_kind="html",
-            content_type="application/gzip",
-            sanitization_status="sanitized",
-            run_id=run_id,
-            observed_at=observed_at,
-            content_encoding="gzip",
-        )
-        refs.append(html_ref)
-        network_ref = None
-        if network_payload:
-            network_ref = _upload_bytes(
-                context=context,
-                artifact_policy=artifact_policy,
-                object_key=f"{base_key}/page-data.json",
-                payload=network_payload,
-                capture_kind="network_data",
-                content_type="application/json",
-                sanitization_status="allowlisted",
-                run_id=run_id,
-                observed_at=observed_at,
-            )
-            refs.append(network_ref)
     except _ArtifactSizeLimitError:
         raise
     except Exception as exc:
         raise _ArtifactWriteError(str(exc), artifact_refs=refs) from exc
-    return normalized_ref, html_ref, network_ref
+    return normalized_ref
 
 
 def _write_failure_artifacts(
@@ -1028,7 +961,6 @@ def _write_failure_artifacts(
     requested_asin: str,
     run_id: str,
     observed_at: datetime,
-    html: str,
     screenshot_bytes: bytes,
 ) -> list[dict[str, Any]]:
     base_key = _raw_capture_base_key(
@@ -1037,49 +969,22 @@ def _write_failure_artifacts(
         run_id=run_id,
         observed_at=observed_at,
     )
-    html_payload = b""
-    if html:
-        sanitized_html_bytes = _sanitize_amazon_html(html).encode("utf-8")
-        _require_artifact_payload_size(
-            capture_kind="decompressed_html",
-            payload=sanitized_html_bytes,
-            max_bytes=_MAX_DECOMPRESSED_HTML_BYTES,
-        )
-        html_payload = gzip.compress(sanitized_html_bytes, mtime=0)
-        _require_raw_capture_size(capture_kind="html", payload=html_payload)
-    if screenshot_bytes:
-        _require_raw_capture_size(capture_kind="screenshot", payload=screenshot_bytes)
+    _require_raw_capture_size(capture_kind="screenshot", payload=screenshot_bytes)
     refs: list[dict[str, Any]] = []
     try:
-        if html_payload:
-            refs.append(
-                _upload_bytes(
-                    context=context,
-                    artifact_policy=artifact_policy,
-                    object_key=f"{base_key}/page.html.gz",
-                    payload=html_payload,
-                    capture_kind="html",
-                    content_type="application/gzip",
-                    sanitization_status="sanitized",
-                    run_id=run_id,
-                    observed_at=observed_at,
-                    content_encoding="gzip",
-                )
+        refs.append(
+            _upload_bytes(
+                context=context,
+                artifact_policy=artifact_policy,
+                object_key=f"{base_key}/page.png",
+                payload=screenshot_bytes,
+                capture_kind="screenshot",
+                content_type="image/png",
+                sanitization_status="not_applicable",
+                run_id=run_id,
+                observed_at=observed_at,
             )
-        if screenshot_bytes:
-            refs.append(
-                _upload_bytes(
-                    context=context,
-                    artifact_policy=artifact_policy,
-                    object_key=f"{base_key}/page.png",
-                    payload=screenshot_bytes,
-                    capture_kind="screenshot",
-                    content_type="image/png",
-                    sanitization_status="not_applicable",
-                    run_id=run_id,
-                    observed_at=observed_at,
-                )
-            )
+        )
     except _ArtifactSizeLimitError:
         raise
     except Exception as exc:
@@ -1138,6 +1043,13 @@ def _upload_bytes(
         )
     if stored.bucket != bucket or stored.object_key != object_key:
         raise ValueError("Artifact store returned coordinates outside the requested Amazon key.")
+    stored_bytes = store.read_bytes(
+        bucket=stored.bucket,
+        object_key=stored.object_key,
+        max_bytes=len(payload) + 1,
+    )
+    if stored_bytes != payload:
+        raise ValueError("Amazon business object failed remote byte verification.")
     ref = {
         "capture_kind": capture_kind,
         "bucket": stored.bucket,

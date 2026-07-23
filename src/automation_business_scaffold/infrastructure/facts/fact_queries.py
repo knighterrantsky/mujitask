@@ -42,9 +42,9 @@ class TKFactQueryAccess:
                     candidates.append(asset)
                     seen_asset_ids.add(asset_id)
         for asset in candidates:
-            if _media_asset_has_locator(asset):
+            if _media_asset_has_durable_reference(asset):
                 return asset
-        return candidates[0] if candidates else {}
+        return {}
 
     def creator_has_product(self, *, creator_id: str = "", uid: str = "", unique_id: str = "", product_id: str) -> bool:
         creator_key = self.build_creator_key(creator_id=creator_id, uid=uid, unique_id=unique_id)
@@ -180,8 +180,14 @@ def _clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _media_asset_has_locator(asset: Mapping[str, Any]) -> bool:
-    return any(_clean_text(asset.get(key)) for key in ("object_key", "file_token", "local_path"))
+def _media_asset_has_durable_reference(asset: Mapping[str, Any]) -> bool:
+    content_digest = _clean_text(asset.get("content_digest"))
+    return bool(
+        _clean_text(asset.get("bucket"))
+        and _clean_text(asset.get("object_key"))
+        and len(content_digest) == 64
+        and all(character in "0123456789abcdef" for character in content_digest)
+    )
 
 
 def _with_video_fact_fields(video: dict[str, Any]) -> dict[str, Any]:

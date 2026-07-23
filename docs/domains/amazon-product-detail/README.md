@@ -16,7 +16,8 @@
 5. [单行 Workflow 契约](../../../contracts/workflow/refresh_amazon_product_row_by_asin.yaml)
 6. [批量 Workflow 契约](../../../contracts/workflow/refresh_current_amazon_product_table.yaml)
 7. [商品事实采集契约](../../../contracts/facts/product-fact-collection.yaml)
-8. 当前相关源码和测试。
+8. [长期业务对象存储契约](../../../contracts/facts/durable-business-object-storage.yaml)
+9. 当前相关源码和测试。
 
 ## 条件展开
 
@@ -28,7 +29,7 @@
 
 - 首期 marketplace 固定为 `US`，商品唯一身份为 `(marketplace_code, asin)`。
 - 浏览器是 Amazon 正常采集阶段，不复用 TikTok 的 fallback 语义。
-- Browser handler 只生成 capture 与 evidence；Fact DB、媒体和飞书副作用由持久化阶段负责。
+- Browser handler 成功/partial success 只生成 normalized capture 与媒体来源，blocked/captcha/access-blocked 只生成受控终态截图；Fact DB、媒体和飞书副作用由持久化阶段负责。
 - Amazon 事实写入 `amazon_*` 表，不写入 `tk_*` 表；对象复用 bucket 但使用 Amazon 独立 prefix。
-- 完整 capture 和 HTML 不进入 Runtime DB，Runtime 只保存紧凑引用。
+- 完整 capture 和 HTML 不进入 Runtime DB；HTML、page/network data 和普通截图只留本地。成功/partial success 的 Runtime 只保存 normalized capture/商品媒体紧凑完整引用，blocked 只保存受控截图引用。
 - 飞书写回只针对来源 `source_record_id`；缺失字段不得清空已有值。

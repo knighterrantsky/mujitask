@@ -1,6 +1,6 @@
 # 项目本地配置
 
-更新时间: `2026-04-24`
+更新时间: `2026-07-23`
 
 本文说明 Mujitask 在本地开发、测试、CLI、daemon、Alembic 和 skill 集成时，如何统一读取项目配置，避免运行时出现“本机明明有 Postgres / MinIO，但进程读不到配置”的问题。
 
@@ -50,6 +50,13 @@
 - `BUSINESS_EXECUTION_CONTROL_DB_HEALTH_PREFLIGHT_ENABLED`
 - `BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_CONNECTION_RATIO`
 - `BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION`
+
+对象配置的目标语义:
+
+- `ARTIFACT_ROOT` 是本地短期 Runtime artifact 根目录。
+- `ARTIFACT_BUCKET` / `ARTIFACT_OBJECT_PREFIX` 和 MinIO 凭据只供机器契约白名单中的长期业务对象使用，不是日志、HTML、截图、raw snapshot 或临时文件的通用上传配置。
+- 生产 `MINIO_CREATE_BUCKET` 必须为 `false`，worker 不拥有 create bucket 权限；bucket 由部署阶段预建。
+- `SYNC_REFERENCED_FILES` 只控制当前运行是否下载或物化被引用的文件，不是旧数据兼容开关，也不决定对象是否允许进入 MinIO。只有持久对象 contract 白名单和现有写入 owner 可以准入 MinIO；Runtime artifact、飞书 raw snapshot 与通用 raw response 始终不能因该开关被提升。
 
 这份文件是：
 
@@ -148,9 +155,9 @@ cp scripts/execution_control/executor.local.env.example scripts/execution_contro
 填写：
 
 - Runtime DB 连接串
-- Fact DB 连接串；本地共库时也要显式填写 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
-- MinIO endpoint / access key / secret key
-- artifact bucket / object prefix
+- 需要事实持久化的 workflow 填写 Fact DB 连接串；本地共库时也要显式填写 `BUSINESS_EXECUTION_CONTROL_FACT_DB_URL`
+- 需要持久化白名单长期业务对象的 workflow 填写 MinIO endpoint / access key / secret key
+- 复用已创建的 MinIO bucket，并配置长期业务对象专用 prefix；本地运行诊断只使用 `ARTIFACT_ROOT`
 
 ### 4.2 Skill
 
@@ -192,7 +199,7 @@ cp .env.example .env
 
 ## 6. 约束
 
-1. Runtime DB / MinIO 配置以 `executor.local.env` 为准，不再依赖人工每次手工导出。
+1. Runtime DB 以及按 workflow 实际需要的 Fact DB / MinIO 配置以 `executor.local.env` 为准，不再依赖人工每次手工导出。
 2. skill 的固定业务输入以 `skill.local.env` 为准，不在对话中动态索取。
 3. `.env` 只承载通用本地默认值，不承担完整 Runtime 控制面配置。
 4. Runtime DB engine 创建必须收口到 `RuntimeStore` / `create_runtime_store()`；开发时不要在业务 flow 或 handler 中临时 `create_engine()`。
@@ -201,7 +208,7 @@ cp .env.example .env
 7. `too many clients already` 等 DB 连接错误在开发和测试中应按基础设施错误处理，不应被写成业务失败或字段校验失败。
 8. 正式 skill submit 不传 `run_mode`，也不传 Runtime DB、Fact DB、MinIO/S3 endpoint、access key、secret key、bucket 或浏览器 provider/profile_id/workspace_id 等运行配置；这些配置由项目运行环境解析。
 9. 测试可以在直接 submit 调用中使用显式 test-only override 指向测试 DB / MinIO，但不能把这些字段写成正式 skill wrapper 的默认参数。
-10. 正式 workflow 缺 Runtime DB、Fact DB 或对象存储配置时必须 fail fast，不能通过 `dry_run`、`local` 或 `linked_local` 返回成功。
+10. 正式 workflow 始终要求 Runtime DB；仅当 `requires_fact_db=true` 时要求 Fact DB，仅当 `requires_object_storage=true` 且会写入白名单长期业务对象时要求 MinIO。缺少当次实际依赖时必须 fail fast，不能通过 `dry_run`、`local` 或 `linked_local` 返回成功；仅产生本地诊断文件的 workflow 不要求 MinIO。
 
 ## 7. DB 连接开发护栏
 

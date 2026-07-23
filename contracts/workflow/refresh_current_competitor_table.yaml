@@ -59,9 +59,9 @@ protected_invariants:
   - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于该主 job 内部步骤
   - Waiting competitor_row_refresh is the only pending row-level fallback fact, task_execution is the browser task fact; competitor_row_refresh 只能返回业务化 browser request，不允许直接 import browser capability 或 run_supervised_handler inline fallback
   - API worker 不允许以 worker_type=browser_worker 或 ChildRunnerConfig 内联执行 tiktok_product_browser_fetch / fastmoss_security_browser_resolve
-  - executor/runtime 必须基于唯一 waiting row job 派发或等待 browser task_execution，并负责把 browser result 引用、cookie cache metadata 或失败证据写回原 row job
+  - executor/runtime 必须基于唯一 waiting row job 派发或等待 browser task_execution，并负责把受控尺寸的 browser normalized result、cookie cache metadata 或失败摘要写回原 row job
   - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status or final result_status; pending/running/waiting/finished/cancelled are lifecycle states, success/partial_success/failed/skipped are terminal result_status values
-  - TikTok browser fallback may substitute the current TikTok collection stage output through task_execution.result_json normalized_product_result and artifact refs; FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage
+  - TikTok browser fallback may substitute the current TikTok collection stage output only through task_execution.result_json normalized_product_result; local diagnostic artifact indexes are not downstream inputs or MinIO refs. FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage
   - Browser task_execution terminal 后，executor/runtime 写回当前 competitor_row_refresh 并让同一个行级主 job 回到 pending 或收敛为终态；不得创建独立恢复 stage、派生 candidate 或第二个行级业务事实源
   - browser task_execution success is not a row-level business terminal result; ready_for_summary can only summarize final competitor_row_refresh row_status/result_status and must have no waiting row job or active browser execution
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success

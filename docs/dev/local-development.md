@@ -1,6 +1,6 @@
 # 本地开发与启动说明
 
-更新时间: 2026-04-29
+更新时间: 2026-07-23
 
 本文说明如何在本机搭建 Mujitask 开发环境、启动本地服务、运行测试和排障。
 
@@ -9,7 +9,7 @@
 - Python >= 3.11
 - Git
 - Postgres，本地或远程均可
-- MinIO（可选，推荐用于完整 Runtime 流程）
+- MinIO（仅运行会持久化白名单长期业务对象的 workflow 时需要；日志、HTML、普通截图等本地 Runtime 流程不需要）
 - Chromium / Playwright
 - 可访问 FastMoss、TikTok、飞书相关账号和配置
 

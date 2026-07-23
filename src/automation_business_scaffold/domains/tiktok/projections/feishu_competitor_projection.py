@@ -120,13 +120,32 @@ def _normalize_competitor_projection_fields(fields: Mapping[str, Any]) -> dict[s
             normalized[name] = _link_value(_text_value(value)) if _text_value(value) else value
             continue
         if name in {"图片", "前台截图", "Fastmoss截图"}:
-            if isinstance(value, Mapping) and any(
-                _first_non_empty(value.get(key))
-                for key in ("file_token", "local_path", "source_path", "path", "url", "source_url", "remote_uri", "object_key")
-            ):
-                normalized[name] = dict(value)
-                continue
-            normalized[name] = _raw_link_value(_text_value(value)) if _text_value(value) else value
+            items = value if isinstance(value, list) else [value]
+            durable_refs = [
+                {
+                    key: _text(item.get(key))
+                    for key in (
+                        "bucket",
+                        "object_key",
+                        "content_digest",
+                        "file_name",
+                        "mime_type",
+                    )
+                    if _text(item.get(key))
+                }
+                for item in items
+                if isinstance(item, Mapping)
+                and _text(item.get("bucket"))
+                and _text(item.get("object_key"))
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    _text(item.get("content_digest")),
+                )
+            ]
+            if durable_refs:
+                normalized[name] = (
+                    durable_refs if isinstance(value, list) else durable_refs[0]
+                )
             continue
         normalized[name] = value
     return normalized

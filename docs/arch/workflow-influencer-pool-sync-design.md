@@ -1,6 +1,6 @@
 # 达人同步 Workflow 设计
 
-日期: 2026-04-25
+日期: 2026-07-23
 
 ## 1. 流程定位
 
@@ -81,7 +81,7 @@ flowchart TD
 - 如需要父子收敛，优先在通用 Runtime job schema 中补充 `parent_job_id` / `job_group` / `entity_type` / `entity_key` 这类通用字段，而不是新增达人同步专用表。
 - `product_creator_discovery` 是商品粒度业务 job，内部复用 FastMoss 商品达人列表能力，不再拆成商品 base、overview、author list 等多个 Runtime job。
 - `influencer_creator_sync` 是达人粒度业务 job，内部完成达人详情、事实入库、素材同步、`TK达人池` upsert 和商品终态状态回写，不再把 `persist_creator_facts`、`write_influencer_pool` 拆成独立 Runtime job。
-- `influencer_creator_sync.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如 `creator_id`、`product_hits` key、内部步骤状态、写入计数和 record id。完整 fact bundle、FastMoss raw response、media sync 明细和飞书完整写入记录必须落到 Fact DB 或 artifact/object storage，Runtime result 只保留计数和引用。
+- `influencer_creator_sync.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如 `creator_id`、`product_hits` key、内部步骤状态、写入计数和 record id。可复用事实进入 Fact DB，达人头像等长期业务媒体由 `media_asset_sync` 写入 MinIO；完整 fact bundle、FastMoss raw response、media sync 明细、飞书完整写入记录和诊断文件不得进入 Runtime result 或被自动提升到 MinIO。
 - 不新增 `influencer_pool_product`、`influencer_pool_author`、`influencer_pool_finalizer` 这类历史业务专用 worker handler；新业务 job 名称以 `product_creator_discovery` 和 `influencer_creator_sync` 为准。
 - 商品状态回写需要幂等。若多个达人同步 job 同时判断同一个 product group 已终态，只允许一个稳定 dedupe key 产生最终写回，其余重复写回应被跳过或视为幂等成功。
 
@@ -239,7 +239,8 @@ payload:
   },
   "adapter_code": "influencer_pool_source_adapter",
   "snapshot_policy": {
-    "store_raw_rows": true
+    "contract_revision": 2,
+    "store_raw_rows": false
   }
 }
 ```
@@ -347,8 +348,11 @@ result:
     "candidate_count": 1,
     "matched_creator_count": 1
   },
-  "raw_response_refs": [
-    "artifact://fastmoss/product/1731194997356205027/author.json"
+  "raw_evidence": [
+    {
+      "source_endpoint": "product.author",
+      "content_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
   ]
 }
 ```
@@ -504,9 +508,9 @@ result:
       "status_writeback": "success"
     }
   ],
-  "raw_response_refs": [
-    "artifact://fastmoss/creator/7228697870020199470/base-info.json",
-    "artifact://fastmoss/creator/7228697870020199470/author-contact.json"
+  "raw_response_ids": [
+    "raw-response-01K0EXAMPLE-BASE",
+    "raw-response-01K0EXAMPLE-CONTACT"
   ]
 }
 ```

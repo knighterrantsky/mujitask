@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from collections.abc import Mapping
 from datetime import date
 from typing import Any
@@ -166,32 +167,41 @@ def _attachment_ref_items(value: Any) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     for item in values:
         if isinstance(item, Mapping):
-            file_token = _first_non_empty(item.get("file_token"))
-            if file_token:
-                refs.append({"file_token": file_token})
-                continue
-            url = _first_non_empty(
-                item.get("url"),
-                item.get("source_url"),
-                item.get("tmp_url"),
-                item.get("download_url"),
-                item.get("link"),
-            )
-            if url:
-                refs.append({"url": url})
+            bucket = _text(item.get("bucket"))
+            object_key = _text(item.get("object_key"))
+            content_digest = _text(item.get("content_digest"))
+            if (
+                bucket
+                and object_key
+                and re.fullmatch(r"[0-9a-f]{64}", content_digest)
+            ):
+                refs.append(
+                    {
+                        key: value
+                        for key, value in {
+                            "bucket": bucket,
+                            "object_key": object_key,
+                            "content_digest": content_digest,
+                            "file_name": _text(item.get("file_name")),
+                            "mime_type": _text(item.get("mime_type")),
+                        }.items()
+                        if value
+                    }
+                )
             continue
-        text = _text(item)
-        if text:
-            refs.append({"url": text})
     return _dedupe_ref_items(refs)
 
 
 def _dedupe_ref_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     deduped: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for item in items:
-        key = (_text(item.get("file_token")), _text(item.get("url")))
-        if not any(key) or key in seen:
+        key = (
+            _text(item.get("bucket")),
+            _text(item.get("object_key")),
+            _text(item.get("content_digest")),
+        )
+        if not all(key) or key in seen:
             continue
         seen.add(key)
         deduped.append(item)

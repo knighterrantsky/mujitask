@@ -71,14 +71,10 @@ _PERSIST_STEP_CODES = (
 )
 _CAPTURE_REF_POLICY = {
     "normalized_capture": ("application/json", "normalized"),
-    "html": ("application/gzip", "sanitized"),
-    "network_data": ("application/json", "allowlisted"),
     "screenshot": ("image/png", "not_applicable"),
 }
 _CAPTURE_FILE_NAMES = {
     "normalized_capture": "normalized.json",
-    "html": "page.html.gz",
-    "network_data": "page-data.json",
     "screenshot": "page.png",
 }
 _CAPTURE_REF_TEXT_FIELDS = (
@@ -413,7 +409,22 @@ def _advance_browser(*, store: Any, request: Any, workflow: Any) -> dict[str, An
             if capture_context
             else []
         )
-        if not capture_context or len(evidence_refs) != len(raw_evidence_refs):
+        requires_screenshot = collection_status == "blocked" or error_code in {
+            "access_blocked",
+            "captcha_required",
+        }
+        evidence_is_valid = (
+            len(evidence_refs) == len(raw_evidence_refs)
+            and (
+                (
+                    requires_screenshot
+                    and len(evidence_refs) == 1
+                    and evidence_refs[0]["capture_kind"] == "screenshot"
+                )
+                or (not requires_screenshot and not evidence_refs)
+            )
+        )
+        if not capture_context or not evidence_is_valid:
             collection_status = "failed"
             error_code = "invalid_amazon_capture_provenance"
         return _terminal_failure_with_writeback(
@@ -1131,19 +1142,10 @@ def _validate_browser_result(
     )
     if not normalized_capture_ref:
         raise ValueError("normalized_capture_ref_missing")
-    if not raw_capture_refs:
-        raise ValueError("raw_capture_refs_missing")
     if len(raw_capture_refs) != len(raw_capture_inputs):
         raise ValueError("invalid_amazon_capture_ref")
-    if normalized_capture_ref not in raw_capture_refs:
+    if raw_capture_refs != [normalized_capture_ref]:
         raise ValueError("normalized_capture_ref_mismatch")
-    if len(raw_capture_refs) > len(_CAPTURE_REF_POLICY):
-        raise ValueError("invalid_amazon_capture_ref")
-    if len({ref["capture_kind"] for ref in raw_capture_refs}) != len(raw_capture_refs):
-        raise ValueError("duplicate_amazon_capture_kind")
-    coordinates = {(ref["bucket"], ref["object_key"]) for ref in raw_capture_refs}
-    if len(coordinates) != len(raw_capture_refs):
-        raise ValueError("duplicate_amazon_capture_coordinate")
     artifact_inputs = _mapping_list(result.get("artifact_refs"))
     artifact_refs = _compact_capture_refs(
         result.get("artifact_refs"),

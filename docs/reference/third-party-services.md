@@ -1,6 +1,6 @@
 # 第三方服务接入说明
 
-更新时间: 2026-04-29
+更新时间: 2026-07-23
 
 本文说明 Mujitask 当前依赖的外部服务、配置项、用途和排障入口。
 
@@ -13,7 +13,7 @@
 | TikTok / TikTok Shop | 商品、达人、视频事实来源 | browser profile / FastMoss / handler |
 | OpenClaw | Agent skill 调用和通知上下文 | `skill.local.env` |
 | Postgres | Runtime DB / Fact DB | `executor.local.env` |
-| MinIO | Artifact object store | `executor.local.env` |
+| MinIO | 白名单长期业务对象存储；不承载通用 Runtime artifact | `executor.local.env` |
 | Browser Profile | 浏览器登录态和 Cookie 共享 | `.env` / `skill.local.env` / `config/browser_profiles.json` |
 
 ## 2. 飞书接入

@@ -403,8 +403,10 @@ def _validate_inputs(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
     if not normalized_capture_ref:
         raise ValueError("normalized_capture_ref is required.")
     raw_capture_refs = _mapping_list(payload.get("raw_capture_refs"))
-    if not raw_capture_refs:
-        raise ValueError("raw_capture_refs is required.")
+    if raw_capture_refs != [normalized_capture_ref]:
+        raise ValueError(
+            "raw_capture_refs must contain exactly the normalized_capture_ref."
+        )
     media_source_refs = _mapping_list(payload.get("media_source_refs"))
     normalized_media_source_refs: list[dict[str, Any]] = []
     seen_media_coordinates: set[tuple[str, int]] = set()

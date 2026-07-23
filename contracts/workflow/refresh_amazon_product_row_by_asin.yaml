@@ -22,6 +22,7 @@ notification_routing:
 
 business_requirement: docs/business/requirements/amazon-product-detail-collection.md
 architecture_design: docs/arch/workflow-amazon-product-detail-design.md
+object_storage_contract: contracts/facts/durable-business-object-storage.yaml
 field_contracts:
   - contracts/fields/feishu-amazon-products.yaml
 state_contracts:
@@ -74,6 +75,31 @@ identity:
 persistence:
   requires_fact_db: true
   requires_object_storage: true
+  object_storage_policy:
+    mode: default_deny_explicit_allowlist
+    success_required:
+      - normalized_capture
+    success_allowed:
+      - normalized_capture
+      - amazon_product_media
+    blocked_required:
+      - blocked_screenshot
+    blocked_allowed:
+      - blocked_screenshot
+    forbidden_new_objects:
+      - html
+      - network_data
+      - page_data
+      - success_screenshot
+      - runtime_artifact
+      - log
+      - temporary_file
+    durable_reference_required:
+      - bucket
+      - object_key
+      - content_digest
+    local_path_as_durable_locator: forbidden
+    downstream_read: minio_only
   runtime_result_policy: compact_references_only
   persist_result_identity:
     source_record_id: exact_source_row
@@ -277,20 +303,22 @@ observability:
 
 protected_invariants:
   - Browser 是 Amazon 正常采集阶段，不使用 fallback_required 表示正常流程。
-  - 完整 capture、HTML 和媒体正文不得进入 Runtime DB；Runtime 只保存紧凑对象引用。
+  - 完整 capture、HTML 和媒体正文不得进入 Runtime DB；成功或 partial success 的 Runtime 只保存 normalized capture 与商品媒体的紧凑完整对象引用，blocked/captcha/access-blocked 只保存受控截图引用。
+  - MinIO 默认拒绝；成功或 partial success 只允许 normalized capture 与商品媒体，blocked/captcha/access-blocked 只允许受控截图，不允许 normalized capture 或商品媒体。HTML、page-data、network data、普通/成功截图、日志、state dump 和临时文件不得上传。
+  - 持久对象引用必须包含 bucket、object_key 和 content_digest；local_path/source_path 只属于当前进程临时文件。API persist 必须直接从 MinIO 读取，不得优先或 fallback 读取 Browser 本地文件，也不得用全局 bucket 猜测缺失引用字段。
   - Browser result 在首次写入 task_execution 前，必须按 submit-time bucket/prefix、当前 request/execution、稳定 run 和 ASIN 校验并投影引用；success、partial_success、blocked、failed 都必须携带 browser_target_digest，且必须是当前 browser:amazon:<sha256> resource lane 的精确 suffix；缺失、空值、非法 lane 或不匹配必须失败收敛，非法引用不得进入 artifact_object。
   - Browser child 返回的 ETag 不属于 Runtime artifact ref contract，不得写入 artifact_object；Runtime 只索引已校验的受控引用字段。
   - amazon_product_row_persist result 在首次写入 api_worker_job 前，必须按嵌套 allowlist 投影 identity、fact refs、media coverage、writeback 和 observability；child summary、warning、error details 与 progress details 不得原样落库。
   - amazon_product_row_persist 只允许 success、partial_success 或 failed handler result；fallback_required 和 skipped 必须按 invalid_handler_result 立即失败收敛，不得进入 waiting。
   - amazon_product_row_persist 的 handler 或 supervisor 明确为 non-retryable/terminal 时，即使尚未耗尽 attempts 也必须 force-terminal，不能回到 pending。
-  - 网络层只观察页面自然加载的 exact same-origin fetch/xhr JSON；按 resolved ASIN 和字段 allowlist 净化后才能持久化。
+  - 网络层只观察页面自然加载的 exact same-origin fetch/xhr JSON；按 resolved ASIN 和字段 allowlist 净化后只能合并到 normalized capture，不得作为独立 network/page-data 对象持久化。
   - Amazon 商品事实只能写入 amazon_* 表，不得写入 tk_* 表或建立跨平台外键。
   - 飞书投影只更新 source_record_id，且字段集合只能是主图、侧边栏图片、30天购买人数、送达日期、包装规格、促销活动记录的子集；30天购买人数保留 Amazon 页面展示值（如 500+），missing 字段必须保留已有值。
   - 最终投影只有在 written_count=1、failed_count=0、skipped_count=0 且 target_record_ids 精确等于 source_record_id 时才算收敛。
   - media_source_ref 的 percent-decoded path 不得含 HTML/token/cookie；重复 media_role/position 必须在 persist 派发和媒体下载前拒绝。
   - media_source_ref 必须是 Browser 按 ImageBlockATF.colorImages.initial 的侧边栏顺序，从同一图库项的 hiRes/data-old-hires/largest dynamic image/large 候选解析出的高清资源 URL，文件名不得保留已知尺寸、裁剪、质量或格式变换段；禁止仅删除缩略图 URL 的变换段后推断高清资产，因为缩略图与 hiRes 可以使用不同资产 ID；视频缩略图必须排除，media_asset_sync 不得回退上传缩略图。
   - 相同 source URL 对应不同 media_role/position 时必须保留每条商品媒体关系，不得按 URL 全局去重。
-  - blocked/captcha 在首次 Runtime 写入前必须带受控 screenshot artifact evidence，并失败收敛；预导航配置或连接失败可无页面证据，不新增绕过路径。
+  - blocked/captcha 在首次 Runtime 写入前必须带受控 screenshot business evidence，并失败收敛；该例外不授权上传 HTML 或其他诊断对象，预导航配置或连接失败可无页面证据，不新增绕过路径。
   - 已定位来源行的 blocked/failed 不写飞书字段，也不进入商品 Fact persistence；兼容 status-only handler 必须以 skipped_empty_fields 收敛。
   - 单行重复执行必须按来源行、ASIN、run 和事实唯一键保持幂等。
   - collecting 与 persisting 必须在对应副作用派发前写回同一 source_record_id，且非终态写回不得更新上次采集时间。

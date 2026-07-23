@@ -327,7 +327,6 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
     )
     fact_bundle["media_assets"] = _merge_media_assets_preserving_roles(
         coerce_mapping(media_result_payload.get("media_fact_bundle")).get("media_assets"),
-        coerce_mapping(fastmoss_payload.get("product_fact_bundle")).get("media_assets"),
     )
     fact_context = _child_context(
         context,
@@ -685,11 +684,18 @@ def _compact_media_result(result: Mapping[str, Any]) -> dict[str, Any]:
                         "entity_type": first_non_empty(asset.get("entity_type")),
                         "entity_external_id": first_non_empty(asset.get("entity_external_id")),
                         "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type")),
+                        "bucket": first_non_empty(asset.get("bucket")),
                         "object_key": first_non_empty(asset.get("object_key")),
-                        "file_token": first_non_empty(asset.get("file_token")),
+                        "content_digest": first_non_empty(asset.get("content_digest")),
                     }
                 )
                 for asset in synced_assets
+                if first_non_empty(asset.get("bucket"))
+                and first_non_empty(asset.get("object_key"))
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    first_non_empty(asset.get("content_digest")),
+                )
             ],
         }
     )
@@ -1102,19 +1108,19 @@ def _first_media_asset_ref(payload: Mapping[str, Any]) -> Any:
         for item in items:
             if not isinstance(item, Mapping):
                 continue
-            file_token = first_non_empty(item.get("file_token"))
-            local_path = first_non_empty(item.get("source_path"), item.get("local_path"))
-            url = first_non_empty(item.get("remote_uri"), item.get("source_url"))
+            bucket = first_non_empty(item.get("bucket"))
             object_key = first_non_empty(item.get("object_key"))
-            if file_token or local_path or url or object_key:
+            content_digest = first_non_empty(item.get("content_digest"))
+            if (
+                bucket
+                and object_key
+                and re.fullmatch(r"[0-9a-f]{64}", content_digest)
+            ):
                 return compact_dict(
                     {
-                        "file_token": file_token,
-                        "local_path": local_path,
-                        "url": url,
-                        "source_url": first_non_empty(item.get("source_url")),
-                        "remote_uri": first_non_empty(item.get("remote_uri")),
+                        "bucket": bucket,
                         "object_key": object_key,
+                        "content_digest": content_digest,
                         "file_name": first_non_empty(item.get("file_name")),
                         "mime_type": first_non_empty(item.get("mime_type")),
                     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, Mapping
@@ -281,17 +282,36 @@ class TKFactStore(TKFactQueryAccess):
         source_url: str = "",
         file_token: str = "",
         local_path: str = "",
+        bucket: str = "",
         object_key: str = "",
+        content_digest: str = "",
+        remote_uri: str = "",
+        size_bytes: int = 0,
         file_name: str = "",
         mime_type: str = "",
         source_platform: str = "",
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        bucket = _clean_text(bucket)
+        object_key = _clean_text(object_key)
+        content_digest = _clean_text(content_digest).lower()
+        try:
+            normalized_size_bytes = int(size_bytes or 0)
+        except (TypeError, ValueError):
+            return {}
+        if (
+            not bucket
+            or not object_key
+            or not re.fullmatch(r"[0-9a-f]{64}", content_digest)
+            or normalized_size_bytes <= 0
+        ):
+            return {}
         asset_key = self.build_asset_key(
             source_url=source_url,
             file_token=file_token,
-            local_path=local_path,
+            local_path="",
             object_key=object_key,
+            content_digest=content_digest,
         )
         if not asset_key:
             return {}
@@ -304,8 +324,12 @@ class TKFactStore(TKFactQueryAccess):
                 "asset_key": asset_key,
                 "source_url": _clean_text(source_url),
                 "file_token": _clean_text(file_token),
-                "local_path": _clean_text(local_path),
-                "object_key": _clean_text(object_key),
+                "local_path": "",
+                "bucket": bucket,
+                "object_key": object_key,
+                "content_digest": content_digest,
+                "remote_uri": _clean_text(remote_uri),
+                "size_bytes": normalized_size_bytes,
                 "file_name": _clean_text(file_name),
                 "mime_type": _clean_text(mime_type),
                 "source_platform": _clean_text(source_platform),
@@ -1112,8 +1136,10 @@ class TKFactStore(TKFactQueryAccess):
         file_token: str = "",
         local_path: str = "",
         object_key: str = "",
+        content_digest: str = "",
     ) -> str:
         for prefix, value in (
+            ("content_sha256", content_digest),
             ("file_token", file_token),
             ("object_key", object_key),
             ("local_path", local_path),

@@ -1,6 +1,6 @@
 # 选品采集与关键词搜索选品写入 Workflow 设计
 
-日期: 2026-04-30
+日期: 2026-07-23
 
 状态: 当前架构设计文档
 
@@ -100,13 +100,13 @@ flowchart TD
 
 - `fallback_required` 是兼容期 handler wait signal，不是 Runtime DB `status`，也不是行级终态。当前行等待 browser 时，`selection_row_refresh.status=waiting` 是唯一 fallback 待处理事实；browser `task_execution` 是浏览器任务事实。
 - 同一顶层请求在 `row_pipeline_concurrency=1` 时最多只能有一个 waiting row job 和一个未终态 browser `task_execution`。workflow 不依赖 `after_browser_candidates`、`fallback_source_job_id` 或派生 candidate 数量判断下一步。
-- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` 成功后，normalized result、artifact evidence 和 fallback metadata 保存在 `task_execution.result_json` / `artifact_object`；executor/runtime 把结果引用写回原 `selection_row_refresh`，原行 pipeline 按引用继续执行 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终 `row_status`。
+- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` 成功后，只把受控尺寸的 normalized result 和 fallback metadata 写入 `task_execution.result_json`；本地 artifact evidence 只允许在 `artifact_object` 建短期排障索引。executor/runtime 把 normalized result 写回原 `selection_row_refresh`，原行 pipeline 直接按该结构化结果继续 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终 `row_status`，不得依赖本地 artifact 恢复。
 - FastMoss security fallback 属于解除阻塞后重跑当前 FastMoss stage。Browser handler 成功后只持久化 `fastmoss_session_cookie_cache` 并返回脱敏 metadata；executor/runtime 把脱敏 metadata 写回原 `selection_row_refresh`，原 FastMoss handler 从 cookie cache 重新请求原 API 一次，不通过 payload 传递 cookie value。
 - Browser `task_execution` 失败时，当前行按业务规则标记 `failed` 或 `partial_success`，然后 row cursor 才能放行下一行；失败不能被父任务 summary 当成成功吞掉。
 - 客户现场 / 生产默认 `row_pipeline_concurrency=1`。当前行未形成最终 `row_status` 前，workflow 不应推进下一条候选行的采集。后续如需提升吞吐，只能通过 workflow contract 显式声明 bounded concurrency、FIFO/lane、幂等边界和 summary gate。
 - `ready_for_summary` 的入口条件是所有候选行都有最终 `row_status`，且不存在未处理 waiting row job、active browser execution 或未收敛的行级主 job。
 - 父任务汇总必须使用行级业务终态结果，不得只按 `api_worker_job.status` 或 `task_execution.status` 汇总，不得看派生 candidate 数量。Browser 子任务 success 只能作为当前行解除等待的输入证据。
-- Browser 阶段产生的截图、HTML、raw page dump 等物理资产可以在 browser handler 内先写对象存储并由 `artifact_object` 索引；商品媒体资产、Fact DB upsert 和 Feishu projection 的最终一致性仍由 `selection_row_refresh` 行级主 job 承担。正式 workflow 缺 Fact DB 或 MinIO/S3 对象存储配置时必须 fail fast，不能用 `dry_run` 或 `local` 成功替代。
+- Browser 阶段产生的截图、HTML、raw page dump 只允许作为本地短期诊断文件，不得写入 MinIO，也不得成为原行继续执行的跨进程依赖；跨进程只传受控的小型 normalized result。只有商品媒体等 `contracts/facts/durable-business-object-storage.yaml` 白名单中的长期业务对象可以进入 MinIO，并由 `selection_row_refresh` 内的既有 `media_asset_sync` owner 物化。正式 workflow 需要持久媒体时，缺 Fact DB 或 MinIO 配置必须 fail fast，不能用 `dry_run` 或本地文件成功替代。
 
 ### 3.5 关键词搜索选品写入入口
 
@@ -176,7 +176,7 @@ flowchart TD
 
 ### 4.2 `selection_row_refresh` Result
 
-`selection_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。完整 normalized product payload、fact bundle、TikTok/FastMoss raw response、media sync 明细和飞书完整写入记录必须落到 Fact DB 或 artifact/object storage，Runtime result 只保留计数和引用。
+`selection_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。可复用业务事实进入 Fact DB，长期业务媒体进入 MinIO；TikTok/FastMoss raw response、完整 media sync 明细、飞书完整写入记录和浏览器诊断文件不得因体积或跨 stage 需要而自动上传 MinIO。Runtime result 只保留受控结构化字段、计数和完整业务对象引用。
 
 ```json
 {
@@ -243,6 +243,7 @@ sequenceDiagram
     participant Exec as executor_daemon
     participant API as api_worker
     participant Browser as browser_worker
+    participant Local as Local artifact_root
     participant Feishu as Feishu
     participant Fact as Fact DB
     participant Obj as MinIO
@@ -269,7 +270,7 @@ sequenceDiagram
             API->>DB: mark row job status=waiting with browser wait ref
             Exec->>DB: enqueue task_execution(tiktok_product_browser_fetch)
             Browser->>DB: claim task_execution
-            Browser->>Obj: store page artifacts
+            Browser->>Local: keep HTML/screenshot diagnostics locally
             Browser->>DB: mark browser job terminal
             Exec->>DB: mark same row job pending with browser result ref
             API->>DB: reclaim selection_row_refresh
@@ -304,9 +305,10 @@ sequenceDiagram
 - `TK选品收集`：必填补全字段、系统运行字段和可选补充字段，`fill_missing_only` 策略
 - `商品状态`：仅在不可访问时写入"链接不可访问"或"已下架/区域不可售"
 
-### 7.4 MinIO / Object Store
+### 7.4 MinIO 长期业务对象
 - 商品主图、侧边栏图片（media sync）
 - 图表 PNG 不入 MinIO，写回时直接渲染后插入飞书单元格
+- Browser HTML、普通截图、raw response、飞书 raw snapshot、日志和临时下载文件不入 MinIO
 
 ## 8. SKU 绑定规则
 
@@ -441,7 +443,7 @@ FastMoss sku_list[0].sku_sale_props[0]:
 
 ### 8.8 Fact DB 持久化配置
 
-正式选品 workflow 必须声明 `requires_fact_db=true` 和 `requires_object_storage=true`。Runtime 控制面在 submit preflight 阶段从 Project Configuration 解析 Runtime DB、Fact DB 和对象存储配置；缺 Fact DB、非 local 对象存储 provider、bucket 或 MinIO/S3 必填配置时，正式任务必须拒绝创建。
+正式选品 workflow 必须声明 `requires_fact_db=true` 和 `requires_object_storage=true`，因为商品媒体属于长期业务对象。Runtime 控制面在 submit preflight 阶段从 Project Configuration 解析 Runtime DB、Fact DB 和 MinIO 配置；缺 Fact DB、MinIO provider、bucket 或必填 credential 时，正式任务必须拒绝创建。该 flag 只约束长期业务对象，不授权同步 Runtime artifact。
 
 `task_request.payload_json`、行级 `api_worker_job.payload_json` 和 browser `task_execution.payload_json` 不承载 `fact_db_url`、`execution_control_db_url`、MinIO/S3 secret 或 browser cookie value。`fact_bundle_upsert` 从项目运行配置解析 Fact DB；缺配置时返回配置失败，不能以 `dry_run` 作为正式流程成功结果。
 

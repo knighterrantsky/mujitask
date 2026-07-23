@@ -2,7 +2,7 @@
 
 > 状态: Ops 文档。本文约定用户电脑长期运行时，如何避免 Postgres 连接耗尽导致 worker 无法 claim job。
 
-更新时间：`2026-04-26`
+更新时间：`2026-07-23`
 
 ## 1. 背景
 
@@ -148,7 +148,7 @@ OpenClaw skill 或部署 smoke test 在提交真实大任务前，应检查:
 - 当前连接数低于阈值。
 - `task_request / api_worker_job / notification_outbox` 可读写。
 - daemon / worker / outbox 进程在线。
-- MinIO 可访问。
+- 仅当待提交 workflow 声明 `requires_object_storage=true` 且会读写白名单长期业务对象时，检查预建 MinIO bucket 和受控 prefix 可访问；仅产生本地诊断文件的 workflow 不要求 MinIO。
 
 如果连接数已接近上限，应返回运行环境异常，不继续提交大量 job。
 

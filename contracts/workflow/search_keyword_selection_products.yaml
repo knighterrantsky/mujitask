@@ -89,9 +89,9 @@ protected_invariants:
   - Price filtering is a candidate filter, not a pagination early-stop condition.
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.
   - selection_row_refresh may report a business browser request with fallback_handler and browser_fallback_payload; compatibility result may still include fallback_required, but it is not a Runtime DB lifecycle status or final row status.
-  - selection_row_refresh.status=waiting is the only pending row-level fallback fact; executor/runtime must enqueue or wait for task_execution, then write browser result references, cookie cache metadata, or failure evidence back to the same selection_row_refresh row job before it can become pending again or terminal.
+  - selection_row_refresh.status=waiting is the only pending row-level fallback fact; executor/runtime must enqueue or wait for task_execution, then write the bounded browser normalized result, cookie cache metadata, or failure summary back to the same selection_row_refresh row job before it can become pending again or terminal.
   - pending/running/waiting/finished/cancelled are execution lifecycle states; success/partial_success/failed/skipped are terminal result_status values.
-  - TikTok browser fallback may substitute the current TikTok collection stage output through task_execution.result_json normalized_product_result and artifact refs; FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage.
+  - TikTok browser fallback may substitute the current TikTok collection stage output only through task_execution.result_json normalized_product_result; local diagnostic artifact indexes are not downstream inputs or MinIO refs. FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage.
   - fallback_required, browser task_execution success, and seed write success are not detail refresh terminal statuses; ready_for_summary requires final row_status/result_status for every newly inserted seed row and no waiting row jobs or active browser executions; it must not depend on derived candidate counts.
 
 payload_defaults:

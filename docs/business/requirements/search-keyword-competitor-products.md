@@ -1,6 +1,6 @@
 # 关键词搜索竞品写入需求
 
-更新时间：`2026-04-23`
+更新时间：`2026-07-23`
 
 - 入口任务：`search_keyword_competitor_products`
 - 触发方式：OpenClaw 对话输入
@@ -49,7 +49,7 @@ FastMoss 账号会话恢复属于平台策略。若缓存 cookie 已标记 `last
 
 当 TikTok 商品详情采集触发安全验证滑块时，系统只在已识别风控 popup 后处理滑块。图片等待是“元素出现的最大等待”，不是固定等待；滑动后最多轮询 5 秒验证结果，弹窗消失后延迟 2 秒二次确认。如果二次确认时弹窗重新出现，或页面出现 `Unable to verify. Please try again.` 等失败态文本，本次滑块尝试视为失败并按重试策略继续。
 
-TikTok 商品页验证码和 FastMoss 搜索验证码使用独立业务逻辑。TikTok 商品页默认沿用已通过真实 Roxy/TikTok 验证的 framework `SliderCaptchaResolver` match 策略，默认 `simple_target=false`；FastMoss 使用 FastMoss/Tencent selector profile。两类流程都必须保留截图、原始坐标、坐标换算、拖动距离、失败态文本和二次确认结果，便于排障。
+TikTok 商品页验证码和 FastMoss 搜索验证码使用独立业务逻辑。TikTok 商品页默认沿用已通过真实 Roxy/TikTok 验证的 framework `SliderCaptchaResolver` match 策略，默认 `simple_target=false`；FastMoss 使用 FastMoss/Tencent selector profile。两类流程都必须在本地短期 artifact 目录保留截图、原始坐标、坐标换算、拖动距离、失败态文本和二次确认结果，便于排障；这些验证码诊断文件不得进入 MinIO，也不得作为跨进程业务输入。
 
 ## 4. 最终交付形式
 

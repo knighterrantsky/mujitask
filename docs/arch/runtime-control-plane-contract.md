@@ -1,6 +1,6 @@
 # Runtime 控制面契约
 
-日期: 2026-04-24
+日期: 2026-07-23
 
 状态: 受控架构契约
 
@@ -17,6 +17,7 @@ Runtime 控制面不负责外部业务系统的字段映射，也不负责 TikTo
 - 工程结构定位: [project-structure-contract.md](./project-structure-contract.md)
 - 当前系统链路: [system-architecture-design.md](./system-architecture-design.md)
 - Runtime DB 状态机: [runtime-db-schema-design.md](./runtime-db-schema-design.md)
+- 长期业务对象边界: [storage-architecture-design.md](./storage-architecture-design.md)
 - 项目配置加载: [../dev/project-configuration.md](../dev/project-configuration.md)
 
 ## 2. 控制面组件
@@ -80,7 +81,11 @@ Runtime 控制面只调度和收敛，不解释 TikTok、FastMoss、飞书字段
 `browser_worker` 的职责:
 
 - 只 claim `task_execution.status=pending` 且 `available_at <= now` 的 browser job。
-- 持有 `resource_lease` 后执行 browser handler，并把截图、HTML、raw response、审计证据等大对象写入对象存储 / `artifact_object`。
+- 持有 `resource_lease` 后执行 browser handler。截图、HTML、raw response、日志和 state 等
+  Runtime 诊断文件只保留在本地 `artifact_root`，不得由通用 browser worker 自动上传 MinIO。
+  只有业务 contract 白名单明确准入的长期业务对象，才能由既有业务 owner 通过对象存储 transport
+  写入；当前包括 Amazon normalized capture 与 blocked/captcha 受控截图，普通 Runtime artifact
+  不在白名单中。
 - 小型结构化结果在首次写入 `task_execution.result_json` 前，先经过已声明的 domain Runtime result projection 校验和压缩；artifact index record 也只能由该投影返回受控字段，再由通用 worker 写入。FastMoss cookie value 直接写入 `fastmoss_session_cookie_cache`，result/log/summary 只允许脱敏 metadata。
 
 `Reconciler` 的职责:
@@ -117,7 +122,7 @@ CLI 参数 > 环境变量 > executor.local.env > skill.local.env > .env
 - `*.env.example` 必须跟实际读取文件保持同名示例关系；新增必填配置时要同步示例、部署脚本、配置文档和测试。
 - 正式 Skill submit 只提交业务 payload；Runtime DB、Fact DB、Object Storage 必须由 Project Configuration 解析，不能由 Skill payload 透传真实连接串或密钥。
 - browser profile 属于项目运行资源；正式 Skill 可以传显式业务级 `profile_ref` override，但固定默认值、provider、profile_id、workspace_id 必须来自 Project Configuration 或 `config/browser_profiles.json`，不能来自 `skill.local.env`。
-- Formal workflow submit 必须在 `Task Request Entry` 阶段完成持久化 preflight；缺 Runtime DB、Fact DB、非 local object store、bucket 或 MinIO/S3 必填配置时拒绝创建正式任务。
+- Formal workflow submit 必须在 `Task Request Entry` 阶段按 workflow 声明完成持久化 preflight：Runtime DB 始终必需；仅当 `requires_fact_db=true` 时要求 Fact DB；仅当 `requires_object_storage=true` 且流程会持久化允许的长期业务对象时要求 MinIO provider、bucket 和凭据。缺少当次流程实际需要的依赖时拒绝创建正式任务；只产生本地 Runtime 诊断文件的流程不要求 MinIO。
 - `task_request.payload_json` 和 child job payload 可以保存非敏感运行摘要，例如 `requires_fact_db`、`requires_object_storage`、`artifact_store.provider`、`artifact_store.bucket`、`artifact_store.object_prefix` 和配置来源标记；不得保存完整 DB URL、access key、secret key。
 - `run_mode` 只允许作为本地测试或 debug submit override，不属于正式 Skill submit 契约。
 

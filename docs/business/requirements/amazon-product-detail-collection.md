@@ -2,7 +2,7 @@
 
 日期: 2026-07-14
 
-更新: 2026-07-22
+更新: 2026-07-23
 
 状态: 已批准，实施中
 
@@ -93,7 +93,7 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 1. 读取 `source_record_id` 对应飞书行并校验 ASIN。
 2. 以项目配置的浏览器 profile 访问美国站 canonical URL。
 3. 按页面内嵌数据、同源页面响应、稳定语义 DOM、受控文本区块的顺序解析字段，并保存字段来源与完整度。
-4. 将完整 capture、HTML、允许的数据片段和必要截图写入对象存储；Runtime DB 只保存紧凑引用。
+4. 将 `normalized_capture` 写入 MinIO；主图/图库在媒体同步阶段写入 MinIO。HTML、page-data、network data、日志和普通截图只作为本地临时/诊断文件，不进入 MinIO。只有 blocked/captcha/access-blocked 的受控终态截图可以作为长期业务审计证据持久化。
 5. 将商品、快照、Offer、变体、BSR、媒体和原始 capture 索引写入 Amazon 独立事实表。
 6. 只从六字段写回白名单中投影本次明确观察到的字段；`missing` 字段保留飞书旧值。
 7. `采集状态`、`上次采集时间`、`字段完整度`、脱敏错误摘要及其他非白名单字段一律不写入飞书，也不得阻断浏览器采集和事实持久化。
@@ -110,14 +110,17 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 
 - `pending`、`collecting`、`persisting` 为非终态。
 - `success`、`partial_success`、`unavailable`、`blocked`、`failed` 为终态。
-- `blocked` 表示验证码、机器人页或访问限制；必须保存证据，不允许自动绕过，并在 Runtime 层按失败结果收敛。
+- `blocked` 表示验证码、机器人页或访问限制；必须只保存一张受控终态证据截图，不生成 normalized capture 或商品媒体，不允许自动绕过，并在 Runtime 层按失败结果收敛。
 - `partial_success` 表示身份与事实已完成，但部分可选字段、媒体或飞书投影缺失。
 - `unavailable` 是已成功持久化的商品终态事实，不等同于系统执行失败。
 
 ## 6. 数据与存储边界
 
 - Amazon 使用同一 Fact DB 实例中的 `amazon_*` 独立表，不写入 `tk_*` 表，也不建立跨平台外键。
-- 对象存储复用现有 bucket，通过 Amazon 专用 prefix 隔离；首期不新建 bucket。
+- MinIO 只保存长期业务对象，采用默认拒绝和显式白名单；Amazon 准入对象仅为商品媒体、`normalized_capture` 与 blocked/captcha/access-blocked 受控截图。
+- 对象存储复用现有 bucket，通过 Amazon 专用 prefix 隔离；首期不新建 bucket，生产 worker 不创建 bucket。
+- 持久引用至少包含 `bucket + object_key + content_digest`；`local_path` 只用于当前进程临时文件，不能进入 Amazon Fact 或作为 Browser/API 跨进程定位。
+- 成功或 partial success 不要求 HTML、page-data、network data 或成功截图。上述文件不得因体积、排障或 Runtime 紧凑引用要求被提升到 MinIO。
 - Runtime DB schema 不因本需求变化，只复用现有 task、execution、job、lease、artifact 和 outbox 能力。
 - 生产 daemon/worker 不执行 DDL；表和索引只由 migration user 通过 migration 创建。
 
@@ -125,9 +128,9 @@ Amazon Skill 从自身 `skill.local.env` 读取 Base URL、Table ID、View ID，
 
 1. 合法飞书 ASIN 能触发四阶段单行 workflow，并将结果写回同一来源记录。
 2. 同一来源行和 ASIN 重试不会产生重复商品主档、重复快照、重复变体关系或重复媒体关系。
-3. 浏览器结果只在 Runtime DB 中保存身份、状态、完整度、对象引用，以及已去除 query/fragment 且绑定 Amazon/US/ASIN 的紧凑媒体来源引用；不内联完整 HTML、标准化 capture 或媒体正文。
+3. 浏览器结果只在 Runtime DB 中保存身份、状态、完整度、完整的 `normalized_capture`/受控 blocked 证据引用，以及已去除 query/fragment 且绑定 Amazon/US/ASIN 的紧凑媒体来源引用；不内联完整 HTML、标准化 capture 或媒体正文，也不返回成功 HTML/page-data/network-data 的持久引用。
 4. `missing` 字段不清空飞书旧值；只有 `observed` 或 `explicitly_unavailable` 字段可写回。
-5. 非美国站、非法 ASIN、身份不一致、blocked、Fact DB 失败、对象存储失败和飞书写回失败均按受控错误口径收敛。
+5. 非美国站、非法 ASIN、身份不一致、blocked、Fact DB 失败、白名单业务对象存储失败和飞书写回失败均按受控错误口径收敛；本地诊断文件未进入 MinIO不是对象存储失败。
 6. 现有 TikTok / FastMoss workflow、`tk_*` 事实表和 browser fallback 语义不受影响。
 7. 动态 Coupon ID 和 Limited Time Deal 能生成结构化促销；同页同时存在 Coupon 与结账折扣时只保留 Coupon。
 8. 无白名单促销页面返回空数组；结账折扣、Prime 会员价、Prime Day Deal、Subscribe & Save、数量/条件购买折扣、普通划线价、促销解释文本、Prime 配送宣传和页面导航不得误判为促销。

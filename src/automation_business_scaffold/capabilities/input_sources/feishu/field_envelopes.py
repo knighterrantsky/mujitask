@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import os
 import re
@@ -187,6 +188,7 @@ def attachment_write_items(value: Any) -> list[dict[str, str]]:
                     "local_path": first_non_empty(item.get("local_path"), item.get("source_path"), item.get("path")),
                     "object" + "_key": first_non_empty(item.get("object" + "_key")),
                     "bucket": first_non_empty(item.get("bucket")),
+                    "content_digest": first_non_empty(item.get("content_digest")),
                     "file_name": first_non_empty(item.get("file_name"), item.get("name")),
                     "mime_type": first_non_empty(item.get("mime_type"), item.get("type")),
                 }
@@ -232,23 +234,28 @@ def upload_attachment_item(
     payload: Mapping[str, Any],
 ) -> str:
     file_name = _attachment_file_name(item)
+    bucket = first_non_empty(item.get("bucket"))
+    object_key = first_non_empty(item.get("object_key"))
+    content_digest = first_non_empty(item.get("content_digest"))
+    if bucket or object_key or content_digest:
+        file_data = _read_materialized_attachment(
+            bucket=bucket,
+            object_key=object_key,
+            content_digest=content_digest,
+        )
+        return client.upload_media(
+            file_name=file_name or Path(object_key).name or "attachment.bin",
+            file_data=file_data,
+            parent_node=target.app_token,
+            extra=_attachment_upload_extra(target, payload),
+        )
+
     local_path = _attachment_local_path(item)
     if local_path:
         file_data = local_path.read_bytes()
         file_name = file_name or local_path.name
         return client.upload_media(
             file_name=file_name,
-            file_data=file_data,
-            parent_node=target.app_token,
-            extra=_attachment_upload_extra(target, payload),
-        )
-
-    bucket = first_non_empty(item.get("bucket"))
-    object_key = first_non_empty(item.get("object_key"))
-    if bucket or object_key:
-        file_data = _read_materialized_attachment(bucket=bucket, object_key=object_key)
-        return client.upload_media(
-            file_name=file_name or Path(object_key).name or "attachment.bin",
             file_data=file_data,
             parent_node=target.app_token,
             extra=_attachment_upload_extra(target, payload),
@@ -298,9 +305,18 @@ def upload_attachment_item(
     )
 
 
-def _read_materialized_attachment(*, bucket: str, object_key: str) -> bytes:
-    if not bucket or not object_key:
-        raise ValueError("Materialized Feishu attachment requires bucket and object_key.")
+def _read_materialized_attachment(
+    *,
+    bucket: str,
+    object_key: str,
+    content_digest: str,
+) -> bytes:
+    if not bucket or not object_key or not content_digest:
+        raise ValueError(
+            "Materialized Feishu attachment requires bucket, object_key, and content_digest."
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", content_digest):
+        raise ValueError("Materialized attachment content_digest must be lowercase SHA-256.")
     defaults = get_execution_control_defaults()
     provider = normalize_artifact_store_provider(defaults.artifact_store_provider)
     if provider == "local" or not defaults.artifact_bucket:
@@ -311,6 +327,22 @@ def _read_materialized_attachment(*, bucket: str, object_key: str) -> bytes:
     normalized_key = object_key.strip().lstrip("/")
     if prefix and not normalized_key.startswith(f"{prefix}/"):
         raise ValueError("Materialized attachment object_key is outside configured prefix.")
+    relative_key = (
+        normalized_key[len(prefix) + 1 :]
+        if prefix
+        else normalized_key
+    )
+    if not relative_key.startswith(
+        (
+            "product-media/",
+            "creator-media/",
+            "video-media/",
+            "business-attachments/tiktok/",
+        )
+    ):
+        raise ValueError(
+            "Materialized attachment object_key is not an allowlisted business attachment."
+        )
     store = create_artifact_store(
         {
             "artifact_store_provider": defaults.artifact_store_provider,
@@ -327,6 +359,8 @@ def _read_materialized_attachment(*, bucket: str, object_key: str) -> bytes:
     content = store.read_bytes(bucket=bucket, object_key=normalized_key)
     if not content:
         raise ValueError("Materialized attachment object is empty.")
+    if hashlib.sha256(content).hexdigest() != content_digest:
+        raise ValueError("Materialized attachment content digest mismatch.")
     return content
 
 

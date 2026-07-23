@@ -89,14 +89,15 @@ def sync_artifact_specs(
         metadata = dict(spec.metadata)
         metadata.setdefault("local_object_key", local_object_key)
         metadata.setdefault("local_uri", resolved_path.resolve().as_uri())
-        metadata.setdefault("storage_backend", getattr(artifact_store, "provider_code", "local"))
+        durable_store = artifact_store if explicit_object_key else None
+        metadata.setdefault("storage_backend", getattr(durable_store, "provider_code", "local"))
         bucket = artifact_bucket
         object_key = local_object_key
         etag = _sha256_of_file(resolved_path)
         size = resolved_path.stat().st_size
-        if artifact_store is not None:
+        if durable_store is not None:
             object_key = join_object_key(artifact_object_prefix, local_object_key)
-            uploaded = artifact_store.upload_file(
+            uploaded = durable_store.upload_file(
                 bucket=bucket,
                 object_key=object_key,
                 local_path=resolved_path,
@@ -116,11 +117,6 @@ def sync_artifact_specs(
             content_type = uploaded.content_type or content_type
             metadata.update(uploaded.metadata)
             metadata["remote_uri"] = uploaded.uri
-            if not explicit_object_key:
-                artifact_uri_prefix = artifact_store.build_uri(
-                    bucket=bucket,
-                    object_key=join_object_key(artifact_object_prefix, f"runs/{run_id}"),
-                )
         record = ArtifactObjectRecord(
             artifact_id=_build_artifact_id(run_id, spec.kind, resolved_path),
             request_id=request_id,

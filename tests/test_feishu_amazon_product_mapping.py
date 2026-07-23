@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,6 +103,7 @@ def _materialized_media(capture):
                 "s3://runtime-artifacts/"
                 "mujitask/local/product-media/amazon/us/B0CHILD001/main.jpg"
             ),
+            "content_digest": "a" * 64,
             "source_path": "/tmp/amazon-main.jpg",
             "file_name": "main.jpg",
             "mime_type": "image/jpeg",
@@ -125,6 +127,7 @@ def _materialized_media(capture):
                     "s3://runtime-artifacts/mujitask/local/product-media/amazon/us/"
                     f"B0CHILD001/gallery-{position}.jpg"
                 ),
+                "content_digest": f"{position + 1:064x}",
                 "source_path": f"/tmp/amazon-gallery-{position}.jpg",
                 "file_name": f"gallery-{position}.jpg",
                 "mime_type": "image/jpeg",
@@ -443,11 +446,11 @@ def test_projection_maps_all_observed_fields_to_same_source_record() -> None:
     assert fields["字段完整度"] == 100.0
     assert fields["主图"] == [
         {
-            "source_url": "https://images.example.test/structured-main.jpg",
-            "local_path": "/tmp/amazon-main.jpg",
+            "bucket": "runtime-artifacts",
             "object_key": (
                 "mujitask/local/product-media/amazon/us/B0CHILD001/main.jpg"
             ),
+            "content_digest": "a" * 64,
             "file_name": "main.jpg",
             "mime_type": "image/jpeg",
         }
@@ -810,12 +813,18 @@ def test_materialized_local_attachment_can_replace_existing_feishu_attachment(
     }
 
 
-def test_materialized_object_attachment_can_replace_and_upload_after_local_file_expires(
+def test_materialized_object_attachment_reads_minio_even_when_local_file_exists(
     monkeypatch,
+    tmp_path,
 ) -> None:
+    stored_image = b"stored-image"
+    local_path = tmp_path / "stale-main.jpg"
+    local_path.write_bytes(b"stale-local-image")
     object_item = {
         "bucket": "runtime-artifacts",
         "object_key": "mujitask/local/product-media/amazon/us/B0CHILD001/main.jpg",
+        "content_digest": hashlib.sha256(stored_image).hexdigest(),
+        "local_path": str(local_path),
         "file_name": "main.jpg",
         "mime_type": "image/jpeg",
     }
@@ -831,7 +840,7 @@ def test_materialized_object_attachment_can_replace_and_upload_after_local_file_
         def read_bytes(self, *, bucket, object_key):
             assert bucket == "runtime-artifacts"
             assert object_key == object_item["object_key"]
-            return b"stored-image"
+            return stored_image
 
     class Client:
         def upload_media(
@@ -858,6 +867,7 @@ def test_materialized_object_attachment_can_replace_and_upload_after_local_file_
             minio_secret_key="secret",
             minio_secure=False,
             minio_region="",
+            minio_create_bucket=False,
         ),
     )
     monkeypatch.setattr(
@@ -877,6 +887,31 @@ def test_materialized_object_attachment_can_replace_and_upload_after_local_file_
     )
 
     assert refs == [{"file_token": "new-feishu-token"}]
+
+
+def test_incomplete_materialized_attachment_reference_is_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match="requires bucket, object_key, and content_digest",
+    ):
+        attachment_file_token_ref_items(
+            [
+                {
+                    "object_key": (
+                        "mujitask/local/product-media/amazon/us/"
+                        "B0CHILD001/main.jpg"
+                    ),
+                    "file_name": "main.jpg",
+                }
+            ],
+            client=object(),
+            target=FeishuTableTarget(
+                access_token="access-token",
+                app_token="app-token",
+                table_id="table-id",
+            ),
+            payload={},
+        )
 
 
 def test_feishu_write_only_transports_six_active_amazon_projection_fields(
@@ -944,11 +979,38 @@ def test_feishu_write_only_transports_six_active_amazon_projection_fields(
         FakeClient,
     )
     record = _projection_record()
+    stored_objects: dict[tuple[str, str], bytes] = {}
     for index, asset in enumerate(record["materialized_media_assets"]):
         path = tmp_path / f"asset-{index}.jpg"
-        path.write_bytes(f"image-{index}".encode())
+        image_bytes = f"image-{index}".encode()
+        path.write_bytes(image_bytes)
         asset["source_path"] = str(path)
         asset["file_name"] = path.name
+        asset["content_digest"] = hashlib.sha256(image_bytes).hexdigest()
+        stored_objects[(asset["bucket"], asset["object_key"])] = image_bytes
+
+    class Store:
+        def read_bytes(self, *, bucket, object_key):
+            return stored_objects[(bucket, object_key)]
+
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes.get_execution_control_defaults",
+        lambda: SimpleNamespace(
+            artifact_store_provider="minio",
+            artifact_bucket="runtime-artifacts",
+            artifact_object_prefix="mujitask/local",
+            minio_endpoint="127.0.0.1:9000",
+            minio_access_key="access",
+            minio_secret_key="secret",
+            minio_secure=False,
+            minio_region="",
+            minio_create_bucket=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes.create_artifact_store",
+        lambda settings: Store(),
+    )
 
     context = HandlerContext(
         request_id="req-amazon-write",

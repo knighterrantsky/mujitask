@@ -53,12 +53,15 @@ class _AmazonCacheArtifactStore:
     def __init__(self, cached_payload: bytes | None) -> None:
         self.cached_payload = cached_payload
         self.uploads: list[dict[str, Any]] = []
+        self.objects: dict[tuple[str, str], bytes] = {}
 
     def read_bytes(self, *, bucket, object_key, max_bytes=None):
-        del bucket, object_key, max_bytes
-        if self.cached_payload is None:
+        payload = self.objects.get((bucket, object_key), self.cached_payload)
+        if payload is None:
             raise FileNotFoundError("cached object is missing")
-        return self.cached_payload
+        if max_bytes is not None and len(payload) > max_bytes:
+            raise ValueError("object exceeds read limit")
+        return payload
 
     def upload_file(
         self,
@@ -70,6 +73,7 @@ class _AmazonCacheArtifactStore:
         metadata=None,
     ):
         payload = local_path.read_bytes()
+        self.objects[(bucket, object_key)] = payload
         self.uploads.append(
             {
                 "bucket": bucket,
@@ -219,8 +223,9 @@ def test_media_asset_sync_downloads_referenced_source_url_before_upload(
     assert asset["source_url"] == "https://cdn.example.com/gallery.webp?from=2378011839"
     assert asset["local_path"].endswith(".webp")
     assert asset["object_key"].endswith(".webp")
-    assert asset["object_key"].startswith("runs/job-media/assets/")
+    assert asset["object_key"].startswith("product-media/1730964478199763166/")
     assert result.result["artifact_refs"][0]["content_type"] == "image/webp"
+    assert result.result["media_fact_bundle"]["media_assets"] == []
 
 
 def test_media_asset_sync_enforces_configured_download_byte_limit(monkeypatch, tmp_path) -> None:
@@ -390,7 +395,7 @@ def test_amazon_valid_source_url_strips_query_and_fragment_before_output(tmp_pat
     assert result.status == "success"
     expected_url = "https://m.media-amazon.com/images/I/main.webp"
     assert result.result["synced_assets"][0]["source_url"] == expected_url
-    assert result.result["media_fact_bundle"]["media_assets"][0]["source_url"] == expected_url
+    assert result.result["media_fact_bundle"]["media_assets"] == []
 
 
 def test_amazon_thumbnail_derivative_is_canonicalized_before_download(
@@ -1180,7 +1185,10 @@ def test_media_asset_sync_fails_when_object_storage_is_required_with_local_provi
     assert result.result["artifact_refs"] == []
 
 
-def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch, tmp_path) -> None:
+def test_media_asset_sync_treats_incomplete_cached_fact_asset_as_cache_miss(
+    monkeypatch,
+    tmp_path,
+) -> None:
     class FakeFactStore:
         def __init__(self, *, db_url: str):
             assert db_url == "postgresql+psycopg://facts"
@@ -1197,20 +1205,29 @@ def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch,
                 "source_platform": "tiktok",
             }
 
+    store = _AmazonCacheArtifactStore(None)
+    requested_urls: list[str] = []
     monkeypatch.setattr(asset_sync_handler, "TKFactStore", FakeFactStore)
     monkeypatch.setattr(
         asset_sync_handler,
+        "create_store_from_settings",
+        lambda settings: store,
+    )
+    monkeypatch.setattr(
+        asset_sync_handler,
         "urlopen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not download")),
+        lambda request, timeout: requested_urls.append(request.full_url) or _FakeResponse(),
     )
 
     result = asset_sync_handler.media_asset_sync_handler(
         _context(
             {
                 "artifact_root": str(tmp_path / "artifacts"),
-                "artifact_store_provider": "local",
+                "artifact_store_provider": "minio",
+                "artifact_bucket": "business-assets",
                 "fact_db_url": "postgresql+psycopg://facts",
                 "sync_referenced_files": True,
+                "require_materialized_assets": True,
                 "asset_refs": [
                     {
                         "entity_type": "product",
@@ -1224,11 +1241,14 @@ def test_media_asset_sync_reuses_cached_fact_asset_without_download(monkeypatch,
     )
 
     assert result.status == "success"
-    assert result.result["artifact_refs"] == []
+    assert requested_urls == ["https://cdn.example.com/gallery.webp"]
+    assert len(result.result["artifact_refs"]) == 1
     asset = result.result["synced_assets"][0]
-    assert asset["sync_state"] == "reused"
-    assert asset["asset_id"] == "asset-cached"
-    assert asset["object_key"] == "runtime/media/gallery.webp"
+    assert asset["sync_state"] == "uploaded"
+    assert asset["bucket"] == "business-assets"
+    assert asset["object_key"].startswith("product-media/1730964478199763166/")
+    assert len(asset["content_digest"]) == 64
+    assert not asset.get("local_path")
 
 
 def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
@@ -1240,6 +1260,7 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
 
         def __init__(self) -> None:
             self.uploads: list[dict[str, Any]] = []
+            self.objects: dict[tuple[str, str], bytes] = {}
 
         def upload_file(
             self,
@@ -1251,6 +1272,7 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
             metadata=None,
         ):
             payload = local_path.read_bytes()
+            self.objects[(bucket, object_key)] = payload
             self.uploads.append(
                 {
                     "bucket": bucket,
@@ -1271,6 +1293,12 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
 
         def build_uri(self, *, bucket, object_key):
             return f"s3://{bucket}/{object_key}"
+
+        def read_bytes(self, *, bucket, object_key, max_bytes=None):
+            payload = self.objects[(bucket, object_key)]
+            if max_bytes is not None and len(payload) > max_bytes:
+                raise ValueError("object exceeds read limit")
+            return payload
 
     class ForbiddenTKFactStore:
         def __init__(self, **kwargs):
@@ -1610,6 +1638,6 @@ def test_media_asset_sync_scopes_duplicate_refs_by_platform_and_amazon_role(
     assert requested_urls == [shared_url, shared_url, shared_url]
     assert len(result.result["artifact_refs"]) == 3
     object_keys = [asset["object_key"] for asset in result.result["synced_assets"]]
-    assert object_keys[0].startswith("runs/job-media/assets/")
+    assert object_keys[0].startswith("product-media/1730964478199763166/")
     assert object_keys[1].startswith("product-media/amazon/us/B0CHILD001/main_image/")
     assert object_keys[2].startswith("product-media/amazon/us/B0CHILD001/gallery_image/")
