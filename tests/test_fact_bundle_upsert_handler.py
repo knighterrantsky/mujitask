@@ -72,6 +72,35 @@ def test_fact_bundle_upsert_accepts_top_level_fact_bundle_only(monkeypatch) -> N
     assert result.result["fact_bundle"]["product_metric_snapshots"][0]["window_days"] == 28
 
 
+def test_fact_bundle_upsert_rejects_incomplete_or_malformed_durable_media() -> None:
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "fact_bundle": {
+                    "media_assets": [
+                        {
+                            "bucket": "business-assets",
+                            "object_key": "product-media/123/main.jpg",
+                            "content_digest": "a" * 64,
+                            "size_bytes": "not-a-number",
+                        },
+                        {
+                            "object_key": "product-media/123/gallery.jpg",
+                            "content_digest": "b" * 64,
+                            "size_bytes": 10,
+                        },
+                    ]
+                }
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "durable_media_reference_required"
+    assert result.error.details["invalid_media_indexes"] == [0, 1]
+
+
 def test_fact_bundle_upsert_ignores_legacy_nested_fact_bundle_inputs() -> None:
     result = fact_bundle_upsert_handler(
         _context(

@@ -1,6 +1,6 @@
 # 依赖说明
 
-更新时间: 2026-04-29
+更新时间: 2026-07-23
 
 本文说明 Mujitask 的 Python 依赖、开发依赖、外部运行依赖和升级规则。
 
@@ -16,7 +16,7 @@
 | `SQLAlchemy` | Runtime DB / Fact DB ORM 与连接 |
 | `psycopg[binary]` | Postgres 驱动 |
 | `alembic` | 数据库 migration |
-| `minio` | Artifact object store |
+| `minio` | 读写机器契约准入的长期业务对象 |
 | `requests` | HTTP 请求 |
 | `uvicorn` | 本地 Agent API 服务 |
 
@@ -44,7 +44,7 @@
 | 服务 | 用途 | 说明 |
 | --- | --- | --- |
 | Postgres | Runtime DB / Fact DB | 本地开发可通过 socket 连接 |
-| MinIO | Artifact object store | 用于存储运行时产物 |
+| MinIO | 长期业务对象存储 | 仅用于白名单业务媒体、Amazon normalized capture 和受控 blocked evidence；本地 Runtime artifact 不依赖 MinIO |
 | Chromium | 浏览器自动化 | 通过 Playwright 安装 |
 
 ## 6. 不要做的事

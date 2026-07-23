@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from time import perf_counter
 from typing import Any
@@ -651,6 +652,16 @@ def _compact_discovery_creator_candidate(candidate: Mapping[str, Any]) -> dict[s
 def _compact_media_result(result: Mapping[str, Any]) -> dict[str, Any]:
     synced_assets = coerce_mapping_list(result.get("synced_assets"))
     artifact_refs = coerce_mapping_list(result.get("artifact_refs"))
+    durable_assets = [
+        asset
+        for asset in synced_assets
+        if first_non_empty(asset.get("bucket"))
+        and first_non_empty(asset.get("object_key"))
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            first_non_empty(asset.get("content_digest")),
+        )
+    ]
     return {
         "synced_count": len(synced_assets),
         "artifact_count": len(artifact_refs),
@@ -660,17 +671,21 @@ def _compact_media_result(result: Mapping[str, Any]) -> dict[str, Any]:
                 "entity_external_id": first_non_empty(asset.get("entity_external_id")),
                 "media_role": first_non_empty(asset.get("media_role"), asset.get("media_type")),
                 "sync_state": first_non_empty(asset.get("sync_state")),
+                "bucket": first_non_empty(asset.get("bucket")),
                 "object_key": first_non_empty(asset.get("object_key")),
-                "remote_uri": first_non_empty(asset.get("remote_uri")),
-                "file_token": first_non_empty(asset.get("file_token")),
+                "content_digest": first_non_empty(asset.get("content_digest")),
             }
-            for asset in synced_assets
+            for asset in durable_assets
         ],
         "artifact_refs": [
             {
                 "artifact_id": first_non_empty(ref.get("artifact_id")),
+                "bucket": first_non_empty(ref.get("bucket")),
                 "object_key": first_non_empty(ref.get("object_key")),
-                "remote_uri": first_non_empty(ref.get("remote_uri")),
+                "content_digest": first_non_empty(
+                    ref.get("content_digest"),
+                    coerce_mapping(ref.get("metadata")).get("content_digest"),
+                ),
             }
             for ref in artifact_refs
         ],
@@ -1104,13 +1119,32 @@ def _final_product_status(influencer_write: HandlerResult) -> str:
 
 
 def _merge_media_refs(existing_refs: list[Any], synced_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    refs: list[dict[str, Any]] = [dict(item) for item in existing_refs if isinstance(item, Mapping)]
+    refs: list[dict[str, Any]] = [
+        dict(item)
+        for item in existing_refs
+        if isinstance(item, Mapping)
+        and first_non_empty(item.get("bucket"))
+        and first_non_empty(item.get("object_key"))
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            first_non_empty(item.get("content_digest")),
+        )
+    ]
     seen = {
         _media_ref_key(ref)
         for ref in refs
         if _media_ref_key(ref)
     }
     for asset in synced_assets:
+        if (
+            not first_non_empty(asset.get("bucket"))
+            or not first_non_empty(asset.get("object_key"))
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                first_non_empty(asset.get("content_digest")),
+            )
+        ):
+            continue
         ref = {
             "entity_key": asset.get("entity_key"),
             "entity_type": asset.get("entity_type"),
@@ -1118,11 +1152,12 @@ def _merge_media_refs(existing_refs: list[Any], synced_assets: list[dict[str, An
             "media_role": asset.get("media_role"),
             "media_type": asset.get("media_role"),
             "source_url": asset.get("source_url"),
-            "local_path": asset.get("local_path"),
-            "source_path": asset.get("source_path"),
+            "bucket": asset.get("bucket"),
             "object_key": asset.get("object_key"),
-            "remote_uri": asset.get("remote_uri"),
-            "file_token": asset.get("file_token"),
+            "content_digest": asset.get("content_digest"),
+            "file_name": asset.get("file_name"),
+            "mime_type": asset.get("mime_type"),
+            "size_bytes": asset.get("size_bytes"),
             "source_platform": asset.get("source_platform"),
             "metadata": coerce_mapping(asset.get("metadata")),
         }
@@ -1139,7 +1174,9 @@ def _media_ref_key(ref: Mapping[str, Any]) -> str:
         [
             first_non_empty(ref.get("entity_type")),
             first_non_empty(ref.get("entity_external_id")),
-            first_non_empty(ref.get("source_url"), ref.get("local_path"), ref.get("object_key"), ref.get("remote_uri")),
+            first_non_empty(ref.get("bucket")),
+            first_non_empty(ref.get("object_key")),
+            first_non_empty(ref.get("content_digest")),
         ]
     )
 

@@ -29,7 +29,6 @@ from automation_business_scaffold.contracts.handler.shared import (
 )
 from automation_business_scaffold.infrastructure.artifacts.artifact_sync import (
     ArtifactFileSpec,
-    create_store_from_settings,
     sync_artifact_specs,
 )
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
@@ -682,7 +681,6 @@ def _capture_fastmoss_search_raw_response(
         return "", [], []
 
     artifact_settings = _resolve_artifact_settings(payload)
-    artifact_store = create_store_from_settings(artifact_settings)
     artifact_root = Path(
         first_non_empty(
             payload.get("artifact_root"),
@@ -740,7 +738,7 @@ def _capture_fastmoss_search_raw_response(
                 },
             )
         ],
-        artifact_store=artifact_store,
+        artifact_store=None,
         created_at=now_timestamp(),
     )
     if not records:

@@ -100,9 +100,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                 "synced_assets": [
                     {
                         "source_url": "https://cdn.example.com/main.jpg",
-                        "object_key": "runtime/media/main.jpg",
-                        "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
-                        "source_path": "/tmp/main.jpg",
+                        "bucket": "bucket",
+                        "object_key": "product-media/123456789/main.jpg",
+                        "content_digest": "a" * 64,
+                        "size_bytes": 10,
+                        "sync_state": "uploaded",
                         "file_name": "main.jpg",
                         "mime_type": "image/jpeg",
                         "entity_type": "product",
@@ -111,9 +113,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                     },
                     {
                         "source_url": "https://cdn.example.com/main.jpg",
-                        "object_key": "runtime/media/main.jpg",
-                        "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
-                        "source_path": "/tmp/main.jpg",
+                        "bucket": "bucket",
+                        "object_key": "product-media/123456789/sku.jpg",
+                        "content_digest": "b" * 64,
+                        "size_bytes": 10,
+                        "sync_state": "uploaded",
                         "file_name": "main.jpg",
                         "mime_type": "image/jpeg",
                         "entity_type": "product",
@@ -125,9 +129,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                     "media_assets": [
                         {
                             "source_url": "https://cdn.example.com/main.jpg",
-                            "object_key": "runtime/media/main.jpg",
-                            "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
-                            "source_path": "/tmp/main.jpg",
+                            "bucket": "bucket",
+                            "object_key": "product-media/123456789/main.jpg",
+                            "content_digest": "a" * 64,
+                            "size_bytes": 10,
+                            "sync_state": "uploaded",
                             "file_name": "main.jpg",
                             "mime_type": "image/jpeg",
                             "entity_type": "product",
@@ -136,9 +142,11 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
                         },
                         {
                             "source_url": "https://cdn.example.com/main.jpg",
-                            "object_key": "runtime/media/main.jpg",
-                            "remote_uri": "s3://bucket/runs/job-competitor-row/main.jpg",
-                            "source_path": "/tmp/main.jpg",
+                            "bucket": "bucket",
+                            "object_key": "product-media/123456789/sku.jpg",
+                            "content_digest": "b" * 64,
+                            "size_bytes": 10,
+                            "sync_state": "uploaded",
                             "file_name": "main.jpg",
                             "mime_type": "image/jpeg",
                             "entity_type": "product",
@@ -238,7 +246,13 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     ]
     assert result.result["writeback_projection"]["fields"]["SKU-ID"] == "123456789"
     assert result.result["writeback_projection"]["fields"]["标题"] == "Graduation Kit"
-    assert result.result["writeback_projection"]["fields"]["图片"]["local_path"] == "/tmp/main.jpg"
+    assert result.result["writeback_projection"]["fields"]["图片"] == {
+        "bucket": "bucket",
+        "object_key": "product-media/123456789/main.jpg",
+        "content_digest": "a" * 64,
+        "file_name": "main.jpg",
+        "mime_type": "image/jpeg",
+    }
     assert result.result["product_fact_bundle"]["product_id"] == "123456789"
     assert result.result["fact_upsert"]["persistence_mode"] == "database"
     assert "fact_bundle" not in result.result["fact_upsert"]
@@ -261,7 +275,13 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         "product_main_image",
         "product_sku_image",
     ]
-    assert write_payloads[0]["records"][0]["projection_fields"]["图片"]["local_path"] == "/tmp/main.jpg"
+    assert write_payloads[0]["records"][0]["projection_fields"]["图片"] == {
+        "bucket": "bucket",
+        "object_key": "product-media/123456789/main.jpg",
+        "content_digest": "a" * 64,
+        "file_name": "main.jpg",
+        "mime_type": "image/jpeg",
+    }
 
 
 def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(

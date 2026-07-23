@@ -1,6 +1,6 @@
 # 项目架构契约
 
-日期: 2026-04-24
+日期: 2026-07-23
 
 状态: 受控项目架构契约
 
@@ -135,7 +135,7 @@ scripts/
 | Fact Source Handler | `capabilities/fact_sources/{source}/` | `{entity}_fetch_handler.py` | TikTok / FastMoss / AWS 等事实采集 |
 | Persistence Handler | `capabilities/persistence/{store}/` | `{operation}_handler.py` | database/object storage 能力，不写业务规则 |
 | Channel Handler | `capabilities/channels/{channel}/` | `{message_type}_handler.py` | Feishu / Dingding / Discord 等出站通道 |
-| Browser / Media Capability | `capabilities/browser/`、`capabilities/media/` | `{capability}_handler.py` | profile/CDP、截图、下载、转存 |
+| Browser / Media Capability | `capabilities/browser/`、`capabilities/media/` | `{capability}_handler.py` | profile/CDP、本地诊断采集、下载，以及机器契约准入媒体的持久化 |
 | Runtime Repository / Query | `infrastructure/runtime/repositories/`、`infrastructure/runtime/queries/` | `{table_or_read_model}_repo.py`、`{read_model}_query.py` | Runtime table persistence 和只读视图；不知道 workflow 业务语义 |
 | Client / Store | `infrastructure/clients/`、`infrastructure/stores/`、`infrastructure/facts/`、`infrastructure/artifacts/` | `{system}_client.py`、`{store}_store.py` | 底层技术实现，不知道 workflow |
 
@@ -148,7 +148,7 @@ scripts/
 | 输入数据源 | 飞书表格、钉钉表格、表单、人工上传 CSV | `capabilities/input_sources/{source}/` | `domains/{domain}/mappers/`、`policies/` |
 | 事实数据源 | TikTok、FastMoss、AWS、第三方 API、爬虫观测源 | `capabilities/fact_sources/{source}/` | `domains/{domain}/policies/`、`mappers/` |
 | 数据库 | Runtime DB、Fact DB、业务索引库 | `capabilities/persistence/database/`、`infrastructure/stores/` | `domains/{domain}/policies/` 定义 key 和幂等语义 |
-| 文件存储 | MinIO、S3、本地 object store | `capabilities/persistence/object_storage/`、`infrastructure/stores/` | `domains/{domain}/projections/` 只引用 artifact，不直连 store |
+| 文件存储 | MinIO 长期业务对象、本地临时/Runtime artifact | `capabilities/persistence/object_storage/`、`infrastructure/artifacts/` | 业务 owner 只提交机器契约准入对象；projection 只引用完整持久坐标，不直连 store |
 | 消息通道 | 飞书、钉钉、Discord、邮件、Webhook | `capabilities/channels/{channel}/` | `domains/{domain}/projections/` 定义消息内容 |
 | 外部 API 节流 | FastMoss、Feishu、TikTok request、Webhook 的 request pacing | `infrastructure/rate_limit/` + provider client | `domains/{domain}/policies/` 只声明业务允许的覆盖范围 |
 | Agent runtime | OpenClaw、Hermes、用户 agent workspace | `skills/{skill_code}/` | skill 只保留入口说明和固定输入配置 |
@@ -180,7 +180,7 @@ scripts/
    TikTok、FastMoss、AWS 等事实来源放 `capabilities/fact_sources/{source}`；事实标准化、去重、可信度、落库 key 规则放 `domains/{domain}/policies` 或 `domains/{domain}/mappers`。
 
 7. 数据库与文件存储
-   DB / Object Store capability 放 `capabilities/persistence`。Runtime DB public 入口是 `infrastructure/runtime/runtime_store.py` 的 `RuntimeStore` façade，具体 table owner 放 `infrastructure/runtime/repositories/**`，read model 放 `infrastructure/runtime/queries/**`；Fact DB / MinIO / S3 技术实现放 `infrastructure/facts`、`infrastructure/artifacts` 或对应 store/client。业务不得直接绕过 store 写底层 client。
+   DB / Object Store capability 放 `capabilities/persistence`。Runtime DB public 入口是 `infrastructure/runtime/runtime_store.py` 的 `RuntimeStore` façade，具体 table owner 放 `infrastructure/runtime/repositories/**`，read model 放 `infrastructure/runtime/queries/**`；Fact DB 与既有 MinIO / S3 / local 对象传输技术实现放 `infrastructure/facts`、`infrastructure/artifacts` 或对应 store/client。S3 / local 只保留既有 transport 与测试兼容，不构成生产持久成功模式；生产长期业务对象只允许写 MinIO，准入分类仍由现有 `media_asset_sync` / `amazon_browser_capture` owner 决定。底层 transport 不得自行分类，业务也不得绕过 store 写底层 client。
 
 8. 输出通道
    飞书写回字段放 `domains/{domain}/projections`；飞书、钉钉、Discord 通知通道放 `capabilities/channels/{channel}`。所有最终通知必须通过 outbox，workflow 不直接调用通道 API。

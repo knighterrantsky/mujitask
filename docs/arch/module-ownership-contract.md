@@ -1,6 +1,6 @@
 # 模块实现所有权契约
 
-日期: 2026-04-24
+日期: 2026-07-23
 
 状态: 受控架构契约
 
@@ -60,7 +60,7 @@ mapper 拥有:
 projection 拥有:
 
 - domain object / workflow result 到飞书表格、消息、视图或 outbox payload 的字段投影。
-- 对显式登记的 handler result，投影到首次 Runtime 写入所需的紧凑 summary/result、受控 artifact index record 和脱敏失败策略；通用 worker 只负责 RuntimeStore 调用、retry/terminal 执行和 artifact replacement。
+- 对显式登记的 handler result，投影到首次 Runtime 写入所需的紧凑 summary/result、本地诊断 artifact index 或白名单长期业务对象完整引用，以及脱敏失败策略；projection 不决定对象类别准入，通用 worker 只负责 RuntimeStore 调用和 retry/terminal 执行。
 - 写回字段名、列级默认值、展示格式和缺失值策略。
 - 面向外部通道的业务摘要文本，但不负责发送。
 - 飞书 projection mapper 的必填字段、可选字段、人工保留字段和系统覆盖字段策略。
@@ -94,7 +94,7 @@ capability handler 拥有:
 - payload parsing 和 handler-level validation。
 - 外部 transport、client / store 调用、分页、批量、限速、重试分类。
 - 标准 `HandlerResult` / result envelope 构造。
-- capability 范围内的幂等、错误分类和 artifact 引用。
+- capability 范围内的幂等、错误分类、本地诊断索引，以及机器契约允许时的完整 `bucket + object_key + content_digest` 引用。
 
 capability handler 禁止:
 

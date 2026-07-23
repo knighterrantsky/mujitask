@@ -424,7 +424,11 @@ def _project_media(
                 continue
             if item.get("sync_state") not in _MATERIALIZED_MEDIA_STATES:
                 continue
-            if not _text(item.get("bucket")) or not _text(item.get("object_key")):
+            if (
+                not _text(item.get("bucket"))
+                or not _text(item.get("object_key"))
+                or not re.fullmatch(r"[0-9a-f]{64}", _text(item.get("content_digest")))
+            ):
                 continue
             assets.append(dict(item))
     if _evidence_status(evidence, "media.main_image") == "observed":
@@ -447,12 +451,9 @@ def _attachment_item(asset: Mapping[str, Any]) -> dict[str, str]:
     return {
         key: value
         for key, value in {
-            "source_url": _text(asset.get("source_url")),
-            "local_path": _first_non_empty(
-                asset.get("local_path"),
-                asset.get("source_path"),
-            ),
+            "bucket": _text(asset.get("bucket")),
             "object_key": _text(asset.get("object_key")),
+            "content_digest": _text(asset.get("content_digest")),
             "file_name": _text(asset.get("file_name")),
             "mime_type": _text(asset.get("mime_type")),
         }.items()

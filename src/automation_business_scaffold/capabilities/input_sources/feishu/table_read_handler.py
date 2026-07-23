@@ -40,7 +40,6 @@ from automation_business_scaffold.contracts.handler.shared import (
 )
 from automation_business_scaffold.infrastructure.artifacts.artifact_sync import (
     ArtifactFileSpec,
-    create_store_from_settings,
     sync_artifact_specs,
 )
 
@@ -180,7 +179,6 @@ def _store_raw_snapshot(
     if not coerce_bool(snapshot_policy.get("store_raw_rows")):
         return {}
     artifact_settings = _resolve_artifact_settings(payload)
-    artifact_store = create_store_from_settings(artifact_settings)
     artifact_root = Path(
         first_non_empty(
             payload.get("artifact_root"),
@@ -240,7 +238,7 @@ def _store_raw_snapshot(
                 metadata={"source_table_ref": table_ref},
             )
         ],
-        artifact_store=artifact_store,
+        artifact_store=None,
         created_at=now_timestamp(),
     )
     artifacts = [record.to_dict() for record in records]

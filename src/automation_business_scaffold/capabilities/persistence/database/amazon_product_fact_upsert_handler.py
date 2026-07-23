@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
-import io
 import json
 import math
 import re
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 from typing import Any, Mapping
 
 from automation_business_scaffold.capabilities.browser.amazon.product_page import (
     AmazonProductExtractionError,
-    extract_amazon_network_product_data,
     normalize_amazon_media_url,
     normalize_asin,
 )
@@ -86,63 +82,11 @@ _MATERIALIZED_MEDIA_MIME_TYPES = {
 }
 _MAX_MATERIALIZED_MEDIA_BYTES = 25 * 1024 * 1024
 _MAX_NORMALIZED_CAPTURE_BYTES = 2 * 1024 * 1024
-_MAX_SANITIZED_HTML_BYTES = 8 * 1024 * 1024
 _RAW_CAPTURE_MAX_BYTES = {
     "normalized_capture": _MAX_NORMALIZED_CAPTURE_BYTES,
-    "html": 2 * 1024 * 1024,
-    "network_data": 512 * 1024,
-    "screenshot": 10 * 1024 * 1024,
-}
-_HTML_SCRIPT_PATTERN = re.compile(
-    r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_HTML_SENSITIVE_ATTRIBUTE_PATTERN = re.compile(
-    r"\s+(?:data-)?(?:cookie|authorization|auth-token|access-token|refresh-token|token|"
-    r"localstorage|workspace|profile|account|address|request-headers?)\s*=",
-    re.IGNORECASE,
-)
-_HTML_SENSITIVE_MARKERS = (
-    "accountname",
-    "addressbook",
-    "customername",
-    "deliveryaddress",
-    "glowingress",
-    "navgloballocation",
-    "navlinkaccountlist",
-    "shippingaddress",
-)
-_HTML_FORBIDDEN_TAGS = {
-    "button",
-    "form",
-    "iframe",
-    "input",
-    "meta",
-    "noscript",
-    "option",
-    "select",
-    "style",
-    "textarea",
-}
-_HTML_SENSITIVE_JSON_KEYS = {
-    "account",
-    "address",
-    "authorization",
-    "cookie",
-    "cookies",
-    "headers",
-    "localstorage",
-    "profile",
-    "refreshtoken",
-    "requestheaders",
-    "token",
-    "workspace",
 }
 _RAW_CAPTURE_POLICIES = {
     "normalized_capture": ("application/json", "normalized"),
-    "html": ("application/gzip", "sanitized"),
-    "network_data": ("application/json", "allowlisted"),
-    "screenshot": ("image/png", "not_applicable"),
 }
 _LEGACY_FIELD_EVIDENCE_PATHS = frozenset(
     {
@@ -360,7 +304,6 @@ def _amazon_product_fact_upsert_with_store(
         _verify_raw_capture_objects(
             artifact_store,
             raw_capture_refs,
-            capture=capture,
             normalized_ref=normalized_ref,
             normalized_bytes=capture_bytes,
         )
@@ -652,7 +595,6 @@ def _validate_raw_capture_evidence(
         raise ValueError("normalized_capture_ref is required.")
 
     normalized_raw: dict[str, Any] | None = None
-    html_raw: dict[str, Any] | None = None
     validated_refs: list[dict[str, Any]] = []
     seen_kinds: set[str] = set()
     for raw_ref in raw_refs:
@@ -677,12 +619,10 @@ def _validate_raw_capture_evidence(
         validated_refs.append(validated)
         if capture_kind == "normalized_capture":
             normalized_raw = validated
-        elif capture_kind == "html":
-            html_raw = validated
 
-    if normalized_raw is None or html_raw is None:
+    if normalized_raw is None or len(validated_refs) != 1:
         raise ValueError(
-            "raw_capture_refs must contain normalized_capture and sanitized html evidence."
+            "raw_capture_refs must contain exactly one normalized_capture reference."
         )
     normalized_policy = _RAW_CAPTURE_POLICIES["normalized_capture"]
     normalized = _validate_artifact_ref(
@@ -733,9 +673,6 @@ def _validate_raw_capture_identity(
     )
     expected_filenames = {
         "normalized_capture": "normalized.json",
-        "html": "page.html.gz",
-        "network_data": "page-data.json",
-        "screenshot": "page.png",
     }
     normalized_ref = next(
         ref for ref in raw_capture_refs if ref["capture_kind"] == "normalized_capture"
@@ -771,7 +708,6 @@ def _verify_raw_capture_objects(
     artifact_store: Any,
     raw_capture_refs: list[dict[str, Any]],
     *,
-    capture: Mapping[str, Any],
     normalized_ref: Mapping[str, Any],
     normalized_bytes: bytes,
 ) -> None:
@@ -797,154 +733,6 @@ def _verify_raw_capture_objects(
             raise ValueError(
                 f"{raw_ref['capture_kind']} raw capture digest does not match stored bytes."
             )
-        if raw_ref["capture_kind"] == "network_data":
-            _validate_network_capture(bytes(payload), capture)
-        elif raw_ref["capture_kind"] == "html":
-            _validate_html_capture(bytes(payload))
-
-
-class _SanitizedHTMLPolicyValidator(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.violation = False
-
-    def handle_starttag(
-        self,
-        tag: str,
-        attrs: list[tuple[str, str | None]],
-    ) -> None:
-        normalized_tag = tag.lower()
-        if normalized_tag in _HTML_FORBIDDEN_TAGS:
-            self.violation = True
-            return
-        for name, value in attrs:
-            normalized_name = re.sub(r"[^a-z0-9]", "", str(name).lower())
-            normalized_value = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
-            if (
-                normalized_name.startswith("on")
-                or any(marker in normalized_name for marker in _HTML_SENSITIVE_JSON_KEYS)
-                or any(marker in normalized_value for marker in _HTML_SENSITIVE_MARKERS)
-            ):
-                self.violation = True
-
-    def handle_startendtag(
-        self,
-        tag: str,
-        attrs: list[tuple[str, str | None]],
-    ) -> None:
-        self.handle_starttag(tag, attrs)
-
-    def handle_comment(self, data: str) -> None:
-        del data
-        self.violation = True
-
-
-def _html_violates_sanitization_policy(html: str) -> bool:
-    validator = _SanitizedHTMLPolicyValidator()
-    validator.feed(html)
-    validator.close()
-    return validator.violation
-
-
-def _validate_html_capture(payload: bytes) -> None:
-    try:
-        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as compressed:
-            decompressed = compressed.read(_MAX_SANITIZED_HTML_BYTES + 1)
-        if len(decompressed) > _MAX_SANITIZED_HTML_BYTES:
-            raise ValueError("html raw capture exceeds the decompressed size limit.")
-        html = decompressed.decode("utf-8")
-    except (EOFError, OSError, UnicodeDecodeError) as exc:
-        raise ValueError("html raw capture must contain valid gzip-compressed UTF-8.") from exc
-    if not html.strip():
-        raise ValueError("html raw capture must contain sanitized page evidence.")
-    if _html_violates_sanitization_policy(html):
-        raise ValueError("html raw capture contains content removed by sanitization policy.")
-    if _HTML_SENSITIVE_ATTRIBUTE_PATTERN.search(html):
-        raise ValueError("html raw capture contains sensitive attributes.")
-    if re.search(
-        r"<meta\b[^>]*(?:http-equiv|authorization|cookie|token)[^>]*>",
-        html,
-        flags=re.IGNORECASE,
-    ):
-        raise ValueError("html raw capture contains sensitive metadata.")
-    if re.search(
-        r"\bBearer\s+(?!\[REDACTED\])[^\s<]+",
-        html,
-        flags=re.IGNORECASE,
-    ):
-        raise ValueError("html raw capture contains an unredacted bearer credential.")
-    script_matches = list(_HTML_SCRIPT_PATTERN.finditer(html))
-    for match in script_matches:
-        attrs = match.group("attrs").strip().lower()
-        if attrs not in {
-            'type="application/ld+json"',
-            'id="amazon-product-state" type="application/json"',
-        }:
-            raise ValueError("html raw capture contains a non-allowlisted script.")
-        try:
-            script_value = json.loads(match.group("body"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("html raw capture contains invalid allowlisted JSON.") from exc
-        if _contains_sensitive_json_key(script_value):
-            raise ValueError("html raw capture contains sensitive structured-data fields.")
-    if re.search(
-        r"</?script\b",
-        _HTML_SCRIPT_PATTERN.sub("", html),
-        flags=re.IGNORECASE,
-    ):
-        raise ValueError("html raw capture contains an incomplete script element.")
-
-
-def _contains_sensitive_json_key(value: Any) -> bool:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if (
-                normalized in _HTML_SENSITIVE_JSON_KEYS
-                or normalized.endswith("token")
-                or any(
-                    marker in normalized
-                    for marker in (
-                        "authorization",
-                        "cookie",
-                        "localstorage",
-                        "requestheader",
-                    )
-                )
-            ):
-                return True
-            if _contains_sensitive_json_key(item):
-                return True
-        return False
-    if isinstance(value, list):
-        return any(_contains_sensitive_json_key(item) for item in value)
-    return False
-
-
-def _validate_network_capture(payload: bytes, capture: Mapping[str, Any]) -> None:
-    try:
-        decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("network_data raw capture must contain valid UTF-8 JSON.") from exc
-    if not isinstance(decoded, dict):
-        raise ValueError("network_data raw capture must contain a JSON object.")
-
-    source_locator = _required_text(
-        decoded.get("source_locator"),
-        "network_data source_locator",
-    )
-    source_path, separator, _ = source_locator.partition("#sha256=")
-    if not separator or not source_path.startswith("/"):
-        raise ValueError("network_data source_locator must use the governed digest form.")
-    canonical = extract_amazon_network_product_data(
-        [{"source_path": source_path, "payload": decoded}],
-        expected_asin=capture["resolved_asin"],
-    )
-    if canonical != decoded:
-        raise ValueError(
-            "network_data raw capture must contain only canonical allowlisted fields "
-            "for the resolved ASIN."
-        )
 
 
 def _validate_governed_artifact_ref(

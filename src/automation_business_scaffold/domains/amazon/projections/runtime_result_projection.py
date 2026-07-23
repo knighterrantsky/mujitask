@@ -17,8 +17,6 @@ from automation_business_scaffold.contracts.handler.domain_mapping import (
 
 _AMAZON_CAPTURE_POLICIES = {
     "normalized_capture": ("application/json", "normalized", "normalized.json"),
-    "html": ("application/gzip", "sanitized", "page.html.gz"),
-    "network_data": ("application/json", "allowlisted", "page-data.json"),
     "screenshot": ("image/png", "not_applicable", "page.png"),
 }
 _AMAZON_CAPTURE_RUNTIME_FIELDS = (
@@ -728,9 +726,8 @@ def _validate_amazon_browser_success_result(
         raise ValueError("Amazon handler and collection statuses do not converge.")
     if (
         not normalized_ref
-        or not raw_refs
+        or raw_refs != [normalized_ref]
         or artifact_refs != raw_refs
-        or {ref["capture_kind"] for ref in raw_refs} < {"normalized_capture", "html"}
     ):
         raise ValueError("Amazon browser success result lacks governed capture evidence.")
 
@@ -742,17 +739,27 @@ def _validate_amazon_browser_failure_evidence(
     raw_refs: list[dict[str, Any]] | None,
     artifact_refs: list[dict[str, Any]] | None,
 ) -> None:
+    if _amazon_effective_handler_status(outcome, result) in {
+        "success",
+        "partial_success",
+    }:
+        return
     _, error_code = _browser_runtime_error_codes(outcome)
     requires_evidence = result.get("collection_status") == "blocked" or error_code in {
         "access_blocked",
         "captcha_required",
     }
     if not requires_evidence:
+        if raw_refs or artifact_refs:
+            raise ValueError(
+                "Amazon non-blocked browser failure must not persist capture evidence."
+            )
         return
     if (
         not raw_refs
+        or len(raw_refs) != 1
         or artifact_refs != raw_refs
-        or "screenshot" not in {ref["capture_kind"] for ref in raw_refs}
+        or raw_refs[0]["capture_kind"] != "screenshot"
     ):
         raise ValueError("Amazon blocked browser result lacks governed screenshot evidence.")
 

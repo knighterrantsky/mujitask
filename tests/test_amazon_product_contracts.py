@@ -76,6 +76,29 @@ def test_workflow_contract_freezes_codes_stages_and_handlers() -> None:
     assert contract["persistence"] == {
         "requires_fact_db": True,
         "requires_object_storage": True,
+        "object_storage_policy": {
+            "mode": "default_deny_explicit_allowlist",
+            "success_required": ["normalized_capture"],
+            "success_allowed": ["normalized_capture", "amazon_product_media"],
+            "blocked_required": ["blocked_screenshot"],
+            "blocked_allowed": ["blocked_screenshot"],
+            "forbidden_new_objects": [
+                "html",
+                "network_data",
+                "page_data",
+                "success_screenshot",
+                "runtime_artifact",
+                "log",
+                "temporary_file",
+            ],
+            "durable_reference_required": [
+                "bucket",
+                "object_key",
+                "content_digest",
+            ],
+            "local_path_as_durable_locator": "forbidden",
+            "downstream_read": "minio_only",
+        },
         "runtime_result_policy": "compact_references_only",
         "persist_result_identity": {
             "source_record_id": "exact_source_row",
@@ -376,10 +399,13 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "amazon_feishu_bindings",
     }
     assert amazon["object_prefixes"] == {
-        "runtime_evidence": "<env>/runs/<run_id>/amazon/<asin>/",
-        "raw_capture": "<env>/raw-captures/amazon/us/<asin>/",
+        "normalized_capture": "<env>/raw-captures/amazon/us/<asin>/",
+        "blocked_evidence": "<env>/raw-captures/amazon/us/<asin>/",
         "product_media": "<env>/product-media/amazon/us/<asin>/",
     }
+    assert amazon["object_storage_policy"] == (
+        "default_deny_allow_only_normalized_capture_blocked_evidence_and_product_media"
+    )
     assert amazon["runtime_db_schema_change"] is False
     assert amazon["cross_platform_foreign_keys"] is False
     assert amazon["fact_bundle_transaction"] == {
@@ -408,29 +434,36 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "changed_bytes": "preserve_new_coordinate_without_overwriting_old_object",
         "same_run_normalized_capture": "reject_divergent_digest",
     }
+    assert amazon["required_evidence_scope"] == (
+        "success_like_fact_persistence_only"
+    )
     assert amazon["required_evidence"] == [
         "normalized_capture_ref",
-        "raw_capture_refs",
         "field_coverage",
     ]
     assert amazon["raw_capture_kinds"] == {
-        "required_on_success": ["normalized_capture", "html"],
-        "optional": ["network_data", "screenshot"],
+        "required_on_success": ["normalized_capture"],
+        "optional_on_success": [],
+        "required_on_blocked": ["blocked_screenshot"],
+        "allowed_on_blocked": ["blocked_screenshot"],
+        "normalized_capture_on_blocked": "forbidden",
+        "media_materialization_on_blocked": "forbidden",
+        "blocked_evidence_binding": "runtime_terminal_business_audit_record",
+        "blocked_enters_fact_persistence": False,
+        "forbidden_new_persistence": [
+            "html",
+            "network_data",
+            "page_data",
+            "success_screenshot",
+            "runtime_screenshot",
+        ],
     }
     assert amazon["raw_capture_metadata"] == {
         "normalized_capture": {
             "content_type": "application/json",
             "sanitization_status": "normalized",
         },
-        "html": {
-            "content_type": "application/gzip",
-            "sanitization_status": "sanitized",
-        },
-        "network_data": {
-            "content_type": "application/json",
-            "sanitization_status": "allowlisted",
-        },
-        "screenshot": {
+        "blocked_screenshot": {
             "content_type": "image/png",
             "sanitization_status": "not_applicable",
         },
@@ -655,18 +688,11 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         "run_binding": "active_collection_run",
         "persisted_execution_id": "origin_browser_execution_id",
         "stored_byte_digest_verification": "required_before_fact_write",
-        "html_payload_validation": {
-            "encoding": "valid_gzip_utf8",
-            "sanitization_revalidation": "required_after_decompression",
-            "sensitive_element_detection": "independent_html_parser",
-            "screenshot_masking_failure": "fail_closed_without_screenshot_upload",
-        },
+        "durable_reference_fields": ["bucket", "object_key", "content_digest"],
+        "local_path_read": "forbidden",
         "size_limits": {
             "normalized_capture_bytes": 2097152,
-            "compressed_html_bytes": 2097152,
-            "decompressed_html_bytes": 8388608,
-            "network_data_bytes": 524288,
-            "screenshot_bytes": 10485760,
+            "blocked_screenshot_bytes": 10485760,
             "materialized_media_bytes": 26214400,
         },
     }
@@ -757,6 +783,11 @@ def test_amazon_owner_boundaries_are_registered() -> None:
         "src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py",
     ]
     assert "write Fact DB" in owners["amazon_browser_capture"]["forbidden"]
+    assert "upload object storage content" in owners["amazon_fact_persistence"]["forbidden"]
+    assert owners["object_storage_transport"]["allowed_logical_writers"] == [
+        "media_asset_sync",
+        "amazon_browser_capture",
+    ]
     runtime_projection = owners["amazon_runtime_result_projection"]
     assert runtime_projection["paths"] == [
         "src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py",

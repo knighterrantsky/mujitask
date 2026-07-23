@@ -114,7 +114,11 @@ TK_FACT_SCHEMA_STATEMENTS = [
         source_url TEXT NOT NULL DEFAULT '',
         file_token TEXT NOT NULL DEFAULT '',
         local_path TEXT NOT NULL DEFAULT '',
+        bucket TEXT NOT NULL DEFAULT '',
         object_key TEXT NOT NULL DEFAULT '',
+        content_digest TEXT NOT NULL DEFAULT '',
+        remote_uri TEXT NOT NULL DEFAULT '',
+        size_bytes BIGINT NOT NULL DEFAULT 0,
         file_name TEXT NOT NULL DEFAULT '',
         mime_type TEXT NOT NULL DEFAULT '',
         source_platform TEXT NOT NULL DEFAULT '',
@@ -473,4 +477,3 @@ def ensure_tk_fact_schema(connection: Any, *, drop_legacy_entity_tables: bool = 
     if drop_legacy_entity_tables:
         for statement in LEGACY_ENTITY_DROP_STATEMENTS:
             connection.exec_driver_sql(statement)
-

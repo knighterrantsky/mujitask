@@ -1,6 +1,6 @@
 # 数据库架构设计
 
-日期: 2026-04-23
+日期: 2026-07-23
 
 ## 1. 结论
 
@@ -11,11 +11,11 @@
 1. Runtime 数据库
    - 负责任务编排、队列、worker 执行状态、lease、outbox、运行产物索引。
 2. 事实数据库
-   - 负责 TikTok / FastMoss / 飞书沉淀出来的业务事实、主体、关系、原始响应和指标。
+   - 负责 TikTok / FastMoss / 飞书沉淀出来的业务事实、主体、关系、受控结构化 raw evidence 和指标。
 3. 运行辅助存储
-   - 负责 artifact 对象索引、对象文件、FastMoss cookie/session cache 等运行辅助数据。
+   - 负责本地短期 artifact 索引/文件、FastMoss cookie/session cache 等运行辅助数据；MinIO 不属于通用运行产物落点，只保存机器契约准入的长期业务对象。
 
-其中 Runtime 数据库和事实数据库当前可以在同一个 Postgres 中落地，但逻辑边界必须清楚。对象文件可以放本地文件系统或 MinIO，数据库只保存对象索引。
+其中 Runtime 数据库和事实数据库当前可以在同一个 Postgres 中落地，但逻辑边界必须清楚。Runtime 文件只放本地；只有机器契约白名单中的长期业务对象进入 MinIO，数据库保存对应事实或索引。
 
 不建议把飞书业务表称为本系统数据库。飞书是外部业务视图和操作台，不是内部状态真相。
 
@@ -35,12 +35,13 @@ flowchart TD
     B --> C["api_worker / browser_worker / outbox_dispatcher"]
     C --> B
 
-    C --> D["事实数据库<br/>TK 主体 / 关系 / 指标 / raw response"]
-    C --> E["运行辅助存储<br/>artifact index / object store / cookie cache"]
+    C --> D["事实数据库<br/>TK 主体 / 关系 / 指标 / raw evidence"]
+    C --> E["运行辅助存储<br/>local artifact index / cookie cache"]
+    C --> H["MinIO<br/>allowlisted long-term business objects"]
 
     D --> F["飞书业务表<br/>外部业务视图"]
     C --> F
-    E --> G["MinIO / local object store<br/>文件与运行产物"]
+    E --> G["Local artifact_root<br/>短期运行文件"]
 ```
 
 ## 2.1 生产权限与 Schema 发布边界
@@ -107,7 +108,7 @@ Runtime 数据库是 `executor_daemon`、`api_worker`、`browser_worker`、`outb
 | `api_worker_job` | API/IO job 队列 | api worker 可 claim 的通用 job，例如飞书表读取、FastMoss 商品搜索/采集、飞书写回 |
 | `resource_lease` | 资源租约 | 浏览器 profile / CDP 资源占用控制 |
 | `notification_outbox` | 通知 outbox | 最终消息发送队列 |
-| `artifact_object` | 运行产物索引 | stdout、截图、状态文件、上传对象等 artifact 的数据库索引 |
+| `artifact_object` | 运行产物索引 | stdout、普通截图、状态文件等本地短期 artifact 的数据库索引；兼容期可冗余索引白名单长期业务对象完整引用，但不是其权威事实 |
 
 ### 3.2 Runtime DB 的核心关系
 
@@ -202,7 +203,7 @@ erDiagram
 - 主体表使用业务 key 和 upsert 保证幂等。
 - 关系表保存多对多关系，不把所有关联塞进 JSON。
 - `facts_json` 承接暂未结构化的扩展字段。
-- `tk_raw_api_responses` 保存原始证据，用于排障、回放和事实追溯。
+- `tk_raw_api_responses` 保存受控尺寸、已脱敏的结构化 raw evidence 或其 digest/preview，用于排障、回放和事实追溯；通用完整 raw body 不进入 MinIO。
 - 当前 schema 不强依赖数据库外键，关系一致性主要由业务 key、唯一键和 upsert 逻辑保证。
 
 ## 5. 运行辅助存储
@@ -215,14 +216,16 @@ Artifact 分两部分:
 
 | 组成 | 存储位置 | 作用 |
 | --- | --- | --- |
-| `artifact_object` | Postgres | 保存 artifact_id、run_id、step_id、bucket、object_key、content_type、source_path 等索引 |
-| 对象内容 | MinIO 或本地文件系统 | 保存 stdout、截图、state dump、下载文件、媒体文件等大对象 |
+| `artifact_object` | Postgres | 保存 artifact_id、run_id、step_id、content_type、本地相对名和 source_path 等短期排障索引；历史 bucket/object_key 字段不代表允许新增远端运行产物 |
+| Runtime artifact 内容 | 本地 `artifact_root` / OS temp | 保存 stdout、普通截图、HTML、state dump、page/network data、临时下载等短期运行文件 |
+| 长期业务对象内容 | MinIO | 只保存 `contracts/facts/durable-business-object-storage.yaml` 白名单中的业务媒体、Amazon normalized capture 和受控 blocked evidence screenshot |
 
 原则:
 
 - 数据库只保存索引，不保存大文件二进制。
-- 业务结果引用 artifact 时使用 `artifact_id`、`object_key` 或 URL。
-- artifact 归属于 run/job/request，用于排障和审计。
+- 本地 artifact 归属于 run/job/request，只用于当前主机排障和短期审计，不作为 Fact 或后续 Job 输入。
+- 长期业务对象只有在上传、远端读取/stat 与 digest 校验通过后，才以完整 `bucket + object_key + content_digest` 写入 Fact DB 或受控 Runtime handoff。
+- 通用日志、截图、HTML、raw response、state dump 和临时文件不得因体积或跨进程需求被提升到 MinIO。
 
 MinIO bucket、object prefix 和生命周期策略详见 [Storage 架构设计](./storage-architecture-design.md)。
 
@@ -277,7 +280,8 @@ MinIO bucket、object prefix 和生命周期策略详见 [Storage 架构设计](
 | --- | --- | --- |
 | Runtime 数据库 | 需要 | 当前核心控制面 |
 | 事实数据库 | 需要 | 当前业务事实沉淀层 |
-| Artifact 对象存储 | 需要 | MinIO 或本地文件系统，数据库保存索引 |
+| 本地 Runtime artifact | 需要 | `artifact_root` / OS temp 保存短期诊断文件，数据库可保存排障索引 |
+| 长期业务对象存储 | 按 workflow 需要 | 仅机器契约白名单对象写 MinIO，数据库保存完整持久引用 |
 | Cookie/session cache | 需要 | 当前可放 Runtime Postgres，逻辑上归运行辅助缓存 |
 | 配置/密钥库 | 可选 | 当前可由 env / local config 管理，生产可接 Secret Manager |
 | 分析数仓 / BI Mart | 暂不需要 | 后续报表或多维分析变复杂后再考虑 |
@@ -308,11 +312,15 @@ Postgres
     tk_raw_api_responses
     tk_*_metrics / window tables
 
-Object Store
+Local artifact_root
   runtime artifacts
-  media files
-  screenshots
-  logs / state dumps
+  ordinary screenshots / HTML
+  logs / state dumps / temporary downloads
+
+MinIO
+  allowlisted TikTok / Amazon business media
+  Amazon normalized capture
+  governed Amazon blocked evidence screenshot
 
 External Business Views
   Feishu tables
@@ -331,10 +339,13 @@ flowchart TD
     C --> G["Fact DB"]
     D --> G
 
-    C --> H["Artifact Object Store"]
+    C --> H["Local artifact_root"]
     D --> H
-    H --> I["artifact_object index"]
+    H --> I["artifact_object local index"]
     I --> B
+
+    C --> K["MinIO<br/>allowlisted business objects"]
+    D --> K
 
     C --> J["Feishu Tables"]
     D --> J
@@ -342,6 +353,6 @@ flowchart TD
 ```
 
 Runtime DB 负责回答“任务怎么跑、跑到哪、谁持有、是否失败”。  
-事实数据库负责回答“采集到了什么、主体和关系是什么、有哪些原始证据”。  
-对象存储负责保存“大文件和运行产物”。  
+事实数据库负责回答“采集到了什么、主体和关系是什么、有哪些受控结构化证据”。
+本地 `artifact_root` 负责短期运行文件；MinIO 只负责机器契约准入的长期业务对象。
 飞书负责展示和人工协作。

@@ -273,11 +273,17 @@ def _build_competitor_projection_fields(
         fastmoss_product.get("seller_name"),
         fastmoss_product.get("shop_name"),
     )
-    image_url = _first_text(
-        _first_media_asset_url(media_result),
-        logical_fields.get("main_image_url"),
-        _first_media_asset_url(product_result),
-        _first_media_asset_url(fastmoss_bundle),
+    image_ref = next(
+        (
+            value
+            for value in (
+                _first_media_asset_ref(media_result),
+                _first_media_asset_ref(product_result),
+                _first_media_asset_ref(fastmoss_bundle),
+            )
+            if value
+        ),
+        {},
     )
     price_text = _price_number_text(
         logical_fields.get("price_text"),
@@ -297,7 +303,7 @@ def _build_competitor_projection_fields(
     fields = {
         "SKU-ID": product_id,
         "产品链接": _normalize_tiktok_product_url(product_url),
-        "图片": image_url,
+        "图片": image_ref,
         "标题": title,
         "卖家": seller_name,
         "价格": price_text,
@@ -354,7 +360,7 @@ def _fact_bundle_product(fact_bundle: Mapping[str, Any], *, product_id: str) -> 
             return current
     return fallback
 
-def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
+def _first_media_asset_ref(payload: Mapping[str, Any]) -> dict[str, str]:
     assets = []
     if isinstance(payload, Mapping):
         for key in ("media_assets", "synced_assets"):
@@ -363,21 +369,32 @@ def _first_media_asset_url(payload: Mapping[str, Any]) -> str:
                 assets.extend(value)
     for asset in _prefer_main_image_assets(assets):
         if isinstance(asset, Mapping):
-            source_url = _first_text(
-                asset.get("remote_uri"),
-                asset.get("source_url"),
-                asset.get("object_key"),
-                asset.get("local_path"),
-            )
-            if source_url:
-                return source_url
+            bucket = _first_text(asset.get("bucket"))
+            object_key = _first_text(asset.get("object_key"))
+            content_digest = _first_text(asset.get("content_digest"))
+            if (
+                bucket
+                and object_key
+                and re.fullmatch(r"[0-9a-f]{64}", content_digest)
+            ):
+                return {
+                    key: value
+                    for key, value in {
+                        "bucket": bucket,
+                        "object_key": object_key,
+                        "content_digest": content_digest,
+                        "file_name": _first_text(asset.get("file_name")),
+                        "mime_type": _first_text(asset.get("mime_type")),
+                    }.items()
+                    if value
+                }
     for nested_key in ("media_fact_bundle", "fact_bundle"):
         nested = payload.get(nested_key) if isinstance(payload, Mapping) else None
         if isinstance(nested, Mapping):
-            found = _first_media_asset_url(nested)
+            found = _first_media_asset_ref(nested)
             if found:
                 return found
-    return ""
+    return {}
 
 def _prefer_main_image_assets(assets: list[Any]) -> list[Any]:
     main_assets: list[Any] = []

@@ -1,0 +1,236 @@
+schema_version: 1
+contract_revision: 2
+contract_type: durable_business_object_storage
+status: active_contract
+implementation_status: complete
+effective_date: "2026-07-23"
+
+scope:
+  platforms:
+    - tiktok
+    - amazon
+  production_provider: minio
+  bucket_policy: reuse_configured_bucket_without_runtime_bucket_creation
+  policy_mode: default_deny_explicit_allowlist
+
+classification:
+  long_term_business_object:
+    definition: bytes_required_by_a_persisted_business_fact_business_relation_or_governed_business_audit_record
+    required_properties:
+      - has_stable_business_owner
+      - has_fact_or_business_record_binding
+      - has_explicit_retention_policy
+      - is_required_after_the_origin_process_and_local_temp_file_end
+      - is_in_explicit_allowlist
+  runtime_transient_file:
+    definition: bytes_used_only_for_one_execution_download_transform_debug_log_or_observation
+    storage: local_artifact_root_or_os_temp_only
+    minio_write: forbidden
+    cross_process_dependency: forbidden
+
+durable_reference:
+  authoritative_fields:
+    - bucket
+    - object_key
+    - content_digest
+  digest_algorithm: sha256_of_stored_bytes
+  content_digest_format: 64_lowercase_hex
+  bucket_validation: exact_configured_bucket
+  object_key_validation: exact_allowlisted_class_prefix_or_template
+  optional_verified_metadata:
+    - size_bytes
+    - content_type
+    - file_name
+    - source_url
+    - remote_uri
+  forbidden_authoritative_locators:
+    - local_path
+    - source_path
+    - file_uri
+    - temporary_path
+  write_rule: persist_only_after_upload_and_remote_stat_or_read_verification
+  read_rule: downstream_consumers_read_minio_by_complete_durable_reference
+  local_first_or_fallback_read: forbidden
+  infer_missing_bucket_from_global_config: forbidden
+  incomplete_reference: reject_or_rematerialize_then_persist_complete_reference
+
+local_temporary_file_policy:
+  download_and_transform: allowed
+  directory: os_temp_or_configured_local_artifact_root
+  fact_db_persistence: forbidden
+  runtime_result_persistence: forbidden_as_cross_process_locator
+  cleanup: best_effort_after_consumer_or_process_exit
+  promotion:
+    trigger: explicit_allowlisted_long_term_business_object_classification
+    sequence:
+      - create_or_download_local_temp_file
+      - validate_identity_type_and_size
+      - upload_to_configured_minio_bucket
+      - verify_remote_bytes_and_sha256
+      - persist_complete_durable_reference
+      - allow_local_temp_cleanup
+
+allowed_object_classes:
+  tiktok_product_media:
+    writer_owner: media_asset_sync
+    business_binding: tk_media_assets_and_tk_entity_media_assets
+    key_prefix: <env>/product-media/
+    retention_policy: business_fact_lifetime
+  tiktok_creator_avatar:
+    writer_owner: media_asset_sync
+    business_binding: tk_media_assets_and_tk_entity_media_assets
+    key_prefix: <env>/creator-media/
+    retention_policy: business_fact_lifetime
+  tiktok_video_cover:
+    writer_owner: media_asset_sync
+    business_binding: tk_media_assets_and_tk_entity_media_assets
+    key_prefix: <env>/video-media/
+    retention_policy: business_fact_lifetime
+  tiktok_business_attachment:
+    writer_owner: media_asset_sync
+    business_binding: explicit_contract_defined_fact_or_business_record_attachment
+    admission: explicit_fact_or_business_record_attachment_contract_required
+    key_prefix: <env>/business-attachments/tiktok/
+    retention_policy: bound_business_record_lifetime
+  amazon_product_media:
+    writer_owner: media_asset_sync
+    business_binding: amazon_media_assets_and_amazon_product_media_assets
+    key_prefix: <env>/product-media/amazon/us/
+    retention_policy: business_fact_lifetime
+  amazon_normalized_capture:
+    writer_owner: amazon_browser_capture
+    business_binding: amazon_raw_captures
+    purpose: cross_process_fact_snapshot_and_replay_input
+    key_template: <env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/normalized.json
+    retention_policy: 365_days
+  amazon_blocked_evidence_screenshot:
+    writer_owner: amazon_browser_capture
+    business_binding: governed_terminal_business_audit_evidence
+    admission: terminal_status_is_blocked_captcha_required_or_access_blocked
+    key_template: <env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/page.png
+    retention_policy: 180_days
+
+denied_object_classes:
+  - runtime_run_json
+  - runtime_steps_json
+  - runtime_signals_json
+  - stdout_or_stderr_log
+  - state_dump
+  - progress_or_timing_diagnostics
+  - ordinary_or_success_screenshot
+  - success_page_html
+  - blocked_or_failed_page_html
+  - page_data
+  - network_data
+  - generic_raw_api_response
+  - feishu_raw_table_snapshot
+  - attachment_envelope_snapshot
+  - browser_profile_or_cookie_export
+  - temporary_download
+  - transform_intermediate
+
+runtime_artifact_policy:
+  storage: local_only
+  runtime_db_index: allowed
+  object_key_semantics: local_relative_name_only
+  source_path_semantics: process_local_diagnostic_only
+  minio_sync: forbidden
+  fact_or_downstream_dependency: forbidden
+  retention: short_best_effort_cleanup
+
+writer_ownership:
+  media_asset_sync:
+    allowed_classes:
+      - tiktok_product_media
+      - tiktok_creator_avatar
+      - tiktok_video_cover
+      - tiktok_business_attachment
+      - amazon_product_media
+  amazon_browser_capture:
+    allowed_classes:
+      - amazon_normalized_capture
+      - amazon_blocked_evidence_screenshot
+  forbidden_writers:
+    - mapper
+    - projection_mapper
+    - feishu_table_read
+    - runtime_supervisor
+    - logger
+  new_parallel_storage_helper: forbidden
+
+amazon_policy:
+  workflow_object_aliases:
+    normalized_capture: amazon_normalized_capture
+    amazon_product_media: amazon_product_media
+    blocked_screenshot: amazon_blocked_evidence_screenshot
+  success_like_outcomes:
+    - success
+    - partial_success
+  success_required_objects:
+    - amazon_normalized_capture
+  success_allowed_objects:
+    - amazon_normalized_capture
+    - amazon_product_media
+  partial_success_allowed_objects:
+    - amazon_normalized_capture
+    - amazon_product_media
+  success_forbidden_objects:
+    - success_page_html
+    - page_data
+    - network_data
+    - ordinary_or_success_screenshot
+  blocked_required_objects:
+    - amazon_blocked_evidence_screenshot
+  blocked_allowed_objects:
+    - amazon_blocked_evidence_screenshot
+  blocked_forbidden_objects:
+    - blocked_or_failed_page_html
+    - page_data
+    - network_data
+  normalized_capture_read_before_fact_write:
+    - verify_bucket_and_object_key
+    - read_actual_stored_bytes
+    - verify_sha256
+    - verify_size_and_content_type
+    - validate_capture_contract
+  media_cache_policy_reference: contracts/facts/product-fact-collection.yaml
+
+tiktok_policy:
+  durable_media_reference_required_fields:
+    - bucket
+    - object_key
+    - content_digest
+  local_path_after_fact_persistence: forbidden
+  raw_response_minio_promotion: forbidden
+  feishu_raw_snapshot_minio_promotion: forbidden
+  browser_fallback_diagnostics: local_only
+
+permissions:
+  worker:
+    allow:
+      - put_object_on_allowlisted_prefix
+      - get_object_on_allowlisted_prefix
+      - stat_object_on_allowlisted_prefix
+    deny:
+      - create_bucket
+      - list_unscoped_bucket
+      - delete_object
+      - write_denied_object_class
+  cleanup_identity:
+    separate_from_worker: true
+    delete_requires_retention_policy: true
+
+cutover_policy:
+  mode: hard_cutover_without_legacy_data_compatibility
+  valid_reference_rule: complete_reference_that_passes_current_contract_validation
+  incomplete_reference_rule: invalid_cache_miss_and_rematerialize_from_source
+  bucket_inference: forbidden
+  legacy_repair_or_backfill: forbidden
+  legacy_data_migration: forbidden
+  mixed_version_workers: forbidden
+  deployment_sequence:
+    - stop_all_old_workers
+    - deploy_contract_revision_2
+    - start_single_version_workers
+
+implementation_gaps: []

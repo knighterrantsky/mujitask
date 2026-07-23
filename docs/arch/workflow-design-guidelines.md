@@ -1,6 +1,6 @@
 # 新增 Workflow 设计与拆分规范
 
-日期: 2026-04-23
+日期: 2026-07-23
 
 ## 1. 这份文档放什么
 
@@ -46,7 +46,7 @@ flowchart TD
 4. 定义每个 stage 会生成哪些 `Job`。
 5. 为每类 job 明确 worker 类型、handler、payload、result、retry、timeout、idempotency。
 6. 明确父子任务如何收敛，最终 summary 如何生成。
-7. 明确会写哪些 Runtime 表、Fact 表、飞书表和对象存储。
+7. 明确会写哪些 Runtime 表、Fact 表、飞书表和 MinIO 白名单对象；本地 artifact 单独列出。
 8. 明确失败、无响应、超时、部分成功时如何兜底。
 
 ## 2.1 命名与版本约束
@@ -161,7 +161,7 @@ Stage 文档必须把 adapter/mapper 放在 Job / Handler / Flow 映射里，不
 约束:
 
 - job payload 只放执行所需的最小稳定数据。
-- 大对象、截图、原始响应、媒体文件不放 payload，放 MinIO/object store 或 Fact DB。
+- 大对象、截图、原始响应、媒体文件不放 payload。可复用结构化事实和受控 raw evidence 进入 Fact DB；只有机器契约显式允许的长期业务对象进入 MinIO；其余运行文件只留本地短期 artifact 目录。
 - payload 中不要长期依赖易变外部页面字段。
 
 ### 3.4 Stage 设计
@@ -257,7 +257,7 @@ Browser fallback 有两类语义，workflow contract 必须明确是哪一类:
 
 | 类型 | 代表 handler | Browser 成功后的处理 |
 | --- | --- | --- |
-| 替代当前 stage 输出 | `tiktok_product_browser_fetch` | browser handler 把 normalized product result 和 artifact refs 写入 `task_execution.result_json` / `artifact_object`；行级主 job 用这些引用作为当前 TikTok 采集阶段输出，继续 media sync、Fact DB、Feishu projection |
+| 替代当前 stage 输出 | `tiktok_product_browser_fetch` | browser handler 把受控尺寸的 normalized product result 写入 `task_execution.result_json`；本地诊断 artifact 只供排障，不作为行级主 job 输入。行级主 job 使用 normalized result 继续 media sync、Fact DB、Feishu projection |
 | 解除阻塞后重跑当前 stage | `fastmoss_security_browser_resolve` | browser handler 只验证原始 FastMoss API 不再返回 `MSG_SAFE_0001` 并持久化 `fastmoss_session_cookie_cache`；原 FastMoss handler/stage 重新读取 cookie cache 并重试原请求一次 |
 
 行级表驱动 workflow 的默认粒度是“一行一个主 job”。同一行内 TikTok request、FastMoss fetch、media sync、Fact DB upsert、Feishu writeback 是主 job 的串行内部步骤；只有需要独立 browser profile 生命周期的 fallback 才拆成 child `task_execution`。如果业务要求严格行级串行，workflow 使用 `stage_cursor_json` 记录当前 row cursor，当前行没有 `status=finished` + `result_status` 前不得派发下一行。
@@ -290,9 +290,9 @@ FastMoss platform session recovery:
 
 审计证据必须足够区分三类失败:
 
-- 识别错误: 记录 ddddocr 原始坐标、`raw_result`、confidence、背景图和拼图块 artifact。
+- 识别错误: 在本地短期 artifact 目录记录 ddddocr 原始坐标、`raw_result`、confidence、背景图和拼图块；这些诊断文件不得进入 MinIO。
 - 坐标换算错误: 记录浏览器渲染 box、图片原始尺寸、缩放后的目标点、当前拼图中心点和拖动距离。
-- 鼠标执行或页面验证失败: 记录拖动 profile、前后截图、目标位置截图、滑动后轮询结果、失败态文本、二次确认结果和最终 popup 状态。目标位置截图必须在鼠标移动到计算出的终点且释放之前捕获，用于复盘实际落点是否偏离缺口。
+- 鼠标执行或页面验证失败: 在本地短期 artifact 目录记录拖动 profile、前后截图、目标位置截图、滑动后轮询结果、失败态文本、二次确认结果和最终 popup 状态。目标位置截图必须在鼠标移动到计算出的终点且释放之前捕获，用于复盘实际落点是否偏离缺口；这些诊断文件不得进入 MinIO。
 
 ### 3.6.1 统一事实采集与业务投影约束
 
@@ -300,10 +300,10 @@ FastMoss platform session recovery:
 
 事实采集统一口径:
 
-- 商品、SKU、店铺、达人、视频、媒体资产、指标、关系和 raw response 属于事实数据，不属于某个飞书表或某个 workflow 的私有数据。
+- 商品、SKU、店铺、达人、视频、媒体资产、指标、关系和受控 raw evidence 属于事实数据，不属于某个飞书表或某个 workflow 的私有数据；通用 raw response body 不是长期业务对象。
 - TikTok request、TikTok browser fallback、FastMoss 商品/达人/店铺/视频采集输出的 normalized result / fact bundle，必须进入统一事实写入 contract。
-- 媒体资产包括商品主图、商品侧边图、SKU 图、达人头像、店铺图、视频封面等；只要被采集到，就按事实媒体处理，不能因为当前飞书写回只需要一张图而丢弃。
-- 媒体内容必须先经过 `media_asset_sync` 落到 MinIO / object store，Fact DB 只保存 `object_key` / `remote_uri` / `source_url` / `mime_type` / metadata 和实体绑定关系。
+- 只有白名单中已明确准入的商品主图/侧边图/SKU 图、达人头像、视频封面等才能物化为持久事实媒体，且不能因为当前飞书只展示一张图而丢弃已准入角色。店铺图等未准入字节只保留受控来源元数据或不采集；要物化必须先新增正式对象类别 contract。
+- 只有已进入长期业务对象白名单的媒体内容才经过 `media_asset_sync` 落到 MinIO；Fact DB 必须保存完整 `bucket + object_key + content_digest` 和已验证 metadata/实体绑定，不能只保存 `object_key`、临时路径或推测的 bucket。
 - `fact_bundle_upsert` 是 Fact DB 主体、关系、指标、raw link 和媒体引用的统一持久化边界；业务 workflow 不应另写一套私有事实入库函数。
 - 已采集、已标准化的事实不能因为业务表字段已满、飞书写回被跳过、或某个 projection mapper 不需要该字段而跳过入库。
 
@@ -388,7 +388,7 @@ Workflow 设计和实现 adapter 时，默认按下面规则:
 - `executor_daemon` 在每个关键 stage 派发哪些 `api_worker_job` 或 `task_execution`。
 - `api_worker` / `browser_worker` 如何 claim job，并把 result/status 写回 Runtime DB。
 - request-first / browser-fallback 的分支条件。
-- Fact DB、Feishu、MinIO/object store 的写入发生在哪个 worker 进程里。
+- Fact DB、Feishu、MinIO 白名单业务对象的写入发生在哪个 worker 进程里；本地诊断 artifact 由哪个进程产生。
 - Reconciler / executor 如何根据 Runtime DB 推进下一 stage 或最终 summary。
 - `notification_outbox` 何时创建，`outbox_dispatcher` 如何发送最终结果。
 - `notification_outbox.payload_json.message_text` 由哪个 domain projection 生成，以及默认人类可读格式覆盖哪些业务计数和明细。
@@ -431,12 +431,12 @@ sequenceDiagram
     API->>DB: claim api_worker_job
     API->>Feishu: optional read / write
     API->>Fact: optional fact upsert
-    API->>Obj: optional artifact / media write
+    API->>Obj: optional allowlisted business-object write
     API->>DB: mark job terminal
     alt browser fallback required
         Exec->>DB: enqueue task_execution(<item_code>)
         Browser->>DB: claim task_execution
-        Browser->>Obj: store browser artifacts
+        Browser->>Obj: optional allowlisted business snapshot/evidence write
         Browser->>DB: mark browser job terminal
     end
     Exec->>DB: reconcile child jobs and advance stage
@@ -804,7 +804,7 @@ writeback job:
 - Runtime 去重只能避免重复派发，不能替代外部系统幂等。
 - Fact DB 必须使用 upsert 承受重复执行。
 - 飞书创建类动作必须先查重或保存 `target_record_id`。
-- MinIO/object store 应使用稳定 object key，允许重复覆盖或跳过。
+- MinIO 只接受长期业务对象白名单；相同 digest 可幂等跳过，内容变化必须写新坐标，持久引用必须包含 `bucket + object_key + content_digest`。
 
 ## 9. 新增 Workflow 文档模板
 
@@ -892,7 +892,7 @@ sequenceDiagram
 - Runtime DB:
 - Fact DB:
 - Feishu:
-- MinIO/object store:
+- MinIO（仅列出显式允许的长期业务对象；其余 artifact 写本地）:
 
 ## 9. 状态收敛
 

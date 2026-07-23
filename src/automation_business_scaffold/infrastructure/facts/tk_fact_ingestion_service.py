@@ -563,8 +563,12 @@ class TKFactIngestionService:
             asset = self.fact_store.upsert_media_asset(
                 source_url=_first_non_empty(media_spec.get("source_url")),
                 file_token=_first_non_empty(media_spec.get("file_token")),
-                local_path=_first_non_empty(media_spec.get("local_path"), media_spec.get("path")),
+                local_path="",
+                bucket=_first_non_empty(media_spec.get("bucket")),
                 object_key=_first_non_empty(media_spec.get("object_key")),
+                content_digest=_first_non_empty(media_spec.get("content_digest")),
+                remote_uri=_first_non_empty(media_spec.get("remote_uri")),
+                size_bytes=int(media_spec.get("size_bytes") or 0),
                 file_name=_first_non_empty(media_spec.get("file_name")),
                 mime_type=_first_non_empty(media_spec.get("mime_type"))
                 or _infer_mime_type(media_spec.get("local_path") or media_spec.get("path")),

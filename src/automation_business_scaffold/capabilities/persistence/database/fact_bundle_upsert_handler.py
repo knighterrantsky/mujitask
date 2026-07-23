@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from automation_business_scaffold.config import get_execution_control_defaults
 from automation_business_scaffold.contracts.handler.allowlist import API_HANDLER_CONTRACTS
 from automation_business_scaffold.contracts.handler.contract import (
@@ -31,6 +33,31 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = coerce_mapping(payload.get("request_payload"))
     merged_bundle = merge_fact_bundles(coerce_mapping(payload.get("fact_bundle")))
+    invalid_media_indexes = [
+        index
+        for index, asset in enumerate(
+            coerce_mapping_list(merged_bundle.get("media_assets"))
+        )
+        if not _is_complete_durable_media_asset(asset)
+    ]
+    if invalid_media_indexes:
+        return failed_result(
+            context,
+            error=build_error(
+                error_type="invalid_input",
+                error_code="durable_media_reference_required",
+                message=(
+                    "Fact media requires bucket, object_key, content_digest, and "
+                    "positive size_bytes; local paths are not persistent locators."
+                ),
+                retryable=True,
+                details={"invalid_media_indexes": invalid_media_indexes},
+            ),
+            summary={
+                "entity_count": 0,
+                "persistence_mode": "rejected_invalid_media",
+            },
+        )
 
     entity_keys = bundle_entity_keys(merged_bundle)
     if not entity_keys:
@@ -240,11 +267,16 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             upserted_entities.append(f"video:{row.get('video_key')}")
 
     for asset in coerce_mapping_list(fact_bundle.get("media_assets")):
+        size_bytes = _positive_int(asset.get("size_bytes"))
         row = store.upsert_media_asset(
             source_url=coerce_str(asset.get("source_url")),
             file_token=coerce_str(asset.get("file_token")),
-            local_path=coerce_str(first_non_empty(asset.get("source_path"), asset.get("local_path"))),
+            local_path="",
+            bucket=coerce_str(asset.get("bucket")),
             object_key=coerce_str(asset.get("object_key")),
+            content_digest=coerce_str(asset.get("content_digest")),
+            remote_uri=coerce_str(asset.get("remote_uri")),
+            size_bytes=size_bytes,
             file_name=coerce_str(asset.get("file_name")),
             mime_type=coerce_str(asset.get("mime_type")),
             source_platform=coerce_str(asset.get("source_platform")),
@@ -520,6 +552,26 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
         "observation_refs": observation_refs,
         "persisted_counts": persisted_counts,
     }
+
+
+def _is_complete_durable_media_asset(asset: dict[str, Any]) -> bool:
+    return bool(
+        coerce_str(asset.get("bucket"))
+        and coerce_str(asset.get("object_key"))
+        and re.fullmatch(r"[0-9a-f]{64}", coerce_str(asset.get("content_digest")))
+        and _positive_int(asset.get("size_bytes")) > 0
+        and not first_non_empty(asset.get("local_path"), asset.get("source_path"))
+    )
+
+
+def _positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return normalized if normalized > 0 else 0
 
 
 def _product_status_from_facts(facts: Any) -> str:

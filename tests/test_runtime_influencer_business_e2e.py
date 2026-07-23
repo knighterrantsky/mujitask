@@ -160,10 +160,7 @@ def test_influencer_pool_write_payload_merges_product_images_by_product_id() -> 
     mapped_records = map_write_records(write_payload)
 
     assert mapped_records[0]["upsert_key"] == {"field": "达人ID", "value": CREATOR_ID}
-    assert mapped_records[0]["fields"]["带货商品图"] == [
-        {"file_token": "tok-product-a"},
-        {"file_token": "tok-product-b"},
-    ]
+    assert "带货商品图" not in mapped_records[0]["fields"]
     assert mapped_records[0]["fields"]["关联节日"] == ["毕业季", "夏季"]
     assert mapped_records[0]["fields"]["关联商品销量"] == "135"
     assert mapped_records[0]["update_accumulate_fields"] == {"关联商品销量": "135"}

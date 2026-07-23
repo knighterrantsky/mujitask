@@ -922,7 +922,7 @@ def test_selection_projection_keeps_non_terminal_product_status_out_of_auto_writ
     }
 
 
-def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
+def test_competitor_projection_does_not_persist_source_image_url_as_attachment() -> None:
     payload = _table_payload(
         target_table_ref="feishu://mujitask/TK竞品收集",
         write_mode="upsert",
@@ -942,10 +942,7 @@ def test_competitor_projection_keeps_image_url_as_raw_link() -> None:
 
     records = map_write_records(payload)
 
-    assert records[0]["fields"]["图片"] == {
-        "text": "https://p16-oec.example.com/image.webp?from=2378011839",
-        "link": "https://p16-oec.example.com/image.webp?from=2378011839",
-    }
+    assert "图片" not in records[0]["fields"]
 
 
 def test_feishu_table_write_uploads_attachment_file_before_write(monkeypatch, tmp_path) -> None:

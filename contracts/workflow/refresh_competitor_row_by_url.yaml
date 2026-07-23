@@ -60,7 +60,7 @@ protected_invariants:
   - 一次请求最多刷新一个由 product_url 定位到的 TK竞品收集记录。
   - 单行刷新必须复用 competitor_row_refresh 行级 pipeline，不新增绕过 Runtime/capability 边界的业务路径。
   - Waiting competitor_row_refresh 是唯一 row-level fallback 待处理事实，task_execution 是浏览器任务事实；competitor_row_refresh 只能返回业务化 browser request，不允许直接 import browser capability 或 run_supervised_handler inline fallback。
-  - browser task_execution terminal 后，executor/runtime 把 browser result 引用、cookie cache metadata 或失败证据写回当前 competitor_row_refresh，并让同一个行级主 job 回到 pending 或收敛为终态；不得创建独立恢复 stage、派生 candidate 或第二个行级业务事实源。
+  - browser task_execution terminal 后，executor/runtime 把受控尺寸的 browser normalized result、cookie cache metadata 或失败摘要写回当前 competitor_row_refresh，并让同一个行级主 job 回到 pending 或收敛为终态；本地诊断 artifact 不得成为下游输入或 MinIO 引用，不得创建独立恢复 stage、派生 candidate 或第二个行级业务事实源。
   - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总最终 competitor_row_refresh 结果，且不得存在 waiting row job 或 active browser execution。
 
 known_architecture_gaps: []

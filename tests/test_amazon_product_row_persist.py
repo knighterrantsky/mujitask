@@ -57,7 +57,6 @@ def _context(
 
 def _payload(*, collection_status: str = "success") -> dict[str, Any]:
     normalized_digest = "e" * 64
-    html_digest = "f" * 64
     normalized_ref = {
         "capture_kind": "normalized_capture",
         "bucket": "test-artifacts",
@@ -68,21 +67,6 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
         "content_digest": normalized_digest,
         "content_type": "application/json",
         "sanitization_status": "normalized",
-        "request_id": REQUEST_ID,
-        "execution_id": BROWSER_EXECUTION_ID,
-        "run_id": STABLE_RUN_ID,
-        "collected_at": "2026-07-15T00:00:00Z",
-    }
-    html_ref = {
-        "capture_kind": "html",
-        "bucket": "test-artifacts",
-        "object_key": (
-            f"test/raw-captures/amazon/us/{ASIN}/2026/07/15/"
-            f"{STABLE_RUN_ID}/{html_digest}/page.html.gz"
-        ),
-        "content_digest": html_digest,
-        "content_type": "application/gzip",
-        "sanitization_status": "sanitized",
         "request_id": REQUEST_ID,
         "execution_id": BROWSER_EXECUTION_ID,
         "run_id": STABLE_RUN_ID,
@@ -105,7 +89,7 @@ def _payload(*, collection_status: str = "success") -> dict[str, Any]:
             "artifact": 8.75,
         },
         "normalized_capture_ref": normalized_ref,
-        "raw_capture_refs": [normalized_ref, html_ref],
+        "raw_capture_refs": [normalized_ref],
         "media_source_refs": [
             {
                 "source_url": MAIN_IMAGE_URL,
@@ -238,7 +222,7 @@ def _success_outcomes() -> dict[str, Callable[[HandlerContext], HandlerResult]]:
                 "product_id": "product-1",
                 "snapshot_id": "snapshot-1",
                 "binding_id": "binding-1",
-                "raw_capture_ids": ["raw-1", "raw-2"],
+                "raw_capture_ids": ["raw-1"],
                 "normalized_capture_ref": context.payload["normalized_capture_ref"],
                 "persisted_counts": {"products": 1, "product_snapshots": 1},
                 "media_coverage": {
@@ -398,14 +382,13 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
         "raw_capture_refs",
         "field_evidence",
         "cookie",
-        "html",
     ):
         assert forbidden not in serialized
     assert result.result["fact_refs"] == {
         "product_id": "product-1",
         "snapshot_id": "snapshot-1",
         "binding_id": "binding-1",
-        "raw_capture_ids": ["raw-1", "raw-2"],
+        "raw_capture_ids": ["raw-1"],
         "normalized_capture_ref": _payload()["normalized_capture_ref"],
     }
     assert result.result["observability"] == {
@@ -423,7 +406,7 @@ def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(
             "missing": 0,
             "percentage": 100.0,
         },
-        "artifact_count": 2,
+        "artifact_count": 1,
         "media_observed_count": 2,
         "media_materialized_count": 2,
         "final_status": "success",
@@ -1072,7 +1055,7 @@ def test_api_worker_projects_row_persist_result_before_first_runtime_write() -> 
             "missing": 0,
             "percentage": 100.0,
         },
-        "artifact_count": 2,
+        "artifact_count": 1,
         "media_observed_count": 2,
         "media_materialized_count": 2,
         "final_status": "success",
@@ -1114,7 +1097,7 @@ def _runtime_success_result(context: HandlerContext) -> dict[str, Any]:
         "observability": {
             "stage_durations_ms": {"fact": 1.25},
             "field_coverage": {"total": 2, "observed": 2},
-            "artifact_count": 2,
+            "artifact_count": 1,
             "media_observed_count": 2,
             "media_materialized_count": 2,
             "final_status": "success",

@@ -78,14 +78,32 @@ owners:
     paths:
       - src/automation_business_scaffold/capabilities/media/**
     responsibilities:
-      - download referenced media
-      - upload/materialize media into object storage
-      - return object_key/remote_uri metadata
+      - download referenced media into process-local temporary files
+      - upload/materialize only allowlisted long-term business media into MinIO
+      - return complete bucket, object_key, and content_digest metadata
       - resolve platform-owned media cache candidates through the existing Fact Store owner
       - validate cached object bytes and conditionally revalidate Amazon source media before reuse
     forbidden:
       - decide whether a product is business-worthy
       - decide Feishu writeback fields
+      - upload runtime logs, HTML, page-data, network data, state dumps, ordinary screenshots, raw table snapshots, or temporary files
+      - persist local_path as a durable media locator
+
+  object_storage_transport:
+    paths:
+      - src/automation_business_scaffold/infrastructure/artifacts/**
+    responsibilities:
+      - execute MinIO put, get, and stat operations requested by an admitted business-object writer
+      - preserve the exact configured bucket and object key returned by the provider
+      - expose stored byte metadata needed for digest verification
+    allowed_logical_writers:
+      - media_asset_sync
+      - amazon_browser_capture
+    forbidden:
+      - classify a file as a long-term business object
+      - scan Runtime results or referenced local files for automatic MinIO upload
+      - infer a missing durable-reference bucket at read time
+      - create a parallel helper, service, manager, coordinator, collector, or orchestrator owner
 
   mapper:
     paths:
@@ -151,12 +169,15 @@ owners:
       - normalize Amazon US ASIN identity and canonical URL for browser collection
       - visit one Amazon product page through the existing browser bridge
       - parse embedded data, same-origin page responses, semantic DOM, and controlled text blocks in precedence order
-      - persist complete capture evidence to object storage and return compact artifact references
+      - persist normalized capture for success and governed screenshot evidence for blocked or captcha outcomes
+      - keep HTML, page-data, network data, ordinary screenshots, logs, and temporary files local
+      - return compact complete bucket, object_key, and content_digest references
     forbidden:
       - write Fact DB
       - write Feishu business projections
       - materialize long-lived product media
       - bypass captcha, access blocks, or provider security policy
+      - upload success HTML, page-data, network data, ordinary screenshots, logs, state dumps, or temporary files
 
   amazon_fact_persistence:
     paths:
@@ -174,11 +195,14 @@ owners:
       - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
       - query Amazon media cache candidates by normalized source URL digest without treating URL identity as freshness proof
       - enforce marketplace plus ASIN identity and per-run idempotency keys
+      - read normalized capture and media objects from MinIO by complete bucket, object_key, and content_digest references and verify actual stored bytes
     forbidden:
       - decide Feishu fields
       - visit or parse Amazon pages
       - decide workflow stage transitions
       - execute production DDL from daemon or worker paths
+      - upload object storage content
+      - read a local_path as fallback for a durable business object
 
   rate_limit:
     paths:

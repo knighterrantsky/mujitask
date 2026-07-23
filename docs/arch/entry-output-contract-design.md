@@ -1,6 +1,6 @@
 # 入口与输出契约设计
 
-日期: 2026-04-23
+日期: 2026-07-23
 
 ## 1. 定位
 
@@ -46,9 +46,16 @@
 - 不传 `fact_db_url`、`db_url`、`execution_control_db_url`、`execution_control_fact_db_url`、`minio_secret_key`、`s3_secret_key`、`browser_cookies` 这类连接、密钥或会话凭据字段。
 - 不从 `skill.local.env` 读取浏览器固定资源配置；`BROWSER_PROFILE_REF`、`BROWSER_PROVIDER_NAME`、`BROWSER_PROFILE_ID`、`BROWSER_WORKSPACE_ID`、`BROWSER_PROFILES_FILE`、`DEFAULT_PROFILE_REF` 这类默认值属于项目运行配置。正式 Skill 只允许用户通过 CLI 参数显式覆盖本次业务使用的 `profile_ref`。
 
-正式 submit 由 Runtime 控制面从项目运行配置解析 Runtime DB、Fact DB 和对象存储，并在创建 `task_request` 前做 preflight。缺 Runtime DB、Fact DB、artifact provider、bucket 或 MinIO/S3 必填配置时，submit 必须被拒绝，不能让后续 handler 退化成 `dry_run` 或本地 `local` 成功。
+正式 submit 由 Runtime 控制面从项目运行配置解析持久化依赖，并在创建 `task_request` 前按 workflow 声明做 preflight:
 
-测试可以直接调用 submit 入口并携带显式 test-only override，用于隔离测试数据库、MinIO/S3 或本地 fixture；这类 override 不能由正式 Skill 自动注入，也不能成为长期业务 payload 字段。
+- Runtime DB 是正式 workflow 的必需控制面，缺失时拒绝提交。
+- 只有 `requires_fact_db=true` 时才要求 Fact DB；缺失时拒绝提交。
+- 只有 `requires_object_storage=true` 且 workflow 会持久化机器契约允许的长期业务对象时，才要求 MinIO provider、bucket 和凭据；缺失时拒绝提交。
+- 仅产生本地日志、HTML、普通截图、页面/网络数据或其他 Runtime 诊断文件的 workflow 不要求 MinIO，也不得为了通过 preflight 把这些文件提升为长期对象。
+
+任何持久化依赖缺失都不能让后续 handler 退化成 `dry_run` 或伪造本地持久化成功。
+
+测试可以直接调用 submit 入口并携带显式 test-only override，用于隔离测试数据库、MinIO 或本地 fixture；这类 override 不能由正式 Skill 自动注入，也不能成为长期业务 payload 字段。
 
 ### 2.2 Amazon 单商品入口
 
@@ -68,8 +75,9 @@ profile、Fact DB 和对象存储；Amazon skill 从自身配置生成必填的
 不接受任意飞书 URL、其他表 alias 或缺失路由快照的提交。
 
 同步接收结果沿用通用 `request_id` 契约。异步终态结果只返回来源行、请求/解析 ASIN、
-`row_status`、coverage、各步骤状态和 Fact/artifact 紧凑引用；完整 capture、HTML、页面数据
-和媒体正文分别留在 Fact DB 或对象存储。`blocked` / identity mismatch 必须返回脱敏错误并
+`row_status`、coverage、各步骤状态和 Fact/长期业务对象紧凑引用；成功时只有 normalized
+capture 和商品媒体允许进入 MinIO，HTML、页面/网络数据和普通截图只留本地；blocked/captcha
+只允许持久化受控终态证据截图，不生成 normalized capture 或商品媒体。`blocked` / identity mismatch 必须返回脱敏错误并
 只更新来源行状态，不得输出或写回错误商品字段。
 
 ### 2.3 Amazon 竞品表批量入口
@@ -170,8 +178,8 @@ CLI / OpenClaw 兼容输出可继续使用 `__OPENCLAW_RESULT__` 作为最终一
 | `summary` | 业务摘要 |
 | `counts` | 成功、失败、跳过、去重等计数 |
 | `failed_items` | 失败明细摘要，不放超大 payload |
-| `artifact_uri_prefix` | 可选，运行产物入口 |
-| `run_object_key` / `steps_object_key` / `stdout_object_key` | 可选，关键 artifact 索引 |
+| `artifact_uri_prefix` | 可选，本地短期运行产物入口；只用于当前主机排障，不是 MinIO 或跨进程业务引用 |
+| `run_object_key` / `steps_object_key` / `stdout_object_key` | 可选，本地 artifact 相对名索引；不得据此读取长期业务对象 |
 
 状态查询必须遵守 Runtime DB 的双状态语义:
 
@@ -218,7 +226,7 @@ request_id -> task_request -> child jobs -> artifacts -> outbox
 - job `error_text` / `last_error_text`
 - `error_type`
 - `error_code`
-- `artifact_object` 中的排障产物
+- `artifact_object` 中指向本地短期文件的排障索引
 
 ## 7. 与其他架构文档关系
 

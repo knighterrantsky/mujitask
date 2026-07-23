@@ -43,6 +43,13 @@ def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_en
     assert "tk_video_metric_snapshots" in table_names
     assert "entity_registry" not in table_names
     assert {"creator_uid", "creator_unique_id"} <= _list_postgres_columns(runtime_db_url, "tk_videos")
+    assert {
+        "bucket",
+        "object_key",
+        "content_digest",
+        "remote_uri",
+        "size_bytes",
+    } <= _list_postgres_columns(runtime_db_url, "tk_media_assets")
     assert "idx_tk_video_product_unique" in _list_postgres_indexes(runtime_db_url)
 
     command.downgrade(config, "20260412_0001")
@@ -61,8 +68,18 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(runtime_db
     product_b = fact_store.upsert_product(product_id="1729440407432826887", title="Rose Bear Updated")
     shop = fact_store.upsert_shop(shop_name="Holiday Shop")
     creator = fact_store.upsert_creator(creator_id="creator-1", uid="7094679250578015274")
-    asset_a = fact_store.upsert_media_asset(source_url="https://example.com/main.png")
-    asset_b = fact_store.upsert_media_asset(source_url="https://example.com/main.png")
+    media_coordinates = {
+        "source_url": "https://example.com/main.png",
+        "bucket": "business-assets",
+        "object_key": "product-media/1729440407432826887/main.png",
+        "content_digest": "a" * 64,
+        "remote_uri": (
+            "s3://business-assets/product-media/1729440407432826887/main.png"
+        ),
+        "size_bytes": 128,
+    }
+    asset_a = fact_store.upsert_media_asset(**media_coordinates)
+    asset_b = fact_store.upsert_media_asset(**media_coordinates)
     media_link = fact_store.link_media_asset(
         entity_type="product",
         entity_external_id="1729440407432826887",
@@ -243,22 +260,30 @@ def test_tk_fact_store_skips_unchanged_relation_writes(runtime_db_url):
     assert changed_with_status["_mutation_status"] == "updated"
 
 
-def test_tk_fact_store_prefers_reusable_media_asset_by_source_url(runtime_db_url):
+def test_tk_fact_store_ignores_incomplete_media_and_returns_durable_reference(
+    runtime_db_url,
+):
     store = RuntimeStore(db_url=runtime_db_url)
     fact_store = TKFactStore(runtime_store=store)
 
     referenced = fact_store.upsert_media_asset(source_url="https://example.com/main.png")
     uploaded = fact_store.upsert_media_asset(
         source_url="https://example.com/main.png",
-        object_key="runtime/media/main.png",
+        bucket="business-assets",
+        object_key="product-media/123/main.png",
+        content_digest="b" * 64,
+        remote_uri="s3://business-assets/product-media/123/main.png",
+        size_bytes=256,
         mime_type="image/png",
     )
 
     found = fact_store.find_media_asset(source_url="https://example.com/main.png")
 
-    assert referenced["asset_id"] != uploaded["asset_id"]
+    assert referenced == {}
     assert found["asset_id"] == uploaded["asset_id"]
-    assert found["object_key"] == "runtime/media/main.png"
+    assert found["bucket"] == "business-assets"
+    assert found["object_key"] == "product-media/123/main.png"
+    assert found["content_digest"] == "b" * 64
 
 
 def test_tk_fact_store_records_product_window_snapshots(runtime_db_url):

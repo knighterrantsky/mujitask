@@ -76,6 +76,7 @@ _AMAZON_CALLER_MATERIALIZED_FIELDS = (
     "bucket",
     "remote_uri",
     "file_token",
+    "content_digest",
 )
 
 
@@ -328,19 +329,28 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
             normalized_asset,
             artifact_object_prefix=artifact_object_prefix,
         )
-        if cached_asset and not _is_amazon_product_media(normalized_asset):
-            reused_asset = _reused_media_asset(normalized_asset, cached_asset)
-            synced_assets.append(reused_asset)
-            if asset_ref_key:
-                synced_assets_by_ref[asset_ref_key] = reused_asset
-            continue
         if cached_asset:
-            cached_asset = _validated_amazon_cached_asset(
-                cached_asset,
-                artifact_store=artifact_store,
-                artifact_bucket=artifact_bucket,
-                artifact_object_prefix=artifact_object_prefix,
-            )
+            if _is_amazon_product_media(normalized_asset):
+                cached_asset = _validated_amazon_cached_asset(
+                    cached_asset,
+                    artifact_store=artifact_store,
+                    artifact_bucket=artifact_bucket,
+                    artifact_object_prefix=artifact_object_prefix,
+                )
+            else:
+                cached_asset = _validated_tiktok_cached_asset(
+                    cached_asset,
+                    asset=normalized_asset,
+                    artifact_store=artifact_store,
+                    artifact_bucket=artifact_bucket,
+                    artifact_object_prefix=artifact_object_prefix,
+                )
+                if cached_asset:
+                    reused_asset = _reused_media_asset(normalized_asset, cached_asset)
+                    synced_assets.append(reused_asset)
+                    if asset_ref_key:
+                        synced_assets_by_ref[asset_ref_key] = reused_asset
+                    continue
         local_path = Path(coerce_str(normalized_asset.get("local_path"))).expanduser()
         if local_path.exists() and local_path.is_file():
             _append_artifact_spec(
@@ -432,18 +442,33 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         for record in records:
             base_asset = local_assets_by_path.get(record.source_path, {})
             synced_asset = dict(base_asset)
+            remote_uri = coerce_str(record.metadata.get("remote_uri"))
             synced_asset.update(
                 {
-                    "sync_state": "uploaded" if artifact_store is not None else "linked_local",
+                    "sync_state": "uploaded" if remote_uri else "linked_local",
                     "bucket": record.bucket,
                     "object_key": record.object_key,
-                    "remote_uri": record.metadata.get("remote_uri", ""),
+                    "remote_uri": remote_uri,
                     "mime_type": record.content_type,
                     "source_path": record.source_path,
                     "artifact_id": record.artifact_id,
                     "artifact_uri_prefix": artifact_uri_prefix,
+                    "content_digest": first_non_empty(
+                        base_asset.get("content_digest"),
+                        record.metadata.get("content_digest"),
+                    ),
+                    "size_bytes": record.size,
                 }
             )
+            if remote_uri and coerce_str(
+                synced_asset.get("content_digest")
+            ):
+                _verify_uploaded_media_asset(
+                    synced_asset,
+                    artifact_store=artifact_store,
+                )
+                synced_asset["local_path"] = ""
+                synced_asset["source_path"] = ""
             synced_asset = compact_dict(synced_asset)
             synced_assets.append(synced_asset)
             for asset_ref_key in {*_asset_ref_keys(base_asset), *_asset_ref_keys(synced_asset)}:
@@ -456,7 +481,9 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                 synced_assets.append(_reused_in_run_media_asset(duplicate_asset, existing_asset))
 
     media_bundle = new_fact_bundle()
-    media_bundle["media_assets"] = synced_assets
+    media_bundle["media_assets"] = [
+        asset for asset in synced_assets if _is_complete_durable_media_asset(asset)
+    ]
     summary = {
         "asset_count": len(asset_refs),
         "synced_count": len(synced_assets),
@@ -472,10 +499,10 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         "media_fact_bundle": media_bundle,
     }
     if strict_storage_required or _coerce_bool(payload.get("require_materialized_assets")):
-        referenced_assets = [
-            asset for asset in synced_assets if asset.get("sync_state") == "referenced"
+        non_durable_assets = [
+            asset for asset in synced_assets if not _is_complete_durable_media_asset(asset)
         ]
-        if referenced_assets:
+        if non_durable_assets:
             return failed_result(
                 context,
                 error=build_error(
@@ -483,7 +510,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     error_code="media_asset_materialization_failed",
                     message="Media asset sync requires every referenced fact media asset to be materialized.",
                     retryable=True,
-                    details={"referenced_count": len(referenced_assets)},
+                    details={"unmaterialized_count": len(non_durable_assets)},
                 ),
                 summary=summary,
                 result=result,
@@ -609,7 +636,8 @@ def _reused_media_asset(
             "asset_key": cached.get("asset_key"),
             "source_url": first_non_empty(asset.get("source_url"), cached.get("source_url")),
             "file_token": first_non_empty(cached.get("file_token"), asset.get("file_token")),
-            "local_path": first_non_empty(cached.get("local_path"), asset.get("local_path")),
+            "local_path": "",
+            "source_path": "",
             "bucket": cached.get("bucket"),
             "object_key": first_non_empty(cached.get("object_key"), asset.get("object_key")),
             "remote_uri": cached.get("remote_uri"),
@@ -876,6 +904,7 @@ def _normalize_media_asset(
             "mime_type": asset.get("mime_type"),
             "bucket": asset.get("bucket"),
             "remote_uri": asset.get("remote_uri"),
+            "content_digest": asset.get("content_digest"),
             "source_platform": source_platform,
             "marketplace_code": marketplace_code,
             "position": asset.get("position"),
@@ -993,17 +1022,22 @@ def _append_artifact_spec(
 ) -> None:
     resolved_path = local_path.resolve()
     stored_asset = dict(asset)
+    content_digest = _sha256_of_file(resolved_path)
+    stored_asset.update(
+        {
+            "asset_key": f"content_sha256:{content_digest}",
+            "content_digest": content_digest,
+            "size_bytes": resolved_path.stat().st_size,
+        }
+    )
     explicit_object_key = ""
     if _is_amazon_product_media(asset):
-        content_digest = _sha256_of_file(resolved_path)
-        stored_asset.update(
-            {
-                "asset_key": f"content_sha256:{content_digest}",
-                "content_digest": content_digest,
-                "size_bytes": resolved_path.stat().st_size,
-            }
-        )
         explicit_object_key = _amazon_product_media_object_key(
+            stored_asset,
+            local_path=resolved_path,
+        )
+    elif _is_tiktok_business_media(asset):
+        explicit_object_key = _tiktok_business_media_object_key(
             stored_asset,
             local_path=resolved_path,
         )
@@ -1037,6 +1071,33 @@ def _is_amazon_product_media(asset: dict[str, Any]) -> bool:
     )
 
 
+def _is_tiktok_business_media(asset: dict[str, Any]) -> bool:
+    return (
+        coerce_str(asset.get("source_platform")).lower() in _TK_MEDIA_CACHE_PLATFORMS
+        and coerce_str(asset.get("entity_type")) in {"product", "creator", "video"}
+        and bool(coerce_str(asset.get("entity_external_id")))
+    )
+
+
+def _tiktok_business_media_object_key(
+    asset: dict[str, Any],
+    *,
+    local_path: Path,
+) -> str:
+    entity_type = coerce_str(asset.get("entity_type"))
+    key_prefix = {
+        "product": "product-media",
+        "creator": "creator-media",
+        "video": "video-media",
+    }[entity_type]
+    return (
+        f"{key_prefix}/{_safe_segment(asset.get('entity_external_id'))}/"
+        f"{_safe_segment(asset.get('media_role')).lower()}-"
+        f"{coerce_str(asset.get('content_digest')).lower()}-"
+        f"{_safe_file_name(local_path.name)}"
+    )
+
+
 def _is_amazon_us_media(asset: dict[str, Any]) -> bool:
     return (
         coerce_str(asset.get("source_platform")).lower() == "amazon"
@@ -1063,6 +1124,53 @@ def _amazon_media_cache_object_prefix(*, artifact_object_prefix: str) -> str:
         artifact_object_prefix,
         "product-media/amazon/us/",
     )
+
+
+def _validated_tiktok_cached_asset(
+    cached: dict[str, Any],
+    *,
+    asset: dict[str, Any],
+    artifact_store: Any,
+    artifact_bucket: str,
+    artifact_object_prefix: str,
+) -> dict[str, Any]:
+    if artifact_store is None or not _is_tiktok_business_media(asset):
+        return {}
+    bucket = coerce_str(cached.get("bucket"))
+    object_key = coerce_str(cached.get("object_key"))
+    content_digest = coerce_str(cached.get("content_digest")).lower()
+    size_bytes = _coerce_int(cached.get("size_bytes"), default=0)
+    entity_type = coerce_str(asset.get("entity_type"))
+    relative_prefix = {
+        "product": "product-media/",
+        "creator": "creator-media/",
+        "video": "video-media/",
+    }[entity_type]
+    expected_prefix = join_object_key(artifact_object_prefix, relative_prefix)
+    if (
+        not bucket
+        or not object_key
+        or bucket != artifact_bucket
+        or not object_key.startswith(expected_prefix)
+        or len(content_digest) != 64
+        or size_bytes <= 0
+    ):
+        return {}
+    try:
+        bytes.fromhex(content_digest)
+        stored_bytes = artifact_store.read_bytes(
+            bucket=bucket,
+            object_key=object_key,
+            max_bytes=size_bytes + 1,
+        )
+    except Exception:  # noqa: BLE001 - an invalid cache entry is a cache miss.
+        return {}
+    if (
+        len(stored_bytes) != size_bytes
+        or hashlib.sha256(stored_bytes).hexdigest() != content_digest
+    ):
+        return {}
+    return cached
 
 
 def _validated_amazon_cached_asset(
@@ -1118,6 +1226,47 @@ def _validated_amazon_cached_asset(
     if hashlib.sha256(stored_bytes).hexdigest() != content_digest:
         return {}
     return cached
+
+
+def _verify_uploaded_media_asset(
+    asset: dict[str, Any],
+    *,
+    artifact_store: Any,
+) -> None:
+    bucket = coerce_str(asset.get("bucket"))
+    object_key = coerce_str(asset.get("object_key"))
+    content_digest = coerce_str(asset.get("content_digest")).lower()
+    size_bytes = _coerce_int(asset.get("size_bytes"), default=0)
+    if not _is_complete_durable_media_asset(asset) or size_bytes <= 0:
+        raise ValueError("Uploaded business media returned an incomplete durable reference.")
+    stored_bytes = artifact_store.read_bytes(
+        bucket=bucket,
+        object_key=object_key,
+        max_bytes=size_bytes + 1,
+    )
+    if (
+        len(stored_bytes) != size_bytes
+        or hashlib.sha256(stored_bytes).hexdigest() != content_digest
+    ):
+        raise ValueError("Uploaded business media failed remote byte verification.")
+
+
+def _is_complete_durable_media_asset(asset: dict[str, Any]) -> bool:
+    bucket = coerce_str(asset.get("bucket"))
+    object_key = coerce_str(asset.get("object_key"))
+    content_digest = coerce_str(asset.get("content_digest")).lower()
+    if (
+        asset.get("sync_state") not in {"uploaded", "reused", "reused_in_run"}
+        or not bucket
+        or not object_key
+        or len(content_digest) != 64
+    ):
+        return False
+    try:
+        bytes.fromhex(content_digest)
+    except ValueError:
+        return False
+    return True
 
 
 def _download_matches_cached_asset(
