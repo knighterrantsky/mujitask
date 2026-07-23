@@ -61,6 +61,7 @@ def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, objec
 
 
 def _configure_project_runtime_env(monkeypatch: pytest.MonkeyPatch, runtime_db_url: str) -> None:
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("TK_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "minio")
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET", "pytest-runtime-artifacts")
@@ -293,14 +294,7 @@ def test_refresh_executor_integration_request_first_success_path(
     read_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))
     assert read_worker["request_id"] == request_id
     assert read_worker["api_worker_job"]["job_code"] == "feishu_table_read"
-    assert read_worker["parent_updates"] == [
-        {
-            "request_id": request_id,
-            "stage_code": "read_competitor_rows",
-            "released": True,
-            "next_executor_status": "pending",
-        }
-    ]
+    assert "parent_updates" not in read_worker
 
     collect_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert collect_wait["request_id"] == request_id
@@ -389,14 +383,7 @@ def test_refresh_executor_integration_browser_fallback_path(
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
     assert browser_worker["execution"]["payload"]["source_record_id"] == SOURCE_RECORD_ID
-    assert browser_worker["parent_updates"] == [
-            {
-                "request_id": request_id,
-                "stage_code": "browser_fallback",
-                "released": True,
-                "next_executor_status": "pending",
-            }
-        ]
+    assert "parent_updates" not in browser_worker
 
     after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert after_browser_wait["request_id"] == request_id
@@ -478,6 +465,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
                 "卖家": "",
                 "价格": "",
                 "Fastmoss价格": "",
+                "佣金率": "",
                 "昨日销量": "",
                 "近7天销量": "",
                 "近90天销量": "",
@@ -495,12 +483,17 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     class FakeArtifactStore:
         provider_code = "minio"
 
+        def __init__(self) -> None:
+            self.objects: dict[tuple[str, str], bytes] = {}
+
         def upload_file(self, *, bucket, object_key, local_path, content_type, metadata=None):
+            payload = local_path.read_bytes()
+            self.objects[(bucket, object_key)] = payload
             return StoredArtifact(
                 bucket=bucket,
                 object_key=object_key,
                 etag="pytest-etag",
-                size=1,
+                size=len(payload),
                 content_type=content_type,
                 uri=f"minio://{bucket}/{object_key}",
                 metadata={"remote_uri": f"minio://{bucket}/{object_key}", **dict(metadata or {})},
@@ -508,6 +501,12 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
 
         def build_uri(self, *, bucket, object_key):
             return f"minio://{bucket}/{object_key}"
+
+        def read_bytes(self, *, bucket, object_key, max_bytes=None):
+            payload = self.objects[(bucket, object_key)]
+            if max_bytes is not None and len(payload) > max_bytes:
+                raise ValueError("object exceeds read limit")
+            return payload
 
     monkeypatch.setattr(
         "automation_business_scaffold.capabilities.media.asset_sync_handler.create_store_from_settings",
@@ -550,6 +549,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
             "卖家",
             "价格",
             "Fastmoss价格",
+            "佣金率",
             "昨日销量",
             "近7天销量",
             "近90天销量",
@@ -557,7 +557,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
         ],
         refresh_filter={
             "candidate_policy": "missing_auto_maintained_fields",
-            "auto_fields": ["标题", "卖家", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
+            "auto_fields": ["标题", "卖家", "Fastmoss价格", "佣金率", "昨日销量", "近7天销量", "近90天销量", "记录日期"],
             "skip_product_status": ["已下架/区域不可售"],
         },
         raw_request_result={
@@ -578,6 +578,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
                         "product_id": PRODUCT_ID,
                         "title": "Graduation Candy Boxes",
                         "real_price": "$14.50",
+                        "commission_rate": "10%",
                         "img": "https://cdn.example.com/fastmoss-main.jpg",
                     },
                     "shop": {"seller_id": "seller-1", "name": "Party Supply Co", "region": "US"},
@@ -638,15 +639,19 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
     assert row_worker["api_worker_job"]["status"] == "finished"
     assert row_worker["api_worker_job"]["result_status"] == "success"
     assert row_worker["api_worker_job"]["result"]["fact_upsert"]["persistence_mode"] == "database"
-    assert TKFactStore(db_url=runtime_db_url).get_product(product_id=PRODUCT_ID)["title"] == "Graduation Candy Boxes"
+    persisted_product = TKFactStore(db_url=runtime_db_url).get_product(product_id=PRODUCT_ID)
+    assert persisted_product["title"] == "Graduation Candy Boxes"
+    assert persisted_product["facts"]["commission_rate"] == "10%"
     projection_fields = row_worker["api_worker_job"]["result"]["writeback_projection"]["fields"]
     assert projection_fields["Fastmoss价格"] == "14.5"
+    assert projection_fields["佣金率"] == "10%"
     assert projection_fields["近7天销量"] == "412"
     assert FakeFeishuClient.updated
     updated_fields = FakeFeishuClient.updated[0]["fields"]
     assert updated_fields["标题"] == "Graduation Candy Boxes"
     assert updated_fields["卖家"] == "Party Supply Co"
     assert updated_fields["Fastmoss价格"] == "14.5"
+    assert updated_fields["佣金率"] == "10%"
     assert updated_fields["昨日销量"] == "38"
     assert updated_fields["近7天销量"] == "412"
     assert updated_fields["近90天销量"] == "2310"

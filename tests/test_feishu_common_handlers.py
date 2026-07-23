@@ -424,6 +424,7 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) 
                                 "价格": "$9.99",
                                 "商品状态": "",
                                 "Fastmoss价格": "",
+                                "佣金率": "",
                                 "昨日销量": "2",
                                 "近7天销量": "",
                                 "近90天销量": "9",
@@ -444,6 +445,7 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) 
                                 "价格": "$0.99",
                                 "商品状态": "",
                                 "Fastmoss价格": "$1",
+                                "佣金率": "10%",
                                 "昨日销量": "2",
                                 "近7天销量": "7",
                                 "近90天销量": "9",
@@ -472,6 +474,7 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) 
             "价格",
             "商品状态",
             "Fastmoss价格",
+            "佣金率",
             "昨日销量",
             "近7天销量",
             "近90天销量",
@@ -495,6 +498,7 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) 
         "节日",
         "卖家",
         "Fastmoss价格",
+        "佣金率",
         "近7天销量",
         "记录日期",
     ]
@@ -503,6 +507,43 @@ def test_feishu_table_read_adapts_competitor_source_rows(monkeypatch, tmp_path) 
     assert result.result["raw_snapshot_ref"].startswith("file://")
     assert result.result["source_rows"][0]["source_snapshot_ref"] == result.result["raw_snapshot_ref"]
     assert result.result["raw_snapshot_artifacts"][0]["size"] > 0
+
+
+def test_feishu_table_read_treats_missing_competitor_commission_rate_as_pending() -> None:
+    payload = _table_payload(
+        request_id="req-read-missing-commission",
+        raw_rows=[
+            {
+                "record_id": "rec-missing-commission",
+                "fields": {
+                    "产品链接": "https://www.tiktok.com/shop/pdp/123456789",
+                    "SKU-ID": "123456789",
+                    "图片": "https://cdn.example.com/product.jpg",
+                    "标题": "Complete except commission",
+                    "节日": "Halloween",
+                    "卖家": "Demo shop",
+                    "价格": "$9.99",
+                    "Fastmoss价格": "$9.99",
+                    "佣金率": "",
+                    "昨日销量": "2",
+                    "近7天销量": "7",
+                    "近90天销量": "90",
+                    "记录日期": "2026-07-23",
+                    "商品状态": "",
+                },
+            }
+        ],
+        filter_spec={"candidate_policy": "missing_auto_maintained_fields"},
+        adapter_code="competitor_table_source_adapter",
+    )
+
+    result = build_bound_api_handler_registry().dispatch(
+        "feishu_table_read",
+        _context("feishu_table_read", payload),
+    )
+
+    assert result.status == "success"
+    assert result.result["source_rows"][0]["missing_auto_fields"] == ["佣金率"]
 
 
 def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric() -> None:
@@ -751,6 +792,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
                     "价格": "$9.99",
                     "标题": "",
                     "Fastmoss价格": "",
+                    "佣金率": "15%",
                     "近7天销量": "",
                     "记录日期": "",
                 },
@@ -784,6 +826,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
                     "标题": "Graduation Candy Boxes",
                     "价格": "$14.50",
                     "Fastmoss价格": "$14.50",
+                    "佣金率": "10%",
                     "近7天销量": "412",
                     "商品状态": "已下架/区域不可售",
                 },
@@ -799,6 +842,7 @@ def test_feishu_table_write_maps_competitor_projection_without_overwriting_manua
     assert fields["标题"] == "Graduation Candy Boxes"
     assert fields["Fastmoss价格"] == "$14.50"
     assert fields["近7天销量"] == "412"
+    assert "佣金率" not in fields
     assert "记录日期" in fields
     assert "SKU-ID" not in fields
     assert "产品链接" not in fields

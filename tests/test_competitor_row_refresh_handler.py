@@ -164,6 +164,12 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
             context,
             result={
                 "product_fact_bundle": {
+                    "products": [
+                        {
+                            "product_id": "123456789",
+                            "facts": {"commission_rate": "10%"},
+                        }
+                    ],
                     "product_daily_metrics": [
                         {"metric_date": "2026-04-24", "sold_count": 10},
                         {"metric_date": "2026-04-25", "sold_count": 12},
@@ -259,6 +265,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     assert "raw_api_responses" not in result.result["product_fact_bundle"]
     assert len(json.dumps(result.result)) < 50_000
     assert result.result["writeback_projection"]["fields"]["近90天销量"] == "600"
+    assert result.result["writeback_projection"]["fields"]["佣金率"] == "10%"
     assert result.result["runtime_evidence"]["browser_fallback_used"] is False
     assert media_payloads[0]["sync_referenced_files"] is True
     assert media_payloads[0]["require_materialized_assets"] is True
@@ -282,6 +289,7 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
         "file_name": "main.jpg",
         "mime_type": "image/jpeg",
     }
+    assert write_payloads[0]["records"][0]["projection_fields"]["佣金率"] == "10%"
 
 
 def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(

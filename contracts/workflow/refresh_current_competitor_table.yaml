@@ -36,7 +36,7 @@ stages:
   - stage_code: read_competitor_rows
     handler_code: feishu_table_read
     source_adapter: competitor_table_source_adapter
-    purpose: 读取 TK竞品收集 中缺少 12 个自动维护字段且未被状态跳过的候选行
+    purpose: 读取 TK竞品收集 中缺少 13 个自动维护字段且未被状态跳过的候选行
   - stage_code: dispatch_row_refresh_jobs
     handler_code: executor_daemon
     purpose: 每条候选飞书记录最多创建一个 competitor_row_refresh 主 job
@@ -66,7 +66,7 @@ protected_invariants:
   - browser task_execution success is not a row-level business terminal result; ready_for_summary can only summarize final competitor_row_refresh row_status/result_status and must have no waiting row job or active browser execution
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch / fastmoss_security_browser_resolve child task_execution
-  - 商品状态不是 12 个自动维护字段，不参与 pending 判断
+  - 商品状态不是 13 个自动维护字段，不参与 pending 判断
   - 商品不可访问、已下架或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售
 
 known_architecture_gaps: []

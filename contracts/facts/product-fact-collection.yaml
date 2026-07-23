@@ -28,6 +28,15 @@ required_pipeline_roles:
   - mapper
   - fact_bundle_upsert
 
+tiktok_product_fact_fields:
+  commission_rate:
+    source: fastmoss.goods.base.data.product.commission_rate
+    mapper_output: products[].facts.commission_rate
+    fact_db_projection: tk_products.facts.commission_rate
+    value_policy: raw_percentage_text_preserve_dash
+    missing_source_policy: omit_without_synthesis
+    feishu_projection: TK竞品收集.佣金率
+
 business_job_usage:
   tiktok_fastmoss_product_ingest:
     - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
