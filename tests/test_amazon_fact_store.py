@@ -363,6 +363,55 @@ def test_offer_variant_and_bsr_writes_are_independently_idempotent(runtime_db_ur
     assert _count(runtime_db_url, "amazon_bsr_snapshots") == 2
 
 
+def test_find_media_asset_uses_normalized_source_digest_and_environment_prefix(
+    runtime_db_url,
+) -> None:
+    store = AmazonFactStore(db_url=runtime_db_url)
+    source_url = "https://m.media-amazon.com/images/I/shared.jpg"
+    first = store.upsert_media_asset(
+        source_url=source_url,
+        content_digest=DIGEST_A,
+        bucket="runtime-artifacts",
+        object_key=f"dev/product-media/amazon/us/B0FIRST001/main_image/{DIGEST_A}.jpg",
+        remote_uri=(
+            "s3://runtime-artifacts/dev/product-media/amazon/us/"
+            f"B0FIRST001/main_image/{DIGEST_A}.jpg"
+        ),
+        mime_type="image/jpeg",
+        size_bytes=3,
+        metadata={"source_etag": '"first"'},
+        observed_at=1000.0,
+    )
+    second = store.upsert_media_asset(
+        source_url=source_url,
+        content_digest=DIGEST_B,
+        bucket="runtime-artifacts",
+        object_key=f"dev/product-media/amazon/us/B0SECOND02/gallery_image/{DIGEST_B}.jpg",
+        remote_uri=(
+            "s3://runtime-artifacts/dev/product-media/amazon/us/"
+            f"B0SECOND02/gallery_image/{DIGEST_B}.jpg"
+        ),
+        mime_type="image/jpeg",
+        size_bytes=4,
+        metadata={"source_etag": '"second"'},
+        observed_at=2000.0,
+    )
+
+    found = store.find_media_asset(
+        source_url=source_url,
+        object_key_prefix="dev/product-media/amazon/us/",
+    )
+    missing = store.find_media_asset(
+        source_url=source_url,
+        object_key_prefix="staging/product-media/amazon/us/",
+    )
+
+    assert found["asset_id"] == second["asset_id"]
+    assert found["asset_id"] != first["asset_id"]
+    assert found["metadata"] == {"source_etag": '"second"'}
+    assert missing == {}
+
+
 def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_url) -> None:
     store = AmazonFactStore(db_url=runtime_db_url)
     product = store.upsert_product(

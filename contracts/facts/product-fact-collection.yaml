@@ -84,6 +84,27 @@ platform_contracts:
     cross_platform_foreign_keys: false
     fact_database_policy: same_fact_database_instance_with_isolated_amazon_tables
     object_storage_policy: reuse_configured_bucket_with_isolated_amazon_prefixes
+    media_cache_policy:
+      candidate_key: normalized_source_url_sha256
+      candidate_index: amazon_media_assets.source_url_digest
+      url_identity_is_freshness_proof: false
+      required_object_checks:
+        - current_environment_amazon_prefix
+        - bucket_and_object_key_present
+        - stored_bytes_size_matches
+        - stored_bytes_sha256_matches
+      source_revalidation:
+        validators:
+          - etag
+          - last_modified
+        not_modified: reuse_cached_object
+        changed_content: write_new_content_addressed_object
+        missing_validators: download_and_compare_sha256
+        validation_failure: fall_back_to_full_download
+      preserve_current_capture_coordinates:
+        - media_role
+        - position
+      download_concurrency_change: false
     raw_capture_object_key:
       template: <env>/raw-captures/amazon/us/<asin>/<yyyy>/<mm>/<dd>/<run_id>/<sha256>/<filename>
       content_address: sha256_of_stored_bytes

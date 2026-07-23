@@ -226,6 +226,13 @@ erDiagram
 - `source_url` 只是来源证据和缓存查找线索；事实媒体必须以对象存储定位为准。
 - 同一个媒体文件可以用不同 `media_role` 绑定到同一实体，例如同一图片同时是 `product_gallery_image` 和 `product_sku_image`，关系层必须保留角色差异，不能只按 URL 去重。
 
+Amazon 使用隔离的 `amazon_media_assets`，复用规则比 TikTok/FastMoss 多一层源站重验证：
+
+- 按规范化 URL 的 `source_url_digest` 只能得到缓存候选，不能直接判定内容未变化。
+- 候选必须匹配当前环境的 Amazon 受控对象前缀，并通过 MinIO 实际字节的 size/digest 校验；对象复用不得覆盖本次关系的 media role/position。
+- 有 `ETag` 或 `Last-Modified` 时执行条件重验证；`304` 才直接复用。缺少验证器时完整下载一次并比较 digest。
+- 同 URL 内容变化必须生成新的 content-addressed 对象与媒体事实；缓存失败只回退下载，不改变行级事实和状态契约。
+
 ### 4.3 关系层
 
 | 表 | 唯一业务键 | 关系 |

@@ -6,6 +6,7 @@ import hashlib
 import mimetypes
 import re
 import tempfile
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
@@ -35,8 +36,10 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     sync_artifact_specs,
 )
 from automation_business_scaffold.infrastructure.artifacts.artifact_store import (
+    join_object_key,
     normalize_artifact_store_provider,
 )
+from automation_business_scaffold.infrastructure.facts.amazon_fact_store import AmazonFactStore
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 from automation_business_scaffold.infrastructure.rate_limit import (
     RequestPacer,
@@ -74,6 +77,10 @@ _AMAZON_CALLER_MATERIALIZED_FIELDS = (
     "remote_uri",
     "file_token",
 )
+
+
+class _AmazonMediaNotModified(Exception):
+    pass
 
 
 class _BoundedRedirectResponse:
@@ -300,7 +307,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
     synced_assets_by_ref: dict[str, dict[str, Any]] = {}
     deferred_reuse_assets: list[tuple[dict[str, Any], str]] = []
     warnings = list(rejected_url_warnings)
-    fact_store = _create_fact_store(
+    fact_stores = _create_fact_store(
         payload,
         asset_refs=normalized_asset_refs,
         warnings=warnings,
@@ -316,13 +323,24 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
             else:
                 synced_assets.append(_reused_in_run_media_asset(normalized_asset, existing_asset))
             continue
-        cached_asset = _find_reusable_media_asset(fact_store, normalized_asset)
-        if cached_asset:
+        cached_asset = _find_reusable_media_asset(
+            fact_stores,
+            normalized_asset,
+            artifact_object_prefix=artifact_object_prefix,
+        )
+        if cached_asset and not _is_amazon_product_media(normalized_asset):
             reused_asset = _reused_media_asset(normalized_asset, cached_asset)
             synced_assets.append(reused_asset)
             if asset_ref_key:
                 synced_assets_by_ref[asset_ref_key] = reused_asset
             continue
+        if cached_asset:
+            cached_asset = _validated_amazon_cached_asset(
+                cached_asset,
+                artifact_store=artifact_store,
+                artifact_bucket=artifact_bucket,
+                artifact_object_prefix=artifact_object_prefix,
+            )
         local_path = Path(coerce_str(normalized_asset.get("local_path"))).expanduser()
         if local_path.exists() and local_path.is_file():
             _append_artifact_spec(
@@ -348,7 +366,21 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     artifact_root=artifact_root,
                     index=index,
                     request_pacer=request_pacer,
+                    conditional_cache=cached_asset,
                 )
+                if cached_asset and _download_matches_cached_asset(
+                    downloaded_asset,
+                    cached_asset,
+                ):
+                    reused_asset = _reused_media_asset(
+                        normalized_asset,
+                        cached_asset,
+                        metadata=coerce_mapping(downloaded_asset.get("metadata")),
+                    )
+                    synced_assets.append(reused_asset)
+                    if asset_ref_key:
+                        synced_assets_by_ref[asset_ref_key] = reused_asset
+                    continue
                 downloaded_path = Path(coerce_str(downloaded_asset.get("local_path"))).expanduser()
                 _append_artifact_spec(
                     specs,
@@ -363,6 +395,12 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     pending_asset["sync_state"] = "pending_upload"
                     synced_assets_by_ref[asset_ref_key] = pending_asset
                 continue
+            except _AmazonMediaNotModified:
+                reused_asset = _reused_media_asset(normalized_asset, cached_asset)
+                synced_assets.append(reused_asset)
+                if asset_ref_key:
+                    synced_assets_by_ref[asset_ref_key] = reused_asset
+                continue
             except Exception as exc:  # noqa: BLE001
                 warnings.append(
                     f"Referenced asset download failed: {normalized_asset.get('source_url')} ({exc})"
@@ -371,6 +409,12 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         synced_assets.append(normalized_asset)
         if asset_ref_key:
             synced_assets_by_ref[asset_ref_key] = normalized_asset
+
+    for fact_store in (fact_stores or {}).values():
+        close = getattr(fact_store, "close", None)
+        if callable(close):
+            with suppress(Exception):
+                close()
 
     artifact_refs: list[dict[str, Any]] = []
     if specs:
@@ -462,12 +506,12 @@ def _create_fact_store(
     *,
     asset_refs: list[dict[str, Any]],
     warnings: list[str],
-) -> TKFactStore | None:
-    if not any(
-        coerce_str(asset.get("source_platform")).lower() in _TK_MEDIA_CACHE_PLATFORMS
-        for asset in asset_refs
-    ):
-        return None
+) -> dict[str, Any]:
+    platforms = {
+        coerce_str(asset.get("source_platform")).lower() for asset in asset_refs
+    }
+    if not (platforms & (_TK_MEDIA_CACHE_PLATFORMS | {"amazon"})):
+        return {}
     request_payload = coerce_mapping(payload.get("request_payload"))
     fact_db_url = first_non_empty(
         payload.get("fact_db_url"),
@@ -480,28 +524,70 @@ def _create_fact_store(
         get_execution_control_defaults().fact_db_url,
     )
     if not fact_db_url:
-        return None
-    try:
-        return TKFactStore(db_url=fact_db_url)
-    except Exception as exc:  # noqa: BLE001 - media sync can proceed without cache lookup.
-        warnings.append(f"Media asset cache lookup disabled: {exc}")
-        return None
+        return {}
+    stores: dict[str, Any] = {}
+    for platform_group, store_type in (
+        ("tk", TKFactStore),
+        ("amazon", AmazonFactStore),
+    ):
+        if platform_group == "tk" and not platforms.intersection(_TK_MEDIA_CACHE_PLATFORMS):
+            continue
+        if platform_group == "amazon" and "amazon" not in platforms:
+            continue
+        try:
+            stores[platform_group] = store_type(db_url=fact_db_url)
+        except Exception as exc:  # noqa: BLE001 - media sync can proceed without cache lookup.
+            warnings.append(f"{platform_group.title()} media asset cache lookup disabled: {exc}")
+    return stores
 
 
 def _find_reusable_media_asset(
-    fact_store: TKFactStore | None, asset: dict[str, Any]
+    fact_stores: dict[str, Any] | None,
+    asset: dict[str, Any],
+    *,
+    artifact_object_prefix: str,
 ) -> dict[str, Any]:
-    if (
-        fact_store is None
-        or coerce_str(asset.get("source_platform")).lower() not in _TK_MEDIA_CACHE_PLATFORMS
-    ):
+    source_platform = coerce_str(asset.get("source_platform")).lower()
+    if not fact_stores:
         return {}
-    cached = fact_store.find_media_asset(
-        source_url=coerce_str(asset.get("source_url")),
-        file_token=coerce_str(asset.get("file_token")),
-        local_path=coerce_str(asset.get("local_path")),
-        object_key=coerce_str(asset.get("object_key")),
-    )
+    if source_platform in _TK_MEDIA_CACHE_PLATFORMS:
+        fact_store = fact_stores.get("tk")
+        if fact_store is None:
+            return {}
+        try:
+            cached = fact_store.find_media_asset(
+                source_url=coerce_str(asset.get("source_url")),
+                file_token=coerce_str(asset.get("file_token")),
+                local_path=coerce_str(asset.get("local_path")),
+                object_key=coerce_str(asset.get("object_key")),
+            )
+        except Exception:  # noqa: BLE001 - cache lookup failure falls back to materialization.
+            fact_stores.pop("tk", None)
+            close = getattr(fact_store, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    close()
+            return {}
+    elif _is_amazon_product_media(asset):
+        fact_store = fact_stores.get("amazon")
+        if fact_store is None:
+            return {}
+        try:
+            cached = fact_store.find_media_asset(
+                source_url=coerce_str(asset.get("source_url")),
+                object_key_prefix=_amazon_media_cache_object_prefix(
+                    artifact_object_prefix=artifact_object_prefix,
+                ),
+            )
+        except Exception:  # noqa: BLE001 - cache lookup failure falls back to materialization.
+            fact_stores.pop("amazon", None)
+            close = getattr(fact_store, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    close()
+            return {}
+    else:
+        return {}
     if not cached:
         return {}
     if coerce_str(cached.get("object_key")) or coerce_str(cached.get("remote_uri")):
@@ -509,7 +595,12 @@ def _find_reusable_media_asset(
     return {}
 
 
-def _reused_media_asset(asset: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:
+def _reused_media_asset(
+    asset: dict[str, Any],
+    cached: dict[str, Any],
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return compact_dict(
         {
             **asset,
@@ -519,12 +610,17 @@ def _reused_media_asset(asset: dict[str, Any], cached: dict[str, Any]) -> dict[s
             "source_url": first_non_empty(asset.get("source_url"), cached.get("source_url")),
             "file_token": first_non_empty(cached.get("file_token"), asset.get("file_token")),
             "local_path": first_non_empty(cached.get("local_path"), asset.get("local_path")),
+            "bucket": cached.get("bucket"),
             "object_key": first_non_empty(cached.get("object_key"), asset.get("object_key")),
+            "remote_uri": cached.get("remote_uri"),
             "file_name": first_non_empty(cached.get("file_name"), asset.get("file_name")),
             "mime_type": first_non_empty(cached.get("mime_type"), asset.get("mime_type")),
+            "content_digest": cached.get("content_digest"),
+            "size_bytes": cached.get("size_bytes"),
             "source_platform": first_non_empty(
                 asset.get("source_platform"), cached.get("source_platform")
             ),
+            "metadata": metadata if metadata is not None else cached.get("metadata"),
         }
     )
 
@@ -962,6 +1058,81 @@ def _amazon_product_media_object_key(
     )
 
 
+def _amazon_media_cache_object_prefix(*, artifact_object_prefix: str) -> str:
+    return join_object_key(
+        artifact_object_prefix,
+        "product-media/amazon/us/",
+    )
+
+
+def _validated_amazon_cached_asset(
+    cached: dict[str, Any],
+    *,
+    artifact_store: Any,
+    artifact_bucket: str,
+    artifact_object_prefix: str,
+) -> dict[str, Any]:
+    if artifact_store is None:
+        return {}
+    bucket = coerce_str(cached.get("bucket"))
+    object_key = coerce_str(cached.get("object_key"))
+    remote_uri = coerce_str(cached.get("remote_uri"))
+    content_digest = coerce_str(cached.get("content_digest")).lower()
+    size_bytes = _coerce_int(cached.get("size_bytes"), default=0)
+    required_values = (
+        cached.get("asset_id"),
+        cached.get("asset_key"),
+        cached.get("source_url"),
+        bucket,
+        object_key,
+        remote_uri,
+        content_digest,
+        cached.get("mime_type"),
+    )
+    expected_prefix = _amazon_media_cache_object_prefix(
+        artifact_object_prefix=artifact_object_prefix
+    )
+    if (
+        not all(coerce_str(value) for value in required_values)
+        or bucket != artifact_bucket
+        or not object_key.startswith(expected_prefix)
+        or size_bytes <= 0
+        or size_bytes > _AMAZON_US_MEDIA_DOWNLOAD_MAX_BYTES
+        or len(content_digest) != 64
+    ):
+        return {}
+    try:
+        bytes.fromhex(content_digest)
+        expected_uri = artifact_store.build_uri(bucket=bucket, object_key=object_key)
+        if remote_uri != expected_uri:
+            return {}
+        stored_bytes = artifact_store.read_bytes(
+            bucket=bucket,
+            object_key=object_key,
+            max_bytes=size_bytes + 1,
+        )
+    except Exception:  # noqa: BLE001 - an invalid cache entry falls back to a source download.
+        return {}
+    if len(stored_bytes) != size_bytes:
+        return {}
+    if hashlib.sha256(stored_bytes).hexdigest() != content_digest:
+        return {}
+    return cached
+
+
+def _download_matches_cached_asset(
+    downloaded: dict[str, Any],
+    cached: dict[str, Any],
+) -> bool:
+    local_path = Path(coerce_str(downloaded.get("local_path"))).expanduser()
+    if not local_path.is_file():
+        return False
+    return (
+        local_path.stat().st_size == _coerce_int(cached.get("size_bytes"), default=0)
+        and _sha256_of_file(local_path) == coerce_str(cached.get("content_digest")).lower()
+    )
+
+
 def _sha256_of_file(path: Path) -> str:
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
@@ -987,6 +1158,7 @@ def _download_referenced_asset(
     artifact_root: Path,
     index: int,
     request_pacer: RequestPacer,
+    conditional_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_url = coerce_str(asset.get("source_url"))
     timeout_seconds = _coerce_int(
@@ -1004,22 +1176,38 @@ def _download_referenced_asset(
             source_url,
             allowed_host_suffixes=allowed_host_suffixes,
         )
-    request = Request(source_url, headers={"User-Agent": "Mozilla/5.0"})
+    request_headers = {"User-Agent": "Mozilla/5.0"}
+    cache_metadata = coerce_mapping((conditional_cache or {}).get("metadata"))
+    source_etag = coerce_str(cache_metadata.get("source_etag"))
+    source_last_modified = coerce_str(cache_metadata.get("source_last_modified"))
+    if source_etag:
+        request_headers["If-None-Match"] = source_etag
+    if source_last_modified:
+        request_headers["If-Modified-Since"] = source_last_modified
+    request = Request(source_url, headers=request_headers)
     request_pacer.wait_before_request("media:download")
     try:
-        response_context = (
-            build_opener(
-                _GovernedMediaRedirectHandler(
-                    allowed_host_suffixes,
-                    max_bytes=max_bytes,
+        try:
+            response_context = (
+                build_opener(
+                    _GovernedMediaRedirectHandler(
+                        allowed_host_suffixes,
+                        max_bytes=max_bytes,
+                    )
+                ).open(
+                    request,
+                    timeout=timeout_seconds,
                 )
-            ).open(
-                request,
-                timeout=timeout_seconds,
+                if allowed_host_suffixes
+                else urlopen(  # noqa: S310 - governed by caller policy.
+                    request,
+                    timeout=timeout_seconds,
+                )
             )
-            if allowed_host_suffixes
-            else urlopen(request, timeout=timeout_seconds)  # noqa: S310 - governed by caller policy.
-        )
+        except HTTPError as exc:
+            if exc.code == 304 and (source_etag or source_last_modified):
+                raise _AmazonMediaNotModified from None
+            raise
         with response_context as response:
             if allowed_host_suffixes:
                 response_url = getattr(response, "geturl", lambda: source_url)()
@@ -1029,6 +1217,8 @@ def _download_referenced_asset(
                 )
             content = response.read(max_bytes + 1) if max_bytes else response.read()
             content_type = coerce_str(response.headers.get("Content-Type"))
+            response_etag = coerce_str(response.headers.get("ETag"))
+            response_last_modified = coerce_str(response.headers.get("Last-Modified"))
     finally:
         request_pacer.mark_request_finished("media:download")
     if not content:
@@ -1071,6 +1261,13 @@ def _download_referenced_asset(
     downloaded["file_name"] = target_path.name
     downloaded["mime_type"] = first_non_empty(
         asset.get("mime_type"), _normalize_content_type(content_type, suffix)
+    )
+    downloaded["metadata"] = compact_dict(
+        {
+            **coerce_mapping(asset.get("metadata")),
+            "source_etag": response_etag,
+            "source_last_modified": response_last_modified,
+        }
     )
     return downloaded
 
