@@ -49,6 +49,7 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
                     "product_id": "1732183068040729370",
                     "title": "Valentine Gift",
                     "real_price": "$12.99",
+                    "commission_rate": "8%",
                     "img": "https://example.com/product.png",
                 },
                 "shop": {
@@ -65,7 +66,22 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
     assert mapped["shops"][0]["shop_name"] == "Roxy Shop"
     assert mapped["relations"]["product_shops"][0]["shop_id"] == "7496166867916327706"
     assert mapped["media_assets"][0]["entity_external_id"] == "1732183068040729370"
-    assert mapped["products"][0]["facts"] == {}
+    assert mapped["products"][0]["facts"] == {"commission_rate": "8%"}
+
+
+def test_map_fastmoss_goods_base_preserves_dash_commission_rate():
+    mapped = map_fastmoss_goods_base(
+        {
+            "data": {
+                "product": {
+                    "product_id": "1732183068040729370",
+                    "commission_rate": "-",
+                }
+            }
+        }
+    )
+
+    assert mapped["products"][0]["facts"] == {"commission_rate": "-"}
 
 
 def test_fastmoss_product_fetch_unwraps_overview_for_metrics_and_observations():
@@ -165,6 +181,9 @@ def test_fastmoss_product_fetch_live_fetch_collects_7_28_90_overview_windows(mon
             return False
 
         def replace_browser_cookies(self, _cookies):
+            return None
+
+        def set_auth_refresh_callback(self, _callback):
             return None
 
         def get_product_base(self, product_id):

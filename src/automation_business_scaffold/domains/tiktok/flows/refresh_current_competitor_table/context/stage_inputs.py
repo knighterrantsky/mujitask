@@ -243,6 +243,7 @@ def _build_competitor_projection_fields(
         fastmoss_bundle,
         product_id=str(row_context.get("product_id") or row_context.get("product_identity", {}).get("product_id") or ""),
     )
+    fastmoss_product_facts = dict(fastmoss_product.get("facts") or {})
     metrics_snapshot = dict(fastmoss_result.get("metrics_snapshot") or {})
     overview_metrics = dict(metrics_snapshot.get("overview") or {})
 
@@ -308,6 +309,10 @@ def _build_competitor_projection_fields(
         "卖家": seller_name,
         "价格": price_text,
         "Fastmoss价格": fastmoss_price,
+        "佣金率": _first_text(
+            fastmoss_product_facts.get("commission_rate"),
+            fastmoss_product.get("commission_rate"),
+        ),
         "昨日销量": _first_text(
             _metric_text(
                 overview_metrics,

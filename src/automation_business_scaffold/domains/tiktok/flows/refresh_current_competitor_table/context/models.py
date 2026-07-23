@@ -154,6 +154,7 @@ DEFAULT_COMPETITOR_AUTO_FIELDS = (
     "卖家",
     "价格",
     "Fastmoss价格",
+    "佣金率",
     "昨日销量",
     "近7天销量",
     "近90天销量",

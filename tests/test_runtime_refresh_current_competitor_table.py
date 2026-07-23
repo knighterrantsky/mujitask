@@ -333,6 +333,7 @@ def test_refresh_runtime_module_is_loadable_and_row_pipeline_finalizes(runtime_d
     )
     assert read_job["payload"]["source_table_ref"] == SOURCE_TABLE_REF
     assert read_job["payload"]["field_names"][-1] == "商品状态"
+    assert "佣金率" in read_job["payload"]["field_names"]
     assert read_job["payload"]["filter_spec"]["candidate_policy"] == "missing_auto_maintained_fields"
 
     _mark_stage_job_success(

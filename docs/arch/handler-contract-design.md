@@ -439,6 +439,7 @@ payload 示例:
         },
         "标题": "Graduation party decoration set",
         "Fastmoss价格": "$12.99",
+        "佣金率": "10%",
         "昨日销量": "38",
         "近7天销量": "412",
         "近90天销量": "2310",
@@ -481,7 +482,7 @@ result 示例:
       "record_id": "recKwc9Y7r",
       "op": "update",
       "status": "success",
-      "fields_written": ["SKU-ID", "产品链接", "标题", "Fastmoss价格", "昨日销量", "近7天销量", "近90天销量", "记录日期"]
+      "fields_written": ["SKU-ID", "产品链接", "标题", "Fastmoss价格", "佣金率", "昨日销量", "近7天销量", "近90天销量", "记录日期"]
     }
   ],
   "writeback_context": {
@@ -1329,6 +1330,7 @@ result 示例:
         "卖家": "Graduation Shop",
         "价格": "$12.99",
         "Fastmoss价格": "$12.99",
+        "佣金率": "10%",
         "近7天销量": "412",
         "记录日期": "2026-04-24"
       },

@@ -1030,6 +1030,21 @@ def _build_competitor_projection_fields(
     metrics_snapshot = coerce_mapping(fastmoss_result.get("metrics_snapshot"))
     overview_metrics = coerce_mapping(metrics_snapshot.get("overview"))
     daily_metrics = fastmoss_bundle.get("product_daily_metrics") if isinstance(fastmoss_bundle.get("product_daily_metrics"), list) else []
+    fastmoss_products = [
+        dict(item)
+        for item in fastmoss_bundle.get("products", [])
+        if isinstance(item, Mapping)
+    ]
+    product_id = first_non_empty(product.get("product_id"), normalized_product_result.get("product_id"))
+    fastmoss_product = next(
+        (
+            item
+            for item in fastmoss_products
+            if product_id and first_non_empty(item.get("product_id")) == product_id
+        ),
+        fastmoss_products[0] if fastmoss_products else {},
+    )
+    fastmoss_product_facts = coerce_mapping(fastmoss_product.get("facts"))
     main_image = _first_present(
         _first_media_asset_ref(media_result),
         _first_media_asset_ref(normalized_product_result),
@@ -1055,6 +1070,10 @@ def _build_competitor_projection_fields(
             overview_metrics.get("fastmoss_price"),
             overview_metrics.get("real_price"),
             overview_metrics.get("price"),
+        ),
+        "佣金率": first_non_empty(
+            fastmoss_product_facts.get("commission_rate"),
+            fastmoss_product.get("commission_rate"),
         ),
         "昨日销量": first_non_empty(
             _metric_text(overview_metrics, "yday_sold_count", "yesterday_sold_count", "day1_sold_count"),

@@ -485,6 +485,7 @@ def _product_from_mapping(
         shop_payload.get("shop_id"),
         shop_payload.get("id"),
     )
+    commission_rate = _first_non_empty(payload.get("commission_rate"))
     return {
         "product_id": product_id,
         "product_url": _first_non_empty(payload.get("detail_url"), payload.get("product_url"), payload.get("url")),
@@ -494,7 +495,7 @@ def _product_from_mapping(
         "shop_name": shop_name,
         "country_region": _first_non_empty(payload.get("region"), shop_payload.get("region")),
         "source_platform": "fastmoss",
-        "facts": {},
+        "facts": {"commission_rate": commission_rate} if commission_rate else {},
     }
 
 

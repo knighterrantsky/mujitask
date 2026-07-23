@@ -29,6 +29,7 @@ auto_maintained_fields:
   - 卖家
   - 价格
   - Fastmoss价格
+  - 佣金率
   - 昨日销量
   - 近7天销量
   - 近90天销量
@@ -127,6 +128,18 @@ fields:
     db_projection: fact_db.product_metric_latest.fastmoss_price
     write_target: feishu.TK竞品收集.Fastmoss价格
     raw_display_rule: raw_number_string_without_currency
+
+  - display_name: 佣金率
+    canonical_name: commission_rate
+    role: auto_maintained
+    participates_in_pending: true
+    update_policy: fill_missing_only
+    overwrite_policy: do_not_overwrite_non_empty
+    source_of_truth: fastmoss.goods.base.product.commission_rate
+    db_projection: fact_db.tk_products.facts.commission_rate
+    write_target: feishu.TK竞品收集.佣金率
+    raw_display_rule: raw_percentage_text_preserve_dash
+    missing_source_policy: do_not_synthesize
 
   - display_name: 昨日销量
     canonical_name: sales_yesterday
