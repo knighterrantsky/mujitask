@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 
@@ -25,6 +26,138 @@ class _FakeResponse:
     def read(self, size: int = -1) -> bytes:
         content = b"fake-webp-bytes"
         return content if size < 0 else content[:size]
+
+
+class _BytesResponse:
+    def __init__(self, payload: bytes, *, etag: str = "", last_modified: str = "") -> None:
+        self.payload = payload
+        self.headers = {
+            "Content-Type": "image/webp",
+            **({"ETag": etag} if etag else {}),
+            **({"Last-Modified": last_modified} if last_modified else {}),
+        }
+
+    def __enter__(self) -> "_BytesResponse":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self.payload if size < 0 else self.payload[:size]
+
+
+class _AmazonCacheArtifactStore:
+    provider_code = "minio"
+
+    def __init__(self, cached_payload: bytes | None) -> None:
+        self.cached_payload = cached_payload
+        self.uploads: list[dict[str, Any]] = []
+
+    def read_bytes(self, *, bucket, object_key, max_bytes=None):
+        del bucket, object_key, max_bytes
+        if self.cached_payload is None:
+            raise FileNotFoundError("cached object is missing")
+        return self.cached_payload
+
+    def upload_file(
+        self,
+        *,
+        bucket,
+        object_key,
+        local_path,
+        content_type,
+        metadata=None,
+    ):
+        payload = local_path.read_bytes()
+        self.uploads.append(
+            {
+                "bucket": bucket,
+                "object_key": object_key,
+                "payload": payload,
+                "metadata": dict(metadata or {}),
+            }
+        )
+        return StoredArtifact(
+            bucket=bucket,
+            object_key=object_key,
+            etag="minio-etag",
+            size=len(payload),
+            content_type=content_type,
+            uri=f"s3://{bucket}/{object_key}",
+        )
+
+    def build_uri(self, *, bucket, object_key):
+        return f"s3://{bucket}/{object_key}"
+
+
+def _amazon_cache_payload(tmp_path, *, source_url: str) -> dict[str, Any]:
+    return {
+        "artifact_root": str(tmp_path / "artifacts"),
+        "artifact_store_provider": "minio",
+        "artifact_bucket": "runtime-artifacts",
+        "artifact_object_prefix": "dev",
+        "fact_db_url": "postgresql+psycopg://facts",
+        "sync_referenced_files": True,
+        "require_materialized_assets": True,
+        "media_download_dir": str(tmp_path / "downloads"),
+        "run_id": "amazon-cache-run",
+        "asset_refs": [
+            {
+                "entity_type": "product",
+                "product_id": "B0CACHE001",
+                "media_role": "gallery_image",
+                "position": 3,
+                "marketplace_code": "US",
+                "source_platform": "amazon",
+                "source_url": source_url,
+            }
+        ],
+    }
+
+
+def _amazon_cache_candidate(
+    payload: bytes,
+    *,
+    source_url: str,
+    etag: str = "",
+    last_modified: str = "",
+) -> dict[str, Any]:
+    digest = hashlib.sha256(payload).hexdigest()
+    object_key = f"dev/product-media/amazon/us/B0CACHE001/gallery_image/{digest}.webp"
+    return {
+        "asset_id": "amazon-cache-asset",
+        "asset_key": f"content_sha256:{digest}",
+        "source_url": source_url,
+        "content_digest": digest,
+        "bucket": "runtime-artifacts",
+        "object_key": object_key,
+        "remote_uri": f"s3://runtime-artifacts/{object_key}",
+        "file_name": f"{digest}.webp",
+        "mime_type": "image/webp",
+        "size_bytes": len(payload),
+        "metadata": {
+            **({"source_etag": etag} if etag else {}),
+            **({"source_last_modified": last_modified} if last_modified else {}),
+        },
+    }
+
+
+def _fake_amazon_fact_store(candidate: dict[str, Any]):
+    class FakeAmazonFactStore:
+        def __init__(self, *, db_url: str):
+            assert db_url == "postgresql+psycopg://facts"
+            self.closed = False
+
+        def find_media_asset(self, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["source_url"] == candidate["source_url"]
+            assert kwargs["object_key_prefix"] == "dev/product-media/amazon/us/"
+            return dict(candidate)
+
+        def close(self) -> None:
+            self.closed = True
+
+    return FakeAmazonFactStore
 
 
 def _context(payload: dict[str, Any]) -> HandlerContext:
@@ -1224,6 +1357,192 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
         for asset in first.result["synced_assets"]
     )
     assert [ref["object_key"] for ref in first.result["artifact_refs"]] == expected_keys
+
+
+def test_media_asset_sync_reuses_amazon_cache_only_after_304_revalidation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_url = "https://m.media-amazon.com/images/I/cache.webp"
+    cached_payload = b"cached-webp-bytes"
+    candidate = _amazon_cache_candidate(
+        cached_payload,
+        source_url=source_url,
+        etag='"amazon-v1"',
+        last_modified="Wed, 22 Jul 2026 08:00:00 GMT",
+    )
+    candidate["object_key"] = (
+        f"dev/product-media/amazon/us/B0OTHER999/main_image/{candidate['content_digest']}.webp"
+    )
+    candidate["remote_uri"] = f"s3://runtime-artifacts/{candidate['object_key']}"
+    store = _AmazonCacheArtifactStore(cached_payload)
+    requests: list[Request] = []
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            requests.append(request)
+            raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+
+    monkeypatch.setattr(asset_sync_handler, "AmazonFactStore", _fake_amazon_fact_store(candidate))
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "build_opener", lambda handler: FakeOpener())
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(_amazon_cache_payload(tmp_path, source_url=source_url))
+    )
+
+    assert result.status == "success"
+    assert store.uploads == []
+    assert len(requests) == 1
+    assert requests[0].get_header("If-none-match") == '"amazon-v1"'
+    assert requests[0].get_header("If-modified-since") == "Wed, 22 Jul 2026 08:00:00 GMT"
+    asset = result.result["synced_assets"][0]
+    assert asset["sync_state"] == "reused"
+    assert asset["object_key"] == candidate["object_key"]
+    assert asset["media_role"] == "gallery_image"
+    assert asset["position"] == 3
+    assert result.result["artifact_refs"] == []
+
+
+def test_media_asset_sync_writes_new_object_when_same_amazon_url_changes_content(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_url = "https://m.media-amazon.com/images/I/cache.webp"
+    cached_payload = b"cached-webp-bytes"
+    changed_payload = b"changed-webp-bytes"
+    candidate = _amazon_cache_candidate(
+        cached_payload,
+        source_url=source_url,
+        etag='"amazon-v1"',
+    )
+    store = _AmazonCacheArtifactStore(cached_payload)
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            assert request.get_header("If-none-match") == '"amazon-v1"'
+            return _BytesResponse(changed_payload, etag='"amazon-v2"')
+
+    monkeypatch.setattr(asset_sync_handler, "AmazonFactStore", _fake_amazon_fact_store(candidate))
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "build_opener", lambda handler: FakeOpener())
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(_amazon_cache_payload(tmp_path, source_url=source_url))
+    )
+
+    changed_digest = hashlib.sha256(changed_payload).hexdigest()
+    assert result.status == "success"
+    assert len(store.uploads) == 1
+    assert store.uploads[0]["payload"] == changed_payload
+    assert store.uploads[0]["object_key"].endswith(f"/{changed_digest}.webp")
+    asset = result.result["synced_assets"][0]
+    assert asset["content_digest"] == changed_digest
+    assert asset["object_key"] != candidate["object_key"]
+    assert asset["metadata"]["source_etag"] == '"amazon-v2"'
+
+
+def test_media_asset_sync_downloads_when_cached_amazon_object_is_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_url = "https://m.media-amazon.com/images/I/cache.webp"
+    cached_payload = b"cached-webp-bytes"
+    downloaded_payload = b"downloaded-webp-bytes"
+    candidate = _amazon_cache_candidate(
+        cached_payload,
+        source_url=source_url,
+        etag='"amazon-v1"',
+    )
+    store = _AmazonCacheArtifactStore(None)
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            assert request.get_header("If-none-match") is None
+            return _BytesResponse(downloaded_payload, etag='"amazon-v2"')
+
+    monkeypatch.setattr(asset_sync_handler, "AmazonFactStore", _fake_amazon_fact_store(candidate))
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "build_opener", lambda handler: FakeOpener())
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(_amazon_cache_payload(tmp_path, source_url=source_url))
+    )
+
+    assert result.status == "success"
+    assert len(store.uploads) == 1
+    assert store.uploads[0]["payload"] == downloaded_payload
+
+
+def test_media_asset_sync_downloads_when_cached_amazon_digest_is_invalid(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_url = "https://m.media-amazon.com/images/I/cache.webp"
+    cached_payload = b"cached-webp-bytes"
+    downloaded_payload = b"invalid-webp-byte"
+    assert len(downloaded_payload) == len(cached_payload)
+    candidate = _amazon_cache_candidate(
+        cached_payload,
+        source_url=source_url,
+        etag='"amazon-v1"',
+    )
+    store = _AmazonCacheArtifactStore(downloaded_payload)
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            assert request.get_header("If-none-match") is None
+            return _BytesResponse(downloaded_payload, etag='"amazon-v2"')
+
+    monkeypatch.setattr(asset_sync_handler, "AmazonFactStore", _fake_amazon_fact_store(candidate))
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "build_opener", lambda handler: FakeOpener())
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(_amazon_cache_payload(tmp_path, source_url=source_url))
+    )
+
+    assert result.status == "success"
+    assert len(store.uploads) == 1
+    assert store.uploads[0]["payload"] == downloaded_payload
+
+
+def test_media_asset_sync_downloads_legacy_amazon_cache_once_and_reuses_same_digest(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_url = "https://m.media-amazon.com/images/I/cache.webp"
+    cached_payload = b"cached-webp-bytes"
+    candidate = _amazon_cache_candidate(cached_payload, source_url=source_url)
+    store = _AmazonCacheArtifactStore(cached_payload)
+    requests: list[Request] = []
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            del timeout
+            requests.append(request)
+            assert request.get_header("If-none-match") is None
+            assert request.get_header("If-modified-since") is None
+            return _BytesResponse(cached_payload, etag='"amazon-v1"')
+
+    monkeypatch.setattr(asset_sync_handler, "AmazonFactStore", _fake_amazon_fact_store(candidate))
+    monkeypatch.setattr(asset_sync_handler, "create_store_from_settings", lambda settings: store)
+    monkeypatch.setattr(asset_sync_handler, "build_opener", lambda handler: FakeOpener())
+
+    result = asset_sync_handler.media_asset_sync_handler(
+        _context(_amazon_cache_payload(tmp_path, source_url=source_url))
+    )
+
+    assert result.status == "success"
+    assert len(requests) == 1
+    assert store.uploads == []
+    asset = result.result["synced_assets"][0]
+    assert asset["sync_state"] == "reused"
+    assert asset["metadata"]["source_etag"] == '"amazon-v1"'
 
 
 def test_media_asset_sync_scopes_duplicate_refs_by_platform_and_amazon_role(

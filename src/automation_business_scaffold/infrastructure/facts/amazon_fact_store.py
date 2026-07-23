@@ -607,6 +607,35 @@ class AmazonFactStore:
             """,
         )
 
+    def find_media_asset(
+        self,
+        *,
+        source_url: str,
+        object_key_prefix: str = "",
+    ) -> dict[str, Any]:
+        normalized_url = _clean_text(source_url)
+        if not normalized_url:
+            return {}
+        values = {
+            "source_url": normalized_url,
+            "source_url_digest": hashlib.sha256(normalized_url.encode("utf-8")).hexdigest(),
+            "object_key_prefix": _clean_text(object_key_prefix),
+        }
+        return self._select_one(
+            """
+            SELECT * FROM amazon_media_assets
+            WHERE source_url_digest = :source_url_digest
+              AND source_url = :source_url
+              AND (
+                  :object_key_prefix = ''
+                  OR LEFT(object_key, LENGTH(:object_key_prefix)) = :object_key_prefix
+              )
+            ORDER BY last_seen_at DESC
+            LIMIT 1
+            """,
+            values,
+        )
+
     def upsert_media_asset(
         self,
         *,

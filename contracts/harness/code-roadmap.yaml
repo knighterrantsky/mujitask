@@ -1498,6 +1498,72 @@ features:
       - Production-style unfiltered daemon claims must complete the row-job/browser-resume lifecycle, and the parent sends exactly one final batch notification.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 
+  - feature_code: amazon_media_cache_revalidation
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/storage-architecture-design.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
+      - src/automation_business_scaffold/capabilities/media/asset_sync_handler.py
+      - tests/test_amazon_fact_store.py
+      - tests/test_media_asset_sync_handler.py
+      - tests/test_amazon_product_contracts.py
+    source_contracts:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/storage-architecture-design.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+    allowed_paths:
+      - docs/business/requirements/amazon-product-detail-collection.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/storage-architecture-design.md
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
+      - src/automation_business_scaffold/capabilities/media/asset_sync_handler.py
+      - tests/test_amazon_fact_store.py
+      - tests/test_media_asset_sync_handler.py
+      - tests/test_amazon_product_contracts.py
+      - tests/test_harness_code_roadmap.py
+      - tests/test_architecture_delta_gate.py
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/infrastructure/schemas/**
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_store.py
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_amazon_fact_store.py
+        - tests/test_media_asset_sync_handler.py
+        - tests/test_amazon_product_contracts.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_architecture_delta_gate.py
+      commands:
+        - uv run --extra dev pytest tests/test_amazon_fact_store.py tests/test_media_asset_sync_handler.py tests/test_amazon_product_contracts.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_architecture_delta_gate.py
+    completion_rules:
+      - Normalized Amazon source URL digest identifies only a cache candidate and never proves source freshness.
+      - Cached Amazon media is reusable only after current-environment Amazon prefix validation, MinIO byte size and SHA-256 verification, and HTTP validator revalidation.
+      - HTTP 304 reuses the cached object; HTTP 200 content is hashed, unchanged bytes reuse the object, and changed bytes create a new content-addressed object.
+      - Missing validators, missing objects, invalid cached metadata, and verification failures fall back to the existing full-download path.
+      - Current capture media_role and position remain authoritative; no download concurrency or schema change is introduced.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
   - feature_code: amazon_bought_past_month_writeback
     status: complete
     feature_type: business_feature

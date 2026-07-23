@@ -250,6 +250,9 @@ Amazon raw ref 必须绑定当前 request、同一来源 Browser execution 和 r
 - `amazon_media_assets` 与 `amazon_product_media_assets` 记录长期业务媒体及商品关系。
 - Amazon 首期不修改 Runtime DB schema；Fact DB 使用独立 `amazon_*` 表，不复用
   `tk_media_assets` 或 `tk_raw_api_responses`。
+- Amazon 媒体对象复用不能只依赖 URL。URL digest 用于查找候选；复用前必须校验当前
+  环境的 Amazon 受控前缀、对象存在性、size 和 SHA-256，并使用非敏感 `ETag/Last-Modified`
+  条件重验证源站。相同 URL 返回变化字节时写入新的 digest coordinate，旧对象不得覆盖。
 
 Raw capture 使用实际存储字节的 SHA-256 内容寻址。相同内容重试复用同一 coordinate；
 内容变化写入新 coordinate，不能覆盖旧证据。Fact 写入还会拒绝同一 run 的 divergent

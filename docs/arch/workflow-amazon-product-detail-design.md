@@ -539,6 +539,14 @@ Browser `task_execution.result_json` 只保存:
 这里的 `media_source_refs` 是等待对象存储物化的紧凑来源引用，不是媒体正文或下载凭证；
 其字段和值都按 workflow machine contract 投影。API persist job 通过 object ref 读取完整
 capture，并消费上述受控媒体来源引用，不经 Runtime DB 传递 capture、HTML 或媒体正文。
+`media_asset_sync` 在下载 Amazon 媒体前可以用规范化 CDN URL 的 SHA-256 查询
+`amazon_media_assets.source_url_digest`，但该查询只产生缓存候选。候选还必须满足当前环境的
+Amazon 受控对象前缀、完整的 bucket/object/digest/size/MIME 元数据，并从对象存储读取
+实际字节复算 digest。完成对象校验后，handler 使用已保存的 `ETag` / `Last-Modified` 发起条件
+重验证；只有 `304 Not Modified` 或返回内容的 SHA-256 与缓存一致时才复用。URL 相同但返回内容
+变化时按新 digest 写入新对象，不能覆盖旧内容地址；验证器缺失、候选对象缺失或校验失败时走
+完整下载。缓存复用保留本次 capture 的 `media_role/position`，不复用历史关系坐标。本次不改变
+现有串行下载与 API worker 并发语义。
 Browser/API child 可控的 provider、progress stage、supervisor 状态、error type/code 和 contract
 revision 只能按各字段 allowlist 或固定值投影；未知 opaque code 使用稳定 fallback，不能依靠
 关键词 denylist 判断是否包含 credential。`amazon_product_row_persist` 只接受

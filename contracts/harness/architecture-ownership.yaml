@@ -81,6 +81,8 @@ owners:
       - download referenced media
       - upload/materialize media into object storage
       - return object_key/remote_uri metadata
+      - resolve platform-owned media cache candidates through the existing Fact Store owner
+      - validate cached object bytes and conditionally revalidate Amazon source media before reuse
     forbidden:
       - decide whether a product is business-worthy
       - decide Feishu writeback fields
@@ -170,6 +172,7 @@ owners:
       - grant the configured shared Fact runtime role only schema usage, governed TikTok and Amazon Fact table DML, and Fact version reads; Runtime tables remain outside this role
       - define Amazon fact tables for migration and test bootstrap consumers
       - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
+      - query Amazon media cache candidates by normalized source URL digest without treating URL identity as freshness proof
       - enforce marketplace plus ASIN identity and per-run idempotency keys
     forbidden:
       - decide Feishu fields

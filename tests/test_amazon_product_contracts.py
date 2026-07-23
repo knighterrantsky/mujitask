@@ -719,6 +719,26 @@ def test_amazon_fact_tables_and_object_prefixes_are_isolated() -> None:
         amazon["media_source_url_policy"]["download_size_limit_bytes"]
         == (amazon["raw_capture_provenance"]["size_limits"]["materialized_media_bytes"])
     )
+    assert amazon["media_cache_policy"] == {
+        "candidate_key": "normalized_source_url_sha256",
+        "candidate_index": "amazon_media_assets.source_url_digest",
+        "url_identity_is_freshness_proof": False,
+        "required_object_checks": [
+            "current_environment_amazon_prefix",
+            "bucket_and_object_key_present",
+            "stored_bytes_size_matches",
+            "stored_bytes_sha256_matches",
+        ],
+        "source_revalidation": {
+            "validators": ["etag", "last_modified"],
+            "not_modified": "reuse_cached_object",
+            "changed_content": "write_new_content_addressed_object",
+            "missing_validators": "download_and_compare_sha256",
+            "validation_failure": "fall_back_to_full_download",
+        },
+        "preserve_current_capture_coordinates": ["media_role", "position"],
+        "download_concurrency_change": False,
+    }
 
 
 def test_amazon_owner_boundaries_are_registered() -> None:
