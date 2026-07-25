@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-07-23`
+更新时间：`2026-07-25`
 
 ## 1. 文档目的
 
@@ -13,13 +13,14 @@
 
 客户当前希望通过 `OpenClaw` 驱动自动化流程，持续抓取 `TK` 和 `AWS` 的商业数据，并把结果沉淀到现有飞书多维表中，用于后续选品、竞品分析、达人运营和业务决策。
 
-当前阶段已经明确的业务目标主要有五类：
+当前阶段已经明确的业务目标主要有六类：
 
 1. 通过定时任务持续更新飞书中的 `TK竞品收集` 数据，保证已有竞品信息保持最新。
 2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品或选品数据。
 3. 通过定时任务把 `TK竞品收集` 中的商品继续扩展到 `TK达人池`，形成达人画像与运营沉淀。
-4. 通过定时或手动检查 `TK达人建联表`，跟踪达人是否已为对应商品发布视频，并回写视频链接与发布时间。
-5. 以飞书 `AMAZON_PRODUCTS` 来源行中的美国站 ASIN 为入口，采集 Amazon 商品详情、变体、Offer、媒体和排名事实，并把受控字段写回同一来源行。
+4. 通过每天一次的 `TK达人监控` 任务扫描全部竞品 SKU，按商品关联视频近 28 天销量发现达人，并在独立目标表保留历史观测最高销量。
+5. 通过定时或手动检查 `TK达人建联表`，跟踪达人是否已为对应商品发布视频，并回写视频链接与发布时间。
+6. 以飞书 `AMAZON_PRODUCTS` 来源行中的美国站 ASIN 为入口，采集 Amazon 商品详情、变体、Offer、媒体和排名事实，并把受控字段写回同一来源行。
 
 ## 3. 客户当前飞书多维表
 
@@ -155,7 +156,7 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 
 ### 3.3 已明确需求表的自动维护字段
 
-当前已经明确自动维护口径的表包括 `TK竞品收集`、`TK达人池`、`TK选品收集` 和 `TK达人建联表`。
+当前已经明确自动维护口径的表包括 `TK竞品收集`、`TK达人池`、`TK达人监控目标表`、`TK选品收集` 和 `TK达人建联表`。
 
 #### 3.3.1 TK竞品收集
 
@@ -267,6 +268,22 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 - 除 `商品ID`、`商品链接` 这类身份字段外，自动维护字段统一采用 `fill_missing_only` 策略：已有值的字段不覆盖。
 - `记录日期` 只在本次确实产生至少一个字段写入时才刷新。
 
+#### 3.3.5 TK达人监控目标表
+
+`TK达人监控目标表` 是 `monitor_tk_influencers` 的独立逻辑目标表。该流程独立维护 `达人ID`、`带货商品图`、`关联节日`、`关联商品销量`、`达人头像`、`粉丝数`、`28天视频数`、`带货视频 GMV`、`带货直播 GMV`、`合作店铺`、`达人联系方式`、`记录日期` 和 `更新日期`：
+
+- `达人ID` 使用 FastMoss canonical `creator_id` 的标准化文本，由目标表独立字段 contract 固定归一化规则，并作为唯一 upsert 主键；`unique_id` 和昵称不作为键。
+- `关联商品销量` 表示历史运行过程中观测到的最高“商品关联视频近 28 天销量”，按 `max(已有值, 本次值)` 写入，只升不降，不按商品累加。
+- `带货商品图` 和 `关联节日` 只从存在达标视频的商品关系中去重合并。
+- `达人头像`、`粉丝数`、`28天视频数`、`带货视频 GMV`、`带货直播 GMV`、`合作店铺` 和 `达人联系方式` 来自 FastMoss 达人详情；空值不覆盖目标表已有值。
+- `合作店铺` 与目标表该达人已有店铺做集合并集，只写入飞书字段已配置的选项；联系方式优先邮箱，否则取第一个有效联系方式。
+- `记录日期` 只在创建时写入；`更新日期` 在创建时写入，后续仅在系统维护字段实际发生变化时刷新。
+- 粉丝数只采集和展示，不参与达人入选筛选。
+- 本流程不读取其他达人业务表；更新时只读取 `TK达人监控目标表` 自身的达人行。
+- 真实 Base、`table_id` 和 `view_id` 由环境配置解析，不属于业务字段口径。
+
+具体规则和验收口径见 [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md)。
+
 ### 3.4 已明确需求表的非自动维护字段
 
 #### 3.4.1 TK竞品收集
@@ -346,6 +363,15 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 - `商品状态` 仅在 URL 校验失败时写入"链接不可访问"，或商品不可访问时写入"已下架/区域不可售"，不参与待更新判断。
 - `差评整理` 需人工分析，不纳入自动采集。
 
+#### 3.4.5 TK达人监控目标表
+
+`TK达人监控目标表` 的以下字段类型不由 `monitor_tk_influencers` 自动写入：
+
+- `合作商品数`。
+- 公式字段。
+- 历史沉淀字段。
+- 人工运营字段。
+
 ## 4. 业务流程需求索引
 
 ### 4.1 正式流程文档
@@ -355,6 +381,7 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 | 竞品采集 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 关键词搜索竞品写入 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
+| TK 达人监控（待实现） | `monitor_tk_influencers` | 每天定时任务 | `TK竞品收集`、`TK达人监控目标表` | [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md) | [workflow-influencer-monitoring-design.md](../arch/workflow-influencer-monitoring-design.md) |
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | [workflow-influencer-outreach-design.md](../arch/workflow-influencer-outreach-design.md) |
@@ -396,10 +423,10 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 
 ## 7. 版本信息
 
-- 需求版本：`v3.4`
-- 文档版本：`v3.7.0`
-- 版本日期：`2026-07-15`
-- 本次变更：纳入 Amazon 美国站单商品采集正式需求索引，并区分已实时验证的 TikTok 表与部署配置的 `AMAZON_PRODUCTS` 路由。
+- 需求版本：`v3.5`
+- 文档版本：`v3.8.0`
+- 版本日期：`2026-07-25`
+- 本次变更：新增 `TK达人监控` 正式需求和独立目标表字段口径；该流程按商品关联视频近 28 天销量筛选达人，并以历史最高值写入。
 
 ## 8. 关联文档
 
@@ -407,6 +434,7 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 - [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md)
 - [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md)
 - [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md)
+- [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md)
 - [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md)
 - [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md)
 - [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md)

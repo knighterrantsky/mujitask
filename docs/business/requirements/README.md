@@ -1,6 +1,6 @@
 # 业务流程需求文档索引
 
-更新时间：`2026-07-15`
+更新时间：`2026-07-25`
 
 本目录用于承载从主需求文档中拆分出的流程级需求文档。主需求文档仍然作为总览、共用字段口径和索引入口；单个业务流程的需求、采集回写、交付形式和验收口径在本目录独立维护。
 
@@ -17,6 +17,7 @@
 | 竞品采集 | `refresh_current_competitor_table` | 每天定时任务 | [refresh-current-competitor-table.md](./refresh-current-competitor-table.md) |
 | 关键词搜索竞品写入 | `search_keyword_competitor_products` | OpenClaw 对话输入 | [search-keyword-competitor-products.md](./search-keyword-competitor-products.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | [sync-tk-influencer-pool.md](./sync-tk-influencer-pool.md) |
+| TK 达人监控（待实现） | `monitor_tk_influencers` | 每天定时任务 | [tk-influencer-monitoring.md](./tk-influencer-monitoring.md) |
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | [tk-selection-collection.md](./tk-selection-collection.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | [search-keyword-selection-products.md](./search-keyword-selection-products.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | [tk-influencer-outreach.md](./tk-influencer-outreach.md) |
