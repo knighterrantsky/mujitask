@@ -170,6 +170,20 @@ def _plan_fact_bundle_upsert(fact_bundle: dict[str, Any]) -> dict[str, Any]:
     observation_refs.extend(
         f"video_metric:{index}" for index, _ in enumerate(coerce_mapping_list(fact_bundle.get("video_metric_snapshots")), start=1)
     )
+    observation_refs.extend(
+        f"video_product_window:{first_non_empty(item.get('performance_id'), index)}"
+        for index, item in enumerate(
+            coerce_mapping_list(fact_bundle.get("video_product_window_performance")),
+            start=1,
+        )
+    )
+    observation_refs.extend(
+        f"creator_product_window:{first_non_empty(item.get('performance_id'), index)}"
+        for index, item in enumerate(
+            coerce_mapping_list(fact_bundle.get("creator_product_window_performance")),
+            start=1,
+        )
+    )
     return {
         "upserted_entities": upserted_entities,
         "upserted_relations": upserted_relations,
@@ -185,6 +199,16 @@ def _plan_fact_bundle_upsert(fact_bundle: dict[str, Any]) -> dict[str, Any]:
             "media_assets": len(coerce_mapping_list(fact_bundle.get("media_assets"))),
             "relations": len(upserted_relations),
             "observations": len(observation_refs),
+            "video_product_window_performance": len(
+                coerce_mapping_list(
+                    fact_bundle.get("video_product_window_performance")
+                )
+            ),
+            "creator_product_window_performance": len(
+                coerce_mapping_list(
+                    fact_bundle.get("creator_product_window_performance")
+                )
+            ),
         },
     }
 
@@ -534,6 +558,46 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
         if row:
             observation_refs.append(f"video_metric_snapshot:{row.get('snapshot_id')}")
 
+    for observation in coerce_mapping_list(
+        fact_bundle.get("video_product_window_performance")
+    ):
+        row = store.record_video_product_window_performance(
+            performance_id=coerce_str(observation.get("performance_id")),
+            video_key=coerce_str(observation.get("video_key")),
+            video_id=coerce_str(observation.get("video_id")),
+            product_id=coerce_str(observation.get("product_id")),
+            creator_key=coerce_str(observation.get("creator_key")),
+            source_platform=coerce_str(observation.get("source_platform")),
+            window_days=int(observation.get("window_days", 28) or 28),
+            sold_count=observation.get("sold_count"),
+            sale_amount=observation.get("sale_amount"),
+            payload=coerce_mapping(observation.get("payload")),
+            collected_at=observation.get("collected_at"),
+        )
+        if row:
+            observation_refs.append(
+                f"video_product_window_performance:{row.get('performance_id')}"
+            )
+
+    for observation in coerce_mapping_list(
+        fact_bundle.get("creator_product_window_performance")
+    ):
+        row = store.record_creator_product_window_performance(
+            performance_id=coerce_str(observation.get("performance_id")),
+            creator_key=coerce_str(observation.get("creator_key")),
+            product_id=coerce_str(observation.get("product_id")),
+            source_platform=coerce_str(observation.get("source_platform")),
+            window_days=int(observation.get("window_days", 28) or 28),
+            sold_count=observation.get("sold_count"),
+            sale_amount=observation.get("sale_amount"),
+            payload=coerce_mapping(observation.get("payload")),
+            collected_at=observation.get("collected_at"),
+        )
+        if row:
+            observation_refs.append(
+                f"creator_product_window_performance:{row.get('performance_id')}"
+            )
+
     persisted_counts = {
         "products": sum(1 for key in upserted_entities if key.startswith("product:")),
         "product_skus": sum(1 for key in upserted_entities if key.startswith("product_sku:")),
@@ -543,6 +607,16 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
         "media_assets": sum(1 for key in upserted_entities if key.startswith("asset:")),
         "relations": len(upserted_relations),
         "observations": len(observation_refs),
+        "video_product_window_performance": len(
+            coerce_mapping_list(
+                fact_bundle.get("video_product_window_performance")
+            )
+        ),
+        "creator_product_window_performance": len(
+            coerce_mapping_list(
+                fact_bundle.get("creator_product_window_performance")
+            )
+        ),
     }
     return {
         "upserted_entities": upserted_entities,

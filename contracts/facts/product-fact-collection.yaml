@@ -38,6 +38,13 @@ tiktok_product_fact_fields:
     feishu_projection: TK竞品收集.佣金率
 
 business_job_usage:
+  monitor_tk_influencers:
+    - product_video_creator_discovery owns FastMoss goods-video collection for one deduplicated product and persists normalized product, creator, video, and relation facts through fact_bundle_upsert.
+    - Product discovery must not materialize or persist product, video, or creator media; media_assets is empty at this boundary.
+    - Every valid video-product sold_count observation is persisted in tk_video_product_window_performance with window_days=28 and metric_name=sold_count.
+    - Every qualified product-creator maximum is persisted in tk_creator_product_window_performance with window_days=28 and aggregation=max_qualified_video.
+    - influencer_monitor_sync may materialize only the creator avatar before Fact persistence; source product images stay as bounded Feishu attachment references used by projection.
+    - Runtime result_json keeps only compact candidates, counts, pagination evidence, persistence summaries, and write summaries; raw responses and full fact bundles are excluded.
   tiktok_fastmoss_product_ingest:
     - selection_row_refresh is the row-level product fact collection boundary for TK selection table rows; it may call TikTok request, media_asset_sync, FastMoss fetch, fact_bundle_upsert, and Feishu writeback in a single serial row pipeline.
     - when selection_row_refresh needs TikTok browser fetch or FastMoss security browser resolve, it must emit a business browser request with browser_fallback_payload; executor/runtime owns task_execution scheduling, waits for browser-runloop completion, writes browser output refs, cookie-cache metadata, or failure evidence back to the original row job, then lets the original row pipeline consume browser output or retry the original FastMoss stage before media/fact persistence continues.

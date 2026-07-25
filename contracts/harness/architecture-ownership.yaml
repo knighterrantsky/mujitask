@@ -14,6 +14,8 @@ owners:
         reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
       - path: src/automation_business_scaffold/domains/tiktok/flows/tiktok_fastmoss_product_ingest/orchestrator.py
         reason: Required workflow package entrypoint for stage dispatch and public import compatibility; stage logic remains in stages/.
+      - path: src/automation_business_scaffold/domains/tiktok/flows/monitor_tk_influencers/orchestrator.py
+        reason: Required independent TK influencer monitoring workflow entrypoint; it owns product-video and creator-sync fan-out without importing another influencer workflow.
       - path: src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/stages/dispatch_product_collection.py
         reason: Stable workflow stage module for dispatch_product_collection; it owns row fan-out for the existing workflow stage rather than a generic helper abstraction.
       - path: src/automation_business_scaffold/domains/amazon/flows/refresh_amazon_product_row_by_asin/orchestrator.py

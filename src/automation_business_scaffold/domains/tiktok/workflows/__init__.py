@@ -24,6 +24,11 @@ from .sync_tk_influencer_pool import (
     build_sync_tk_influencer_pool_definition,
     build_sync_tk_influencer_pool_workflow,
 )
+from .monitor_tk_influencers import (
+    MONITOR_TK_INFLUENCERS_DEFINITION,
+    build_monitor_tk_influencers_definition,
+    build_monitor_tk_influencers_workflow,
+)
 from .tiktok_influencer_outreach_sync import (
     TIKTOK_INFLUENCER_OUTREACH_SYNC_DEFINITION,
     build_tiktok_influencer_outreach_sync_definition,
@@ -41,6 +46,7 @@ DEFAULT_WORKFLOW_DEFINITIONS = (
     SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION,
     SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION,
     SYNC_TK_INFLUENCER_POOL_DEFINITION,
+    MONITOR_TK_INFLUENCERS_DEFINITION,
     TIKTOK_INFLUENCER_OUTREACH_SYNC_DEFINITION,
     TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION,
 )
@@ -70,6 +76,7 @@ __all__ = [
     "SEARCH_KEYWORD_COMPETITOR_PRODUCTS_DEFINITION",
     "SEARCH_KEYWORD_SELECTION_PRODUCTS_DEFINITION",
     "SYNC_TK_INFLUENCER_POOL_DEFINITION",
+    "MONITOR_TK_INFLUENCERS_DEFINITION",
     "TIKTOK_INFLUENCER_OUTREACH_SYNC_DEFINITION",
     "TIKTOK_FASTMOSS_PRODUCT_INGEST_DEFINITION",
     "WorkflowDefinition",
@@ -83,6 +90,8 @@ __all__ = [
     "build_search_keyword_selection_products_workflow",
     "build_sync_tk_influencer_pool_definition",
     "build_sync_tk_influencer_pool_workflow",
+    "build_monitor_tk_influencers_definition",
+    "build_monitor_tk_influencers_workflow",
     "build_tiktok_influencer_outreach_sync_definition",
     "build_tiktok_influencer_outreach_sync_workflow",
     "build_tiktok_fastmoss_product_ingest_definition",

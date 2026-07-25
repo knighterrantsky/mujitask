@@ -1,0 +1,90 @@
+schema_version: 1
+workflow_origin: new_workflow
+workflow_code: monitor_tk_influencers
+domain: tiktok
+agent_artifact:
+  skill_code: mujitask-tiktok-feishu-sync
+  path: skills/mujitask-tiktok-feishu-sync
+  status: legacy_skills_directory
+task:
+  code: monitor_tk_influencers
+  module: automation_business_scaffold.domains.tiktok.tasks.monitor_tk_influencers
+  exports:
+    - MonitorTKInfluencersTask
+workflow:
+  module: automation_business_scaffold.domains.tiktok.workflows.monitor_tk_influencers
+  definition_export: build_monitor_tk_influencers_definition
+  runtime_export: build_monitor_tk_influencers_workflow
+  exports:
+    - MONITOR_TK_INFLUENCERS_DEFINITION
+custom_logic:
+  mappers:
+    - code: influencer_monitor_source_adapter
+      module: automation_business_scaffold.domains.tiktok.mappers.influencer_monitor_source_adapter
+      export: influencer_monitor_source_adapter
+  policies:
+    - code: influencer_monitor_candidate_policy
+      module: automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy
+      export: select_product_video_creator_candidates
+  projections:
+    - code: influencer_monitor_projection_mapper
+      module: automation_business_scaffold.domains.tiktok.projections.feishu_influencer_monitor_projection
+      export: influencer_monitor_projection_mapper
+outbox:
+  job_code: task_completed_notification
+  handler_code: outbox_dispatch
+  capability:
+    role: channel
+    system: outbox
+    module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+    export: outbox_dispatch_handler
+jobs:
+  - code: feishu_table_read
+    module: automation_business_scaffold.domains.tiktok.jobs.feishu_table_read
+    handler_code: feishu_table_read
+    capability:
+      role: input_source
+      system: feishu
+      module: automation_business_scaffold.capabilities.input_sources.feishu.table_read_handler
+      export: feishu_table_read_handler
+    custom_logic_refs:
+      mappers:
+        - influencer_monitor_source_adapter
+  - code: product_video_creator_discovery
+    module: automation_business_scaffold.domains.tiktok.jobs.product_video_creator_discovery
+    handler_code: product_video_creator_discovery
+    capability:
+      role: business_orchestration
+      system: fastmoss
+      module: automation_business_scaffold.domains.tiktok.jobs.product_video_creator_discovery
+      export: product_video_creator_discovery_handler
+    custom_logic_refs:
+      policies:
+        - influencer_monitor_candidate_policy
+  - code: influencer_monitor_sync
+    module: automation_business_scaffold.domains.tiktok.jobs.influencer_monitor_sync
+    handler_code: influencer_monitor_sync
+    capability:
+      role: business_orchestration
+      system: fastmoss_feishu
+      module: automation_business_scaffold.domains.tiktok.jobs.influencer_monitor_sync
+      export: influencer_monitor_sync_handler
+    custom_logic_refs:
+      projections:
+        - influencer_monitor_projection_mapper
+  - code: fastmoss_security_browser_resolve
+    module: automation_business_scaffold.domains.tiktok.jobs.fastmoss_security_browser_resolve
+    handler_code: fastmoss_security_browser_resolve
+    capability:
+      role: browser_recovery
+      system: fastmoss
+      module: automation_business_scaffold.capabilities.browser.fastmoss_security_resolve_handler
+      export: fastmoss_security_browser_resolve_handler
+  - code: task_completed_notification
+    module: automation_business_scaffold.domains.tiktok.jobs.task_completed_notification
+    handler_code: outbox_dispatch
+    capability:
+      role: channel
+      system: outbox
+      module: automation_business_scaffold.capabilities.channels.outbox.message_dispatch_handler
+      export: outbox_dispatch_handler

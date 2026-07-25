@@ -1057,6 +1057,138 @@ class TKFactStore(TKFactQueryAccess):
             )
         return self._row_to_dict(row) if row is not None else {}
 
+    def record_video_product_window_performance(
+        self,
+        *,
+        performance_id: str,
+        video_key: str = "",
+        video_id: str = "",
+        product_id: str,
+        creator_key: str = "",
+        source_platform: str = "",
+        window_days: int = 28,
+        sold_count: Any = 0,
+        sale_amount: Any = 0,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        performance_id = _clean_text(performance_id)
+        product_id = _clean_text(product_id)
+        video_key = _clean_text(video_key) or (
+            f"video:{_clean_text(video_id)}" if _clean_text(video_id) else ""
+        )
+        if not performance_id or not video_key or not product_id:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_video_product_window_performance (
+                            performance_id, video_key, product_id, creator_key,
+                            source_platform, window_days, sold_count, sale_amount,
+                            payload_json, collected_at, created_at
+                        ) VALUES (
+                            :performance_id, :video_key, :product_id, :creator_key,
+                            :source_platform, :window_days, :sold_count, :sale_amount,
+                            :payload_json, :collected_at, :created_at
+                        )
+                        ON CONFLICT (performance_id) DO UPDATE SET
+                            video_key = EXCLUDED.video_key,
+                            product_id = EXCLUDED.product_id,
+                            creator_key = EXCLUDED.creator_key,
+                            source_platform = EXCLUDED.source_platform,
+                            window_days = EXCLUDED.window_days,
+                            sold_count = EXCLUDED.sold_count,
+                            sale_amount = EXCLUDED.sale_amount,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "performance_id": performance_id,
+                        "video_key": video_key,
+                        "product_id": product_id,
+                        "creator_key": _clean_text(creator_key),
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "sold_count": _coerce_float(sold_count),
+                        "sale_amount": _coerce_float(sale_amount),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
+    def record_creator_product_window_performance(
+        self,
+        *,
+        performance_id: str,
+        creator_key: str,
+        product_id: str,
+        source_platform: str = "",
+        window_days: int = 28,
+        sold_count: Any = 0,
+        sale_amount: Any = 0,
+        payload: Mapping[str, Any] | None = None,
+        collected_at: float | None = None,
+    ) -> dict[str, Any]:
+        performance_id = _clean_text(performance_id)
+        creator_key = _clean_text(creator_key)
+        product_id = _clean_text(product_id)
+        if not performance_id or not creator_key or not product_id:
+            return {}
+        now = time.time()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    self._text(
+                        """
+                        INSERT INTO tk_creator_product_window_performance (
+                            performance_id, creator_key, product_id, source_platform,
+                            window_days, sold_count, sale_amount, payload_json,
+                            collected_at, created_at
+                        ) VALUES (
+                            :performance_id, :creator_key, :product_id, :source_platform,
+                            :window_days, :sold_count, :sale_amount, :payload_json,
+                            :collected_at, :created_at
+                        )
+                        ON CONFLICT (performance_id) DO UPDATE SET
+                            creator_key = EXCLUDED.creator_key,
+                            product_id = EXCLUDED.product_id,
+                            source_platform = EXCLUDED.source_platform,
+                            window_days = EXCLUDED.window_days,
+                            sold_count = EXCLUDED.sold_count,
+                            sale_amount = EXCLUDED.sale_amount,
+                            payload_json = EXCLUDED.payload_json,
+                            collected_at = EXCLUDED.collected_at
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "performance_id": performance_id,
+                        "creator_key": creator_key,
+                        "product_id": product_id,
+                        "source_platform": _clean_text(source_platform),
+                        "window_days": int(window_days or 0),
+                        "sold_count": _coerce_float(sold_count),
+                        "sale_amount": _coerce_float(sale_amount),
+                        "payload_json": _json_dumps(payload),
+                        "collected_at": float(collected_at or now),
+                        "created_at": now,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row is not None else {}
+
     def link_raw_entity(
         self,
         *,

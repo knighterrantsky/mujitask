@@ -232,6 +232,7 @@ def test_feishu_table_read_returns_resolved_source_table_identity() -> None:
 def test_feishu_business_components_have_named_registries() -> None:
     assert SOURCE_ADAPTER_CODES == {
         "competitor_table_source_adapter",
+        "influencer_monitor_source_adapter",
         "influencer_pool_source_adapter",
         "outreach_source_adapter",
         "selection_table_source_adapter",
@@ -240,6 +241,7 @@ def test_feishu_business_components_have_named_registries() -> None:
         "competitor_seed_projection_mapper",
         "competitor_table_projection_mapper",
         "influencer_pool_projection_mapper",
+        "influencer_monitor_projection_mapper",
         "competitor_influencer_status_projection_mapper",
         "outreach_result_projection_mapper",
         "selection_seed_projection_mapper",

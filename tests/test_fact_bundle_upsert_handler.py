@@ -152,6 +152,7 @@ def test_fact_bundle_upsert_uses_project_fact_db_url(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(fact_bundle_module, "_persist_fact_bundle", fake_persist_fact_bundle)
+    _clear_fact_db_env(monkeypatch)
     monkeypatch.setenv("TK_FACT_DB_URL", "postgresql+psycopg://facts")
 
     result = fact_bundle_upsert_handler(
@@ -188,6 +189,78 @@ def test_fact_bundle_upsert_fails_when_database_persistence_is_required_without_
     assert result.error is not None
     assert result.error.error_code == "fact_database_persistence_required"
     assert result.summary["persistence_mode"] == "missing_database"
+
+
+def test_fact_bundle_upsert_persists_monitor_window_performance(monkeypatch) -> None:
+    calls: dict[str, list[dict]] = {"video": [], "creator": []}
+
+    class FakeFactStore:
+        def __init__(self, *, db_url: str) -> None:
+            assert db_url == "postgresql+psycopg://facts"
+
+        def upsert_product(self, **payload):
+            return {"product_id": payload["product_id"]}
+
+        def record_video_product_window_performance(self, **payload):
+            calls["video"].append(payload)
+            return {"performance_id": payload["performance_id"]}
+
+        def record_creator_product_window_performance(self, **payload):
+            calls["creator"].append(payload)
+            return {"performance_id": payload["performance_id"]}
+
+    monkeypatch.setattr(fact_bundle_module, "TKFactStore", FakeFactStore)
+    result = fact_bundle_upsert_handler(
+        _context(
+            {
+                "fact_db_url": "postgresql+psycopg://facts",
+                "require_database_persistence": True,
+                "fact_bundle": {
+                    "products": [{"product_id": "sku-a"}],
+                    "video_product_window_performance": [
+                        {
+                            "performance_id": "video-performance-1",
+                            "video_key": "video:video-1",
+                            "video_id": "video-1",
+                            "product_id": "sku-a",
+                            "creator_key": "uid:creator-a",
+                            "source_platform": "fastmoss",
+                            "window_days": 28,
+                            "sold_count": 120,
+                            "payload": {"metric_name": "sold_count"},
+                        }
+                    ],
+                    "creator_product_window_performance": [
+                        {
+                            "performance_id": "creator-performance-1",
+                            "creator_key": "uid:creator-a",
+                            "product_id": "sku-a",
+                            "source_platform": "fastmoss",
+                            "window_days": 28,
+                            "sold_count": 120,
+                            "payload": {
+                                "aggregation": "max_qualified_video"
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert result.status == "success"
+    assert calls["video"][0]["sold_count"] == 120
+    assert calls["creator"][0]["sold_count"] == 120
+    assert result.result["persisted_counts"][
+        "video_product_window_performance"
+    ] == 1
+    assert result.result["persisted_counts"][
+        "creator_product_window_performance"
+    ] == 1
+    assert result.result["observation_refs"] == [
+        "video_product_window_performance:video-performance-1",
+        "creator_product_window_performance:creator-performance-1",
+    ]
 
 
 def test_fact_bundle_upsert_persists_unavailable_product_status(monkeypatch) -> None:
