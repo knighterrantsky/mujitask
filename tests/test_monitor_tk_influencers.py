@@ -142,7 +142,7 @@ def test_source_adapter_includes_all_product_statuses_and_merges_duplicate_skus(
     assert result["adapter_summary"]["status_filtered_count"] == 0
 
 
-def test_candidate_policy_uses_strict_threshold_creator_uid_and_per_product_max() -> None:
+def test_candidate_policy_uses_unique_id_and_per_product_max() -> None:
     selected = select_product_video_creator_candidates(
         [
             {
@@ -176,9 +176,15 @@ def test_candidate_policy_uses_strict_threshold_creator_uid_and_per_product_max(
                 "sold_count": 100,
             },
             {
+                "video_id": "video-missing-unique-id",
+                "uid": "creator-e",
+                "author": {"uid": "creator-e"},
+                "sold_count": 100,
+            },
+            {
                 "video_id": "video-invalid-sales",
                 "uid": "creator-d",
-                "author": {"uid": "creator-d"},
+                "author": {"uid": "creator-d", "unique_id": "dave"},
                 "sold_count": "",
             },
         ],
@@ -187,11 +193,11 @@ def test_candidate_policy_uses_strict_threshold_creator_uid_and_per_product_max(
     )
 
     assert selected["qualified_video_count"] == 3
-    assert selected["invalid_identity_count"] == 1
+    assert selected["invalid_identity_count"] == 2
     assert selected["invalid_sales_count"] == 1
     assert selected["candidates"] == [
         {
-            "creator_id": "creator-a",
+            "creator_id": "alice",
             "uid": "creator-a",
             "unique_id": "alice",
             "product_id": "sku-a",
@@ -200,7 +206,7 @@ def test_candidate_policy_uses_strict_threshold_creator_uid_and_per_product_max(
             "qualified_video_count": 2,
         },
         {
-            "creator_id": "creator-b",
+            "creator_id": "bob",
             "uid": "creator-b",
             "unique_id": "bob",
             "product_id": "sku-a",
@@ -215,7 +221,7 @@ def test_cross_product_creator_aggregation_uses_max_and_merges_all_qualified_hit
     creators = aggregate_creator_candidates(
         [
             {
-                "creator_id": "creator-a",
+                "creator_id": "alice",
                 "uid": "creator-a",
                 "unique_id": "alice",
                 "product_id": "sku-a",
@@ -225,7 +231,7 @@ def test_cross_product_creator_aggregation_uses_max_and_merges_all_qualified_hit
                 "holidays": ["万圣节"],
             },
             {
-                "creator_id": "creator-a",
+                "creator_id": "alice",
                 "uid": "creator-a",
                 "unique_id": "alice",
                 "product_id": "sku-b",
@@ -245,9 +251,12 @@ def test_cross_product_creator_aggregation_uses_max_and_merges_all_qualified_hit
 def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
     record = influencer_monitor_projection_mapper(
         {
-            "creator_id": "creator-a",
+            "creator_id": "alice",
+            "creator_unique_id": "alice",
             "creator_fact_bundle": {
-                "creator_id": "creator-a",
+                "creator_id": "alice",
+                "uid": "creator-a",
+                "unique_id": "alice",
                 "metrics": {
                     "follower_count": 155_500,
                     "aweme_28d_count": 12,
@@ -270,7 +279,7 @@ def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
         {"write_mode": "upsert"},
     )
 
-    assert record["upsert_key"] == {"field": "达人ID", "value": "creator-a"}
+    assert record["upsert_key"] == {"field": "达人ID", "value": "alice"}
     assert record["fields"]["关联商品销量"] == "120"
     assert record["fields"]["粉丝数"] == "16W"
     assert record["fields"]["带货视频 GMV"] == "244W"
@@ -279,6 +288,16 @@ def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
     assert record["skip_unchanged_update_fields"] is True
     assert record["conditional_update_fields"] == ["更新日期"]
     assert record["update_excluded_fields"] == ["记录日期"]
+
+
+def test_monitor_projection_never_falls_back_to_numeric_uid_for_influencer_id() -> None:
+    record = influencer_monitor_projection_mapper(
+        {"creator_fact_bundle": {"uid": "7269459274316645422"}},
+        {"write_mode": "upsert"},
+    )
+
+    assert "达人ID" not in record.get("fields", {})
+    assert record.get("upsert_key", {}) == {}
 
 
 def test_explicit_max_merge_does_not_change_existing_default_sales_sum() -> None:
@@ -371,26 +390,31 @@ def test_product_discovery_uses_exact_query_contract_and_stops_at_sorted_thresho
                                 {
                                     "video_id": "video-100",
                                     "uid": "creator-a",
+                                    "unique_id": "alice",
                                     "sold_count": 100,
                                 },
                                 {
                                     "video_id": "video-90",
                                     "uid": "creator-a",
+                                    "unique_id": "alice",
                                     "sold_count": 90,
                                 },
                                 {
                                     "video_id": "video-51",
                                     "uid": "creator-b",
+                                    "unique_id": "bob",
                                     "sold_count": 51,
                                 },
                                 {
                                     "video_id": "video-50",
                                     "uid": "creator-c",
+                                    "unique_id": "carol",
                                     "sold_count": 50,
                                 },
                                 {
                                     "video_id": "video-49",
                                     "uid": "creator-d",
+                                    "unique_id": "dave",
                                     "sold_count": 49,
                                 },
                             ],
@@ -403,6 +427,7 @@ def test_product_discovery_uses_exact_query_contract_and_stops_at_sorted_thresho
                                 {
                                     "video_id": "video-not-fetched",
                                     "uid": "creator-e",
+                                    "unique_id": "eve",
                                     "sold_count": 200,
                                 }
                             ],
@@ -469,26 +494,31 @@ def test_live_product_discovery_stops_requesting_after_first_sorted_boundary(
                         {
                             "video_id": "video-100",
                             "uid": "creator-a",
+                            "unique_id": "alice",
                             "sold_count": 100,
                         },
                         {
                             "video_id": "video-80",
                             "uid": "creator-b",
+                            "unique_id": "bob",
                             "sold_count": 80,
                         },
                         {
                             "video_id": "video-60",
                             "uid": "creator-c",
+                            "unique_id": "carol",
                             "sold_count": 60,
                         },
                         {
                             "video_id": "video-50",
                             "uid": "creator-d",
+                            "unique_id": "dave",
                             "sold_count": 50,
                         },
                         {
                             "video_id": "video-40",
                             "uid": "creator-e",
+                            "unique_id": "eve",
                             "sold_count": 40,
                         },
                     ],
@@ -558,26 +588,31 @@ def test_product_discovery_does_not_early_stop_when_sales_order_is_invalid(
                                 {
                                     "video_id": "video-100",
                                     "uid": "creator-a",
+                                    "unique_id": "alice",
                                     "sold_count": 100,
                                 },
                                 {
                                     "video_id": "video-40",
                                     "uid": "creator-b",
+                                    "unique_id": "bob",
                                     "sold_count": 40,
                                 },
                                 {
                                     "video_id": "video-80",
                                     "uid": "creator-c",
+                                    "unique_id": "carol",
                                     "sold_count": 80,
                                 },
                                 {
                                     "video_id": "video-invalid",
                                     "uid": "creator-d",
+                                    "unique_id": "dave",
                                     "sold_count": "unknown",
                                 },
                                 {
                                     "video_id": "video-70",
                                     "uid": "creator-e",
+                                    "unique_id": "eve",
                                     "sold_count": 70,
                                 },
                             ],
@@ -590,6 +625,7 @@ def test_product_discovery_does_not_early_stop_when_sales_order_is_invalid(
                                 {
                                     "video_id": "video-30",
                                     "uid": "creator-f",
+                                    "unique_id": "frank",
                                     "sold_count": 30,
                                 }
                             ],
@@ -637,6 +673,7 @@ def test_product_discovery_fails_when_fact_persistence_fails(monkeypatch) -> Non
                     {
                         "video_id": "video-100",
                         "uid": "creator-a",
+                        "unique_id": "alice",
                         "sold_count": 100,
                     }
                 ],
@@ -654,7 +691,7 @@ def test_product_discovery_fails_when_fact_persistence_fails(monkeypatch) -> Non
     }
 
 
-def test_creator_sync_uses_stable_uid_persists_avatar_and_writes_new_projection(
+def test_creator_sync_uses_unique_id_for_write_and_uid_for_fetch(
     monkeypatch,
 ) -> None:
     captured: dict[str, dict] = {}
@@ -772,7 +809,7 @@ def test_creator_sync_uses_stable_uid_persists_avatar_and_writes_new_projection(
         _creator_sync_context(
             {
                 "creator_identity": {
-                    "creator_id": "creator-a",
+                    "creator_id": "alice",
                     "uid": "creator-a",
                     "unique_id": "alice",
                 },
@@ -819,6 +856,8 @@ def test_creator_sync_uses_stable_uid_persists_avatar_and_writes_new_projection(
         "influencer_monitor_projection_mapper"
     )
     assert captured["feishu_write"]["write_mode"] == "upsert"
+    assert captured["feishu_write"]["records"][0]["creator_id"] == "alice"
+    assert captured["feishu_write"]["records"][0]["creator_unique_id"] == "alice"
     assert captured["feishu_write"]["records"][0][
         "creator_run_max_sales_28d"
     ] == 120
@@ -841,8 +880,9 @@ def test_creator_sync_rejects_noncanonical_creator_identity(monkeypatch) -> None
         _creator_sync_context(
             {
                 "creator_identity": {
-                    "creator_id": "creator-a",
+                    "creator_id": "alice",
                     "uid": "creator-b",
+                    "unique_id": "bob",
                 }
             }
         )

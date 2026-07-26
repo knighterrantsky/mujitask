@@ -35,21 +35,20 @@ feishu_table_write_handler = api_handler_callable("feishu_table_write")
 def influencer_monitor_sync_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     creator_identity = coerce_mapping(payload.get("creator_identity"))
-    creator_id = first_non_empty(
-        creator_identity.get("creator_id"),
-        creator_identity.get("uid"),
-        payload.get("creator_id"),
+    creator_id = _normalize_unique_id(
+        creator_identity.get("creator_id"), payload.get("creator_id")
     )
-    uid = first_non_empty(creator_identity.get("uid"), creator_id)
-    if not creator_id or not uid or creator_id != uid:
+    unique_id = _normalize_unique_id(creator_identity.get("unique_id"))
+    uid = first_non_empty(creator_identity.get("uid"))
+    if not creator_id or not unique_id or not uid or creator_id != unique_id:
         return failed_result(
             context,
             error=build_error(
                 error_type="invalid_input",
                 error_code="monitor_creator_identity_invalid",
                 message=(
-                    "influencer_monitor_sync requires canonical creator_id equal to "
-                    "the stable FastMoss uid."
+                    "influencer_monitor_sync requires creator_id equal to the "
+                    "normalized FastMoss unique_id and a separate stable uid."
                 ),
                 retryable=False,
             ),
@@ -68,6 +67,7 @@ def influencer_monitor_sync_handler(context: HandlerContext) -> HandlerResult:
                     **creator_identity,
                     "creator_id": creator_id,
                     "uid": uid,
+                    "unique_id": unique_id,
                 },
                 "required": True,
                 "detail_level": "profile_metrics_contact_goods",
@@ -211,6 +211,7 @@ def influencer_monitor_sync_handler(context: HandlerContext) -> HandlerResult:
 
     projection_record = {
         "creator_id": creator_id,
+        "creator_unique_id": unique_id,
         "creator_fact_bundle": coerce_mapping(
             creator_payload.get("creator_fact_bundle")
         ),
@@ -316,6 +317,10 @@ def influencer_monitor_sync_handler(context: HandlerContext) -> HandlerResult:
         result=result,
         warnings=tuple(warnings),
     )
+
+
+def _normalize_unique_id(*values: Any) -> str:
+    return first_non_empty(*values).lstrip("@").strip()
 
 
 def _propagate_fallback(

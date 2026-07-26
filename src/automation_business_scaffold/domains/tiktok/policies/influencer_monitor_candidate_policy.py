@@ -108,21 +108,30 @@ def aggregate_creator_candidates(
     grouped: dict[str, dict[str, Any]] = {}
     for raw_candidate in candidates:
         candidate = dict(raw_candidate)
-        creator_id = _first_text(candidate.get("creator_id"), candidate.get("uid"))
+        creator_id = _normalize_unique_id(candidate.get("creator_id"))
+        unique_id = _normalize_unique_id(candidate.get("unique_id"))
+        uid = _first_text(candidate.get("uid"))
         product_id = _first_text(candidate.get("product_id"))
         sales = _numeric(
             candidate.get("video_product_sales_28d")
             if candidate.get("video_product_sales_28d") not in (None, "")
             else candidate.get("creator_run_max_sales_28d")
         )
-        if not creator_id or not product_id or sales is None:
+        if (
+            not creator_id
+            or not unique_id
+            or creator_id != unique_id
+            or not uid
+            or not product_id
+            or sales is None
+        ):
             continue
         group = grouped.setdefault(
             creator_id,
             {
                 "creator_id": creator_id,
-                "uid": _first_text(candidate.get("uid"), creator_id),
-                "unique_id": _first_text(candidate.get("unique_id")),
+                "uid": uid,
+                "unique_id": unique_id,
                 "creator_run_max_sales_28d": sales,
                 "product_hits": [],
                 "source_product_images": [],
@@ -177,14 +186,19 @@ def _creator_identity(row: Mapping[str, Any]) -> dict[str, str]:
     if root_uid and author_uid and root_uid != author_uid:
         return {"creator_id": "", "uid": "", "unique_id": ""}
     uid = _first_text(root_uid, author_uid)
+    root_unique_id = _normalize_unique_id(
+        row.get("unique_id"), row.get("author_unique_id")
+    )
+    author_unique_id = _normalize_unique_id(author.get("unique_id"))
+    if root_unique_id and author_unique_id and root_unique_id != author_unique_id:
+        return {"creator_id": "", "uid": "", "unique_id": ""}
+    unique_id = _normalize_unique_id(root_unique_id, author_unique_id)
+    if not uid or not unique_id:
+        return {"creator_id": "", "uid": "", "unique_id": ""}
     return {
-        "creator_id": uid,
+        "creator_id": unique_id,
         "uid": uid,
-        "unique_id": _first_text(
-            row.get("unique_id"),
-            row.get("author_unique_id"),
-            author.get("unique_id"),
-        ),
+        "unique_id": unique_id,
     }
 
 
@@ -213,6 +227,10 @@ def _first_text(*values: Any) -> str:
         if normalized:
             return normalized
     return ""
+
+
+def _normalize_unique_id(*values: Any) -> str:
+    return _first_text(*values).lstrip("@").strip()
 
 
 def _extend_unique_text(target: list[str], values: list[Any]) -> None:

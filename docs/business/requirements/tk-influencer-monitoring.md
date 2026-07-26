@@ -71,7 +71,7 @@ SKU + 达人销量 = max(该 SKU 下该达人的达标视频近28天销量)
 
 ## 5. 目标表写入与字段维护
 
-目标表保持一人一行。`达人ID` 使用 FastMoss canonical `creator_id` 的标准化文本，也是唯一 upsert 键；商品关联视频行只有稳定 `uid` 时，由本流程 mapper 将其归一化为 canonical `creator_id`。`unique_id`、昵称和主页名称只作为辅助信息，不得作为 upsert 键。无法生成稳定 `达人ID` 的候选不写入目标表并记录失败原因。
+目标表保持一人一行。`达人ID` 使用 FastMoss/TikTok `unique_id` 的标准化文本（去除首部 `@`），与达人池现行达人 ID 口径一致，也是唯一 upsert 键。FastMoss 数字 `uid` 只用于内部达人详情查询和事实关联，不得写入 `达人ID`。无法同时取得有效 `unique_id` 和稳定 `uid` 的候选不写入目标表并记录失败原因。
 
 目标表只读取自身已有行来执行销量 `max`、关联字段集合合并和字段 diff，不从其他达人业务表复制记录或字段值。
 

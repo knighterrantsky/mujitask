@@ -233,7 +233,7 @@ def test_sync_stage_deduplicates_creator_and_uses_cross_product_max() -> None:
 
     def discovery_job(product_id: str, sales: int, image: str) -> dict:
         candidate = {
-            "creator_id": "creator-a",
+            "creator_id": "alice",
             "uid": "creator-a",
             "unique_id": "alice",
             "product_id": product_id,
@@ -298,7 +298,11 @@ def test_sync_stage_deduplicates_creator_and_uses_cross_product_max() -> None:
     ]
     assert len(sync_jobs) == 1
     payload = sync_jobs[0]["payload"]
-    assert payload["creator_identity"]["creator_id"] == "creator-a"
+    assert payload["creator_identity"] == {
+        "creator_id": "alice",
+        "uid": "creator-a",
+        "unique_id": "alice",
+    }
     assert payload["creator_run_max_sales_28d"] == 120
     assert [hit["product_id"] for hit in payload["product_hits"]] == [
         "sku-a",

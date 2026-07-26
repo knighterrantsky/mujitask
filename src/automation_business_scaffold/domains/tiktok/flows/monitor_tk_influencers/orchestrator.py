@@ -309,7 +309,9 @@ def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
             )
         ):
             creator_id = str(candidate.get("creator_id") or "").strip()
-            if not creator_id:
+            uid = str(candidate.get("uid") or "").strip()
+            unique_id = str(candidate.get("unique_id") or "").lstrip("@").strip()
+            if not creator_id or not uid or not unique_id or creator_id != unique_id:
                 continue
             payload = {
                 "request_id": request.request_id,
@@ -321,8 +323,8 @@ def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
                 "creator_id": creator_id,
                 "creator_identity": {
                     "creator_id": creator_id,
-                    "uid": str(candidate.get("uid") or creator_id),
-                    "unique_id": str(candidate.get("unique_id") or ""),
+                    "uid": uid,
+                    "unique_id": unique_id,
                 },
                 "creator_run_max_sales_28d": candidate[
                     "creator_run_max_sales_28d"

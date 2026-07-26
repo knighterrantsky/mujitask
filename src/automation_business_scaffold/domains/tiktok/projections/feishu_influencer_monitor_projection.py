@@ -28,10 +28,10 @@ def influencer_monitor_projection_mapper(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     creator_fact = _mapping(record.get("creator_fact_bundle"))
-    creator_id = _first_text(
+    creator_id = _normalize_unique_id(
+        record.get("creator_unique_id"),
         record.get("creator_id"),
-        creator_fact.get("creator_id"),
-        creator_fact.get("uid"),
+        creator_fact.get("unique_id"),
     )
     today = _first_text(record.get("write_date"), payload.get("write_date"), date.today())
     fields = _compact(
@@ -113,6 +113,10 @@ def _creator_metric(creator_fact: Mapping[str, Any], *names: str) -> Any:
             if section.get(name) not in (None, ""):
                 return section[name]
     return ""
+
+
+def _normalize_unique_id(*values: Any) -> str:
+    return _first_text(*values).lstrip("@").strip()
 
 
 def _contact_text(creator_fact: Mapping[str, Any]) -> str:

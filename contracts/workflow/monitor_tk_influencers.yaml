@@ -92,9 +92,10 @@ fastmoss_product_video_query:
     disable_early_stop_after_non_monotonic_evidence: true
 
 creator_candidate_contract:
-  identity_field: canonical_creator_id
-  canonical_creator_id_source: stable uid
-  unique_id_is_identity: false
+  identity_field: unique_id
+  target_creator_id_source: normalized_unique_id_without_at_prefix
+  stable_uid_usage: internal_fastmoss_lookup_only
+  unique_id_is_identity: true
   follower_filter: disabled
   aggregation:
     duplicate_video: dedupe_by_video_id

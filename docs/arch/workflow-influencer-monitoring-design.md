@@ -406,10 +406,10 @@ FastMoss 参数、排序、销量字段和阈值分页的外部技术验证已�
 
 creator identity contract：
 
-- canonical 身份字段为 FastMoss `creator_identity.creator_id` 的标准化非空文本。
-- 商品关联视频行只有稳定 `uid` 时，mapper 将 `uid` 归一化为 canonical `creator_id`。
-- `unique_id`、昵称和主页名称只保留为辅助属性，不参与 business key、dedupe key 或目标表 upsert key。
-- 无法生成 canonical `creator_id` 的视频不形成达人候选，并记录 `invalid_creator_identity`。
+- 业务身份字段为 FastMoss/TikTok `unique_id` 的标准化非空文本，标准化时去除首部 `@`。
+- mapper 将标准化 `unique_id` 同时作为 candidate `creator_id`、business key、dedupe key 和目标表 upsert key。
+- FastMoss 稳定数字 `uid` 作为独立内部标识保留，只用于达人详情查询和 Fact 关联，不写入目标表 `达人ID`。
+- 无法同时取得有效 `unique_id` 和稳定 `uid` 的视频不形成达人候选，并记录 `invalid_creator_identity`。
 
 `2026-07-25` 商品视频实抓对 20 行进行了身份一致性抽样：
 
@@ -420,7 +420,7 @@ creator identity contract：
 - 达人 `uid=7269459274316645422` 的抽样视频销量为 `1113`、`112`、`66`，
   按同一 canonical 身份执行单 SKU 内 `max` 聚合后为 `1113`。
 
-因此本流程以标准化 `uid` 生成 canonical `creator_id`；`unique_id` 只保留为辅助属性。
+因此本流程以标准化 `unique_id` 生成业务 `creator_id`；`uid` 仅保留为内部 FastMoss 标识。
 
 ```text
 creator_run_max_sales_28d
@@ -569,7 +569,7 @@ result 只保存下游 summary 所需的 compact 结构：
 
 | 字段 | 输入 | 更新策略 |
 | --- | --- | --- |
-| `达人ID` | FastMoss canonical `creator_id` | 标准化为文本；创建必填、唯一 upsert key、创建后不改；`unique_id` 不作为键 |
+| `达人ID` | FastMoss/TikTok `unique_id` | 去除首部 `@` 后写入；创建必填、唯一 upsert key、创建后不改；数字 `uid` 不写入 |
 | `带货商品图` | 全部 qualifying product hits 对应的 `TK竞品收集.图片` | 按 `source product_id + asset/attachment identity` 去重并集，不删除目标行有效图片 |
 | `关联节日` | 全部 qualifying product hits 对应来源行的节日 | 标准化文本后集合并集，不删除目标行有效值 |
 | `关联商品销量` | `creator_run_max_sales_28d` | `max(existing, observed)` |
