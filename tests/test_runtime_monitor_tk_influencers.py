@@ -12,9 +12,11 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
 from automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers.orchestrator import (
     DISCOVERY_STAGE_CODE,
     READ_STAGE_CODE,
+    SUMMARY_STAGE_CODE,
     SYNC_STAGE_CODE,
     TASK_CODE,
     advance_stage,
+    release_request_after_child_completion,
 )
 from automation_business_scaffold.domains.tiktok.tasks import monitor_tk_influencers as task_module
 
@@ -54,6 +56,26 @@ def test_monitor_task_submits_fastmoss_credential_env_references(monkeypatch) ->
     assert captured["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
     assert "fastmoss_phone" not in captured
     assert "fastmoss_password" not in captured
+
+
+def test_summary_stage_is_not_released_back_to_pending() -> None:
+    class Request:
+        request_id = "req-monitor-summary"
+        task_code = TASK_CODE
+        status = "pending"
+        current_stage = SUMMARY_STAGE_CODE
+
+    class Store:
+        def load_task_request(self, *, request_id: str) -> Request:
+            assert request_id == Request.request_id
+            return Request()
+
+        def update_task_request(self, **_: object) -> None:
+            raise AssertionError("summary stage must be finalized, not released")
+
+    assert release_request_after_child_completion(
+        Store(), request_id=Request.request_id
+    ) == []
 
 
 def test_read_stage_dispatches_all_sku_source_adapter() -> None:

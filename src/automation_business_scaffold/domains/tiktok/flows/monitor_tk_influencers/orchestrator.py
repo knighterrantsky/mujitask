@@ -80,6 +80,8 @@ def release_request_after_child_completion(
     if str(request.status or "") in {"finished", "cancelled"}:
         return []
     stage_code = _current_stage(request)
+    if stage_code == SUMMARY_STAGE_CODE:
+        return []
     if stage_code in {DISCOVERY_STAGE_CODE, SYNC_STAGE_CODE}:
         if _fallback_candidates(
             store=store,
