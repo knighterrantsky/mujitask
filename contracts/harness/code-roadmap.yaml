@@ -501,6 +501,72 @@ features:
       - Control plane must not contain product-ingest fallback orchestration or business message projection logic.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 
+  - feature_code: tk_influencer_monitoring
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - docs/business/requirements/tk-influencer-monitoring.md
+      - docs/arch/workflow-influencer-monitoring-design.md
+      - docs/ops/deployment.md
+      - contracts/workflow/monitor_tk_influencers.yaml
+      - contracts/fields/feishu-tk-influencer-monitoring.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - src/automation_business_scaffold/contracts/workflow/monitor_tk_influencers.yaml
+      - src/automation_business_scaffold/domains/tiktok/
+      - tests/test_monitor_tk_influencers.py
+      - tests/test_runtime_monitor_tk_influencers.py
+    source_contracts:
+      - docs/business/requirements/tk-influencer-monitoring.md
+      - docs/arch/workflow-influencer-monitoring-design.md
+      - contracts/workflow/monitor_tk_influencers.yaml
+      - contracts/fields/feishu-tk-influencer-monitoring.yaml
+      - contracts/facts/product-fact-collection.yaml
+    allowed_paths:
+      - contracts/**
+      - docs/business/requirements/tk-influencer-monitoring.md
+      - docs/arch/workflow-influencer-monitoring-design.md
+      - docs/ops/deployment.md
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/contracts/**
+      - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/infrastructure/facts/**
+      - scripts/deploy/macos/**
+      - examples/openclaw/openclaw_deploy_common.sh
+      - skills/mujitask-tiktok-feishu-sync/**
+      - README.md
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - automation_framework/**
+    done_gate:
+      tests:
+        - tests/test_monitor_tk_influencers.py
+        - tests/test_runtime_monitor_tk_influencers.py
+        - tests/test_handler_registry_contract.py
+        - tests/test_workflow_architecture_manifests.py
+        - tests/test_runtime_workflow_registry.py
+        - tests/test_fact_bundle_upsert_handler.py
+        - tests/test_feishu_common_handlers.py
+        - tests/test_run_skill_step.py
+      commands:
+        - uv run --extra dev pytest -q tests/test_monitor_tk_influencers.py tests/test_runtime_monitor_tk_influencers.py
+        - uv run --extra dev pytest -q tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_runtime_workflow_registry.py
+        - uv run --extra dev pytest -q tests/test_fact_bundle_upsert_handler.py tests/test_feishu_common_handlers.py
+        - uv run --extra dev pytest -q tests/test_run_skill_step.py
+        - bash -n scripts/deploy/macos/preflight.sh scripts/deploy/macos/deploy.sh
+    completion_rules:
+      - The task and workflow are independent and must not import another influencer workflow, job, projection, mapper, or field contract.
+      - Every parseable source SKU is eligible regardless of influencer-search or product status; delisted and region-unavailable acceptance uses contract fixtures without external probing.
+      - Product videos use all publish dates, sold_count window 28, strict configurable threshold, per-product creator max, and cross-product creator max.
+      - The target row identity is canonical creator_id and 关联商品销量 uses max merge without changing the default additive behavior used by existing flows.
+      - No source table status field is written.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
   - feature_code: project_structure_refactor_phase_2
     status: complete
     feature_type: repository_governance

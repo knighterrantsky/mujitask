@@ -13,9 +13,11 @@ from automation_business_scaffold.domains.tiktok.jobs.fastmoss_security_browser_
 from automation_business_scaffold.domains.tiktok.jobs.feishu_table_read import FEISHU_TABLE_READ_JOB
 from automation_business_scaffold.domains.tiktok.jobs.feishu_table_write import FEISHU_TABLE_WRITE_JOB
 from automation_business_scaffold.domains.tiktok.jobs.influencer_creator_sync import INFLUENCER_CREATOR_SYNC_JOB
+from automation_business_scaffold.domains.tiktok.jobs.influencer_monitor_sync import INFLUENCER_MONITOR_SYNC_JOB
 from automation_business_scaffold.domains.tiktok.jobs.keyword_seed_import import KEYWORD_SEED_IMPORT_JOB
 from automation_business_scaffold.domains.tiktok.jobs.media_asset_sync import MEDIA_ASSET_SYNC_JOB
 from automation_business_scaffold.domains.tiktok.jobs.product_creator_discovery import PRODUCT_CREATOR_DISCOVERY_JOB
+from automation_business_scaffold.domains.tiktok.jobs.product_video_creator_discovery import PRODUCT_VIDEO_CREATOR_DISCOVERY_JOB
 from automation_business_scaffold.domains.tiktok.jobs.outreach_creator_video_metric_refresh import OUTREACH_CREATOR_VIDEO_METRIC_REFRESH_JOB
 from automation_business_scaffold.domains.tiktok.jobs.product_video_outreach_check import PRODUCT_VIDEO_OUTREACH_CHECK_JOB
 from automation_business_scaffold.domains.tiktok.jobs.task_completed_notification import TASK_COMPLETED_NOTIFICATION_JOB
@@ -33,6 +35,8 @@ def list_job_definitions() -> tuple[JobDefinition, ...]:
         PRODUCT_VIDEO_OUTREACH_CHECK_JOB,
         OUTREACH_CREATOR_VIDEO_METRIC_REFRESH_JOB,
         INFLUENCER_CREATOR_SYNC_JOB,
+        INFLUENCER_MONITOR_SYNC_JOB,
+        PRODUCT_VIDEO_CREATOR_DISCOVERY_JOB,
         TIKTOK_PRODUCT_REQUEST_FETCH_JOB,
         TIKTOK_PRODUCT_BROWSER_FETCH_JOB,
         FASTMOSS_SECURITY_BROWSER_RESOLVE_JOB,
@@ -56,10 +60,12 @@ __all__ = [
     "FEISHU_TABLE_READ_JOB",
     "FEISHU_TABLE_WRITE_JOB",
     "INFLUENCER_CREATOR_SYNC_JOB",
+    "INFLUENCER_MONITOR_SYNC_JOB",
     "KEYWORD_SEED_IMPORT_JOB",
     "MEDIA_ASSET_SYNC_JOB",
     "OUTREACH_CREATOR_VIDEO_METRIC_REFRESH_JOB",
     "PRODUCT_CREATOR_DISCOVERY_JOB",
+    "PRODUCT_VIDEO_CREATOR_DISCOVERY_JOB",
     "PRODUCT_VIDEO_OUTREACH_CHECK_JOB",
     "SELECTION_ROW_REFRESH_JOB",
     "TASK_COMPLETED_NOTIFICATION_JOB",

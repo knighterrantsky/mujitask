@@ -1,0 +1,138 @@
+schema_version: 1
+contract_type: workflow_contract
+status: complete
+task_code: monitor_tk_influencers
+workflow_code: monitor_tk_influencers
+contract_revision: 1
+domain: tiktok
+
+business_truth:
+  requirements: docs/business/requirements/tk-influencer-monitoring.md
+arch_truth: docs/arch/workflow-influencer-monitoring-design.md
+
+trigger_modes:
+  - schedule
+  - manual
+  - cli
+normal_frequency: daily
+allows_partial_success: true
+
+table_refs:
+  source: feishu://mujitask/tk_competitor
+  target: feishu://mujitask/tk_influencer_monitoring
+
+business_payload:
+  min_video_sales_28d:
+    type: non_negative_integer
+    default: 50
+    comparison: strict_greater_than
+forbidden_business_payload:
+  - physical_feishu_base_url
+  - physical_feishu_table_id
+  - physical_feishu_view_id
+  - fastmoss_transport_params
+  - mapper_code
+
+stages:
+  - code: read_competitor_products
+    mode: worker_jobs
+    job_codes:
+      - feishu_table_read
+    output: deduped product candidates from all parseable SKU rows
+  - code: discover_product_video_creators
+    mode: worker_jobs
+    job_codes:
+      - product_video_creator_discovery
+    output: unique creator candidates per product using maximum qualifying video sales
+  - code: fastmoss_security_browser_fallback
+    mode: worker_jobs
+    job_codes:
+      - fastmoss_security_browser_resolve
+    maximum_attempts_per_waiting_job: 1
+  - code: sync_monitored_influencers
+    mode: worker_jobs
+    job_codes:
+      - influencer_monitor_sync
+    output: creator Fact persistence and target table upsert results
+  - code: ready_for_summary
+    mode: summary
+    job_codes:
+      - task_completed_notification
+
+source_candidate_contract:
+  identity: product_id
+  include_all_parseable_skus: true
+  ignored_filter_fields:
+    - 达人查找状态
+    - 商品状态
+  included_status_examples:
+    - 已下架
+    - 区域不可售
+  duplicate_product_policy:
+    request_once: true
+    source_record_ids: set_union
+    product_images: unique_by_product_and_attachment_identity
+    holidays: normalized_set_union
+
+fastmoss_product_video_query:
+  endpoint: /api/goods/v3/video
+  page_size: 5
+  parameters:
+    order: "1,2"
+    d_type: 0
+    date_type: 28
+    is_promoted: -1
+  interpretation:
+    video_publish_time_range: all
+    metric_window_days: 28
+    metric_field: sold_count
+  pagination:
+    early_stop_when_sorted_prefix_reaches_threshold: true
+    invalid_metric_cannot_trigger_early_stop: true
+    disable_early_stop_after_non_monotonic_evidence: true
+
+creator_candidate_contract:
+  identity_field: unique_id
+  target_creator_id_source: normalized_unique_id_without_at_prefix
+  stable_uid_usage: internal_fastmoss_lookup_only
+  unique_id_is_identity: true
+  follower_filter: disabled
+  aggregation:
+    duplicate_video: dedupe_by_video_id
+    product_creator_sales: max
+    task_creator_sales: max_across_qualified_products
+
+writeback_contract:
+  target_identity_field: 达人ID
+  target_identity_policy: one_row_per_creator
+  related_product_sales_policy: max_existing_and_current
+  empty_value_overwrite: forbidden
+  no_actual_change_policy: skip_write_and_keep_update_date
+  source_table_writeback: forbidden
+
+fact_contract:
+  requires_fact_db: true
+  product_discovery_media_assets: forbidden
+  creator_avatar_media:
+    requires_object_storage: true
+  observations:
+    - tk_video_product_window_performance
+    - tk_creator_product_window_performance
+
+summary:
+  outbox_title: TK达人监控完成
+  required_counts:
+    - source_row_count
+    - valid_product_count
+    - deduped_product_count
+    - product_discovery_success_count
+    - product_discovery_empty_count
+    - product_discovery_failed_count
+    - fetched_video_count
+    - qualified_video_count
+    - qualified_creator_count
+    - creator_created_count
+    - creator_updated_count
+    - creator_unchanged_count
+    - creator_failed_count
+    - early_stopped_product_count

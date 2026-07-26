@@ -10,6 +10,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     AMAZON_PRODUCT_ROW_TASK_CODE,
     INFLUENCER_POOL_TASK_CODE,
     INFLUENCER_OUTREACH_TASK_CODE,
+    INFLUENCER_MONITOR_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
     SELECTION_KEYWORD_TASK_CODE,
@@ -72,6 +73,9 @@ WORKFLOW_RUNTIME_MODULES = {
     ),
     INFLUENCER_OUTREACH_TASK_CODE: (
         "automation_business_scaffold.domains.tiktok.flows.tiktok_influencer_outreach_sync.orchestrator"
+    ),
+    INFLUENCER_MONITOR_TASK_CODE: (
+        "automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers.orchestrator"
     ),
     KEYWORD_TASK_CODE: (
         "automation_business_scaffold.domains.tiktok.flows."

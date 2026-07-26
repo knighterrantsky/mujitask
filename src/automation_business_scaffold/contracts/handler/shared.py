@@ -174,6 +174,8 @@ def new_fact_bundle() -> dict[str, Any]:
         "product_distribution_snapshots": [],
         "product_sku_metric_snapshots": [],
         "video_metric_snapshots": [],
+        "video_product_window_performance": [],
+        "creator_product_window_performance": [],
         "relations": {key: [] for key in _RELATION_KEYS},
     }
 
@@ -196,6 +198,8 @@ def merge_fact_bundles(*bundles: dict[str, Any]) -> dict[str, Any]:
             "product_distribution_snapshots",
             "product_sku_metric_snapshots",
             "video_metric_snapshots",
+            "video_product_window_performance",
+            "creator_product_window_performance",
         ):
             for item in coerce_mapping_list(current.get(key)):
                 _append_unique(merged[key], item, collection=key, key=_bundle_item_key(key, item))
@@ -503,6 +507,11 @@ def _bundle_item_key(collection: str, item: dict[str, Any]) -> str:
             f"{first_non_empty(record.get('sku_key'), record.get('sku_id'), record.get('sku_name'))}:"
             f"{coerce_str(record.get('window_days'))}"
         )
+    if collection in {
+        "video_product_window_performance",
+        "creator_product_window_performance",
+    }:
+        return first_non_empty(record.get("performance_id"))
     if collection == "video_metric_snapshots":
         return (
             f"{first_non_empty(record.get('video_key'), record.get('video_id'))}:"

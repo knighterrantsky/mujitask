@@ -1,6 +1,6 @@
 # Business 文档索引
 
-更新时间：`2026-07-15`
+更新时间：`2026-07-25`
 
 `docs/business` 只承载客户需求、业务规则、飞书表口径和验收口径。系统架构、Runtime 状态机、数据库 schema、Storage、部署运维、开发调试、外部接口研究不再作为本目录的 active truth source。
 
@@ -24,6 +24,7 @@
 | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | 竞品采集需求 |
 | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | 关键词搜索竞品写入需求 |
 | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | 竞品到达人池同步需求 |
+| [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md) | TK 达人监控需求（已批准，待实现） |
 | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | 选品采集需求 |
 | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | 关键词搜索选品写入需求 |
 | [requirements/amazon-product-detail-collection.md](./requirements/amazon-product-detail-collection.md) | Amazon 美国站单商品详情采集正式需求（实施中） |
@@ -69,6 +70,10 @@
 
 - `refresh_amazon_product_row_by_asin`
 - `refresh_current_amazon_product_table`
+
+已批准、待实现：
+
+- `monitor_tk_influencers`
 
 ## README 实践
 

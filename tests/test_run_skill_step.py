@@ -15,6 +15,8 @@ FEISHU_TABLE_ROUTE_ENV = {
     "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID": "vewCompetitor",
     "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID": "tblInfluencer",
     "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID": "vewInfluencer",
+    "MUJITASK_FEISHU_TK_INFLUENCER_MONITORING_TABLE_ID": "tblMonitor",
+    "MUJITASK_FEISHU_TK_INFLUENCER_MONITORING_VIEW_ID": "vewMonitor",
     "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID": "tblOutreach",
     "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID": "vewOutreach",
     "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID": "tblVideo",
@@ -24,6 +26,7 @@ FEISHU_TABLE_URLS = {
     "tk_selection": f"{FEISHU_BASE_URL}?table=tblSelection&view=vewSelection",
     "tk_competitor": f"{FEISHU_BASE_URL}?table=tblCompetitor&view=vewCompetitor",
     "tk_influencer_pool": f"{FEISHU_BASE_URL}?table=tblInfluencer&view=vewInfluencer",
+    "tk_influencer_monitoring": f"{FEISHU_BASE_URL}?table=tblMonitor&view=vewMonitor",
     "tk_influencer_outreach": f"{FEISHU_BASE_URL}?table=tblOutreach&view=vewOutreach",
     "tk_hot_video": f"{FEISHU_BASE_URL}?table=tblVideo&view=vewVideo",
 }

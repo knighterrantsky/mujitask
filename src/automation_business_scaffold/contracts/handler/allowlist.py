@@ -185,6 +185,22 @@ API_HANDLER_CONTRACTS = MappingProxyType(
             contract_reference="docs/arch/workflow-influencer-pool-sync-design.md#113-达人同步业务-job-influencer_creator_sync",
             side_effects=("fastmoss.request", "fact_db.write", "artifact.write", "feishu.write"),
         ),
+        "product_video_creator_discovery": _contract(
+            handler_code="product_video_creator_discovery",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Discover qualifying creators from FastMoss product videos and persist window facts.",
+            contract_reference="docs/arch/workflow-influencer-monitoring-design.md#71-product_video_creator_discovery",
+            side_effects=("fastmoss.request", "fact_db.write"),
+        ),
+        "influencer_monitor_sync": _contract(
+            handler_code="influencer_monitor_sync",
+            worker_type="api_worker",
+            runtime_table="api_worker_job",
+            purpose="Collect and upsert one unique creator into the independent TK monitoring target.",
+            contract_reference="docs/arch/workflow-influencer-monitoring-design.md#72-influencer_monitor_sync",
+            side_effects=("fastmoss.request", "artifact.write", "fact_db.write", "feishu.write"),
+        ),
         "tiktok_product_request_fetch": _contract(
             handler_code="tiktok_product_request_fetch",
             worker_type="api_worker",

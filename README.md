@@ -50,6 +50,7 @@ Mujitask 是当前 TikTok / FastMoss / Amazon / 飞书自动化业务项目。
 | `refresh_competitor_row_by_url` | 竞品采集：按 TikTok 商品 URL 定位并刷新单行竞品记录 | submit 入队，executor 编排，browser/API worker 执行 |
 | `search_keyword_competitor_products` | 关键词搜索竞品写入 | submit 入队，executor 编排，browser/API worker 执行 |
 | `sync_tk_influencer_pool` | 从竞品表扩展达人池 | submit 入队，api worker 消费 product/author/finalizer job |
+| `monitor_tk_influencers` | 从全部竞品 SKU 发现近 28 天销量达标视频并更新独立达人监控表 | submit 入队，executor 编排，api/browser worker 执行 |
 | `tiktok_fastmoss_product_ingest` | 选品采集：TikTok + FastMoss 商品事实采集并写回选品表 | submit 入队，api worker 采集、上传媒体、写事实库 |
 | `search_keyword_selection_products` | 关键词搜索选品写入 | submit 入队，executor 编排，browser/API worker 执行 |
 
@@ -90,7 +91,7 @@ bash scripts/deploy/macos/deploy.sh
 
 `deploy.sh` 会在启动或重启 `launchd` 守护进程前执行 Alembic migration，避免新代码访问旧 schema。
 
-飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`、`AMAZON_PRODUCTS`）。Amazon Skill 只从自身 `skill.local.env` 读取 `MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL/TABLE_ID/VIEW_ID` 并提交必填的无密钥表路由快照；worker 只消费该 Task 快照，项目 `.env` 与 `executor.local.env` 都不是 Amazon 表路由来源或回退。
+飞书表配置使用英文 alias（`TK_SELECTION`、`TK_COMPETITOR`、`TK_INFLUENCER_POOL`、`TK_INFLUENCER_MONITORING`、`TK_INFLUENCER_OUTREACH`、`TK_HOT_VIDEO`、`AMAZON_PRODUCTS`）。Amazon Skill 只从自身 `skill.local.env` 读取 `MUJITASK_FEISHU_AMAZON_PRODUCTS_BASE_URL/TABLE_ID/VIEW_ID` 并提交必填的无密钥表路由快照；worker 只消费该 Task 快照，项目 `.env` 与 `executor.local.env` 都不是 Amazon 表路由来源或回退。
 
 ## 4. 本地开发运行
 

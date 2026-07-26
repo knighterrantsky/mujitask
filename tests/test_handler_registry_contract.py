@@ -32,6 +32,8 @@ ALLOWLIST_BY_WORKER = {
         "outreach_creator_video_metric_refresh",
         "product_creator_discovery",
         "influencer_creator_sync",
+        "product_video_creator_discovery",
+        "influencer_monitor_sync",
         "media_asset_sync",
         "fact_bundle_upsert",
         "amazon_product_fact_upsert",

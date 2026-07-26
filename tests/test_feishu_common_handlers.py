@@ -77,6 +77,25 @@ def test_prepare_fields_for_write_optionally_filters_missing_schema_fields() -> 
     ) == {"品牌": "HAPPYCLUB"}
 
 
+def test_prepare_fields_for_write_normalizes_feishu_number_fields() -> None:
+    target = FeishuTableTarget(
+        access_token="token",
+        app_token="app-token",
+        table_id="tbl-token",
+    )
+
+    assert prepare_fields_for_write(
+        {"关联商品销量": "1,234", "达人ID": "00123"},
+        {
+            "关联商品销量": {"field_name": "关联商品销量", "type": 2},
+            "达人ID": {"field_name": "达人ID", "type": 1},
+        },
+        client=object(),
+        target=target,
+        payload={},
+    ) == {"关联商品销量": 1234, "达人ID": "00123"}
+
+
 def test_map_write_records_enforces_explicit_field_allowlist() -> None:
     records = map_write_records(
         {
@@ -232,6 +251,7 @@ def test_feishu_table_read_returns_resolved_source_table_identity() -> None:
 def test_feishu_business_components_have_named_registries() -> None:
     assert SOURCE_ADAPTER_CODES == {
         "competitor_table_source_adapter",
+        "influencer_monitor_source_adapter",
         "influencer_pool_source_adapter",
         "outreach_source_adapter",
         "selection_table_source_adapter",
@@ -240,6 +260,7 @@ def test_feishu_business_components_have_named_registries() -> None:
         "competitor_seed_projection_mapper",
         "competitor_table_projection_mapper",
         "influencer_pool_projection_mapper",
+        "influencer_monitor_projection_mapper",
         "competitor_influencer_status_projection_mapper",
         "outreach_result_projection_mapper",
         "selection_seed_projection_mapper",

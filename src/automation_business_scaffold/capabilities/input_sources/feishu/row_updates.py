@@ -150,12 +150,36 @@ def fields_for_update(
             continue
         if text(field_name) in selected:
             selected[field_name] = value
-    return merge_update_fields(
-        selected,
+    conditional_fields = {
+        text(value)
+        for value in list(record.get("conditional_update_fields") or [])
+        if text(value)
+    }
+    substantive = {
+        key: value
+        for key, value in selected.items()
+        if text(key) not in conditional_fields
+    }
+    merged = merge_update_fields(
+        substantive,
         existing_fields=mapping(existing_fields),
         field_schema=field_schema or {},
         replace_fields={text(value) for value in list(record.get("update_replace_fields") or []) if text(value)},
+        merge_strategies=mapping(record.get("update_merge_strategies")),
     )
+    if bool(record.get("skip_unchanged_update_fields")) and existing_fields:
+        existing = mapping(existing_fields)
+        merged = {
+            key: value
+            for key, value in merged.items()
+            if value != existing.get(key)
+        }
+    if not merged:
+        return {}
+    for field_name in conditional_fields:
+        if field_name in selected:
+            merged[field_name] = selected[field_name]
+    return merged
 
 
 def merge_update_fields(
@@ -164,10 +188,16 @@ def merge_update_fields(
     existing_fields: Mapping[str, Any],
     field_schema: Mapping[str, Mapping[str, Any]],
     replace_fields: set[str] | None = None,
+    merge_strategies: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not existing_fields:
         return dict(fields)
     replace_field_names = replace_fields or set()
+    strategies = {
+        text(key): text(value)
+        for key, value in mapping(merge_strategies).items()
+        if text(key) and text(value)
+    }
     merged: dict[str, Any] = {}
     for field_name, value in fields.items():
         field_name_text = text(field_name)
@@ -185,11 +215,24 @@ def merge_update_fields(
         if is_multi_select_field(schema):
             merged[field_name] = _merge_text_lists(existing_fields.get(field_name), value)
             continue
+        if strategies.get(field_name_text) == "max_numeric":
+            merged[field_name] = _merge_numeric_max(existing_fields.get(field_name), value)
+            continue
         if text(field_name) == "关联商品销量":
             merged[field_name] = _merge_numeric_sum(existing_fields.get(field_name), value)
             continue
         merged[field_name] = value
     return merged
+
+
+def _merge_numeric_max(existing: Any, incoming: Any) -> str:
+    incoming_number = _numeric_value(incoming)
+    existing_number = _numeric_value(existing)
+    if incoming_number is None:
+        return text_value(existing)
+    if existing_number is None:
+        return _format_trimmed_decimal(incoming_number)
+    return _format_trimmed_decimal(max(existing_number, incoming_number))
 
 
 def find_existing_record_id(

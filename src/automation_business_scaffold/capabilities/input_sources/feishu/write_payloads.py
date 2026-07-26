@@ -86,6 +86,20 @@ def normalize_write_record(record: Mapping[str, Any], payload: Mapping[str, Any]
         "update_excluded_fields": list(record.get("update_excluded_fields") or payload.get("update_excluded_fields") or []),
         "update_replace_fields": list(record.get("update_replace_fields") or payload.get("update_replace_fields") or []),
         "update_accumulate_fields": mapping(record.get("update_accumulate_fields") or payload.get("update_accumulate_fields")),
+        "update_merge_strategies": mapping(
+            record.get("update_merge_strategies")
+            or payload.get("update_merge_strategies")
+        ),
+        "skip_unchanged_update_fields": bool(
+            record.get("skip_unchanged_update_fields")
+            if "skip_unchanged_update_fields" in record
+            else payload.get("skip_unchanged_update_fields")
+        ),
+        "conditional_update_fields": list(
+            record.get("conditional_update_fields")
+            or payload.get("conditional_update_fields")
+            or []
+        ),
         "clear_fields": clear_fields,
         "fields": normalized_fields,
         "source_context": mapping(record.get("source_context")) or source_context_from_record(record, payload),

@@ -1,0 +1,107 @@
+schema_version: 1
+contract_type: feishu_field_contract
+table_code: tk_influencer_monitoring
+feishu_table_name: TK达人监控目标表
+owner: business
+
+source_adapter: influencer_monitor_source_adapter
+projection_mapper: influencer_monitor_projection_mapper
+
+business_truth:
+  requirements:
+    - docs/business/requirements/tk-influencer-monitoring.md
+arch_truth:
+  - docs/arch/workflow-influencer-monitoring-design.md
+
+identity_field: 达人ID
+auto_maintained_fields:
+  - 带货商品图
+  - 关联节日
+  - 关联商品销量
+  - 达人头像
+  - 粉丝数
+  - 28天视频数
+  - 带货视频 GMV
+  - 带货直播 GMV
+  - 合作店铺
+  - 达人联系方式
+  - 记录日期
+  - 更新日期
+
+fields:
+  - display_name: 达人ID
+    canonical_name: influencer_id
+    role: identity
+    participates_in_upsert_key: true
+    update_policy: required_on_create
+    source_of_truth: fastmoss.creator_identity.unique_id
+    normalization: trim_and_remove_leading_at_prefix
+    forbidden_source: fastmoss.creator_identity.uid
+  - display_name: 带货商品图
+    canonical_name: promoted_product_images
+    role: auto_maintained_relation
+    update_policy: append_unique_by_product_and_attachment_identity
+    source_of_truth: TK竞品收集.图片
+  - display_name: 关联节日
+    canonical_name: related_holidays
+    role: auto_maintained_relation
+    update_policy: merge_set
+    source_of_truth: TK竞品收集.节日
+  - display_name: 关联商品销量
+    canonical_name: related_product_sales
+    role: historical_max_metric
+    update_policy: max_existing_and_current
+    source_of_truth: fastmoss.goods_video.sold_count
+  - display_name: 达人头像
+    canonical_name: influencer_avatar
+    role: auto_maintained
+    update_policy: refresh_with_valid_durable_asset
+    empty_policy: do_not_overwrite
+  - display_name: 粉丝数
+    canonical_name: follower_count
+    role: auto_maintained_metric
+    update_policy: refresh_when_valid
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
+  - display_name: 28天视频数
+    canonical_name: aweme_28d_count
+    role: auto_maintained_metric
+    update_policy: refresh_when_valid
+  - display_name: 带货视频 GMV
+    canonical_name: video_sale_amount
+    role: auto_maintained_metric
+    update_policy: refresh_when_valid
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
+  - display_name: 带货直播 GMV
+    canonical_name: live_sale_amount
+    role: auto_maintained_metric
+    update_policy: refresh_when_valid
+    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
+  - display_name: 合作店铺
+    canonical_name: partner_shops
+    role: auto_maintained_relation
+    update_policy: merge_existing_feishu_options_only
+  - display_name: 达人联系方式
+    canonical_name: influencer_contact
+    role: auto_maintained_optional
+    update_policy: prefer_email_else_first_valid
+    empty_policy: do_not_overwrite
+  - display_name: 记录日期
+    canonical_name: recorded_date
+    role: auto_maintained
+    update_policy: create_only
+  - display_name: 更新日期
+    canonical_name: updated_date
+    role: auto_maintained
+    update_policy: create_or_refresh_only_when_another_maintained_field_changes
+
+write_policy:
+  update_excluded_fields:
+    - 记录日期
+  update_replace_fields:
+    - 达人头像
+  update_merge_strategies:
+    关联商品销量: max_numeric
+  skip_unchanged_update_fields: true
+  conditional_update_fields:
+    - 更新日期
+  empty_values_never_clear_existing: true

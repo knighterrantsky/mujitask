@@ -12,6 +12,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
     FORMAL_TASK_CODES,
     INFLUENCER_POOL_TASK_CODE,
     INFLUENCER_OUTREACH_TASK_CODE,
+    INFLUENCER_MONITOR_TASK_CODE,
     KEYWORD_TASK_CODE,
     PRODUCT_INGEST_TASK_CODE,
     SELECTION_KEYWORD_TASK_CODE,
@@ -341,6 +342,10 @@ def run_sync_tk_influencer_pool_request(params: dict[str, Any]) -> dict[str, Any
 
 def run_tiktok_influencer_outreach_sync_request(params: dict[str, Any]) -> dict[str, Any]:
     return run_task_request(INFLUENCER_OUTREACH_TASK_CODE, params)
+
+
+def run_monitor_tk_influencers_request(params: dict[str, Any]) -> dict[str, Any]:
+    return run_task_request(INFLUENCER_MONITOR_TASK_CODE, params)
 
 
 def run_tiktok_fastmoss_product_ingest_request(params: dict[str, Any]) -> dict[str, Any]:
@@ -1125,6 +1130,7 @@ __all__ = [
     "run_refresh_current_amazon_product_table_request",
     "run_search_keyword_competitor_products_request",
     "run_sync_tk_influencer_pool_request",
+    "run_monitor_tk_influencers_request",
     "run_task_request",
     "run_tiktok_influencer_outreach_sync_request",
     "run_tiktok_fastmoss_product_ingest_request",
