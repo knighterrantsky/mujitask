@@ -77,6 +77,25 @@ def test_prepare_fields_for_write_optionally_filters_missing_schema_fields() -> 
     ) == {"品牌": "HAPPYCLUB"}
 
 
+def test_prepare_fields_for_write_normalizes_feishu_number_fields() -> None:
+    target = FeishuTableTarget(
+        access_token="token",
+        app_token="app-token",
+        table_id="tbl-token",
+    )
+
+    assert prepare_fields_for_write(
+        {"关联商品销量": "1,234", "达人ID": "00123"},
+        {
+            "关联商品销量": {"field_name": "关联商品销量", "type": 2},
+            "达人ID": {"field_name": "达人ID", "type": 1},
+        },
+        client=object(),
+        target=target,
+        payload={},
+    ) == {"关联商品销量": 1234, "达人ID": "00123"}
+
+
 def test_map_write_records_enforces_explicit_field_allowlist() -> None:
     records = map_write_records(
         {

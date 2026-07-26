@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import mimetypes
 import os
 import re
@@ -33,6 +34,7 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_store import
 _FEISHU_ATTACHMENT_FIELD_TYPE = 17
 _FEISHU_DATE_FIELD_TYPE = 5
 _FEISHU_MULTI_SELECT_FIELD_TYPE = 4
+_FEISHU_NUMBER_FIELD_TYPE = 2
 
 
 def prepare_fields_for_write(
@@ -57,6 +59,11 @@ def prepare_fields_for_write(
             attachment_refs = attachment_file_token_ref_items(value, client=client, target=target, payload=payload)
             if attachment_refs:
                 prepared[name] = attachment_refs
+            continue
+        if is_number_field(field_schema.get(name)):
+            prepared_value = number_value_for_write(value)
+            if prepared_value is not None:
+                prepared[name] = prepared_value
             continue
         if is_date_field(field_schema.get(name)):
             prepared_value = date_value_for_write(value)
@@ -92,6 +99,33 @@ def is_date_field(field_schema: Mapping[str, Any] | None) -> bool:
         "date",
         "datetime",
     }
+
+
+def is_number_field(field_schema: Mapping[str, Any] | None) -> bool:
+    if not isinstance(field_schema, Mapping):
+        return False
+    field_type = field_schema.get("type")
+    return field_type == _FEISHU_NUMBER_FIELD_TYPE or text(field_type).lower() in {
+        str(_FEISHU_NUMBER_FIELD_TYPE),
+        "number",
+        "numeric",
+    }
+
+
+def number_value_for_write(value: Any) -> int | float | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        item = text(value).replace(",", "").replace("$", "")
+        try:
+            number = float(item)
+        except ValueError:
+            return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
 
 
 def is_multi_select_field(field_schema: Mapping[str, Any] | None) -> bool:
