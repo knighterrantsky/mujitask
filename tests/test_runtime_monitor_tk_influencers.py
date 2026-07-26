@@ -39,8 +39,8 @@ def test_read_stage_dispatches_all_sku_source_adapter() -> None:
     class Request:
         request_id = "req-monitor-read"
         payload = {
-            "source_table_ref": "feishu://mujitask/TK竞品收集",
-            "target_table_ref": "feishu://mujitask/TK达人监控目标表",
+            "source_table_ref": "feishu://mujitask/tk_competitor",
+            "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
             "min_video_sales_28d": 50,
         }
 
@@ -94,8 +94,8 @@ def test_discovery_stage_fans_out_each_deduplicated_product() -> None:
     class Request:
         request_id = "req-monitor-discovery"
         payload = {
-            "source_table_ref": "feishu://mujitask/TK竞品收集",
-            "target_table_ref": "feishu://mujitask/TK达人监控目标表",
+            "source_table_ref": "feishu://mujitask/tk_competitor",
+            "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
             "min_video_sales_28d": 77,
             "fastmoss": {"live_fetch": True},
         }
@@ -185,7 +185,7 @@ def test_sync_stage_deduplicates_creator_and_uses_cross_product_max() -> None:
     class Request:
         request_id = "req-monitor-sync"
         payload = {
-            "target_table_ref": "feishu://mujitask/TK达人监控目标表",
+            "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
         }
 
     def discovery_job(product_id: str, sales: int, image: str) -> dict:

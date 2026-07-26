@@ -508,6 +508,7 @@ features:
     default_context:
       - docs/business/requirements/tk-influencer-monitoring.md
       - docs/arch/workflow-influencer-monitoring-design.md
+      - docs/ops/deployment.md
       - contracts/workflow/monitor_tk_influencers.yaml
       - contracts/fields/feishu-tk-influencer-monitoring.yaml
       - contracts/facts/product-fact-collection.yaml
@@ -525,11 +526,16 @@ features:
       - contracts/**
       - docs/business/requirements/tk-influencer-monitoring.md
       - docs/arch/workflow-influencer-monitoring-design.md
+      - docs/ops/deployment.md
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/contracts/**
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/infrastructure/facts/**
+      - scripts/deploy/macos/**
+      - examples/openclaw/openclaw_deploy_common.sh
+      - skills/mujitask-tiktok-feishu-sync/**
+      - README.md
       - tests/**
     forbidden_paths:
       - .platform/**
@@ -546,10 +552,13 @@ features:
         - tests/test_runtime_workflow_registry.py
         - tests/test_fact_bundle_upsert_handler.py
         - tests/test_feishu_common_handlers.py
+        - tests/test_run_skill_step.py
       commands:
         - uv run --extra dev pytest -q tests/test_monitor_tk_influencers.py tests/test_runtime_monitor_tk_influencers.py
         - uv run --extra dev pytest -q tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_runtime_workflow_registry.py
         - uv run --extra dev pytest -q tests/test_fact_bundle_upsert_handler.py tests/test_feishu_common_handlers.py
+        - uv run --extra dev pytest -q tests/test_run_skill_step.py
+        - bash -n scripts/deploy/macos/preflight.sh scripts/deploy/macos/deploy.sh
     completion_rules:
       - The task and workflow are independent and must not import another influencer workflow, job, projection, mapper, or field contract.
       - Every parseable source SKU is eligible regardless of influencer-search or product status; delisted and region-unavailable acceptance uses contract fixtures without external probing.

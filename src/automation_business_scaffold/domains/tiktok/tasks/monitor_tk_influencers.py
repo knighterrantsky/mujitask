@@ -18,8 +18,8 @@ from automation_business_scaffold.domains.tiktok.workflows import (
 
 
 TASK_CODE = INFLUENCER_MONITOR_TASK_CODE
-SOURCE_TABLE_REF = "feishu://mujitask/TK竞品收集"
-TARGET_TABLE_REF = "feishu://mujitask/TK达人监控目标表"
+SOURCE_TABLE_REF = "feishu://mujitask/tk_competitor"
+TARGET_TABLE_REF = "feishu://mujitask/tk_influencer_monitoring"
 
 
 class MonitorTKInfluencersTask(RuntimeTaskShell):

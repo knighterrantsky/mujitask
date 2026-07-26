@@ -18,8 +18,8 @@ normal_frequency: daily
 allows_partial_success: true
 
 table_refs:
-  source: feishu://mujitask/TK竞品收集
-  target: feishu://mujitask/TK达人监控目标表
+  source: feishu://mujitask/tk_competitor
+  target: feishu://mujitask/tk_influencer_monitoring
 
 business_payload:
   min_video_sales_28d:

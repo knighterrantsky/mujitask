@@ -122,7 +122,7 @@ def test_source_adapter_includes_all_product_statuses_and_merges_duplicate_skus(
                 },
             },
         ],
-        {"source_table_ref": "feishu://mujitask/TK竞品收集"},
+        {"source_table_ref": "feishu://mujitask/tk_competitor"},
     )
 
     assert [row["product_id"] for row in result["source_rows"]] == [
@@ -785,7 +785,7 @@ def test_creator_sync_uses_stable_uid_persists_avatar_and_writes_new_projection(
                 ],
                 "source_product_images": [{"file_token": "img-a"}],
                 "holidays": ["万圣节"],
-                "target_table_ref": "feishu://mujitask/TK达人监控目标表",
+                "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
             }
         )
     )

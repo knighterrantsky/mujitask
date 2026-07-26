@@ -412,7 +412,9 @@ with open(sys.argv[1], "rb") as handle:
     data = tomllib.load(handle)
 
 for dep in data.get("project", {}).get("dependencies", []):
-    if dep.startswith("automation-framework @ "):
+    if dep.startswith("automation-framework @ ") or dep.startswith(
+        "automation-framework["
+    ):
         continue
     print(dep)
 PY

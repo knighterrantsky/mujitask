@@ -161,11 +161,12 @@ Amazon 固定使用 `amazon-ops` / `workspace-amazon`；TikTok 使用 `tiktok-op
 | `TK_SELECTION` | `tblpF46y6SkmVCE5` | `vewhXPD4x1` |
 | `TK_COMPETITOR` | `tblpzuTZXHtDq83t` | `vewT6AtfED` |
 | `TK_INFLUENCER_POOL` | `tblwLYl59TkfVFLe` | `vewuKd9i6D` |
+| `TK_INFLUENCER_MONITORING` | 部署环境显式配置 | 部署环境显式配置 |
 | `TK_INFLUENCER_OUTREACH` | `tblpK4zCGaaL6h6v` | `vewmMgDNV5` |
 | `TK_HOT_VIDEO` | `tblP9S5mRrirutDT` | `vewu7vztKp` |
 | `AMAZON_PRODUCTS` | 部署环境显式配置 | 部署环境显式配置 |
 
-达人池同步的来源表固定由 `TK_COMPETITOR` 路由推导，目标表固定由 `TK_INFLUENCER_POOL` 路由推导；配置层不再维护派生出来的完整表 URL。
+达人池同步的来源表固定由 `TK_COMPETITOR` 路由推导，目标表固定由 `TK_INFLUENCER_POOL` 路由推导；达人监控流程使用同一来源，并固定写入独立的 `TK_INFLUENCER_MONITORING`。配置层不再维护派生出来的完整表 URL。
 
 当前模板见：
 

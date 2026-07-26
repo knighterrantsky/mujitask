@@ -91,6 +91,7 @@ require_feishu_table_config() {
   require_feishu_table_route "TK_SELECTION"
   require_feishu_table_route "TK_COMPETITOR"
   require_feishu_table_route "TK_INFLUENCER_POOL"
+  require_feishu_table_route "TK_INFLUENCER_MONITORING"
   require_feishu_table_route "TK_INFLUENCER_OUTREACH"
   require_feishu_table_route "TK_HOT_VIDEO"
   require_feishu_table_route "AMAZON_PRODUCTS"

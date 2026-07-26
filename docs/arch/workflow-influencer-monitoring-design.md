@@ -29,8 +29,8 @@
 | `contract_revision` | `1` |
 | 触发方式 | `schedule`；实现验收时允许手动提交同一 Task |
 | 正常频率 | 每天一次 |
-| 来源逻辑表 | `feishu://mujitask/TK竞品收集` |
-| 目标逻辑表 | `feishu://mujitask/TK达人监控目标表` |
+| 来源逻辑表 | `feishu://mujitask/tk_competitor` |
+| 目标逻辑表 | `feishu://mujitask/tk_influencer_monitoring` |
 | 主要 worker | `api_worker` |
 | Runtime 队列 | `api_worker_job` |
 | 允许部分成功 | 是 |
@@ -179,7 +179,7 @@ workflow 内部有效 payload：
   "task_code": "monitor_tk_influencers",
   "workflow_code": "monitor_tk_influencers",
   "stage_code": "read_competitor_products",
-  "source_table_ref": "feishu://mujitask/TK竞品收集",
+  "source_table_ref": "feishu://mujitask/tk_competitor",
   "field_names": ["SKU-ID", "产品链接", "图片", "节日", "商品状态", "达人查找状态"],
   "adapter_code": "influencer_monitor_source_adapter",
   "snapshot_policy": {
@@ -481,7 +481,7 @@ payload 示例：
     },
     "target_write": {
       "internal_handler": "feishu_table_write",
-      "target_table_ref": "feishu://mujitask/TK达人监控目标表",
+      "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
       "mapper_code": "influencer_monitor_projection_mapper"
     }
   }
@@ -611,8 +611,8 @@ else:
 workflow 和 mapper 只使用稳定逻辑引用：
 
 ```text
-feishu://mujitask/TK竞品收集
-feishu://mujitask/TK达人监控目标表
+feishu://mujitask/tk_competitor
+feishu://mujitask/tk_influencer_monitoring
 ```
 
 真实 Base、`table_id`、`view_id` 和环境差异由平台配置解析层负责。它们不进入 Task payload、workflow contract 的业务规则、dedupe key 或领域测试样例。
