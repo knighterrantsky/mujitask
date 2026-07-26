@@ -1558,6 +1558,18 @@ main() {
     "${executor_env_file}" \
     "MUJITASK_FEISHU_ACCESS_TOKEN=$(quote_env_value "${token}")" \
     "MUJITASK_FEISHU_BASE_URL=$(quote_env_value "${feishu_base_url}")" \
+    "MUJITASK_FEISHU_TK_SELECTION_TABLE_ID=$(quote_env_value "${tk_selection_table_id}")" \
+    "MUJITASK_FEISHU_TK_SELECTION_VIEW_ID=$(quote_env_value "${tk_selection_view_id}")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_TABLE_ID=$(quote_env_value "${tk_competitor_table_id}")" \
+    "MUJITASK_FEISHU_TK_COMPETITOR_VIEW_ID=$(quote_env_value "${tk_competitor_view_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_TABLE_ID=$(quote_env_value "${tk_influencer_pool_table_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_POOL_VIEW_ID=$(quote_env_value "${tk_influencer_pool_view_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_MONITORING_TABLE_ID=$(quote_env_value "${tk_influencer_monitoring_table_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_MONITORING_VIEW_ID=$(quote_env_value "${tk_influencer_monitoring_view_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID=$(quote_env_value "${tk_influencer_outreach_table_id}")" \
+    "MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID=$(quote_env_value "${tk_influencer_outreach_view_id}")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_TABLE_ID=$(quote_env_value "${tk_hot_video_table_id}")" \
+    "MUJITASK_FEISHU_TK_HOT_VIDEO_VIEW_ID=$(quote_env_value "${tk_hot_video_view_id}")" \
     "MUJITASK_FEISHU_AMAZON_PRODUCTS_ACCESS_TOKEN=$(quote_env_value "${amazon_products_access_token}")" \
     "BUSINESS_EXECUTION_CONTROL_FACT_DB_URL=$(quote_env_value "${fact_db_url}")" \
     "AMAZON_US_BROWSER_PROFILE_REF=$(quote_env_value "${amazon_us_browser_profile_ref}")"
