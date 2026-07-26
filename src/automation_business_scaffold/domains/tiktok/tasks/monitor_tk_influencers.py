@@ -46,6 +46,8 @@ class MonitorTKInfluencersTask(RuntimeTaskShell):
         payload.setdefault("source_table_ref", SOURCE_TABLE_REF)
         payload.setdefault("target_table_ref", TARGET_TABLE_REF)
         payload.setdefault("fastmoss_live_fetch", True)
+        payload.setdefault("fastmoss_phone_env", "FASTMOSS_PHONE")
+        payload.setdefault("fastmoss_password_env", "FASTMOSS_PASSWORD")
         return run_monitor_tk_influencers_request(payload)
 
 

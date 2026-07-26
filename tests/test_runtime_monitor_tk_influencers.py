@@ -16,6 +16,7 @@ from automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers.or
     TASK_CODE,
     advance_stage,
 )
+from automation_business_scaffold.domains.tiktok.tasks import monitor_tk_influencers as task_module
 
 
 def test_monitor_workflow_is_a_registered_independent_formal_task() -> None:
@@ -33,6 +34,26 @@ def test_monitor_workflow_is_a_registered_independent_formal_task() -> None:
         "ready_for_summary",
     ]
     assert load_workflow_runtime(TASK_CODE) is not None
+
+
+def test_monitor_task_submits_fastmoss_credential_env_references(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(payload: dict[str, object]) -> dict[str, object]:
+        captured.update(payload)
+        return {"status": "pending"}
+
+    monkeypatch.setattr(task_module, "run_monitor_tk_influencers_request", fake_run)
+
+    result = task_module.MonitorTKInfluencersTask().run_runtime_request(
+        {"control_action": "submit"}
+    )
+
+    assert result == {"status": "pending"}
+    assert captured["fastmoss_phone_env"] == "FASTMOSS_PHONE"
+    assert captured["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
+    assert "fastmoss_phone" not in captured
+    assert "fastmoss_password" not in captured
 
 
 def test_read_stage_dispatches_all_sku_source_adapter() -> None:
