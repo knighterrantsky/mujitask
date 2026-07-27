@@ -133,9 +133,6 @@ def _influencer_avatar_refs(record: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def _influencer_product_image_refs(record: Mapping[str, Any], *, product_id: str) -> list[dict[str, str]]:
-    product_ids = _list_text(_mapping(record.get("source_context")).get("product_ids"))
-    if len(product_ids) > 1:
-        return []
     refs = _attachment_ref_items(record.get("source_product_images"))
     if refs:
         return refs
