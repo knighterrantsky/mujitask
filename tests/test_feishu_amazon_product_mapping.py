@@ -99,10 +99,6 @@ def _materialized_media(capture):
             "sync_state": "uploaded",
             "bucket": "runtime-artifacts",
             "object_key": "mujitask/local/product-media/amazon/us/B0CHILD001/main.jpg",
-            "remote_uri": (
-                "s3://runtime-artifacts/"
-                "mujitask/local/product-media/amazon/us/B0CHILD001/main.jpg"
-            ),
             "content_digest": "a" * 64,
             "source_path": "/tmp/amazon-main.jpg",
             "file_name": "main.jpg",
@@ -122,10 +118,6 @@ def _materialized_media(capture):
                 "object_key": (
                     "mujitask/local/product-media/amazon/us/B0CHILD001/"
                     f"gallery-{position}.jpg"
-                ),
-                "remote_uri": (
-                    "s3://runtime-artifacts/mujitask/local/product-media/amazon/us/"
-                    f"B0CHILD001/gallery-{position}.jpg"
                 ),
                 "content_digest": f"{position + 1:064x}",
                 "source_path": f"/tmp/amazon-gallery-{position}.jpg",

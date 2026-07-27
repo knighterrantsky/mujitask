@@ -1967,3 +1967,126 @@ features:
       - Deployment stops all old workers, runs migration 20260723_0008, and starts only one matching worker revision; mixed worker versions are forbidden.
       - No new storage helper, service, manager, coordinator, collector, or orchestrator module is introduced.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
+  - feature_code: durable_media_reference_consistency
+    status: complete
+    feature_type: architecture_implementation
+    requires_architecture_delta_gate: true
+    default_context:
+      - contracts/facts/durable-business-object-storage.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - docs/arch/storage-architecture-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/ops/deployment.md
+      - src/automation_business_scaffold/capabilities/media/asset_sync_handler.py
+      - src/automation_business_scaffold/capabilities/persistence/database/fact_bundle_upsert_handler.py
+      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
+      - src/automation_business_scaffold/domains/tiktok/flows/influencer_sync.py
+      - tests/test_durable_business_object_storage_contract.py
+    source_contracts:
+      - contracts/facts/durable-business-object-storage.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - docs/arch/storage-architecture-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/arch/workflow-influencer-pool-sync-design.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/ops/deployment.md
+    allowed_paths:
+      - contracts/facts/durable-business-object-storage.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - docs/arch/storage-architecture-design.md
+      - docs/arch/fact-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/workflow-design-guidelines.md
+      - docs/arch/workflow-influencer-pool-sync-design.md
+      - docs/arch/workflow-amazon-product-detail-design.md
+      - docs/ops/deployment.md
+      - alembic/versions/20260723_0008_tk_durable_media_references.py
+      - alembic/versions/20260727_0009_remove_tk_media_remote_uri.py
+      - alembic_fact/versions/20260727_0009_remove_amazon_media_remote_uri.py
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/product_search_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/creator_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/product_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/shop_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/fastmoss/video_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/fact_sources/tiktok/product_normalization.py
+      - src/automation_business_scaffold/capabilities/fact_sources/tiktok/product_request_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/input_sources/feishu/table_read_handler.py
+      - src/automation_business_scaffold/capabilities/media/asset_sync_handler.py
+      - src/automation_business_scaffold/capabilities/persistence/database/amazon_product_fact_upsert_handler.py
+      - src/automation_business_scaffold/capabilities/persistence/database/fact_bundle_upsert_handler.py
+      - src/automation_business_scaffold/domains/amazon/flows/amazon_product_row_persist/orchestrator.py
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+      - src/automation_business_scaffold/domains/tiktok/flows/competitor_row_refresh/pipeline/finalization.py
+      - src/automation_business_scaffold/domains/tiktok/flows/influencer_sync.py
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/context/runtime_views.py
+      - src/automation_business_scaffold/domains/tiktok/flows/refresh_current_competitor_table/context/stage_inputs.py
+      - src/automation_business_scaffold/domains/tiktok/flows/selection_row_refresh/pipeline/finalization.py
+      - src/automation_business_scaffold/domains/tiktok/flows/sync_tk_influencer_pool/context/stage_inputs.py
+      - src/automation_business_scaffold/domains/tiktok/jobs/fastmoss_product_fetch.py
+      - src/automation_business_scaffold/domains/tiktok/projections/feishu_influencer_projection.py
+      - src/automation_business_scaffold/infrastructure/artifacts/artifact_sync.py
+      - src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py
+      - src/automation_business_scaffold/infrastructure/facts/ingestion_payloads.py
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_ingestion_service.py
+      - src/automation_business_scaffold/infrastructure/facts/tk_fact_store.py
+      - src/automation_business_scaffold/infrastructure/runtime/repositories/artifact_object_repo.py
+      - src/automation_business_scaffold/infrastructure/schemas/amazon_fact_schema.py
+      - src/automation_business_scaffold/infrastructure/schemas/fact_schema.py
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - automation_framework/**
+    done_gate:
+      tests:
+        - tests/test_durable_business_object_storage_contract.py
+        - tests/test_artifact_sync.py
+        - tests/test_media_asset_sync_handler.py
+        - tests/test_amazon_product_browser_fetch_handler.py
+        - tests/test_amazon_product_fact_upsert_handler.py
+        - tests/test_amazon_product_row_persist.py
+        - tests/test_fact_bundle_upsert_handler.py
+        - tests/test_tk_fact_store.py
+        - tests/test_amazon_fact_store.py
+        - tests/test_amazon_fact_schema.py
+        - tests/test_runtime_influencer_business_e2e.py
+        - tests/test_competitor_row_refresh_handler.py
+        - tests/test_selection_row_refresh_safety.py
+        - tests/test_tiktok_product_request_fetch_handler.py
+        - tests/test_tiktok_product_browser_fetch_handler.py
+        - tests/test_fastmoss_creator_fetch_handler.py
+        - tests/test_fastmoss_product_flow.py
+        - tests/test_fastmoss_fact_mappers.py
+        - tests/test_facts_persistence_structure.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_architecture_delta_gate.py
+      commands:
+        - uv run --extra dev pytest -q tests/test_durable_business_object_storage_contract.py tests/test_artifact_sync.py tests/test_harness_code_roadmap.py tests/test_architecture_delta_gate.py
+        - uv run --extra dev pytest -q tests/test_media_asset_sync_handler.py tests/test_amazon_product_browser_fetch_handler.py tests/test_amazon_product_row_persist.py tests/test_competitor_row_refresh_handler.py tests/test_selection_row_refresh_safety.py tests/test_tiktok_product_request_fetch_handler.py tests/test_tiktok_product_browser_fetch_handler.py tests/test_fastmoss_creator_fetch_handler.py tests/test_fastmoss_product_flow.py tests/test_fastmoss_fact_mappers.py tests/test_facts_persistence_structure.py
+        - uv run --extra dev pytest -q tests/test_fact_bundle_upsert_handler.py tests/test_amazon_product_fact_upsert_handler.py tests/test_amazon_fact_schema.py tests/test_tk_fact_store.py tests/test_amazon_fact_store.py
+        - uv run --extra dev pytest -q tests/test_runtime_influencer_business_e2e.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - Source URLs, file tokens, and process-local paths remain asset_refs until media_asset_sync has uploaded or revalidated the object.
+      - Every workflow replaces fact_bundle.media_assets with the final verified media_asset_sync collection; raw and durable media arrays are never appended or merged.
+      - Persisted media require bucket, object_key, content_digest, positive size_bytes, and no local or source path.
+      - remote_uri is derived from bucket and object_key only at the object-access or external-link call site; it is not stored in Fact DB, Runtime DB metadata, persisted handler results, JSON metadata, or cache identity.
+      - Runtime/TikTok and isolated Amazon Fact migrations remove both media table remote_uri columns at revision 20260727_0009.
+      - Deployment stops all old workers, runs both migrations, and starts one matching contract revision; mixed worker versions are forbidden.
+      - Old payloads may contain remote_uri for compatibility, but persistence owners ignore and remove it.
+      - No new storage or media helper module is introduced.
+      - Do not claim complete until claim_done.py --run-gates returns no failed_checks.

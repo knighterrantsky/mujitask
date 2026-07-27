@@ -246,7 +246,6 @@ def _store_raw_snapshot(
     if records:
         record = records[0]
         ref = first_non_empty(
-            record.metadata.get("remote_uri"),
             record.metadata.get("local_uri"),
             Path(record.source_path).resolve().as_uri(),
         )

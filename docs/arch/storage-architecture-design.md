@@ -1,6 +1,6 @@
 # Storage 架构设计
 
-日期: 2026-07-23
+日期: 2026-07-27
 
 状态: 已实现并受机器契约与 completion gate 约束
 
@@ -99,8 +99,11 @@ MinIO 暂时只承担长期业务对象存储，不再承担通用 Runtime artif
 bucket + object_key + content_digest
 ```
 
-其中 `content_digest` 是实际存储字节的 SHA-256，格式固定为 `64 位小写十六进制`。`size_bytes`、`content_type`、`file_name`、
-`source_url` 和 `remote_uri` 可以作为已校验元数据，但不能替代上述三个字段。
+其中 `content_digest` 是实际存储字节的 SHA-256，格式固定为 `64 位小写十六进制`。
+`size_bytes`、`content_type`、`file_name` 和 `source_url` 可以作为已校验元数据，但不能替代上述三个字段。
+`remote_uri` 不是事实或运行时持久字段：需要 URI 的调用方必须在实际访问对象或生成外部链接前，
+通过对象存储客户端根据 `bucket + object_key` 即时派生。Fact DB、Runtime DB metadata 和持久化
+handler result 都不保存该值，缓存身份和有效性校验也不得依赖该值。
 
 规则:
 
@@ -111,8 +114,31 @@ bucket + object_key + content_digest
 - 下游消费者必须按完整 MinIO 引用读取，不能优先读取旧 `local_path`，也不能在本地文件失效后才 fallback MinIO。
 - 引用缺少 `bucket`、`object_key` 或 `content_digest` 时，一律视为无效缓存并从业务源重新物化。
 - 读取方不得用全局默认 bucket 静默猜测缺失字段，也不得修复、回填或迁移不完整旧引用。
+- `remote_uri` 只能在对象访问或外部链接生成的调用点短暂存在，不能序列化进
+  `tk_media_assets`、`amazon_media_assets`、Runtime artifact metadata 或 handler result；
+  外部 HTTP 下载地址应按需生成预签名 URL，不能持久化。
 
 这条规则直接避免“对象实际存在，但转换链路只保留 `object_key`、丢失 `bucket`，随后因临时文件消失而失败”的问题。
+
+### 4.1 `media_assets` 替换语义
+
+采集阶段看到的 URL、飞书附件 token 或本地临时路径只是待物化描述，统一放在 `asset_refs`
+或等价的 source input 中。`fact_bundle.media_assets` 在 Fact DB 写入边界表示最终持久媒体集合，
+只能包含已经上传并验证，或从 Fact DB 缓存读取后再次验证远端字节的记录。
+
+固定顺序如下：
+
+```text
+source asset_refs
+→ media_asset_sync 下载/上传或校验缓存
+→ 生成完整 bucket + object_key + content_digest 记录
+→ 用完整记录整体替换 fact_bundle.media_assets
+→ fact_bundle_upsert 严格校验并写 Fact DB
+```
+
+禁止把上传前的 source media description 与上传后的 durable record 进行数组 merge。即使两条记录
+指向同一个 URL、实体和角色，旧记录缺少持久引用时仍会污染最终集合并导致整包校验失败。一个对象
+需要绑定多个 `media_role` 或 `position` 时，应复制完整持久引用并保留不同关系维度，而不是保留旧记录。
 
 ## 5. Bucket 与 Object key
 
@@ -164,6 +190,8 @@ Fact DB 保存业务事实和长期对象引用，不保存媒体 body、HTML、
 
 - TikTok/FastMoss 媒体事实必须保存完整 `bucket + object_key + content_digest`。
 - Amazon 商品媒体遵守同一规则，并继续执行当前的对象 size/digest 校验与源站 freshness 重验证。
+- TikTok 与 Amazon 媒体事实表、Runtime artifact metadata 和持久化 handler result 都不保存
+  `remote_uri`；读取方按 `bucket + object_key` 访问对象，需要 URI 或预签名链接时在当前调用中派生。
 - Amazon `normalized_capture` 是被允许的长期标准化业务快照。Fact handler 必须从 MinIO 读取实际字节、验证摘要与 capture contract 后写入事实。
 - 通用 raw response 不因体积变大自动进入 MinIO。需要长期分析的字段应标准化到主体、关系、observation/latest 或专用受控 snapshot；其余只作短期本地诊断。
 - 飞书 raw table snapshot 不是长期业务对象。Runtime 只传递已裁剪的结构化行输入，不保存或上传完整 raw snapshot。
@@ -179,7 +207,9 @@ Fact DB 保存业务事实和长期对象引用，不保存媒体 body、HTML、
 ## 7. TikTok / FastMoss 统一约束
 
 - `media_asset_sync` 是长期业务媒体的唯一通用物化 owner。
-- Fact 缓存复用必须返回完整持久引用；只存在 `object_key`、`remote_uri` 或旧 `local_path` 不算命中。
+- Fact 缓存复用必须返回完整持久引用；只存在 `object_key` 或旧 `local_path` 不算命中。
+- 每条业务链路在调用 `fact_bundle_upsert` 前必须用 `media_asset_sync.media_fact_bundle.media_assets`
+  整体替换原始媒体描述，禁止 raw + durable merge。
 - 业务 mapper/projection 只能传递已校验引用，不能自行上传文件或补猜 bucket。
 - TikTok browser fallback 的 HTML、截图、state 和调试输出只保留本地。
 - FastMoss/TikTok raw response 可以按受控尺寸写入 Fact DB 的结构化 raw/preview；不得自动上传 MinIO。
@@ -240,15 +270,19 @@ Amazon 媒体缓存仍使用已确认的严格规则:
 
 ## 10. 硬切换与实施边界
 
-本 contract revision 采用无旧数据兼容的硬切换:
+本 contract revision 3 采用无旧 worker 混跑的硬切换:
 
 - 只按当前 contract 校验对象引用；完整且校验通过的引用可读，不因写入时间获得特殊待遇。
 - 缺少 `bucket`、`object_key` 或 `content_digest` 的引用一律是无效缓存，必须从业务源重新物化。
 - 禁止根据全局 bucket 猜测、修复、回填或迁移不完整引用。
 - 不为旧 HTML、network data、Runtime artifact 对象提供读取或重新分类分支。
 - 发布时先停止全部旧 worker，再部署并启动同一 contract revision 的 worker；不支持混合版本滚动兼容。
-- Runtime DB schema 不变；Fact DB 通过 `20260723_0008` 为 `tk_media_assets` 增加完整持久引用字段。migration 只增加列及空默认值，不回填或迁移旧数据。
+- Runtime/TikTok migration 与独立 Amazon Fact migration 都升级到 `20260727_0009`：
+  分别删除 `tk_media_assets.remote_uri` 与 `amazon_media_assets.remote_uri`。被删除的数据完全可由
+  `bucket + object_key` 派生，不回填、不迁移，也不改变对象或资产/关系唯一键。
 - 旧行中的空字段、不完整对象引用和旧 `local_path` 都不构成兼容读取；它们按缓存未命中处理，并从业务源重新物化。
-- 回滚时必须先停止所有新 worker，再回退应用与 migration，并只启动同一旧 revision 的 worker；回滚不恢复或改写已存在的 MinIO 对象。
+- 回滚时必须先停止所有新 worker，再 downgrade 两个 `20260727_0009` migration 并回退应用。
+  downgrade 只重新增加默认空字符串的 `remote_uri` 列；旧 worker 会把既有行视为缓存未命中并重新物化，
+  不回填派生 URI，也不恢复或改写 MinIO 对象。
 
 当前实现已收口到本 contract revision：媒体缓存和 Fact 写入只接受完整且远端校验通过的引用；飞书持久附件直接读取 MinIO；通用 Runtime artifact、飞书 raw snapshot 与 FastMoss raw response 保持本地；Amazon 成功只持久化 normalized capture，受阻终态只持久化一张受控截图。

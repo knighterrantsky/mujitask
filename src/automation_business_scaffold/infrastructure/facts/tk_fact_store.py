@@ -12,8 +12,24 @@ from automation_business_scaffold.infrastructure.facts.fact_queries import TKFac
 from automation_business_scaffold.infrastructure.schemas.fact_schema import ensure_tk_fact_schema
 
 
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_derived_remote_uri(item) for item in value]
+    return value
+
+
 def _json_dumps(payload: Mapping[str, Any] | None) -> str:
-    return json.dumps(dict(payload or {}), ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(
+        _without_derived_remote_uri(dict(payload or {})),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _load_json_dict(raw_value: str | None) -> dict[str, Any]:
@@ -285,7 +301,6 @@ class TKFactStore(TKFactQueryAccess):
         bucket: str = "",
         object_key: str = "",
         content_digest: str = "",
-        remote_uri: str = "",
         size_bytes: int = 0,
         file_name: str = "",
         mime_type: str = "",
@@ -328,7 +343,6 @@ class TKFactStore(TKFactQueryAccess):
                 "bucket": bucket,
                 "object_key": object_key,
                 "content_digest": content_digest,
-                "remote_uri": _clean_text(remote_uri),
                 "size_bytes": normalized_size_bytes,
                 "file_name": _clean_text(file_name),
                 "mime_type": _clean_text(mime_type),

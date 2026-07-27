@@ -610,7 +610,7 @@ def _has_retry_remaining(context: HandlerContext) -> bool:
 def _materialized_assets(raw_assets: Any) -> list[dict[str, Any]]:
     return (
         [
-            dict(item)
+            _without_derived_remote_uri(dict(item))
             for item in raw_assets
             if isinstance(item, Mapping)
             and item.get("sync_state") in _MATERIALIZED_MEDIA_STATES
@@ -620,6 +620,20 @@ def _materialized_assets(raw_assets: Any) -> list[dict[str, Any]]:
         if isinstance(raw_assets, list)
         else []
     )
+
+
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, list):
+        return [_without_derived_remote_uri(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_derived_remote_uri(item) for item in value)
+    return value
 
 
 def _fact_refs(

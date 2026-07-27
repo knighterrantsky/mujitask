@@ -717,7 +717,7 @@ erDiagram
 
 - `asset_id`、`asset_key`。
 - `source_url`、`source_url_digest`、`content_digest`。
-- `bucket`、`object_key`、`remote_uri`。
+- `bucket`、`object_key`；访问 URI 在运行时派生，不进入 Fact DB。
 - `file_name`、`mime_type`、`size_bytes`。
 - `metadata_json`。
 - `first_seen_at`、`last_seen_at`、`created_at`、`updated_at`。

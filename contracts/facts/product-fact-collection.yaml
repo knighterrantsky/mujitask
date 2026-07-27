@@ -6,6 +6,8 @@ durable_object_storage_contract: contracts/facts/durable-business-object-storage
 principles:
   - product facts are independent from Feishu business writeback
   - every persisted product media fact must be materialized to MinIO and carry bucket, object_key, and content_digest before being persisted as fact media
+  - source media descriptions belong in asset_refs; at the persistence boundary fact_bundle.media_assets is replaced by the complete verified media_asset_sync output and raw plus durable media arrays must never be merged
+  - remote_uri is derived immediately before object access or external link generation from bucket and object_key; it is not stored in Fact DB, Runtime DB metadata, or persisted handler envelopes and must not participate in cache identity or durable-reference validation
   - Amazon media materialization may persist a validated subset of observed media; missing observed media makes the handler partial_success, while unexpected or duplicate media remains invalid
   - formal workflows that persist allowlisted long-term business objects must declare requires_fact_db=true and requires_object_storage=true
   - missing Fact DB or MinIO configuration must fail fast only when the formal workflow requires fact persistence or an allowlisted long-term business object
@@ -577,6 +579,8 @@ forbidden_patterns:
   - full_feishu_source_fields_embedded_in_runtime_source_rows
   - runtime_or_debug_artifact_written_to_minio
   - fact_media_reference_with_local_path
+  - fact_media_raw_and_materialized_assets_merged
+  - derived_remote_uri_persisted_or_used_as_cache_identity
   - downstream_local_first_then_minio_fallback
   - missing_bucket_inferred_from_global_config_at_read_time
 

@@ -40,6 +40,20 @@ def artifact_content_type(kind: str, path: Path) -> str:
     return guessed or "application/octet-stream"
 
 
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, list):
+        return [_without_derived_remote_uri(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_derived_remote_uri(item) for item in value)
+    return value
+
+
 def build_artifact_payload(
     *,
     artifact_root: Path,
@@ -86,7 +100,7 @@ def sync_artifact_specs(
         explicit_object_key = str(spec.object_key or "").strip().lstrip("/")
         local_object_key = explicit_object_key or runtime_object_key(run_id, spec.relative_name)
         content_type = spec.content_type or artifact_content_type(spec.kind, resolved_path)
-        metadata = dict(spec.metadata)
+        metadata = _without_derived_remote_uri(dict(spec.metadata))
         metadata.setdefault("local_object_key", local_object_key)
         metadata.setdefault("local_uri", resolved_path.resolve().as_uri())
         durable_store = artifact_store if explicit_object_key else None
@@ -115,8 +129,7 @@ def sync_artifact_specs(
             etag = uploaded.etag or etag
             size = uploaded.size or size
             content_type = uploaded.content_type or content_type
-            metadata.update(uploaded.metadata)
-            metadata["remote_uri"] = uploaded.uri
+            metadata.update(_without_derived_remote_uri(dict(uploaded.metadata)))
         record = ArtifactObjectRecord(
             artifact_id=_build_artifact_id(run_id, spec.kind, resolved_path),
             request_id=request_id,

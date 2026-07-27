@@ -1474,7 +1474,7 @@ def test_amazon_submit_rejects_fact_schema_revision_mismatch_before_task_creatio
 
     assert rejected["request_status"] == "rejected"
     assert rejected["error_code"] == "amazon_fact_schema_not_ready"
-    assert rejected["required_fact_schema_revision"] == "20260714_0007"
+    assert rejected["required_fact_schema_revision"] == "20260727_0009"
     engine = create_engine(runtime_db_url, future=True)
     try:
         with engine.connect() as connection:
@@ -1519,7 +1519,7 @@ def test_amazon_submit_marks_fact_schema_connectivity_failure_retryable(
     assert rejected["request_status"] == "rejected"
     assert rejected["error_code"] == "amazon_fact_schema_check_failed"
     assert rejected["retryable"] is True
-    assert rejected["required_fact_schema_revision"] == "20260714_0007"
+    assert rejected["required_fact_schema_revision"] == "20260727_0009"
 
 
 def test_invalid_amazon_row_result_force_terminal_on_first_attempt(

@@ -95,6 +95,32 @@ class _AmazonCacheArtifactStore:
         return f"s3://{bucket}/{object_key}"
 
 
+def test_remote_uri_sanitizer_removes_deeply_nested_values() -> None:
+    sanitized = asset_sync_handler._without_derived_remote_uri(
+        {
+            "remote_uri": "s3://bucket/top",
+            "metadata": {
+                "nested": [
+                    {"remote_uri": "s3://bucket/list", "kept": True},
+                    (
+                        {"remote_uri": "s3://bucket/tuple", "value": "kept"},
+                        "unchanged",
+                    ),
+                ]
+            },
+        }
+    )
+
+    assert sanitized == {
+        "metadata": {
+            "nested": [
+                {"kept": True},
+                ({"value": "kept"}, "unchanged"),
+            ]
+        }
+    }
+
+
 def _amazon_cache_payload(tmp_path, *, source_url: str) -> dict[str, Any]:
     return {
         "artifact_root": str(tmp_path / "artifacts"),
@@ -136,7 +162,6 @@ def _amazon_cache_candidate(
         "content_digest": digest,
         "bucket": "runtime-artifacts",
         "object_key": object_key,
-        "remote_uri": f"s3://runtime-artifacts/{object_key}",
         "file_name": f"{digest}.webp",
         "mime_type": "image/webp",
         "size_bytes": len(payload),
@@ -1246,7 +1271,10 @@ def test_media_asset_sync_treats_incomplete_cached_fact_asset_as_cache_miss(
     asset = result.result["synced_assets"][0]
     assert asset["sync_state"] == "uploaded"
     assert asset["bucket"] == "business-assets"
-    assert asset["object_key"].startswith("product-media/1730964478199763166/")
+    assert (
+        "/product-media/1730964478199763166/"
+        in f"/{asset['object_key']}"
+    )
     assert len(asset["content_digest"]) == 64
     assert not asset.get("local_path")
 
@@ -1380,9 +1408,18 @@ def test_media_asset_sync_materializes_amazon_media_with_stable_product_keys(
         asset["content_digest"] == content_digest
         and asset["size_bytes"] == len(source_bytes)
         and asset["asset_key"] == f"content_sha256:{content_digest}"
-        and asset["remote_uri"] == f"s3://runtime-artifacts/{asset['object_key']}"
+        and "remote_uri" not in asset
         and "artifact_uri_prefix" not in asset
         for asset in first.result["synced_assets"]
+    )
+    assert all(
+        "remote_uri" not in asset
+        and "remote_uri" not in asset.get("metadata", {})
+        for asset in first.result["media_fact_bundle"]["media_assets"]
+    )
+    assert all(
+        "remote_uri" not in ref.get("metadata", {})
+        for ref in first.result["artifact_refs"]
     )
     assert [ref["object_key"] for ref in first.result["artifact_refs"]] == expected_keys
 
@@ -1402,7 +1439,6 @@ def test_media_asset_sync_reuses_amazon_cache_only_after_304_revalidation(
     candidate["object_key"] = (
         f"dev/product-media/amazon/us/B0OTHER999/main_image/{candidate['content_digest']}.webp"
     )
-    candidate["remote_uri"] = f"s3://runtime-artifacts/{candidate['object_key']}"
     store = _AmazonCacheArtifactStore(cached_payload)
     requests: list[Request] = []
 

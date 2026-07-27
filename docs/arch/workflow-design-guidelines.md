@@ -304,6 +304,8 @@ FastMoss platform session recovery:
 - TikTok request、TikTok browser fallback、FastMoss 商品/达人/店铺/视频采集输出的 normalized result / fact bundle，必须进入统一事实写入 contract。
 - 只有白名单中已明确准入的商品主图/侧边图/SKU 图、达人头像、视频封面等才能物化为持久事实媒体，且不能因为当前飞书只展示一张图而丢弃已准入角色。店铺图等未准入字节只保留受控来源元数据或不采集；要物化必须先新增正式对象类别 contract。
 - 只有已进入长期业务对象白名单的媒体内容才经过 `media_asset_sync` 落到 MinIO；Fact DB 必须保存完整 `bucket + object_key + content_digest` 和已验证 metadata/实体绑定，不能只保存 `object_key`、临时路径或推测的 bucket。
+- 上传前的 URL、附件 token 和本地临时路径只能放在 `asset_refs` 等 source input 中；`media_asset_sync` 完成后必须用其已验证输出整体替换 `fact_bundle.media_assets`，禁止把上传前后的数组 append 或 merge。
+- `remote_uri` 不是事实或运行时持久字段。需要访问对象或生成外部链接时，调用方才根据 `bucket + object_key` 派生；Fact DB、Runtime DB metadata、持久化 handler result、缓存身份和有效性校验都不得保存或依赖该值。
 - `fact_bundle_upsert` 是 Fact DB 主体、关系、指标、raw link 和媒体引用的统一持久化边界；业务 workflow 不应另写一套私有事实入库函数。
 - 已采集、已标准化的事实不能因为业务表字段已满、飞书写回被跳过、或某个 projection mapper 不需要该字段而跳过入库。
 
@@ -319,6 +321,7 @@ FastMoss platform session recovery:
 - 定义另一套事实 schema 或绕过 `fact_bundle_upsert` 直接写事实表。
 - 把业务投影字段当成事实主档字段反向驱动 schema。
 - 在 workflow 私有 helper 中复制 TikTok / FastMoss / media / Fact DB 的通用写入逻辑。
+- 把 source media description 与已物化媒体混入同一个 `fact_bundle.media_assets`，或把派生 `remote_uri` 写入任何数据库/持久化结果。
 - 因为当前业务只展示部分字段，就丢弃 normalized result 中的其他事实数据。
 
 实现约束:

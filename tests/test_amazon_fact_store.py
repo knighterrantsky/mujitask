@@ -373,10 +373,6 @@ def test_find_media_asset_uses_normalized_source_digest_and_environment_prefix(
         content_digest=DIGEST_A,
         bucket="runtime-artifacts",
         object_key=f"dev/product-media/amazon/us/B0FIRST001/main_image/{DIGEST_A}.jpg",
-        remote_uri=(
-            "s3://runtime-artifacts/dev/product-media/amazon/us/"
-            f"B0FIRST001/main_image/{DIGEST_A}.jpg"
-        ),
         mime_type="image/jpeg",
         size_bytes=3,
         metadata={"source_etag": '"first"'},
@@ -387,13 +383,13 @@ def test_find_media_asset_uses_normalized_source_digest_and_environment_prefix(
         content_digest=DIGEST_B,
         bucket="runtime-artifacts",
         object_key=f"dev/product-media/amazon/us/B0SECOND02/gallery_image/{DIGEST_B}.jpg",
-        remote_uri=(
-            "s3://runtime-artifacts/dev/product-media/amazon/us/"
-            f"B0SECOND02/gallery_image/{DIGEST_B}.jpg"
-        ),
         mime_type="image/jpeg",
         size_bytes=4,
-        metadata={"source_etag": '"second"'},
+        metadata={
+            "source_etag": '"second"',
+            "remote_uri": "s3://runtime-artifacts/derived",
+            "nested": {"remote_uri": "must-not-persist", "kept": True},
+        },
         observed_at=2000.0,
     )
 
@@ -408,7 +404,11 @@ def test_find_media_asset_uses_normalized_source_digest_and_environment_prefix(
 
     assert found["asset_id"] == second["asset_id"]
     assert found["asset_id"] != first["asset_id"]
-    assert found["metadata"] == {"source_etag": '"second"'}
+    assert found["metadata"] == {
+        "nested": {"kept": True},
+        "source_etag": '"second"',
+    }
+    assert "remote_uri" not in found
     assert missing == {}
 
 
@@ -433,7 +433,6 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         content_digest="content-sha256",
         bucket="artifacts",
         object_key="product-media/amazon/us/B0CHILD001/main.jpg",
-        remote_uri="s3://artifacts/product-media/amazon/us/B0CHILD001/main.jpg",
         file_name="main.jpg",
         mime_type="image/jpeg",
         size_bytes=123,
@@ -444,7 +443,6 @@ def test_media_raw_capture_and_feishu_binding_writes_are_idempotent(runtime_db_u
         content_digest="content-sha256",
         bucket="artifacts",
         object_key="product-media/amazon/us/B0CHILD001/main.jpg",
-        remote_uri="s3://artifacts/product-media/amazon/us/B0CHILD001/main.jpg",
         observed_at=2000.0,
     )
     link = store.link_product_media_asset(

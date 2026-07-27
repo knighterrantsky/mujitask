@@ -984,6 +984,10 @@ FastMoss raw 字段映射:
 | idempotency | product_id + source endpoint + detail_level |
 | retry | 网络、限流、上游 5xx 可重试 |
 
+商品图、达人头像、视频封面等上传前描述输出为 `media_refs` / `asset_refs`。FastMoss 和 TikTok
+source handler 对外返回的 Fact Bundle 必须令 `media_assets=[]`；只有 `media_asset_sync`
+完成物化与远端校验后，调用方才能把其 replacement set 放回 Fact Bundle。
+
 窗口约束:
 
 - `fastmoss_product_fetch` 支持一次 handler 调用采集多个 `goods.overview` 窗口；`fastmoss_overview_window_days` / `fastmoss_window_days` 可指定 `7,28,90` 或数组形式。
@@ -1214,6 +1218,10 @@ result 示例:
 
 `local_path` 只允许作为当前调用进程的临时输入，不能出现在成功的持久媒体事实中。下游必须按
 完整 `bucket + object_key + content_digest` 读取 MinIO，不得 local-first 或 fallback。
+`media_fact_bundle.media_assets` 是完成物化后的替换集合，只能包含已验证的 `uploaded`、
+`reused` 或 `reused_in_run` 记录。Handler result 也只返回 `bucket + object_key` 等权威字段；
+`remote_uri` 只在实际对象访问或外部链接生成的调用点即时派生，不能进入 Fact Bundle、
+Fact DB、Runtime DB metadata 或持久化 handler result。
 
 ### 6.7 `fact_bundle_upsert`
 
@@ -1228,6 +1236,12 @@ result 示例:
 | output | persisted_entities、persisted_relations、persisted_observations、warnings |
 | idempotency | 主体按业务键 upsert，关系按 relation_key upsert，latest upsert，observations/raw 追加或 digest 去重 |
 | side effects | Fact DB |
+
+`fact_bundle.media_assets` 是持久化边界，不是 source media description 的累积数组。调用方必须先将
+上传前的 URL/token/path 作为 `asset_refs` 交给 `media_asset_sync`，再用其完整持久记录整体替换
+原数组；禁止将 raw media 与 durable media 通过 `merge_fact_bundles` 合并。Handler 继续对每一条
+记录执行严格校验，任何缺少 `bucket`、`object_key`、`content_digest` 或正数 `size_bytes` 的记录
+都表示调用方违反 contract。`remote_uri` 不属于输入 Fact schema，也不得写入媒体资产表。
 
 ### 6.7.1 Fact projection P0 冻结样例
 

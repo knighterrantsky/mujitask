@@ -156,6 +156,7 @@ def test_default_api_registry_binds_fastmoss_creator_fetch_and_maps_contract() -
     assert product_media_ref["entity_external_id"] == "1732183068040729370"
     assert product_media_ref["source_url"] == "https://example.com/product.png"
     assert any(ref["media_type"] == "creator_avatar" for ref in result.result["media_refs"])
+    assert result.result["fact_bundle"]["media_assets"] == []
     assert any(ref.endswith("/author.goods_list") for ref in result.result["raw_response_refs"])
     assert result.result["fact_bundle"]["relations"]["creator_videos"][0]["video_id"] == (
         "7623147954093690143"

@@ -319,6 +319,8 @@ def _result_payload(
     video_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     media_refs = _contract_media_refs_from_fact_bundle(fact_bundle)
+    quality = _video_fetch_quality(fact_bundle, video_identity=video_identity)
+    fact_bundle["media_assets"] = []
     return {
         "entities": _contract_entities_from_fact_bundle(fact_bundle),
         "relations": _contract_relations_from_fact_bundle(fact_bundle),
@@ -329,7 +331,7 @@ def _result_payload(
         ),
         "media_refs": media_refs,
         "raw_response_refs": _raw_response_refs_from_video_bundle(fact_bundle, video_identity=video_identity),
-        "quality": _video_fetch_quality(fact_bundle, video_identity=video_identity),
+        "quality": quality,
         "video_fact_bundle": fact_bundle,
         "fact_bundle": fact_bundle,
     }

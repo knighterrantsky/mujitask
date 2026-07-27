@@ -605,7 +605,9 @@ def _effective_tiktok_result(*, tiktok_job: Mapping[str, Any] | None, browser_ex
 
 def _collect_asset_refs(product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw_assets: list[Any] = []
-    media_assets = product_result.get("media_assets")
+    media_assets = product_result.get("asset_refs")
+    if not isinstance(media_assets, list):
+        media_assets = product_result.get("media_assets")
     if isinstance(media_assets, list):
         raw_assets.extend(media_assets)
     images = product_result.get("images")
@@ -640,7 +642,6 @@ def _collect_asset_refs(product_result: Mapping[str, Any]) -> list[dict[str, Any
                     "mime_type": str(item.get("mime_type") or ""),
                     "local_path": local_path,
                     "object_key": object_key,
-                    "remote_uri": str(item.get("remote_uri") or ""),
                     "entity_type": str(item.get("entity_type") or ""),
                     "entity_external_id": str(item.get("entity_external_id") or item.get("product_id") or ""),
                     "media_role": str(item.get("media_role") or ""),

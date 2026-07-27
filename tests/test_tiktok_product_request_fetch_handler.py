@@ -53,6 +53,8 @@ def test_tiktok_product_request_fetch_keeps_inline_request_payload_on_request_pa
     assert normalized["product"]["title"] == "Candy Boxes"
     assert normalized["media_assets"][0]["source_url"] == "https://cdn.example.com/main.jpg"
     assert normalized["media_assets"][0]["local_path"] == "/tmp/main.jpg"
+    assert normalized["asset_refs"] == normalized["media_assets"]
+    assert normalized["fact_bundle"]["media_assets"] == []
     assert result.result["request_attempt"]["attempted"] is False
     assert result.result["request_attempt"]["request_source"] == "inline_payload"
 
@@ -98,6 +100,8 @@ def test_tiktok_product_request_fetch_promotes_all_request_metrics_to_product_fi
     assert normalized["logical_fields"]["sales_count"] == "12000"
     assert len(normalized["logical_fields"]["gallery_images"]) == 1
     assert len(normalized["media_assets"]) == 3
+    assert normalized["asset_refs"] == normalized["media_assets"]
+    assert normalized["fact_bundle"]["media_assets"] == []
 
 
 def test_tiktok_product_request_fetch_cleans_sold_by_shop_label() -> None:

@@ -127,9 +127,6 @@ def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]
             "sync_state": "uploaded",
             "bucket": "test-artifacts",
             "object_key": f"test/product-media/amazon/us/{ASIN}/main_image/{'1' * 64}.jpg",
-            "remote_uri": (
-                f"s3://test-artifacts/test/product-media/amazon/us/{ASIN}/main_image/{'1' * 64}.jpg"
-            ),
             "content_digest": "1" * 64,
             "size_bytes": 10,
         }
@@ -146,10 +143,6 @@ def _materialized_assets(*, include_gallery: bool = True) -> list[dict[str, Any]
                 "sync_state": "uploaded",
                 "bucket": "test-artifacts",
                 "object_key": (f"test/product-media/amazon/us/{ASIN}/gallery_image/{'2' * 64}.jpg"),
-                "remote_uri": (
-                    f"s3://test-artifacts/test/product-media/amazon/us/{ASIN}/"
-                    f"gallery_image/{'2' * 64}.jpg"
-                ),
                 "content_digest": "2" * 64,
                 "size_bytes": 11,
             }
@@ -276,6 +269,41 @@ def test_job_contract_declares_compact_serial_row_persistence() -> None:
         "failed_count",
         "target_record_ids",
     )
+
+
+def test_row_persist_recursively_strips_derived_remote_uri_from_materialized_assets() -> None:
+    from automation_business_scaffold.domains.amazon.flows.amazon_product_row_persist import (
+        orchestrator,
+    )
+
+    asset = _materialized_assets(include_gallery=False)[0]
+    asset["remote_uri"] = "s3://test-artifacts/top"
+    asset["metadata"] = {
+        "remote_uri": "s3://test-artifacts/metadata",
+        "items": [
+            {
+                "remote_uri": "s3://test-artifacts/list",
+                "content_digest": "1" * 64,
+            },
+            (
+                {
+                    "remote_uri": "s3://test-artifacts/tuple",
+                    "bucket": "test-artifacts",
+                },
+            ),
+        ],
+    }
+
+    cleaned = orchestrator._materialized_assets([asset])
+
+    assert cleaned[0]["metadata"] == {
+        "items": [
+            {"content_digest": "1" * 64},
+            ({"bucket": "test-artifacts"},),
+        ]
+    }
+    assert "remote_uri" not in cleaned[0]
+    assert asset["remote_uri"] == "s3://test-artifacts/top"
 
 
 def test_row_persist_serially_dispatches_media_fact_and_same_record_writeback(

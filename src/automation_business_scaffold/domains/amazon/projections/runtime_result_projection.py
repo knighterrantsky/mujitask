@@ -1431,7 +1431,6 @@ def _amazon_artifact_records(
                 "metadata": {
                     "content_digest": str(ref.get("content_digest") or "").strip(),
                     "sanitization_status": str(ref.get("sanitization_status") or "").strip(),
-                    "remote_uri": str(ref.get("remote_uri") or "").strip(),
                 },
                 "created_at": created_at,
             }

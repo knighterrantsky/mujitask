@@ -81,6 +81,7 @@ owners:
       - download referenced media into process-local temporary files
       - upload/materialize only allowlisted long-term business media into MinIO
       - return complete bucket, object_key, and content_digest metadata
+      - return fact_bundle.media_assets as a replacement set containing only verified materialized assets
       - resolve platform-owned media cache candidates through the existing Fact Store owner
       - validate cached object bytes and conditionally revalidate Amazon source media before reuse
     forbidden:
@@ -88,14 +89,19 @@ owners:
       - decide Feishu writeback fields
       - upload runtime logs, HTML, page-data, network data, state dumps, ordinary screenshots, raw table snapshots, or temporary files
       - persist local_path as a durable media locator
+      - merge pre-materialization source descriptions into persisted media assets
+      - require or persist remote_uri as durable media state
 
   object_storage_transport:
     paths:
       - src/automation_business_scaffold/infrastructure/artifacts/**
+      - src/automation_business_scaffold/infrastructure/runtime/repositories/artifact_object_repo.py
     responsibilities:
       - execute MinIO put, get, and stat operations requested by an admitted business-object writer
       - preserve the exact configured bucket and object key returned by the provider
       - expose stored byte metadata needed for digest verification
+      - derive a URI from bucket and object_key only immediately before object access or external link generation
+      - strip derived remote_uri before writing the Runtime artifact index
     allowed_logical_writers:
       - media_asset_sync
       - amazon_browser_capture
@@ -103,6 +109,7 @@ owners:
       - classify a file as a long-term business object
       - scan Runtime results or referenced local files for automatic MinIO upload
       - infer a missing durable-reference bucket at read time
+      - serialize or persist a derived remote_uri in database metadata or handler result envelopes
       - create a parallel helper, service, manager, coordinator, collector, or orchestrator owner
 
   mapper:
@@ -120,11 +127,16 @@ owners:
     paths:
       - src/automation_business_scaffold/capabilities/**/fact*
       - src/automation_business_scaffold/control_plane/**
+      - src/automation_business_scaffold/infrastructure/facts/**
     responsibilities:
       - upsert fact entities, snapshots, relations, media assets, raw audit
+      - persist media only from the final verified materialized replacement set
+      - persist bucket, object_key, and content_digest without a derived remote_uri column
     forbidden:
       - decide business selection criteria
       - decide Feishu field projection
+      - accept pre-materialization source descriptions as persisted media facts
+      - copy remote_uri into a column or JSON metadata
 
   projection_mapper:
     paths:
@@ -157,6 +169,7 @@ owners:
       - classify Amazon Runtime failures without mutating Runtime state
     forbidden:
       - access RuntimeStore or a database directly
+      - persist a derived remote_uri in Runtime result or artifact metadata
       - execute browser, media, Fact DB, object storage, or Feishu side effects
       - claim jobs, advance workflow stages, or decide retry scheduling
       - create a parallel helper, service, manager, coordinator, collector, or orchestrator owner
@@ -171,7 +184,7 @@ owners:
       - parse embedded data, same-origin page responses, semantic DOM, and controlled text blocks in precedence order
       - persist normalized capture for success and governed screenshot evidence for blocked or captcha outcomes
       - keep HTML, page-data, network data, ordinary screenshots, logs, and temporary files local
-      - return compact complete bucket, object_key, and content_digest references
+      - return compact complete bucket, object_key, and content_digest references without a serialized remote_uri
     forbidden:
       - write Fact DB
       - write Feishu business projections
@@ -194,6 +207,7 @@ owners:
       - define Amazon fact tables for migration and test bootstrap consumers
       - upsert Amazon products, snapshots, offers, variants, BSR, media relations, raw capture indexes, and Feishu bindings
       - query Amazon media cache candidates by normalized source URL digest without treating URL identity as freshness proof
+      - persist and validate media from bucket, object_key, content_digest, positive size, and verified metadata without remote_uri
       - enforce marketplace plus ASIN identity and per-run idempotency keys
       - read normalized capture and media objects from MinIO by complete bucket, object_key, and content_digest references and verify actual stored bytes
     forbidden:
@@ -203,6 +217,7 @@ owners:
       - execute production DDL from daemon or worker paths
       - upload object storage content
       - read a local_path as fallback for a durable business object
+      - persist or require remote_uri in Amazon Fact rows, JSON metadata, or cache validation
 
   rate_limit:
     paths:

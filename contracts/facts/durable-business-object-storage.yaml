@@ -1,9 +1,9 @@
 schema_version: 1
-contract_revision: 2
+contract_revision: 3
 contract_type: durable_business_object_storage
 status: active_contract
 implementation_status: complete
-effective_date: "2026-07-23"
+effective_date: "2026-07-27"
 
 scope:
   platforms:
@@ -42,7 +42,13 @@ durable_reference:
     - content_type
     - file_name
     - source_url
-    - remote_uri
+  derived_runtime_fields:
+    remote_uri:
+      derivation: artifact_store_build_uri_from_bucket_and_object_key
+      derivation_time: immediately_before_object_access_or_external_link_generation
+      database_persistence: forbidden
+      persisted_handler_or_runtime_envelope: forbidden
+      cache_identity_or_validity_check: forbidden
   forbidden_authoritative_locators:
     - local_path
     - source_path
@@ -53,6 +59,28 @@ durable_reference:
   local_first_or_fallback_read: forbidden
   infer_missing_bucket_from_global_config: forbidden
   incomplete_reference: reject_or_rematerialize_then_persist_complete_reference
+
+media_fact_materialization:
+  source_description_field: asset_refs
+  persisted_collection: fact_bundle.media_assets
+  persisted_collection_semantics: final_verified_materialized_assets_only
+  materialization_boundary_rule: replace_source_media_descriptions_with_verified_materialized_assets
+  raw_and_durable_array_merge: forbidden
+  admitted_states:
+    - uploaded
+    - reused
+    - reused_in_run
+  required_fields:
+    - bucket
+    - object_key
+    - content_digest
+    - positive_size_bytes
+  preserve_relation_dimensions:
+    - entity_type
+    - entity_external_id
+    - media_role
+    - position
+  failed_or_incomplete_materialization: reject_without_restoring_raw_media_descriptions
 
 local_temporary_file_policy:
   download_and_transform: allowed
@@ -134,6 +162,7 @@ runtime_artifact_policy:
   runtime_db_index: allowed
   object_key_semantics: local_relative_name_only
   source_path_semantics: process_local_diagnostic_only
+  derived_remote_uri_persistence: forbidden
   minio_sync: forbidden
   fact_or_downstream_dependency: forbidden
   retention: short_best_effort_cleanup
@@ -222,15 +251,23 @@ permissions:
 
 cutover_policy:
   mode: hard_cutover_without_legacy_data_compatibility
+  enforcement_scope: all_writes_after_contract_revision_3
   valid_reference_rule: complete_reference_that_passes_current_contract_validation
   incomplete_reference_rule: invalid_cache_miss_and_rematerialize_from_source
   bucket_inference: forbidden
   legacy_repair_or_backfill: forbidden
   legacy_data_migration: forbidden
+  historical_runtime_or_fact_json_remote_uri: ignore_until_normal_retention_without_read_dependency
   mixed_version_workers: forbidden
+  removed_derived_fact_columns:
+    - tk_media_assets.remote_uri
+    - amazon_media_assets.remote_uri
+  removed_column_data_policy: discard_without_backfill_because_value_is_derived
+  downgrade_policy: re_add_empty_columns_and_treat_existing_rows_as_cache_misses_under_old_workers
   deployment_sequence:
     - stop_all_old_workers
-    - deploy_contract_revision_2
+    - run_runtime_and_fact_migration_20260727_0009
+    - deploy_contract_revision_3
     - start_single_version_workers
 
 implementation_gaps: []

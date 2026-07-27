@@ -175,6 +175,9 @@ Influencer Creator Sync Job 的关键原则:
 
 - 一条 influencer creator sync job 对应一个 unique 达人的同步动作，payload 携带该达人本次命中的所有 `product_hits`。
 - 该 job 内部完成达人详情采集、Fact DB upsert、媒体资产同步、`TK达人池` upsert，不再把这些连续依赖步骤拆成多个 Runtime job。
+- FastMoss 返回的头像 URL 只作为 `asset_refs`。头像上传或缓存远端校验成功后，
+  `influencer_creator_sync` 必须用 `media_asset_sync.media_fact_bundle.media_assets`
+  整体替换原始 `fact_bundle.media_assets`，不得把上传前后的头像记录合并。
 - 失败只影响该达人，不拖垮整个 task。
 - 写飞书和事实库必须依赖 `creator_id`、`product_hits[*].product_id`、`product_hits[*].source_record_id` 做幂等。
 - job 终态后必须检查它涉及的每个 product group 是否所有相关达人同步 job 都已终态；如果是，则在同一个 job 内通过飞书写回该商品的 `达人查找状态`。

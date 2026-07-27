@@ -196,11 +196,20 @@ def _fact_persist_candidates(store: RuntimeStore, *, request_id: str) -> list[di
         if not tiktok_result and not fastmoss_result and not media_result:
             continue
         product_result = dict(tiktok_result.get("normalized_product_result") or {})
+        product_fact_bundle = dict(product_result.get("fact_bundle") or {})
+        product_fact_bundle["media_assets"] = []
+        fastmoss_fact_bundle = dict(fastmoss_result.get("product_fact_bundle") or {})
+        fastmoss_fact_bundle["media_assets"] = []
         fact_bundle = _merge_runtime_fact_bundles(
-            dict(product_result.get("fact_bundle") or {}),
-            dict(fastmoss_result.get("product_fact_bundle") or {}),
-            dict(media_result.get("media_fact_bundle") or {}),
+            product_fact_bundle,
+            fastmoss_fact_bundle,
         )
+        media_fact_bundle = dict(media_result.get("media_fact_bundle") or {})
+        fact_bundle["media_assets"] = [
+            dict(asset)
+            for asset in media_fact_bundle.get("media_assets", [])
+            if isinstance(asset, Mapping)
+        ]
         fact_bundle["source_record_id"] = source_record_id
         fact_bundle["product_identity"] = dict(row["product_identity"])
         fact_bundle["source_context"] = dict(row["source_context"])

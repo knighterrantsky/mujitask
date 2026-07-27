@@ -180,7 +180,7 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
 
     media_result_payload: dict[str, Any] = {}
     media_refs = _influencer_media_refs_for_sync(list(creator_payload.get("media_refs") or []))
-    fact_bundle = _filter_influencer_fact_media(fact_bundle)
+    fact_bundle = _fact_bundle_without_media(fact_bundle)
     if media_refs:
         step_started_at = perf_counter()
         media_result = media_asset_sync_handler(
@@ -221,10 +221,12 @@ def run_influencer_creator_sync_flow(context: HandlerContext) -> HandlerResult:
             skipped_asset_count=len(list(creator_payload.get("media_refs") or [])),
         )
 
-    fact_bundle = merge_fact_bundles(
-        fact_bundle,
-        coerce_mapping(media_result_payload.get("media_fact_bundle")),
-    )
+    fact_bundle["media_assets"] = [
+        dict(asset)
+        for asset in coerce_mapping_list(
+            coerce_mapping(media_result_payload.get("media_fact_bundle")).get("media_assets")
+        )
+    ]
     creator_payload["fact_bundle"] = fact_bundle
     creator_payload["media_refs"] = _merge_media_refs(
         media_refs,
@@ -765,14 +767,10 @@ def _influencer_media_refs_for_sync(media_refs: list[Any]) -> list[dict[str, Any
     ]
 
 
-def _filter_influencer_fact_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]:
-    filtered = dict(fact_bundle)
-    filtered["media_assets"] = [
-        dict(asset)
-        for asset in coerce_mapping_list(filtered.get("media_assets"))
-        if _is_creator_avatar_media(asset)
-    ]
-    return filtered
+def _fact_bundle_without_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]:
+    cleaned = dict(fact_bundle)
+    cleaned["media_assets"] = []
+    return cleaned
 
 
 def _is_creator_avatar_media(media: Mapping[str, Any]) -> bool:

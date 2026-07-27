@@ -1065,7 +1065,6 @@ def _upload_bytes(
         "created_at_epoch": observed_at.timestamp(),
         "etag": _clean_text(stored.etag),
         "size": int(stored.size),
-        "remote_uri": _clean_text(stored.uri),
     }
     if content_encoding:
         ref["content_encoding"] = content_encoding

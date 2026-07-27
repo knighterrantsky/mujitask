@@ -384,7 +384,8 @@ BUSINESS_EXECUTION_CONTROL_MIGRATION_ENV_FILE=/secure/path/migration.local.env \
   bash scripts/execution_control/run_fact_alembic_upgrade.sh
 ```
 
-本次持久对象 contract revision 采用硬切换，不兼容旧的不完整媒体引用。推荐更新顺序：
+持久对象 contract revision 3 采用硬切换，不允许依赖 `remote_uri` 列的旧 worker 与新 worker
+混跑。推荐更新顺序：
 
 1. 停止 executor、API worker、browser runloop、outbox dispatcher 和 watchdog，确认没有旧 worker 仍在 claim 或执行 job。
 2. 更新项目代码和 Python 依赖，但不要启动任何 worker。
@@ -392,8 +393,9 @@ BUSINESS_EXECUTION_CONTROL_MIGRATION_ENV_FILE=/secure/path/migration.local.env \
 4. 确认私有 migration env 只包含 Fact migration URL 和显式 Fact runtime role，且权限为 `0600`。
 5. External 模式先核对 Runtime worker/migration URL 的数据库身份，再用独立 migration URL 执行
    Runtime migration；Native 模式保持既有 Runtime migration 与随后 Runtime/TikTok 兼容 bootstrap。
-6. 执行包含 `20260723_0008` 的 migration，为 `tk_media_assets` 增加完整持久引用列；该 migration 不执行旧数据回填、修复或对象迁移。
-7. 执行独立 `fact_alembic_version` 图的 Amazon Fact migration。
+6. 执行 Runtime/TikTok 图的 `20260727_0009`，删除 `tk_media_assets.remote_uri`。
+7. 执行独立 `fact_alembic_version` 图的 `20260727_0009`，删除
+   `amazon_media_assets.remote_uri`。两个 migration 都不回填、修复或迁移对象数据。
 8. Native 模式按显式 Fact 表白名单补齐 Fact DML；External 模式由数据库管理员预先创建
    TikTok Fact 表并授权。两种模式都检查 Fact runtime 账号对权威 TikTok 表全集和 9 张
    Amazon 表具备 DML、对 `fact_alembic_version` 只有只读权限。
@@ -403,9 +405,13 @@ BUSINESS_EXECUTION_CONTROL_MIGRATION_ENV_FILE=/secure/path/migration.local.env \
    不允许任何有效权限或 ownership。
 11. 删除临时 migration env，再一次性安装或启动同一代码 revision 的全部 `launchd` 守护进程；禁止混合版本滚动发布。
 12. 确认新 worker 将旧空字段/不完整引用视为缓存未命中并从业务源重新物化；不要运行 bucket 推断、旧行回填、repair job 或 legacy data migration。
+13. 确认新写入的 Fact/Runtime JSON 不含 `remote_uri`。本次不全表重写历史 Runtime/Fact JSON；
+    新代码不得读取或依赖旧键，历史运行记录按既有 retention 淘汰。
 
-若需回滚，先停止全部新 worker，再回退应用和 `20260723_0008`，最后只启动匹配旧 schema
-的 worker。回滚不删除或改写已经存在的 MinIO 对象；对象清理由独立 retention policy 处理。
+若需回滚，先停止全部新 worker，再 downgrade 两个 `20260727_0009` 并回退应用，最后只启动
+匹配旧 schema 的 worker。downgrade 重新增加默认空字符串的 `remote_uri` 列；旧 worker 会将
+既有空值行视为缓存未命中并重新物化。回滚不删除或改写已经存在的 MinIO 对象；对象清理由独立
+retention policy 处理。
 
 当前 macOS 一键部署脚本会在安装 launchd 之前自动执行上述顺序，并在数据库身份、任一迁移、
 实际 revision 或权限核验失败时停止。Native 模式继续通过 `install_launch_agents.sh` 执行既有
