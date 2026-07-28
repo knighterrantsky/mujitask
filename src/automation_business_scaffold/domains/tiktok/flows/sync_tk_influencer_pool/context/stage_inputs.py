@@ -249,6 +249,7 @@ def _build_fact_upsert_jobs(
             continue
         result_payload = extract_effective_result_payload(product_job)
         fact_bundle = merge_fact_bundles(dict(result_payload.get("product_fact_bundle") or {}))
+        fact_bundle["media_assets"] = []
         entity_keys = bundle_entity_keys(fact_bundle)
         if not entity_keys:
             continue
@@ -295,6 +296,7 @@ def _build_fact_upsert_jobs(
             continue
         result_payload = extract_effective_result_payload(creator_job)
         fact_bundle = merge_fact_bundles(dict(result_payload.get("fact_bundle") or {}))
+        fact_bundle["media_assets"] = []
         entity_keys = bundle_entity_keys(fact_bundle)
         if not entity_keys:
             continue

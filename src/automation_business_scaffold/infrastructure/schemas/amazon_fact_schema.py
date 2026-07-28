@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-AMAZON_FACT_SCHEMA_REVISION = "20260714_0007"
+AMAZON_FACT_SCHEMA_REVISION = "20260727_0009"
 AMAZON_FACT_VERSION_TABLE = "fact_alembic_version"
 
 AMAZON_FACT_TABLES = [
@@ -179,7 +179,6 @@ AMAZON_FACT_SCHEMA_STATEMENTS = [
         content_digest TEXT NOT NULL DEFAULT '',
         bucket TEXT NOT NULL DEFAULT '',
         object_key TEXT NOT NULL DEFAULT '',
-        remote_uri TEXT NOT NULL DEFAULT '',
         file_name TEXT NOT NULL DEFAULT '',
         mime_type TEXT NOT NULL DEFAULT '',
         size_bytes BIGINT NOT NULL DEFAULT 0,

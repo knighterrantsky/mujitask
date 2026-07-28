@@ -120,6 +120,8 @@ def test_tiktok_product_browser_fetch_reuses_legacy_product_fetch(monkeypatch) -
         "product_gallery_image",
         "product_sku_image",
     ]
+    assert normalized["asset_refs"] == normalized["media_assets"]
+    assert normalized["fact_bundle"]["media_assets"] == []
     assert normalized["media_assets"][0]["local_path"] == "/tmp/1730964478199763166-main.webp"
     assert result.summary["slider_captcha_attempted"] is True
     assert result.summary["slider_captcha_resolved"] is True

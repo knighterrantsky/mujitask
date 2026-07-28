@@ -225,5 +225,5 @@ def test_real_skill_submit_requires_and_uses_database_and_object_storage(
     assert fact_upsert["persistence_mode"] == "database"
     assert uploaded_asset["sync_state"] == "uploaded"
     assert uploaded_asset["object_key"]
-    assert uploaded_asset["remote_uri"]
+    assert "remote_uri" not in uploaded_asset
     assert uploaded_asset["sync_state"] != "linked_local"

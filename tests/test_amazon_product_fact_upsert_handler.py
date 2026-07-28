@@ -192,7 +192,6 @@ def _materialized_asset(
         "content_digest": content_digest,
         "bucket": "artifacts",
         "object_key": object_key,
-        "remote_uri": f"s3://artifacts/{object_key}",
         "file_name": file_name,
         "mime_type": "image/jpeg",
         "size_bytes": len(media_bytes),
@@ -249,6 +248,45 @@ def test_field_evidence_paths_match_the_machine_fact_contract() -> None:
     ]
 
     assert set(target_fields) == fact_handler_module._REQUIRED_FIELD_EVIDENCE_PATHS
+
+
+def test_materialized_media_sanitizer_recursively_strips_derived_remote_uri() -> None:
+    asset = {
+        "remote_uri": "s3://artifacts/top",
+        "bucket": "artifacts",
+        "metadata": {
+            "remote_uri": "s3://artifacts/metadata",
+            "items": [
+                {
+                    "remote_uri": "s3://artifacts/list",
+                    "content_digest": "a" * 64,
+                },
+                (
+                    {
+                        "remote_uri": "s3://artifacts/tuple",
+                        "object_key": "product-media/amazon/us/B0CHILD001/main.jpg",
+                    },
+                ),
+            ],
+        },
+    }
+
+    cleaned = fact_handler_module._materialized_media_without_derived_remote_uri(asset)
+
+    assert cleaned == {
+        "bucket": "artifacts",
+        "metadata": {
+            "items": [
+                {"content_digest": "a" * 64},
+                (
+                    {
+                        "object_key": "product-media/amazon/us/B0CHILD001/main.jpg",
+                    },
+                ),
+            ]
+        },
+    }
+    assert asset["remote_uri"] == "s3://artifacts/top"
 
 
 def test_handler_fails_when_fact_database_configuration_is_missing(monkeypatch) -> None:
@@ -324,7 +362,7 @@ def test_handler_checks_fact_schema_before_reading_artifacts(runtime_db_url) -> 
     assert result.status == "failed"
     assert result.error is not None
     assert result.error.error_code == "amazon_fact_schema_not_ready"
-    assert result.result["required_fact_schema_revision"] == "20260714_0007"
+    assert result.result["required_fact_schema_revision"] == "20260727_0009"
     assert artifact_store.read_calls == []
 
 
@@ -367,7 +405,7 @@ def test_handler_closes_fact_store_it_constructs_on_early_failure(monkeypatch) -
         closed = False
 
         def require_schema_revision(self) -> str:
-            return "20260714_0007"
+            return "20260727_0009"
 
         def close(self) -> None:
             self.closed = True
@@ -528,6 +566,7 @@ def test_handler_rejects_inconsistent_raw_capture_provenance_before_fact_write(
         resolved_url="https://www.amazon.com/dp/B0CHILD001",
     )
     payload = _payload(capture_bytes)
+    payload["raw_capture_refs"] = [dict(payload["raw_capture_refs"][0])]
     payload["raw_capture_refs"][0][field_name] = invalid_value
     normalized_ref = payload["normalized_capture_ref"]
     artifact_store = FakeArtifactStore({("artifacts", normalized_ref["object_key"]): capture_bytes})
@@ -544,8 +583,8 @@ def test_handler_rejects_inconsistent_raw_capture_provenance_before_fact_write(
 
     assert result.status == "failed"
     assert result.error is not None
-    assert result.error.error_code == "invalid_amazon_capture"
-    assert artifact_store.read_calls == [("artifacts", normalized_ref["object_key"])]
+    assert result.error.error_code == "raw_capture_evidence_missing"
+    assert artifact_store.read_calls == []
     assert _count(runtime_db_url, "amazon_products") == 0
 
 
@@ -1365,7 +1404,6 @@ def test_handler_rejects_media_prefix_that_only_appears_mid_path(runtime_db_url)
     payload = _payload(capture_bytes)
     asset = payload["materialized_media_assets"][0]
     asset["object_key"] = f"evil/{asset['object_key']}"
-    asset["remote_uri"] = f"s3://artifacts/{asset['object_key']}"
     artifact_store = FakeArtifactStore(
         {("artifacts", payload["normalized_capture_ref"]["object_key"]): capture_bytes}
     )

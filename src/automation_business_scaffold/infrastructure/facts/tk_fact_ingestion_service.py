@@ -13,7 +13,6 @@ from automation_business_scaffold.infrastructure.facts.ingestion_payloads import
     first_non_empty as _first_non_empty,
     has_observable_value as _has_observable_value,
     infer_mime_type as _infer_mime_type,
-    media_assets_from_logical_images as _media_assets_from_logical_images,
     metadata_from_relation as _metadata_from_relation,
     product_metric_payload as _product_metric_payload,
     product_status_from_spec as _product_status_from_spec,
@@ -37,6 +36,44 @@ class TKFactIngestionService:
         self.fact_store = fact_store or TKFactStore(
             runtime_store=runtime_store,
             db_url=db_url,
+        )
+
+    @staticmethod
+    def _media_asset_without_derived_remote_uri(
+        media_spec: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        def clean(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    key: clean(nested_value)
+                    for key, nested_value in value.items()
+                    if key != "remote_uri"
+                }
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(clean(item) for item in value)
+            return value
+
+        return clean(media_spec)
+
+    @staticmethod
+    def _is_complete_durable_media_asset(media_spec: Mapping[str, Any]) -> bool:
+        digest = _first_non_empty(media_spec.get("content_digest")).lower()
+        try:
+            size_bytes = int(media_spec.get("size_bytes") or 0)
+            bytes.fromhex(digest)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            _first_non_empty(media_spec.get("bucket"))
+            and _first_non_empty(media_spec.get("object_key"))
+            and len(digest) == 64
+            and size_bytes > 0
+            and not _first_non_empty(
+                media_spec.get("local_path"),
+                media_spec.get("source_path"),
+            )
         )
 
     def ingest_tiktok_product_request(
@@ -75,62 +112,9 @@ class TKFactIngestionService:
             "shop_name": _first_non_empty(logical_payload.get("shop_name")),
             "shop_url": _first_non_empty(logical_payload.get("shop_url")),
         }
-        media_assets = [
-            {
-                "entity_type": "product",
-                "entity_external_id": product_id,
-                "media_role": "product_main_image",
-                "source_url": logical_payload.get("main_image_url"),
-                "file_token": logical_payload.get("main_image_file_token"),
-                "local_path": logical_payload.get("main_image_local_path"),
-                "object_key": logical_payload.get("main_image_object_key"),
-                "file_name": logical_payload.get("main_image_file_name"),
-                "mime_type": logical_payload.get("main_image_mime_type"),
-                "source_platform": "tiktok",
-                "bucket": logical_payload.get("main_image_bucket"),
-                "remote_uri": logical_payload.get("main_image_remote_uri"),
-            },
-            {
-                "entity_type": "product",
-                "entity_external_id": product_id,
-                "media_role": "product_page_screenshot",
-                "local_path": logical_payload.get("product_page_screenshot_local_path"),
-                "object_key": logical_payload.get("product_page_screenshot_object_key"),
-                "file_name": logical_payload.get("product_page_screenshot_file_name"),
-                "mime_type": logical_payload.get("product_page_screenshot_mime_type"),
-                "source_platform": "tiktok",
-                "bucket": logical_payload.get("product_page_screenshot_bucket"),
-                "remote_uri": logical_payload.get("product_page_screenshot_remote_uri"),
-            },
-            {
-                "entity_type": "product",
-                "entity_external_id": product_id,
-                "media_role": "fastmoss_detail_screenshot",
-                "local_path": fastmoss_payload.get("detail_page_screenshot_local_path"),
-                "object_key": fastmoss_payload.get("detail_page_screenshot_object_key"),
-                "file_name": fastmoss_payload.get("detail_page_screenshot_file_name"),
-                "mime_type": fastmoss_payload.get("detail_page_screenshot_mime_type"),
-                "source_platform": "fastmoss",
-                "bucket": fastmoss_payload.get("detail_page_screenshot_bucket"),
-                "remote_uri": fastmoss_payload.get("detail_page_screenshot_remote_uri"),
-            },
-        ]
-        main_image_source_url = _first_non_empty(logical_payload.get("main_image_url"))
-        media_assets.extend(
-            _media_assets_from_logical_images(
-                logical_payload.get("gallery_images"),
-                product_id=product_id,
-                media_role="product_gallery_image",
-                skip_source_urls={main_image_source_url} if main_image_source_url else set(),
-            )
-        )
-        media_assets.extend(
-            _media_assets_from_logical_images(
-                logical_payload.get("sku_images"),
-                product_id=product_id,
-                media_role="product_sku_image",
-            )
-        )
+        # This legacy ingestion entrypoint has no media materialization stage.
+        # Source URLs/tokens remain source descriptions and must not become Fact media.
+        media_assets: list[dict[str, Any]] = []
         persisted = self.ingest_api_response(
             source_platform="tiktok",
             source_endpoint=source_endpoint,
@@ -184,6 +168,21 @@ class TKFactIngestionService:
         raw_entity_links: Sequence[Mapping[str, Any]] | None = None,
         execution: Any | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        normalized_media_assets = [
+            self._media_asset_without_derived_remote_uri(media_spec)
+            for media_spec in (media_assets or [])
+        ]
+        invalid_media_indexes = [
+            index
+            for index, media_spec in enumerate(normalized_media_assets)
+            if not self._is_complete_durable_media_asset(media_spec)
+        ]
+        if invalid_media_indexes:
+            raise ValueError(
+                "Fact media requires bucket, object_key, content_digest, positive "
+                "size_bytes, and no local/source path; invalid indexes: "
+                f"{invalid_media_indexes}."
+            )
         persisted = _empty_ingestion_payload()
         source_platform = _first_non_empty(source_platform)
         source_endpoint = _first_non_empty(source_endpoint)
@@ -222,7 +221,7 @@ class TKFactIngestionService:
             videos=video_rows,
             persisted=persisted,
         )
-        self._ingest_media_assets(media_assets or [], persisted)
+        self._ingest_media_assets(normalized_media_assets, persisted)
         self._ingest_product_metric_snapshots(
             product_metric_snapshots or [],
             source_platform=source_platform,
@@ -567,7 +566,6 @@ class TKFactIngestionService:
                 bucket=_first_non_empty(media_spec.get("bucket")),
                 object_key=_first_non_empty(media_spec.get("object_key")),
                 content_digest=_first_non_empty(media_spec.get("content_digest")),
-                remote_uri=_first_non_empty(media_spec.get("remote_uri")),
                 size_bytes=int(media_spec.get("size_bytes") or 0),
                 file_name=_first_non_empty(media_spec.get("file_name")),
                 mime_type=_first_non_empty(media_spec.get("mime_type"))

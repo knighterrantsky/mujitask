@@ -14,6 +14,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     build_error,
     coerce_bool,
     coerce_mapping,
+    coerce_mapping_list,
     compact_dict,
     failed_result,
     fallback_required_result,
@@ -322,12 +323,14 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
-        coerce_mapping(media_result_payload.get("media_fact_bundle")),
-        coerce_mapping(fastmoss_payload.get("product_fact_bundle")),
+        _fact_bundle_without_media(coerce_mapping(fastmoss_payload.get("product_fact_bundle"))),
     )
-    fact_bundle["media_assets"] = _merge_media_assets_preserving_roles(
-        coerce_mapping(media_result_payload.get("media_fact_bundle")).get("media_assets"),
-    )
+    fact_bundle["media_assets"] = [
+        dict(asset)
+        for asset in coerce_mapping_list(
+            coerce_mapping(media_result_payload.get("media_fact_bundle")).get("media_assets")
+        )
+    ]
     fact_context = _child_context(
         context,
         handler_code="fact_bundle_upsert",
@@ -976,35 +979,13 @@ def _fact_bundle_without_media(fact_bundle: Mapping[str, Any]) -> dict[str, Any]
     return cleaned
 
 
-def _merge_media_assets_preserving_roles(*asset_lists: Any) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for asset_list in asset_lists:
-        for item in asset_list if isinstance(asset_list, list) else []:
-            if not isinstance(item, Mapping):
-                continue
-            record = dict(item)
-            asset_ref = first_non_empty(
-                record.get("asset_key"),
-                record.get("object_key"),
-                record.get("remote_uri"),
-                record.get("source_url"),
-                record.get("source_path"),
-                record.get("local_path"),
-                record.get("file_token"),
-            )
-            dedupe_key = f"{asset_ref}:{first_non_empty(record.get('media_role'))}" if asset_ref else ""
-            if not dedupe_key or dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            merged.append(record)
-    return merged
-
-
 def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in normalized_product_result.get("media_assets") if isinstance(normalized_product_result.get("media_assets"), list) else []:
+    source_assets = normalized_product_result.get("asset_refs")
+    if not isinstance(source_assets, list):
+        source_assets = normalized_product_result.get("media_assets")
+    for item in source_assets if isinstance(source_assets, list) else []:
         if not isinstance(item, Mapping):
             continue
         record = dict(item)

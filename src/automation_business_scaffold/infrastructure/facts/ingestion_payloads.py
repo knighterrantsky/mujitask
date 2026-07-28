@@ -42,7 +42,6 @@ def media_assets_from_logical_images(
                 "mime_type": first_non_empty(image.get("mime_type")),
                 "source_platform": first_non_empty(image.get("source_platform")) or "tiktok",
                 "bucket": first_non_empty(image.get("bucket")),
-                "remote_uri": first_non_empty(image.get("remote_uri")),
                 "metadata": metadata,
             }
         )
@@ -412,6 +411,7 @@ def facts_from_spec(spec: Mapping[str, Any], *, source_endpoint: str = "") -> di
                 "object_key",
                 "file_name",
                 "mime_type",
+                "remote_uri",
             }
         }
     if source_endpoint:

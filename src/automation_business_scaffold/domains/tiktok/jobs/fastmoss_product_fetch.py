@@ -22,6 +22,7 @@ FASTMOSS_PRODUCT_FETCH_JOB = JobDefinition(
     result_contract=contract(
         "fastmoss_product_fetch_result",
         optional_field("product_fact_bundle", "Normalized product/store metric bundle.", type_hint="dict[str, Any]"),
+        optional_field("media_refs", "Pre-materialization media source references.", type_hint="list[dict[str, Any]]"),
         optional_field("related_creators", "Related creator candidates for influencer fan-out.", type_hint="list[dict[str, Any]]"),
         optional_field("metrics_snapshot", "Observation snapshot for later fact upsert.", type_hint="dict[str, Any]"),
     ),

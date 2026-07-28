@@ -167,6 +167,10 @@ def _attachment_ref_items(value: Any) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     for item in values:
         if isinstance(item, Mapping):
+            file_token = _text(item.get("file_token"))
+            if file_token:
+                refs.append({"file_token": file_token})
+                continue
             bucket = _text(item.get("bucket"))
             object_key = _text(item.get("object_key"))
             content_digest = _text(item.get("content_digest"))
@@ -196,12 +200,17 @@ def _dedupe_ref_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     deduped: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for item in items:
+        file_token = _text(item.get("file_token"))
         key = (
-            _text(item.get("bucket")),
-            _text(item.get("object_key")),
-            _text(item.get("content_digest")),
+            ("file_token", file_token, "")
+            if file_token
+            else (
+                _text(item.get("bucket")),
+                _text(item.get("object_key")),
+                _text(item.get("content_digest")),
+            )
         )
-        if not all(key) or key in seen:
+        if (not file_token and not all(key)) or key in seen:
             continue
         seen.add(key)
         deduped.append(item)

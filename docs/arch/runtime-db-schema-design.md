@@ -134,7 +134,7 @@ Handler fallback 请求使用小型结构化 payload，不复制大对象，也�
 }
 ```
 
-`task_execution.result_json` 保存浏览器 handler 的小型结构化结果。只有机器契约显式允许的长期业务对象可以用完整 `bucket + object_key + content_digest` 引用交接；HTML、普通截图、页面/网络数据和其他浏览器诊断文件只留在本地并可由 `artifact_object` 建立短期排障索引，不得成为 Fact 或后续 Job 输入。FastMoss 风控解除产生的 cookie 直接持久化到 `fastmoss_session_cookie_cache`。browser result 写回原 job 的逻辑由 executor/runtime 层完成，原 job 只接收 normalized result、允许的长期业务对象引用、脱敏 cache metadata 或失败摘要。
+`task_execution.result_json` 保存浏览器 handler 的小型结构化结果。只有机器契约显式允许的长期业务对象可以用完整 `bucket + object_key + content_digest` 引用交接；派生 `remote_uri` 不得写入 Runtime result 或 artifact metadata，需要访问对象时才即时生成。HTML、普通截图、页面/网络数据和其他浏览器诊断文件只留在本地并可由 `artifact_object` 建立短期排障索引，不得成为 Fact 或后续 Job 输入。FastMoss 风控解除产生的 cookie 直接持久化到 `fastmoss_session_cookie_cache`。browser result 写回原 job 的逻辑由 executor/runtime 层完成，原 job 只接收 normalized result、允许的长期业务对象引用、脱敏 cache metadata 或失败摘要。
 
 ### 2.2 Runtime JSON 热路径存储边界
 
@@ -158,7 +158,7 @@ Runtime JSON 允许保存:
 
 - 生命周期和业务 handoff: `row_status`、`result_status`、`business_entity_key`、`source_record_id`、`product_id`、`creator_id`、`record_id`。
 - 小型统计: count、duration、step status、error type/code、少量失败样本。
-- 持久化引用: Fact DB entity/raw response id；以及仅对显式允许长期业务对象使用的完整 `bucket + object_key + content_digest` 和已验证的 byte size/content type。
+- 持久化引用: Fact DB entity/raw response id；以及仅对显式允许长期业务对象使用的完整 `bucket + object_key + content_digest` 和已验证的 byte size/content type。不得附带可由坐标重建的 `remote_uri`。
 - 本地诊断索引: `artifact_object` id 可以作为当次运行的排障线索，但不是持久业务引用、Fact 输入或跨进程可用性承诺。
 - 下游真正需要的 compact projection hints，例如一张主图的对象引用、少量展示字段或去重键。
 
@@ -347,12 +347,15 @@ Feishu 账号配置按以下优先级解析:
 | `kind` | 本地 artifact 类型，例如 screenshot、stdout、state；历史 `media` 值只作兼容读取 |
 | `bucket`, `object_key`, `etag`, `size`, `content_type` | 历史远端字段继续兼容读取；新本地 artifact 的 `object_key` 只表示本地相对名，`bucket/etag` 不构成远端持久引用 |
 | `source_path` | 当前主机本地来源路径，只用于排障 |
-| `metadata_json` | 扩展元数据；若冗余索引白名单长期业务对象，必须含对象类别与已验证 `content_digest`，且 `bucket/object_key` 命中配置 bucket 和类别 prefix |
+| `metadata_json` | 扩展元数据；若冗余索引白名单长期业务对象，必须含对象类别与已验证 `content_digest`，且 `bucket/object_key` 命中配置 bucket 和类别 prefix；禁止保存派生 `remote_uri` |
 | `created_at` | 创建时间 |
 
 关键索引:
 
 - `idx_artifact_object_run_id(run_id)`
+
+Runtime artifact repository 在 JSON 写入边界递归剥离 `remote_uri`。revision 3 不扫描或重写历史
+Runtime result/artifact JSON；任何读取方都不得依赖旧键，历史运行记录按既有 retention 淘汰。
 
 ### 3.8 `fastmoss_session_cookie_cache`
 

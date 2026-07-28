@@ -7,7 +7,6 @@ Create Date: 2026-07-23 12:00:00
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 
@@ -18,26 +17,26 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "tk_media_assets",
-        sa.Column("bucket", sa.Text(), nullable=False, server_default=""),
+    op.execute(
+        "ALTER TABLE tk_media_assets ADD COLUMN IF NOT EXISTS "
+        "bucket TEXT DEFAULT '' NOT NULL"
     )
-    op.add_column(
-        "tk_media_assets",
-        sa.Column("content_digest", sa.Text(), nullable=False, server_default=""),
+    op.execute(
+        "ALTER TABLE tk_media_assets ADD COLUMN IF NOT EXISTS "
+        "content_digest TEXT DEFAULT '' NOT NULL"
     )
-    op.add_column(
-        "tk_media_assets",
-        sa.Column("remote_uri", sa.Text(), nullable=False, server_default=""),
+    op.execute(
+        "ALTER TABLE tk_media_assets ADD COLUMN IF NOT EXISTS "
+        "remote_uri TEXT DEFAULT '' NOT NULL"
     )
-    op.add_column(
-        "tk_media_assets",
-        sa.Column("size_bytes", sa.BigInteger(), nullable=False, server_default="0"),
+    op.execute(
+        "ALTER TABLE tk_media_assets ADD COLUMN IF NOT EXISTS "
+        "size_bytes BIGINT DEFAULT 0 NOT NULL"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("tk_media_assets", "size_bytes")
-    op.drop_column("tk_media_assets", "remote_uri")
-    op.drop_column("tk_media_assets", "content_digest")
-    op.drop_column("tk_media_assets", "bucket")
+    op.execute("ALTER TABLE tk_media_assets DROP COLUMN IF EXISTS size_bytes")
+    op.execute("ALTER TABLE tk_media_assets DROP COLUMN IF EXISTS remote_uri")
+    op.execute("ALTER TABLE tk_media_assets DROP COLUMN IF EXISTS content_digest")
+    op.execute("ALTER TABLE tk_media_assets DROP COLUMN IF EXISTS bucket")

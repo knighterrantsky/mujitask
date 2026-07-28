@@ -745,7 +745,6 @@ def _capture_fastmoss_search_raw_response(
         return raw_path.resolve().as_uri(), [], []
     record = records[0]
     raw_response_ref = first_non_empty(
-        record.metadata.get("remote_uri"),
         record.metadata.get("local_uri"),
         Path(record.source_path).resolve().as_uri(),
     )

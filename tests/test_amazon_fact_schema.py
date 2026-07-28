@@ -7,6 +7,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
     AMAZON_FACT_INDEX_NAMES,
     AMAZON_FACT_SCHEMA_STATEMENTS,
     AMAZON_FACT_TABLES,
@@ -54,6 +55,8 @@ def test_amazon_schema_contract_declares_only_the_nine_governed_tables() -> None
     assert "create table if not exists tk_" not in schema_sql
     assert "alter table" not in schema_sql
     assert "foreign key" not in schema_sql
+    assert "remote_uri" not in schema_sql
+    assert AMAZON_FACT_SCHEMA_REVISION == "20260727_0009"
 
 
 def test_amazon_schema_freezes_business_and_dedupe_keys() -> None:
@@ -108,6 +111,19 @@ def test_migration_revision_is_additive_and_reversible() -> None:
     assert "AMAZON_FACT_TABLES" in migration
     assert "DROP INDEX IF EXISTS" in migration
     assert "DROP TABLE IF EXISTS" in migration
+
+
+def test_remote_uri_removal_migration_is_bounded_and_reversible() -> None:
+    migration_path = (
+        REPO_ROOT
+        / "alembic_fact/versions/20260727_0009_remove_amazon_media_remote_uri.py"
+    )
+    migration = migration_path.read_text(encoding="utf-8")
+
+    assert 'revision = "20260727_0009"' in migration
+    assert 'down_revision = "20260714_0007"' in migration
+    assert "DROP COLUMN IF EXISTS remote_uri" in migration
+    assert 'sa.Column("remote_uri", sa.Text(), nullable=False, server_default="")' in migration
 
 
 def test_local_bootstrap_creates_all_amazon_tables_and_indexes(

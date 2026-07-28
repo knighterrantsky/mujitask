@@ -370,6 +370,8 @@ def _result_payload(
     shop_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     media_refs = _contract_media_refs_from_fact_bundle(fact_bundle)
+    quality = _shop_fetch_quality(fact_bundle, shop_identity=shop_identity)
+    fact_bundle["media_assets"] = []
     return {
         "entities": _contract_entities_from_fact_bundle(fact_bundle),
         "relations": _contract_relations_from_fact_bundle(fact_bundle),
@@ -381,7 +383,7 @@ def _result_payload(
         ),
         "media_refs": media_refs,
         "raw_response_refs": _raw_response_refs_from_shop_bundle(fact_bundle, shop_identity=shop_identity),
-        "quality": _shop_fetch_quality(fact_bundle, shop_identity=shop_identity),
+        "quality": quality,
         "shop_fact_bundle": fact_bundle,
         "fact_bundle": fact_bundle,
     }

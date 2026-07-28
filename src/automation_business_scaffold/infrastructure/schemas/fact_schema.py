@@ -117,7 +117,6 @@ TK_FACT_SCHEMA_STATEMENTS = [
         bucket TEXT NOT NULL DEFAULT '',
         object_key TEXT NOT NULL DEFAULT '',
         content_digest TEXT NOT NULL DEFAULT '',
-        remote_uri TEXT NOT NULL DEFAULT '',
         size_bytes BIGINT NOT NULL DEFAULT 0,
         file_name TEXT NOT NULL DEFAULT '',
         mime_type TEXT NOT NULL DEFAULT '',

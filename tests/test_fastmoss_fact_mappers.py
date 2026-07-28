@@ -219,9 +219,12 @@ def test_fastmoss_product_fetch_live_fetch_collects_7_28_90_overview_windows(mon
     result = product_fetch_module.fastmoss_product_fetch_handler(
         _handler_context(
             "fastmoss_product_fetch",
-            {
-                "product_identity": {"product_id": "1732183618577011482"},
-                "fastmoss": {"live_fetch": True},
+                {
+                    "product_identity": {"product_id": "1732183618577011482"},
+                    "fastmoss": {
+                        "live_fetch": True,
+                        "cookie_cache_enabled": False,
+                    },
                 "fastmoss_overview_window_days": [7, 28, 90],
             },
         )
@@ -235,6 +238,8 @@ def test_fastmoss_product_fetch_live_fetch_collects_7_28_90_overview_windows(mon
     assert overview["sales_7d"] == "77"
     assert overview["sales_28d"] == "308"
     assert overview["sales_90d"] == "990"
+    assert result.result["product_fact_bundle"]["media_assets"] == []
+    assert isinstance(result.result["media_refs"], list)
     raw_overview_params = [
         item["request_params"]
         for item in result.result["product_fact_bundle"]["raw_api_responses"]
@@ -531,7 +536,6 @@ def test_business_layer_maps_accepted_rows_then_explicitly_ingests(runtime_db_ur
         shops=mapped["shops"],
         creators=mapped["creators"],
         videos=mapped["videos"],
-        media_assets=mapped["media_assets"],
         relations=mapped["relations"],
         raw_entity_links=mapped["raw_entity_links"],
     )

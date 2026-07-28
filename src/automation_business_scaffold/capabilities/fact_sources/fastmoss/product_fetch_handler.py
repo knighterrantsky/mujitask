@@ -31,6 +31,9 @@ from automation_business_scaffold.capabilities.fact_sources.fastmoss.mappers.fac
     map_fastmoss_goods_product_sku,
     map_fastmoss_goods_video,
 )
+from automation_business_scaffold.capabilities.fact_sources.fastmoss.contract_mapping import (
+    _contract_media_refs_from_fact_bundle,
+)
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossAuthError,
     FastMossHTTPError,
@@ -142,15 +145,18 @@ def fastmoss_product_fetch_handler(context: HandlerContext) -> HandlerResult:
             summary={"detail_level": detail_level, "product_business_key": product_business_key(identity)},
         )
 
+    media_refs = _contract_media_refs_from_fact_bundle(fact_bundle)
+    fact_bundle["media_assets"] = []
     summary = {
         "detail_level": detail_level,
         "product_business_key": product_business_key(identity),
         "entity_count": len(bundle_entity_keys(fact_bundle)),
         "related_creator_count": len(related_creators),
-        "media_asset_count": len(coerce_mapping_list(fact_bundle.get("media_assets"))),
+        "media_asset_count": len(media_refs),
     }
     result = {
         "product_fact_bundle": fact_bundle,
+        "media_refs": media_refs,
         "related_creators": related_creators,
         "metrics_snapshot": metrics_snapshot,
     }

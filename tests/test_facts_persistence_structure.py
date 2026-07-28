@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from automation_business_scaffold.infrastructure.facts.fact_payload_views import extract_fact_payloads
 from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import TKFactIngestionService
 
@@ -33,6 +35,28 @@ class _FakeFactStore:
         row = {"raw_link_id": f"raw-link-{len(self.raw_links) + 1}", **kwargs}
         self.raw_links.append(row)
         return row
+
+
+def test_fact_ingestion_rejects_raw_media_before_any_fact_write() -> None:
+    fact_store = _FakeFactStore()
+
+    with pytest.raises(ValueError, match="Fact media requires bucket"):
+        TKFactIngestionService(fact_store=fact_store).ingest_api_response(
+            source_platform="fastmoss",
+            source_endpoint="goods.detail",
+            products=[{"product_id": "p-1", "title": "Demo product"}],
+            media_assets=[
+                {
+                    "entity_type": "product",
+                    "entity_external_id": "p-1",
+                    "media_role": "product_main_image",
+                    "source_url": "https://example.com/raw.webp",
+                }
+            ],
+        )
+
+    assert fact_store.raw_rows == []
+    assert fact_store.products == {}
 
 
 def test_fact_ingestion_success_path_writes_product_and_raw_link() -> None:

@@ -46,7 +46,7 @@ from automation_business_scaffold.infrastructure.rate_limit import (
     resolve_api_request_pacer_config,
 )
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 HANDLER_CODE = "media_asset_sync"
 CONTRACT = API_HANDLER_CONTRACTS[HANDLER_CODE]
@@ -442,13 +442,13 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
         for record in records:
             base_asset = local_assets_by_path.get(record.source_path, {})
             synced_asset = dict(base_asset)
-            remote_uri = coerce_str(record.metadata.get("remote_uri"))
+            storage_backend = coerce_str(record.metadata.get("storage_backend")).lower()
+            durable_uploaded = storage_backend not in {"", "local"}
             synced_asset.update(
                 {
-                    "sync_state": "uploaded" if remote_uri else "linked_local",
+                    "sync_state": "uploaded" if durable_uploaded else "linked_local",
                     "bucket": record.bucket,
                     "object_key": record.object_key,
-                    "remote_uri": remote_uri,
                     "mime_type": record.content_type,
                     "source_path": record.source_path,
                     "artifact_id": record.artifact_id,
@@ -460,7 +460,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
                     "size_bytes": record.size,
                 }
             )
-            if remote_uri and coerce_str(
+            if durable_uploaded and coerce_str(
                 synced_asset.get("content_digest")
             ):
                 _verify_uploaded_media_asset(
@@ -480,6 +480,7 @@ def media_asset_sync_handler(context: HandlerContext) -> HandlerResult:
             if existing_asset:
                 synced_assets.append(_reused_in_run_media_asset(duplicate_asset, existing_asset))
 
+    synced_assets = [_without_derived_remote_uri(asset) for asset in synced_assets]
     media_bundle = new_fact_bundle()
     media_bundle["media_assets"] = [
         asset for asset in synced_assets if _is_complete_durable_media_asset(asset)
@@ -617,7 +618,7 @@ def _find_reusable_media_asset(
         return {}
     if not cached:
         return {}
-    if coerce_str(cached.get("object_key")) or coerce_str(cached.get("remote_uri")):
+    if coerce_str(cached.get("object_key")):
         return cached
     return {}
 
@@ -640,7 +641,6 @@ def _reused_media_asset(
             "source_path": "",
             "bucket": cached.get("bucket"),
             "object_key": first_non_empty(cached.get("object_key"), asset.get("object_key")),
-            "remote_uri": cached.get("remote_uri"),
             "file_name": first_non_empty(cached.get("file_name"), asset.get("file_name")),
             "mime_type": first_non_empty(cached.get("mime_type"), asset.get("mime_type")),
             "content_digest": cached.get("content_digest"),
@@ -666,7 +666,6 @@ def _reused_in_run_media_asset(asset: dict[str, Any], existing: dict[str, Any]) 
             "source_path": first_non_empty(existing.get("source_path"), asset.get("source_path")),
             "object_key": existing.get("object_key"),
             "bucket": existing.get("bucket"),
-            "remote_uri": existing.get("remote_uri"),
             "file_name": first_non_empty(existing.get("file_name"), asset.get("file_name")),
             "mime_type": first_non_empty(existing.get("mime_type"), asset.get("mime_type")),
             "content_digest": existing.get("content_digest"),
@@ -903,7 +902,6 @@ def _normalize_media_asset(
             "file_name": asset.get("file_name"),
             "mime_type": asset.get("mime_type"),
             "bucket": asset.get("bucket"),
-            "remote_uri": asset.get("remote_uri"),
             "content_digest": asset.get("content_digest"),
             "source_platform": source_platform,
             "marketplace_code": marketplace_code,
@@ -1184,7 +1182,6 @@ def _validated_amazon_cached_asset(
         return {}
     bucket = coerce_str(cached.get("bucket"))
     object_key = coerce_str(cached.get("object_key"))
-    remote_uri = coerce_str(cached.get("remote_uri"))
     content_digest = coerce_str(cached.get("content_digest")).lower()
     size_bytes = _coerce_int(cached.get("size_bytes"), default=0)
     required_values = (
@@ -1193,7 +1190,6 @@ def _validated_amazon_cached_asset(
         cached.get("source_url"),
         bucket,
         object_key,
-        remote_uri,
         content_digest,
         cached.get("mime_type"),
     )
@@ -1211,9 +1207,6 @@ def _validated_amazon_cached_asset(
         return {}
     try:
         bytes.fromhex(content_digest)
-        expected_uri = artifact_store.build_uri(bucket=bucket, object_key=object_key)
-        if remote_uri != expected_uri:
-            return {}
         stored_bytes = artifact_store.read_bytes(
             bucket=bucket,
             object_key=object_key,
@@ -1226,6 +1219,20 @@ def _validated_amazon_cached_asset(
     if hashlib.sha256(stored_bytes).hexdigest() != content_digest:
         return {}
     return cached
+
+
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, list):
+        return [_without_derived_remote_uri(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_derived_remote_uri(item) for item in value)
+    return value
 
 
 def _verify_uploaded_media_asset(

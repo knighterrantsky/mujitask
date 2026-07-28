@@ -9,6 +9,7 @@ import pytest
 import automation_business_scaffold.capabilities.fact_sources.fastmoss.creator_fetch_handler as creator_fetch_impl
 import automation_business_scaffold.capabilities.fact_sources.fastmoss.product_fetch_handler as product_fetch_impl
 import automation_business_scaffold.capabilities.input_sources.feishu.table_common as feishu_common
+import automation_business_scaffold.capabilities.media.asset_sync_handler as asset_sync_impl
 from automation_business_scaffold.capabilities.input_sources.feishu.write_payloads import map_write_records
 import automation_business_scaffold.control_plane.executor.runner as runtime_orchestrator
 from automation_business_scaffold.domains.tiktok.flows.influencer_sync import _influencer_pool_write_payload
@@ -21,6 +22,7 @@ from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.c
 from automation_business_scaffold.domains.tiktok.tasks.sync_tk_influencer_pool import (
     SyncTKInfluencerPoolTask,
 )
+from automation_business_scaffold.infrastructure.artifacts.artifact_store import StoredArtifact
 from automation_business_scaffold.infrastructure.facts.tk_fact_store import TKFactStore
 
 TASK_CODE = "sync_tk_influencer_pool"
@@ -35,6 +37,60 @@ PRODUCT_ID = "1729384756012345678"
 PRODUCT_URL = f"https://www.tiktok.com/shop/pdp/{PRODUCT_ID}"
 CREATOR_ID = "roxy_creator"
 CREATOR_UID = "7094679250578015274"
+
+
+class _FakeMediaResponse:
+    headers = {"Content-Type": "image/png"}
+
+    def __enter__(self) -> "_FakeMediaResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, _size: int = -1) -> bytes:
+        return b"durable-avatar-bytes"
+
+
+class _FakeDurableArtifactStore:
+    provider_code = "minio"
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+
+    def upload_file(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        local_path: Any,
+        content_type: str,
+        metadata: Any = None,
+    ) -> StoredArtifact:
+        payload = local_path.read_bytes()
+        self.objects[(bucket, object_key)] = payload
+        return StoredArtifact(
+            bucket=bucket,
+            object_key=object_key,
+            etag="test-etag",
+            size=len(payload),
+            content_type=content_type,
+            uri=self.build_uri(bucket=bucket, object_key=object_key),
+            metadata={"storage_backend": self.provider_code, **dict(metadata or {})},
+        )
+
+    def read_bytes(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        payload = self.objects[(bucket, object_key)]
+        return payload if max_bytes is None else payload[:max_bytes]
+
+    def build_uri(self, *, bucket: str, object_key: str) -> str:
+        return f"s3://{bucket}/{object_key}"
 
 
 def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, object]:
@@ -57,6 +113,7 @@ def _runtime_params(runtime_db_url: str, **overrides: object) -> dict[str, objec
 
 
 def _configure_project_runtime_env(monkeypatch: pytest.MonkeyPatch, runtime_db_url: str) -> None:
+    monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("TK_FACT_DB_URL", runtime_db_url)
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_STORE_PROVIDER", "minio")
     monkeypatch.setenv("BUSINESS_EXECUTION_CONTROL_ARTIFACT_BUCKET", "pytest-runtime-artifacts")
@@ -160,7 +217,10 @@ def test_influencer_pool_write_payload_merges_product_images_by_product_id() -> 
     mapped_records = map_write_records(write_payload)
 
     assert mapped_records[0]["upsert_key"] == {"field": "达人ID", "value": CREATOR_ID}
-    assert "带货商品图" not in mapped_records[0]["fields"]
+    assert mapped_records[0]["fields"]["带货商品图"] == [
+        {"file_token": "tok-product-a"},
+        {"file_token": "tok-product-b"},
+    ]
     assert mapped_records[0]["fields"]["关联节日"] == ["毕业季", "夏季"]
     assert mapped_records[0]["fields"]["关联商品销量"] == "135"
     assert mapped_records[0]["update_accumulate_fields"] == {"关联商品销量": "135"}
@@ -209,6 +269,12 @@ def test_influencer_pool_write_payload_uses_created_creator_product_relations_as
 
 
 def _bind_fake_business_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    artifact_store = _FakeDurableArtifactStore()
+
+    def fake_media_urlopen(_request: Any, timeout: int) -> _FakeMediaResponse:
+        assert timeout > 0
+        return _FakeMediaResponse()
+
     state: dict[str, Any] = {
         "tables": {
             (SOURCE_APP_TOKEN, SOURCE_TABLE_ID): [
@@ -476,6 +542,16 @@ def _bind_fake_business_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, An
     monkeypatch.setattr(feishu_common, "FeishuBitableClient", FakeFeishuBitableClient)
     monkeypatch.setattr(product_fetch_impl, "FastMossHTTPSession", FakeFastMossHTTPSession)
     monkeypatch.setattr(creator_fetch_impl, "FastMossHTTPSession", FakeFastMossHTTPSession)
+    monkeypatch.setattr(
+        asset_sync_impl,
+        "urlopen",
+        fake_media_urlopen,
+    )
+    monkeypatch.setattr(
+        asset_sync_impl,
+        "create_store_from_settings",
+        lambda _settings: artifact_store,
+    )
     monkeypatch.setattr(runtime_orchestrator, "API_HANDLER_REGISTRY", None, raising=False)
     return state
 
@@ -555,6 +631,15 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
         unique_id=CREATOR_ID,
         product_id=PRODUCT_ID,
     )
+    avatar_assets = fact_store._get_media_assets_by_column(  # noqa: SLF001
+        "source_url",
+        "https://example.com/avatar.png",
+    )
+    assert len(avatar_assets) == 1
+    assert avatar_assets[0]["bucket"] == "pytest-runtime-artifacts"
+    assert avatar_assets[0]["object_key"]
+    assert len(avatar_assets[0]["content_digest"]) == 64
+    assert "remote_uri" not in avatar_assets[0]
 
     pool_records = feishu_state["tables"][(POOL_APP_TOKEN, POOL_TABLE_ID)]
     assert len(pool_records) == 1
@@ -569,7 +654,11 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
     assert pool_fields["合作店铺"] == ["Graduation Shop"]
     assert pool_fields["达人联系方式"] == "hello@example.com"
     assert pool_fields["带货商品图"] == [{"file_token": "tok-product-image"}]
-    assert pool_fields["达人头像"] == [{"url": "https://example.com/avatar.png"}]
+    assert len(pool_fields["达人头像"]) == 1
+    assert pool_fields["达人头像"][0]["bucket"] == "pytest-runtime-artifacts"
+    assert pool_fields["达人头像"][0]["object_key"]
+    assert len(pool_fields["达人头像"][0]["content_digest"]) == 64
+    assert "remote_uri" not in pool_fields["达人头像"][0]
 
     writeback_dispatch = runtime_orchestrator.execute_executor_once(runtime_params)
     assert writeback_dispatch["current_stage"] == WRITEBACK_STAGE_CODE

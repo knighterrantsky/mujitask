@@ -10,13 +10,17 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_sync import 
     ArtifactFileSpec,
     sync_artifact_specs,
 )
+from automation_business_scaffold.infrastructure.runtime.repositories.artifact_object_repo import (
+    _without_derived_remote_uri,
+)
 
 
 class _RecordingStore:
     provider_code = "minio"
 
-    def __init__(self) -> None:
+    def __init__(self, *, returned_metadata: dict[str, object] | None = None) -> None:
         self.uploads: list[tuple[str, str, bytes]] = []
+        self.returned_metadata = returned_metadata
 
     def upload_file(
         self,
@@ -36,7 +40,7 @@ class _RecordingStore:
             size=len(payload),
             content_type=content_type,
             uri=f"s3://{bucket}/{object_key}",
-            metadata=metadata,
+            metadata=metadata if self.returned_metadata is None else self.returned_metadata,
         )
 
 
@@ -110,6 +114,96 @@ def test_explicit_business_object_key_is_the_only_minio_admission_path(
         )
     ]
     assert records[0].metadata["storage_backend"] == "minio"
-    assert records[0].metadata["remote_uri"] == (
-        "s3://business-assets/mujitask/product-media/123/main.jpg"
+    assert "remote_uri" not in records[0].metadata
+
+
+def test_artifact_sync_recursively_strips_derived_remote_uri_from_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.jpg"
+    path.write_bytes(b"business image")
+    store = _RecordingStore(
+        returned_metadata={
+            "remote_uri": "s3://business-assets/uploaded",
+            "uploaded": {
+                "items": [
+                    {
+                        "remote_uri": "s3://business-assets/uploaded-list",
+                        "content_digest": "a" * 64,
+                    },
+                    (
+                        {
+                            "remote_uri": "s3://business-assets/uploaded-tuple",
+                            "bucket": "business-assets",
+                        },
+                    ),
+                ]
+            },
+        }
     )
+
+    records, _ = sync_artifact_specs(
+        run_id="run-1",
+        request_id="request-1",
+        execution_id="execution-1",
+        artifact_root=tmp_path,
+        artifact_bucket="business-assets",
+        artifact_object_prefix="mujitask",
+        specs=[
+            ArtifactFileSpec(
+                kind="product_main_image",
+                step_id="media_asset_sync",
+                relative_name="assets/main.jpg",
+                path=path,
+                content_type="image/jpeg",
+                object_key="product-media/123/main.jpg",
+                metadata={
+                    "remote_uri": "s3://business-assets/spec",
+                    "spec": {
+                        "items": [
+                            {
+                                "remote_uri": "s3://business-assets/spec-list",
+                                "object_key": "product-media/123/main.jpg",
+                            },
+                            (
+                                {
+                                    "remote_uri": "s3://business-assets/spec-tuple",
+                                    "bucket": "business-assets",
+                                },
+                            ),
+                        ]
+                    },
+                },
+            )
+        ],
+        artifact_store=store,
+        created_at=1.0,
+    )
+
+    assert records[0].metadata["spec"] == {
+        "items": [
+            {"object_key": "product-media/123/main.jpg"},
+            ({"bucket": "business-assets"},),
+        ]
+    }
+    assert records[0].metadata["uploaded"] == {
+        "items": [
+            {"content_digest": "a" * 64},
+            ({"bucket": "business-assets"},),
+        ]
+    }
+    assert "remote_uri" not in records[0].metadata
+
+
+def test_runtime_artifact_index_recursively_strips_derived_remote_uri() -> None:
+    assert _without_derived_remote_uri(
+        {
+            "remote_uri": "s3://bucket/top",
+            "nested": [
+                {
+                    "remote_uri": "s3://bucket/nested",
+                    "content_digest": "a" * 64,
+                }
+            ],
+        }
+    ) == {"nested": [{"content_digest": "a" * 64}]}

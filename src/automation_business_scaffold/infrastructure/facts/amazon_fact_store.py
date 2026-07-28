@@ -36,10 +36,22 @@ def _required_sha256_digest(value: Any, field_name: str) -> str:
     return digest
 
 
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_derived_remote_uri(item) for item in value]
+    return value
+
+
 def _canonical_json(value: Any, *, default: Any) -> str:
     payload = default if value is None else value
     return json.dumps(
-        payload,
+        _without_derived_remote_uri(payload),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -643,7 +655,6 @@ class AmazonFactStore:
         content_digest: str = "",
         bucket: str = "",
         object_key: str = "",
-        remote_uri: str = "",
         file_name: str = "",
         mime_type: str = "",
         size_bytes: Any = 0,
@@ -671,7 +682,6 @@ class AmazonFactStore:
             "content_digest": normalized_content_digest,
             "bucket": _clean_text(bucket),
             "object_key": _clean_text(object_key),
-            "remote_uri": _clean_text(remote_uri),
             "file_name": _clean_text(file_name),
             "mime_type": _clean_text(mime_type),
             "size_bytes": max(0, int(size_bytes or 0)),
@@ -686,11 +696,11 @@ class AmazonFactStore:
             """
             INSERT INTO amazon_media_assets (
                 asset_id, asset_key, source_url, source_url_digest, content_digest, bucket,
-                object_key, remote_uri, file_name, mime_type, size_bytes, metadata_json,
+                object_key, file_name, mime_type, size_bytes, metadata_json,
                 first_seen_at, last_seen_at, created_at, updated_at
             ) VALUES (
                 :asset_id, :asset_key, :source_url, :source_url_digest, :content_digest, :bucket,
-                :object_key, :remote_uri, :file_name, :mime_type, :size_bytes, :metadata_json,
+                :object_key, :file_name, :mime_type, :size_bytes, :metadata_json,
                 :first_seen_at, :last_seen_at, :created_at, :updated_at
             )
             ON CONFLICT (asset_key) DO UPDATE SET
@@ -709,9 +719,6 @@ class AmazonFactStore:
                 object_key = CASE WHEN EXCLUDED.object_key <> ''
                     AND EXCLUDED.last_seen_at >= amazon_media_assets.last_seen_at
                     THEN EXCLUDED.object_key ELSE amazon_media_assets.object_key END,
-                remote_uri = CASE WHEN EXCLUDED.remote_uri <> ''
-                    AND EXCLUDED.last_seen_at >= amazon_media_assets.last_seen_at
-                    THEN EXCLUDED.remote_uri ELSE amazon_media_assets.remote_uri END,
                 file_name = CASE WHEN EXCLUDED.file_name <> ''
                     AND EXCLUDED.last_seen_at >= amazon_media_assets.last_seen_at
                     THEN EXCLUDED.file_name ELSE amazon_media_assets.file_name END,

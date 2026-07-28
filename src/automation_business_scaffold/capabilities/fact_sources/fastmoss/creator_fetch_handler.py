@@ -168,6 +168,7 @@ def fastmoss_creator_fetch_handler(context: HandlerContext) -> HandlerResult:
         creator_identity=creator_identity,
         media_refs=media_refs,
     )
+    fact_bundle["media_assets"] = []
     product_relations = [
         relation for relation in relations if relation.get("relation_type") == "creator_promotes_product"
     ]

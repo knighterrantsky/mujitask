@@ -47,9 +47,11 @@ def test_alembic_upgrade_creates_tk_fact_tables_and_downgrade_restores_legacy_en
         "bucket",
         "object_key",
         "content_digest",
-        "remote_uri",
         "size_bytes",
     } <= _list_postgres_columns(runtime_db_url, "tk_media_assets")
+    assert "remote_uri" not in _list_postgres_columns(
+        runtime_db_url, "tk_media_assets"
+    )
     assert "idx_tk_video_product_unique" in _list_postgres_indexes(runtime_db_url)
 
     command.downgrade(config, "20260412_0001")
@@ -73,10 +75,11 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(runtime_db
         "bucket": "business-assets",
         "object_key": "product-media/1729440407432826887/main.png",
         "content_digest": "a" * 64,
-        "remote_uri": (
-            "s3://business-assets/product-media/1729440407432826887/main.png"
-        ),
         "size_bytes": 128,
+        "metadata": {
+            "remote_uri": "s3://business-assets/product-media/1729440407432826887/main.png",
+            "nested": {"remote_uri": "must-not-persist", "kept": True},
+        },
     }
     asset_a = fact_store.upsert_media_asset(**media_coordinates)
     asset_b = fact_store.upsert_media_asset(**media_coordinates)
@@ -112,6 +115,7 @@ def test_tk_fact_store_upserts_entities_media_relations_and_raw_links(runtime_db
     assert product_a["id"] == product_b["id"]
     assert product_b["title"] == "Rose Bear Updated"
     assert asset_a["asset_id"] == asset_b["asset_id"]
+    assert asset_a["metadata"] == {"nested": {"kept": True}}
     assert media_link["entity_external_id"] == "1729440407432826887"
     assert product_shop["product_id"] == "1729440407432826887"
     assert creator_product["sold_count"] == 88
@@ -272,7 +276,6 @@ def test_tk_fact_store_ignores_incomplete_media_and_returns_durable_reference(
         bucket="business-assets",
         object_key="product-media/123/main.png",
         content_digest="b" * 64,
-        remote_uri="s3://business-assets/product-media/123/main.png",
         size_bytes=256,
         mime_type="image/png",
     )
@@ -284,6 +287,7 @@ def test_tk_fact_store_ignores_incomplete_media_and_returns_durable_reference(
     assert found["bucket"] == "business-assets"
     assert found["object_key"] == "product-media/123/main.png"
     assert found["content_digest"] == "b" * 64
+    assert "remote_uri" not in found
 
 
 def test_tk_fact_store_records_product_window_snapshots(runtime_db_url):
@@ -479,6 +483,11 @@ def test_persist_influencer_fact_bundle_writes_creator_product_shop_and_media(ru
                 "media_role": "avatar",
                 "source_url": "https://example.com/avatar.png",
                 "source_platform": "fastmoss",
+                "bucket": "business-assets",
+                "object_key": "creator-media/creator-1/avatar.png",
+                "content_digest": "a" * 64,
+                "size_bytes": 128,
+                "mime_type": "image/png",
             },
             {
                 "entity_type": "product",
@@ -486,6 +495,11 @@ def test_persist_influencer_fact_bundle_writes_creator_product_shop_and_media(ru
                 "media_role": "product_main_image",
                 "file_token": "file-token-main",
                 "source_platform": "feishu",
+                "bucket": "business-assets",
+                "object_key": "product-media/1729440407432826887/main.png",
+                "content_digest": "b" * 64,
+                "size_bytes": 256,
+                "mime_type": "image/png",
             },
         ],
         relations={
@@ -558,6 +572,10 @@ def test_tk_fact_ingestion_service_links_fastmoss_api_entities_and_relations(run
                 "media_role": "video_cover",
                 "source_url": "https://example.com/video-cover.png",
                 "source_platform": "fastmoss",
+                "bucket": "business-assets",
+                "object_key": "fastmoss/video/7623147954093690143/cover.png",
+                "content_digest": "c" * 64,
+                "size_bytes": 512,
             }
         ],
         video_metric_snapshots=[

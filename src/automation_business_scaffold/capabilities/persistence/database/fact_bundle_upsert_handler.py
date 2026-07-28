@@ -33,6 +33,10 @@ def fact_bundle_upsert_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
     request_payload = coerce_mapping(payload.get("request_payload"))
     merged_bundle = merge_fact_bundles(coerce_mapping(payload.get("fact_bundle")))
+    merged_bundle["media_assets"] = [
+        _media_asset_without_derived_remote_uri(asset)
+        for asset in coerce_mapping_list(merged_bundle.get("media_assets"))
+    ]
     invalid_media_indexes = [
         index
         for index, asset in enumerate(
@@ -299,7 +303,6 @@ def _persist_fact_bundle(fact_bundle: dict[str, Any], *, fact_db_url: str) -> di
             bucket=coerce_str(asset.get("bucket")),
             object_key=coerce_str(asset.get("object_key")),
             content_digest=coerce_str(asset.get("content_digest")),
-            remote_uri=coerce_str(asset.get("remote_uri")),
             size_bytes=size_bytes,
             file_name=coerce_str(asset.get("file_name")),
             mime_type=coerce_str(asset.get("mime_type")),
@@ -636,6 +639,23 @@ def _is_complete_durable_media_asset(asset: dict[str, Any]) -> bool:
         and _positive_int(asset.get("size_bytes")) > 0
         and not first_non_empty(asset.get("local_path"), asset.get("source_path"))
     )
+
+
+def _media_asset_without_derived_remote_uri(asset: dict[str, Any]) -> dict[str, Any]:
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: clean(nested_value)
+                for key, nested_value in value.items()
+                if key != "remote_uri"
+            }
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(clean(item) for item in value)
+        return value
+
+    return clean(asset)
 
 
 def _positive_int(value: Any) -> int:

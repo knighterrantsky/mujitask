@@ -155,7 +155,7 @@ def _build_tiktok_normalized_product_result(
             )
         )
     fact_bundle["product_skus"] = product_skus
-    fact_bundle["media_assets"] = media_assets
+    fact_bundle["media_assets"] = []
     if raw:
         fact_bundle["raw_api_responses"].append(
             {
@@ -179,6 +179,7 @@ def _build_tiktok_normalized_product_result(
         "collection_path": collection_path,
         "product": product,
         "product_skus": product_skus,
+        "asset_refs": media_assets,
         "media_assets": media_assets,
         "fact_bundle": fact_bundle,
         "artifact_refs": coerce_mapping_list(raw.get("artifact_refs")),
@@ -412,7 +413,6 @@ def _normalize_media_asset(asset: dict[str, Any], *, fallback_product_id: str = 
             "file_name": asset.get("file_name"),
             "mime_type": asset.get("mime_type"),
             "bucket": asset.get("bucket"),
-            "remote_uri": asset.get("remote_uri"),
             "source_platform": first_non_empty(asset.get("source_platform"), "tiktok"),
             "metadata": coerce_mapping(asset.get("metadata")),
         }

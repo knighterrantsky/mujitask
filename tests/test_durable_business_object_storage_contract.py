@@ -5,6 +5,14 @@ from typing import Any
 
 import yaml
 
+from automation_business_scaffold.infrastructure.schemas.amazon_fact_schema import (
+    AMAZON_FACT_SCHEMA_REVISION,
+    AMAZON_FACT_SCHEMA_STATEMENTS,
+)
+from automation_business_scaffold.infrastructure.schemas.fact_schema import (
+    TK_FACT_SCHEMA_STATEMENTS,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STORAGE_CONTRACT = (
@@ -22,7 +30,7 @@ def test_minio_is_default_deny_for_long_term_business_objects_only() -> None:
     contract = _load_yaml(STORAGE_CONTRACT)
 
     assert contract["status"] == "active_contract"
-    assert contract["contract_revision"] == 2
+    assert contract["contract_revision"] == 3
     assert contract["implementation_status"] == "complete"
     assert contract["implementation_gaps"] == []
     assert contract["scope"] == {
@@ -57,6 +65,51 @@ def test_durable_reference_never_depends_on_local_temp_paths() -> None:
     )
     assert durable_ref["local_first_or_fallback_read"] == "forbidden"
     assert durable_ref["infer_missing_bucket_from_global_config"] == "forbidden"
+    assert "remote_uri" not in durable_ref["optional_verified_metadata"]
+    assert durable_ref["derived_runtime_fields"]["remote_uri"] == {
+        "derivation": "artifact_store_build_uri_from_bucket_and_object_key",
+        "derivation_time": "immediately_before_object_access_or_external_link_generation",
+        "database_persistence": "forbidden",
+        "persisted_handler_or_runtime_envelope": "forbidden",
+        "cache_identity_or_validity_check": "forbidden",
+    }
+    assert contract["runtime_artifact_policy"]["derived_remote_uri_persistence"] == (
+        "forbidden"
+    )
+
+
+def test_media_fact_collection_replaces_raw_descriptions_after_materialization() -> None:
+    contract = _load_yaml(STORAGE_CONTRACT)
+    materialization = contract["media_fact_materialization"]
+    product_contract = _load_yaml(
+        REPO_ROOT / "contracts" / "facts" / "product-fact-collection.yaml"
+    )
+
+    assert materialization["source_description_field"] == "asset_refs"
+    assert materialization["persisted_collection"] == "fact_bundle.media_assets"
+    assert materialization["persisted_collection_semantics"] == (
+        "final_verified_materialized_assets_only"
+    )
+    assert materialization["materialization_boundary_rule"] == (
+        "replace_source_media_descriptions_with_verified_materialized_assets"
+    )
+    assert materialization["raw_and_durable_array_merge"] == "forbidden"
+    assert materialization["failed_or_incomplete_materialization"] == (
+        "reject_without_restoring_raw_media_descriptions"
+    )
+    assert {
+        "fact_media_raw_and_materialized_assets_merged",
+        "derived_remote_uri_persisted_or_used_as_cache_identity",
+    } <= set(product_contract["forbidden_patterns"])
+
+
+def test_media_fact_schemas_do_not_persist_derived_remote_uri() -> None:
+    tk_schema_sql = "\n".join(TK_FACT_SCHEMA_STATEMENTS).lower()
+    amazon_schema_sql = "\n".join(AMAZON_FACT_SCHEMA_STATEMENTS).lower()
+
+    assert "remote_uri" not in tk_schema_sql
+    assert "remote_uri" not in amazon_schema_sql
+    assert AMAZON_FACT_SCHEMA_REVISION == "20260727_0009"
 
 
 def test_cutover_rejects_legacy_repair_backfill_and_mixed_workers() -> None:
@@ -64,16 +117,25 @@ def test_cutover_rejects_legacy_repair_backfill_and_mixed_workers() -> None:
     cutover = contract["cutover_policy"]
 
     assert cutover["mode"] == "hard_cutover_without_legacy_data_compatibility"
+    assert cutover["enforcement_scope"] == "all_writes_after_contract_revision_3"
     assert cutover["incomplete_reference_rule"] == (
         "invalid_cache_miss_and_rematerialize_from_source"
     )
     assert cutover["bucket_inference"] == "forbidden"
     assert cutover["legacy_repair_or_backfill"] == "forbidden"
     assert cutover["legacy_data_migration"] == "forbidden"
+    assert cutover["historical_runtime_or_fact_json_remote_uri"] == (
+        "ignore_until_normal_retention_without_read_dependency"
+    )
     assert cutover["mixed_version_workers"] == "forbidden"
+    assert cutover["removed_derived_fact_columns"] == [
+        "tk_media_assets.remote_uri",
+        "amazon_media_assets.remote_uri",
+    ]
     assert cutover["deployment_sequence"] == [
         "stop_all_old_workers",
-        "deploy_contract_revision_2",
+        "run_runtime_and_fact_migration_20260727_0009",
+        "deploy_contract_revision_3",
         "start_single_version_workers",
     ]
     assert "compatibility" not in contract
@@ -197,6 +259,9 @@ def test_storage_docs_and_platform_contract_reference_the_policy() -> None:
     assert "默认拒绝" in storage_doc
     assert "`bucket + object_key + content_digest`" in storage_doc
     assert "local_path" in storage_doc
+    assert "`media_assets` 替换语义" in storage_doc
+    assert "Fact DB、Runtime DB metadata 和持久化" in storage_doc
+    assert "handler result 都不保存该值" in storage_doc
     assert product_contract["durable_object_storage_contract"] == (
         "contracts/facts/durable-business-object-storage.yaml"
     )
@@ -275,6 +340,39 @@ def test_hard_cutover_implementation_has_a_bounded_completion_gate() -> None:
     }.issubset(feature["done_gate"]["tests"])
     assert "src/automation_business_scaffold/agent.py" in feature["forbidden_paths"]
     assert "src/automation_business_scaffold/registry.py" in feature["forbidden_paths"]
+
+
+def test_media_reference_consistency_has_a_bounded_completion_gate() -> None:
+    roadmap = _load_yaml(
+        REPO_ROOT / "contracts" / "harness" / "code-roadmap.yaml"
+    )
+    feature = {
+        item["feature_code"]: item for item in roadmap["features"]
+    }["durable_media_reference_consistency"]
+
+    assert feature["status"] == "complete"
+    assert feature["feature_type"] == "architecture_implementation"
+    assert feature["requires_architecture_delta_gate"] is True
+    assert {
+        "contracts/facts/durable-business-object-storage.yaml",
+        "contracts/facts/product-fact-collection.yaml",
+        "docs/arch/storage-architecture-design.md",
+        "docs/arch/fact-db-schema-design.md",
+    } <= set(feature["source_contracts"])
+    assert {
+        "alembic/versions/20260727_0009_remove_tk_media_remote_uri.py",
+        "alembic_fact/versions/20260727_0009_remove_amazon_media_remote_uri.py",
+        "src/automation_business_scaffold/domains/tiktok/flows/influencer_sync.py",
+        "src/automation_business_scaffold/infrastructure/facts/tk_fact_store.py",
+        "src/automation_business_scaffold/infrastructure/facts/amazon_fact_store.py",
+    } <= set(feature["allowed_paths"])
+    assert {
+        "tests/test_durable_business_object_storage_contract.py",
+        "tests/test_runtime_influencer_business_e2e.py",
+        "tests/test_amazon_fact_schema.py",
+        "tests/test_harness_code_roadmap.py",
+        "tests/test_architecture_delta_gate.py",
+    } <= set(feature["done_gate"]["tests"])
 
 
 def test_cross_platform_design_docs_do_not_restore_generic_minio_artifacts() -> None:

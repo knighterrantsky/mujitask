@@ -1,6 +1,6 @@
 # Fact DB Schema 设计
 
-日期: 2026-07-23
+日期: 2026-07-27
 
 ## 1. 定位
 
@@ -96,6 +96,8 @@ Fact DB 写入逻辑必须是跨 workflow 的统一能力，而不是竞品表�
 - TikTok request 和 browser fallback 输出同一种 normalized product result。
 - FastMoss 商品、达人、店铺、视频采集输出标准 fact bundle 和 raw response 证据。
 - 媒体采集输出标准 media asset refs，并通过 `media_asset_sync` materialize 到 MinIO；持久引用必须包含 `bucket + object_key + content_digest`，`local_path` 只用于当前进程临时文件。
+- source handler 输出的待上传媒体只进入 `asset_refs`；调用 `fact_bundle_upsert` 前必须使用
+  `media_asset_sync` 的完整持久记录整体替换 `fact_bundle.media_assets`，禁止把上传前后记录合并。
 - `fact_bundle_upsert` 接收标准 fact bundle，统一写主体、关系、指标、raw link 和媒体绑定。
 - 业务 workflow 可以决定“是否采集某个对象”和“采集深度”，但不能决定“已采集事实是否入库”。
 - 飞书写回、运营状态、备注、截图展示等只属于业务投影，不能成为事实是否入库的前置条件。
@@ -221,7 +223,8 @@ erDiagram
 沿用既有列。新列使用空字符串或 `0` 作为 DDL 默认值，仅用于无数据回填的 schema 切换，
 不表示旧记录有效。长期媒体事实必须保存完整的
 `bucket + object_key + content_digest`、正数 `size_bytes`、`mime_type` 和已校验元数据；
-新写入必须将 `local_path` 置空，`remote_uri` 仅是派生展示字段，不能替代权威三元组。
+新写入必须将 `local_path` 置空。`20260727_0009` 删除 `tk_media_assets.remote_uri`；
+该值由读取方按 `bucket + object_key` 运行时派生，不属于 schema、缓存身份或持久引用校验。
 
 媒体复用规则:
 
@@ -229,15 +232,26 @@ erDiagram
 - 如果已有记录包含可用且完整的 `bucket + object_key + content_digest`，并能通过远端对象校验，则不重复下载资源图片，只补齐 `tk_entity_media_assets` 绑定。
 - 只有数据库没有可复用资产，或已有定位不可用时，才进入下载/上传路径。
 - `source_url` 只是来源证据和缓存查找线索；事实媒体必须以对象存储定位为准。
-- 只存在 `object_key`、`remote_uri` 或旧 `local_path` 不构成缓存命中；必须从业务源重新物化并按新写入路径生成完整引用。禁止为旧行推断 bucket、执行修复/回填或数据迁移。
+- 只存在 `object_key` 或旧 `local_path` 不构成缓存命中；必须从业务源重新物化并按新写入路径生成完整引用。禁止为旧行推断 bucket、执行修复/回填或数据迁移。
 - 下游从持久媒体事实取文件时直接按 MinIO 引用读取，不得优先读取临时 `local_path`。
 - 同一个媒体文件可以用不同 `media_role` 绑定到同一实体，例如同一图片同时是 `product_gallery_image` 和 `product_sku_image`，关系层必须保留角色差异，不能只按 URL 去重。
 
+`media_assets` 写入规则:
+
+- `asset_refs` 承载上传前的 source URL、file token 和进程内临时路径。
+- `fact_bundle.media_assets` 只承载上传成功或缓存远端校验成功后的最终记录。
+- 进入 Fact DB 前必须整体替换媒体集合，禁止通过通用 `merge_fact_bundles` 保留上传前记录。
+- 同一资产的多角色/多位置绑定必须让每条关系记录都携带完整持久引用。
+
 硬切换与回滚规则:
 
-- 发布前停止所有旧 worker，由 migration 账号执行 `20260723_0008`，再启动同一代码 revision 的全部 worker；禁止新旧 worker 混跑。
-- migration 不扫描、不修补、不回填 `tk_media_assets` 旧行，也不迁移既有对象。空默认值使旧行自然成为无效缓存。
-- 回滚必须先停止全部新 worker，再 downgrade 删除新增列并回退应用；随后只启动匹配旧 schema 的 worker。
+- 发布前停止所有旧 worker，由 migration 账号执行 Runtime/TikTok 与 Amazon Fact 两个
+  `20260727_0009`，再启动同一代码 revision 的全部 worker；禁止新旧 worker 混跑。
+- migration 只删除 TikTok/Amazon 媒体表的派生 `remote_uri` 列，不扫描、不修补或迁移对象数据。
+- revision 3 对所有新写入生效；历史 Runtime/Fact JSON 不做全表重写，读取与缓存逻辑不得依赖其中
+  的旧 `remote_uri`，旧运行记录按既有 retention 自然淘汰。
+- 回滚必须先停止全部新 worker，再 downgrade 重新增加默认空字符串的列并回退应用；旧 worker
+  对空 URI 行执行缓存未命中和重新物化。
 - downgrade 不删除或改写 MinIO 对象。对象生命周期由独立 retention policy 管理，不属于 schema rollback。
 
 Amazon 使用隔离的 `amazon_media_assets`，复用规则比 TikTok/FastMoss 多一层源站重验证：
@@ -246,6 +260,8 @@ Amazon 使用隔离的 `amazon_media_assets`，复用规则比 TikTok/FastMoss �
 - 候选必须匹配当前环境的 Amazon 受控对象前缀，并通过 MinIO 实际字节的 size/digest 校验；对象复用不得覆盖本次关系的 media role/position。
 - 有 `ETag` 或 `Last-Modified` 时执行条件重验证；`304` 才直接复用。缺少验证器时完整下载一次并比较 digest。
 - 同 URL 内容变化必须生成新的 content-addressed 对象与媒体事实；缓存失败只回退下载，不改变行级事实和状态契约。
+- `20260727_0009` 同时从 `amazon_media_assets` 删除 `remote_uri`；Amazon 缓存校验根据
+  `bucket + object_key` 读取对象，不再要求或比较数据库中的派生 URI。
 
 ### 4.3 关系层
 
@@ -342,7 +358,10 @@ Amazon 使用隔离的 `amazon_media_assets`，复用规则比 TikTok/FastMoss �
 
 - 同一个图片/文件重复上传或重复发现，不应产生多条资产主档。
 - 同一主体同一角色同一资产，不应重复绑定。
-- 对象内容在 MinIO，Fact DB 只保存完整 `bucket + object_key + content_digest` 和元数据；local store 只用于临时/测试诊断，不是正式持久媒体成功状态。
+- 对象内容在 MinIO，Fact DB 只保存完整 `bucket + object_key + content_digest` 和元数据；
+  不保存 `remote_uri`，local store 只用于临时/测试诊断，不是正式持久媒体成功状态。
+- Fact Store 在 JSON 序列化边界递归移除旧 payload 或 metadata 中的 `remote_uri`，避免调用方
+  绕过 handler 过滤后把派生地址藏入 `metadata_json`。
 - 数据库已有可用媒体资产时应复用，不重复下载远端图片。
 
 ### 5.3 关系 upsert

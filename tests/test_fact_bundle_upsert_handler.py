@@ -7,6 +7,9 @@ from automation_business_scaffold.capabilities.persistence.database.fact_bundle_
     fact_bundle_upsert_handler,
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.infrastructure.facts.tk_fact_ingestion_service import (
+    TKFactIngestionService,
+)
 
 fact_bundle_module = importlib.import_module(
     "automation_business_scaffold.capabilities.persistence.database.fact_bundle_upsert_handler"
@@ -159,8 +162,42 @@ def test_fact_bundle_upsert_uses_project_fact_db_url(monkeypatch) -> None:
         _context(
             {
                 "request_payload": {},
+                "fact_db_url": "postgresql+psycopg://facts",
                 "fact_bundle": {
                     "products": [{"product_id": "123456789"}],
+                    "media_assets": [
+                        {
+                            "bucket": "business-assets",
+                            "object_key": "product-media/123456789/main.webp",
+                            "content_digest": "a" * 64,
+                            "size_bytes": 128,
+                            "remote_uri": (
+                                "s3://business-assets/product-media/123456789/main.webp"
+                            ),
+                            "metadata": {
+                                "remote_uri": (
+                                    "s3://business-assets/product-media/123456789/main.webp"
+                                ),
+                                "label": "main-image",
+                                "nested": {
+                                    "remote_uri": "s3://business-assets/nested.webp",
+                                    "items": [
+                                        {
+                                            "remote_uri": "s3://business-assets/list.webp",
+                                            "position": 1,
+                                        },
+                                        (
+                                            {
+                                                "remote_uri": "s3://business-assets/tuple.webp",
+                                                "position": 2,
+                                            },
+                                            "preserved",
+                                        ),
+                                    ],
+                                },
+                            },
+                        }
+                    ],
                 },
             }
         )
@@ -169,6 +206,48 @@ def test_fact_bundle_upsert_uses_project_fact_db_url(monkeypatch) -> None:
     assert result.status == "success"
     assert result.result["persistence_mode"] == "database"
     assert captured["fact_db_url"] == "postgresql+psycopg://facts"
+    persisted_media = captured["fact_bundle"]["media_assets"][0]
+    assert "remote_uri" not in persisted_media
+    assert persisted_media["metadata"] == {
+        "label": "main-image",
+        "nested": {
+            "items": [
+                {"position": 1},
+                ({"position": 2}, "preserved"),
+            ]
+        },
+    }
+    assert result.result["fact_bundle"]["media_assets"][0] == persisted_media
+
+
+def test_tk_fact_ingestion_removes_deep_remote_uri_and_preserves_other_fields() -> None:
+    cleaned = TKFactIngestionService._media_asset_without_derived_remote_uri(
+        {
+            "remote_uri": "s3://business-assets/top.webp",
+            "bucket": "business-assets",
+            "metadata": {
+                "label": "main-image",
+                "nested": [
+                    {"remote_uri": "s3://business-assets/list.webp", "position": 1},
+                    (
+                        {"remote_uri": "s3://business-assets/tuple.webp", "position": 2},
+                        "preserved",
+                    ),
+                ],
+            },
+        }
+    )
+
+    assert cleaned == {
+        "bucket": "business-assets",
+        "metadata": {
+            "label": "main-image",
+            "nested": [
+                {"position": 1},
+                ({"position": 2}, "preserved"),
+            ],
+        },
+    }
 
 
 def test_fact_bundle_upsert_fails_when_database_persistence_is_required_without_url(monkeypatch) -> None:

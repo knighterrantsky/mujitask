@@ -1107,7 +1107,10 @@ def _validate_materialized_media_assets(
     artifact_policy: Mapping[str, str],
 ) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
     required_media = _required_materialized_media(capture)
-    assets = coerce_mapping_list(payload.get("materialized_media_assets"))
+    assets = [
+        _materialized_media_without_derived_remote_uri(asset)
+        for asset in coerce_mapping_list(payload.get("materialized_media_assets"))
+    ]
     expected_bucket = artifact_policy["bucket"]
     expected_prefix = join_object_key(
         artifact_policy.get("object_prefix", ""),
@@ -1118,7 +1121,6 @@ def _validate_materialized_media_assets(
     for asset in assets:
         bucket = _required_text(asset.get("bucket"), "materialized media bucket")
         object_key = _required_text(asset.get("object_key"), "materialized media object_key")
-        remote_uri = _required_text(asset.get("remote_uri"), "materialized media remote_uri")
         source_url = _required_text(asset.get("source_url"), "materialized media source_url")
         if normalize_amazon_media_url(source_url) != source_url:
             raise ValueError("Materialized media source_url must be a normalized Amazon CDN URL.")
@@ -1132,8 +1134,6 @@ def _validate_materialized_media_assets(
             raise ValueError("Materialized media must use the configured Amazon artifact bucket.")
         if not object_key.startswith(f"{expected_prefix}/"):
             raise ValueError("Materialized media object_key is outside the governed Amazon prefix.")
-        if remote_uri != f"s3://{bucket}/{object_key}":
-            raise ValueError("Materialized media remote_uri does not match bucket/object_key.")
         if media_role not in _MATERIALIZED_MEDIA_ROLES:
             raise ValueError("Materialized media role is not allowed for Amazon product facts.")
         if asset.get("sync_state") not in _MATERIALIZED_MEDIA_STATES:
@@ -1195,6 +1195,30 @@ def _validate_materialized_media_assets(
         "missing": missing_count,
         "complete": missing_count == 0,
     }
+
+
+def _materialized_media_without_derived_remote_uri(
+    asset: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: _without_derived_remote_uri(value)
+        for key, value in asset.items()
+        if key != "remote_uri"
+    }
+
+
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, list):
+        return [_without_derived_remote_uri(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_derived_remote_uri(item) for item in value)
+    return value
 
 
 def _verify_materialized_media_objects(
@@ -1512,7 +1536,6 @@ def _persist_capture(
             content_digest=asset.get("content_digest") or "",
             bucket=asset.get("bucket") or "",
             object_key=asset.get("object_key") or "",
-            remote_uri=asset.get("remote_uri") or "",
             file_name=asset.get("file_name") or "",
             mime_type=asset.get("mime_type") or "",
             size_bytes=asset.get("size_bytes") or 0,

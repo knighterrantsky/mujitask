@@ -1,7 +1,21 @@
 from __future__ import annotations
 
+from typing import Any
+
 from automation_business_scaffold.models.artifact_object import ArtifactObjectRecord
 from automation_business_scaffold.infrastructure.runtime.persistence_primitives import json_dumps as _json_dumps
+
+
+def _without_derived_remote_uri(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_derived_remote_uri(item)
+            for key, item in value.items()
+            if key != "remote_uri"
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_derived_remote_uri(item) for item in value]
+    return value
 
 
 class ArtifactObjectRepository:
@@ -45,7 +59,9 @@ class ArtifactObjectRepository:
                         "size": record.size,
                         "content_type": record.content_type,
                         "source_path": record.source_path,
-                        "metadata_json": _json_dumps(record.metadata),
+                        "metadata_json": _json_dumps(
+                            _without_derived_remote_uri(record.metadata)
+                        ),
                         "created_at": record.created_at,
                     },
                 )
