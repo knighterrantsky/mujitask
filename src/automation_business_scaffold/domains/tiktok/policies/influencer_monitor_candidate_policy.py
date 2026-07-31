@@ -5,6 +5,7 @@ from typing import Any
 
 
 DEFAULT_MIN_VIDEO_SALES_28D = 50
+DEFAULT_RELATED_PRODUCT_SALES_RESET_DAYS = 28
 
 
 def normalize_min_video_sales_28d(value: Any) -> int:
@@ -20,6 +21,29 @@ def normalize_min_video_sales_28d(value: Any) -> int:
         ) from exc
     if normalized < 0 or str(value).strip() not in {str(normalized), f"{normalized}.0"}:
         raise ValueError("min_video_sales_28d must be a non-negative integer.")
+    return normalized
+
+
+def normalize_related_product_sales_reset_days(value: Any) -> int:
+    if value in (None, ""):
+        return DEFAULT_RELATED_PRODUCT_SALES_RESET_DAYS
+    if isinstance(value, bool):
+        raise ValueError(
+            "related_product_sales_reset_days must be a positive integer."
+        )
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "related_product_sales_reset_days must be a positive integer."
+        ) from exc
+    if normalized <= 0 or str(value).strip() not in {
+        str(normalized),
+        f"{normalized}.0",
+    }:
+        raise ValueError(
+            "related_product_sales_reset_days must be a positive integer."
+        )
     return normalized
 
 
@@ -272,7 +296,9 @@ def _mapping_identity(item: Mapping[str, Any]) -> str:
 
 __all__ = [
     "DEFAULT_MIN_VIDEO_SALES_28D",
+    "DEFAULT_RELATED_PRODUCT_SALES_RESET_DAYS",
     "aggregate_creator_candidates",
     "normalize_min_video_sales_28d",
+    "normalize_related_product_sales_reset_days",
     "select_product_video_creator_candidates",
 ]

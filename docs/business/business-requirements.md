@@ -1,6 +1,6 @@
 # 需求文档
 
-更新时间：`2026-07-25`
+更新时间：`2026-07-28`
 
 ## 1. 文档目的
 
@@ -18,7 +18,7 @@
 1. 通过定时任务持续更新飞书中的 `TK竞品收集` 数据，保证已有竞品信息保持最新。
 2. 通过 `OpenClaw` 对话输入业务指令，按关键词或其他入口新增 `TK` 竞品或选品数据。
 3. 通过定时任务把 `TK竞品收集` 中的商品继续扩展到 `TK达人池`，形成达人画像与运营沉淀。
-4. 通过每天一次的 `TK达人监控` 任务扫描全部竞品 SKU，按商品关联视频近 28 天销量发现达人，并在独立目标表保留历史观测最高销量。
+4. 通过每天一次的 `TK达人监控` 任务扫描全部竞品 SKU，按商品关联视频近 28 天销量发现达人，并在独立目标表按达人独立周期保留本周期观测最高销量。
 5. 通过定时或手动检查 `TK达人建联表`，跟踪达人是否已为对应商品发布视频，并回写视频链接与发布时间。
 6. 以飞书 `AMAZON_PRODUCTS` 来源行中的美国站 ASIN 为入口，采集 Amazon 商品详情、变体、Offer、媒体和排名事实，并把受控字段写回同一来源行。
 
@@ -273,11 +273,14 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 `TK达人监控目标表` 是 `monitor_tk_influencers` 的独立逻辑目标表。该流程独立维护 `达人ID`、`带货商品图`、`关联节日`、`关联商品销量`、`达人头像`、`粉丝数`、`28天视频数`、`带货视频 GMV`、`带货直播 GMV`、`合作店铺`、`达人联系方式`、`记录日期` 和 `更新日期`：
 
 - `达人ID` 使用 FastMoss/TikTok `unique_id` 的标准化文本（去除首部 `@`），并作为唯一 upsert 主键；数字 `uid` 仅用于内部查询和事实关联，不得写入该字段。
-- `关联商品销量` 表示历史运行过程中观测到的最高“商品关联视频近 28 天销量”，按 `max(已有值, 本次值)` 写入，只升不降，不按商品累加。
+- `关联商品销量` 表示当前达人销量周期内观测到的最高“商品关联视频近 28 天销量”，周期内按 `max(已有值, 本次值)` 写入，只升不降、不按商品累加；周期到期后仅在该达人下一次出现达标观测时，以本次值开启新周期。
 - `带货商品图` 和 `关联节日` 只从存在达标视频的商品关系中去重合并。
 - `达人头像`、`粉丝数`、`28天视频数`、`带货视频 GMV`、`带货直播 GMV`、`合作店铺` 和 `达人联系方式` 来自 FastMoss 达人详情；空值不覆盖目标表已有值。
 - `合作店铺` 与目标表该达人已有店铺做集合并集，只写入飞书字段已配置的选项；联系方式优先邮箱，否则取第一个有效联系方式。
-- `记录日期` 只在创建时写入；`更新日期` 在创建时写入，后续仅在系统维护字段实际发生变化时刷新。
+- `记录日期` 作为每个达人的销量周期锚点，沿用已有有效日期；周期到期后的下一次达标观测无论高于、等于或低于旧值，都以本次值开启新周期，并把 `记录日期` 和 `更新日期` 更新为本次 Task 业务日期。周期内普通新高不移动 `记录日期`。
+- 周期参数为正整数 `related_product_sales_reset_days`，默认 `28`，按 `Asia/Shanghai` 自然日和 `elapsed_days >= 周期天数` 判断到期；已有日期为空、非法或在未来时，不降低销量，按 `max(已有值, 本次值)` 修正并把日期重置为当天，同时记录 warning。
+- 没有达标视频、销量低于 `min_video_sales_28d` 阈值或 FastMoss 返回空列表时，即使已经到期，也不清零、不降低、不更新日期；下次达标时才惰性重置。
+- `min_video_sales_28d` 默认 `50` 且使用严格大于判断；两个参数和 Task 业务日期在每次 Task 创建时固定为 payload 快照，参数变化从下一次 Task 起基于旧锚点立即生效。OpenClaw 定时任务推荐显式传入两个参数，且 `monitor_tk_influencers` 任务不得并发执行。
 - 粉丝数只采集和展示，不参与达人入选筛选。
 - 本流程不读取其他达人业务表；更新时只读取 `TK达人监控目标表` 自身的达人行。
 - 真实 Base、`table_id` 和 `view_id` 由环境配置解析，不属于业务字段口径。
@@ -381,7 +384,7 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 | 竞品采集 | `refresh_current_competitor_table` | 每天定时任务 | `TK竞品收集` | [requirements/refresh-current-competitor-table.md](./requirements/refresh-current-competitor-table.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 关键词搜索竞品写入 | `search_keyword_competitor_products` | OpenClaw 对话输入 | `TK竞品收集` | [requirements/search-keyword-competitor-products.md](./requirements/search-keyword-competitor-products.md) | [workflow-competitor-table-design.md](../arch/workflow-competitor-table-design.md) |
 | 竞品到达人池同步 | `sync_tk_influencer_pool` | 每天定时任务 | `TK竞品收集`、`TK达人池` | [requirements/sync-tk-influencer-pool.md](./requirements/sync-tk-influencer-pool.md) | [workflow-influencer-pool-sync-design.md](../arch/workflow-influencer-pool-sync-design.md) |
-| TK 达人监控（待实现） | `monitor_tk_influencers` | 每天定时任务 | `TK竞品收集`、`TK达人监控目标表` | [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md) | [workflow-influencer-monitoring-design.md](../arch/workflow-influencer-monitoring-design.md) |
+| TK 达人监控（基础流程已实现；周期重置待实现） | `monitor_tk_influencers` | 每天定时任务 | `TK竞品收集`、`TK达人监控目标表` | [requirements/tk-influencer-monitoring.md](./requirements/tk-influencer-monitoring.md) | [workflow-influencer-monitoring-design.md](../arch/workflow-influencer-monitoring-design.md) |
 | 选品采集 | `tiktok_fastmoss_product_ingest` | OpenClaw 定时/手动触发 | `TK选品收集` | [requirements/tk-selection-collection.md](./requirements/tk-selection-collection.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 关键词搜索选品写入 | `search_keyword_selection_products` | OpenClaw 对话输入 | `TK选品收集` | [requirements/search-keyword-selection-products.md](./requirements/search-keyword-selection-products.md) | [workflow-selection-table-design.md](../arch/workflow-selection-table-design.md) |
 | 达人建联检查 | `tiktok_influencer_outreach_sync` | 定时任务或手动触发 | `TK达人建联表` | [requirements/tk-influencer-outreach.md](./requirements/tk-influencer-outreach.md) | [workflow-influencer-outreach-design.md](../arch/workflow-influencer-outreach-design.md) |
@@ -423,10 +426,10 @@ Amazon 竞品表单商品流程另使用配置别名 `AMAZON_PRODUCTS`，用户�
 
 ## 7. 版本信息
 
-- 需求版本：`v3.5`
-- 文档版本：`v3.8.0`
-- 版本日期：`2026-07-25`
-- 本次变更：新增 `TK达人监控` 正式需求和独立目标表字段口径；该流程按商品关联视频近 28 天销量筛选达人，并以历史最高值写入。
+- 需求版本：`v3.6`
+- 文档版本：`v3.9.0`
+- 版本日期：`2026-07-28`
+- 本次变更：确认 `TK达人监控` 的每达人独立最高销量重置周期；默认 `28` 天，按上海自然日和已有 `记录日期` 判断，仅在到期后的下一次达标观测时惰性重置。基础流程已实现，本次周期变更待实现。
 
 ## 8. 关联文档
 

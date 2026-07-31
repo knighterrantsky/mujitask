@@ -49,8 +49,8 @@ fields:
     source_of_truth: TK竞品收集.节日
   - display_name: 关联商品销量
     canonical_name: related_product_sales
-    role: historical_max_metric
-    update_policy: max_existing_and_current
+    role: periodic_max_metric
+    update_policy: max_existing_and_current_before_expiry_else_current_observation
     source_of_truth: fastmoss.goods_video.sold_count
   - display_name: 达人头像
     canonical_name: influencer_avatar
@@ -87,8 +87,9 @@ fields:
     empty_policy: do_not_overwrite
   - display_name: 记录日期
     canonical_name: recorded_date
-    role: auto_maintained
-    update_policy: create_only
+    role: periodic_max_anchor
+    update_policy: create_reset_or_repair_only
+    date_basis: Asia/Shanghai_natural_day
   - display_name: 更新日期
     canonical_name: updated_date
     role: auto_maintained
@@ -100,7 +101,12 @@ write_policy:
   update_replace_fields:
     - 达人头像
   update_merge_strategies:
-    关联商品销量: max_numeric
+    关联商品销量:
+      strategy: periodic_max_numeric
+      anchor_field: 记录日期
+      period_parameter: related_product_sales_reset_days
+      current_date_field: task_business_date
+      invalid_anchor_policy: max_then_repair_with_warning
   skip_unchanged_update_fields: true
   conditional_update_fields:
     - 更新日期

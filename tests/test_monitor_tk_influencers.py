@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
 
 from automation_business_scaffold.capabilities.input_sources.feishu.row_updates import (
     fields_for_update,
@@ -26,7 +30,9 @@ from automation_business_scaffold.domains.tiktok.mappers.influencer_monitor_sour
     influencer_monitor_source_adapter,
 )
 from automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy import (
+    DEFAULT_RELATED_PRODUCT_SALES_RESET_DAYS,
     aggregate_creator_candidates,
+    normalize_related_product_sales_reset_days,
     select_product_video_creator_candidates,
 )
 from automation_business_scaffold.domains.tiktok.projections.feishu_influencer_monitor_projection import (
@@ -39,6 +45,26 @@ product_discovery_module = importlib.import_module(
 creator_sync_module = importlib.import_module(
     "automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers.creator_sync"
 )
+
+
+def _periodic_merge_record(
+    *,
+    current_date: str,
+    period_days: int = 7,
+) -> dict[str, object]:
+    return {
+        "update_excluded_fields": ["记录日期"],
+        "update_merge_strategies": {
+            "关联商品销量": {
+                "strategy": "periodic_max_numeric",
+                "anchor_field": "记录日期",
+                "period_days": period_days,
+                "current_date": current_date,
+            }
+        },
+        "skip_unchanged_update_fields": True,
+        "conditional_update_fields": ["更新日期"],
+    }
 
 
 def _product_discovery_context(payload: dict) -> HandlerContext:
@@ -248,7 +274,20 @@ def test_cross_product_creator_aggregation_uses_max_and_merges_all_qualified_hit
     assert [hit["product_id"] for hit in creators[0]["product_hits"]] == ["sku-a", "sku-b"]
 
 
-def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
+def test_related_product_sales_reset_days_defaults_and_requires_positive_integer() -> None:
+    assert normalize_related_product_sales_reset_days(None) == 28
+    assert (
+        normalize_related_product_sales_reset_days("")
+        == DEFAULT_RELATED_PRODUCT_SALES_RESET_DAYS
+    )
+    assert normalize_related_product_sales_reset_days("7") == 7
+
+    for value in (0, -1, True, "7.5", "invalid"):
+        with pytest.raises(ValueError):
+            normalize_related_product_sales_reset_days(value)
+
+
+def test_monitor_projection_declares_periodic_max_merge_and_business_date_contract() -> None:
     record = influencer_monitor_projection_mapper(
         {
             "creator_id": "alice",
@@ -275,6 +314,8 @@ def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
             ],
             "holidays": ["万圣节"],
             "cooperation_shop_names": ["Happy Shop"],
+            "related_product_sales_reset_days": 7,
+            "task_business_date": "2026-06-27",
         },
         {"write_mode": "upsert"},
     )
@@ -284,7 +325,16 @@ def test_monitor_projection_declares_max_merge_and_noop_date_contract() -> None:
     assert record["fields"]["粉丝数"] == "16W"
     assert record["fields"]["带货视频 GMV"] == "244W"
     assert record["fields"]["带货直播 GMV"] == "小于1W"
-    assert record["update_merge_strategies"] == {"关联商品销量": "max_numeric"}
+    assert record["fields"]["记录日期"] == "2026-06-27"
+    assert record["fields"]["更新日期"] == "2026-06-27"
+    assert record["update_merge_strategies"] == {
+        "关联商品销量": {
+            "strategy": "periodic_max_numeric",
+            "anchor_field": "记录日期",
+            "period_days": 7,
+            "current_date": "2026-06-27",
+        }
+    }
     assert record["skip_unchanged_update_fields"] is True
     assert record["conditional_update_fields"] == ["更新日期"]
     assert record["update_excluded_fields"] == ["记录日期"]
@@ -318,43 +368,168 @@ def test_explicit_max_merge_does_not_change_existing_default_sales_sum() -> None
 
 
 def test_write_record_normalization_preserves_monitor_merge_contract() -> None:
+    merge_strategy = {
+        "关联商品销量": {
+            "strategy": "periodic_max_numeric",
+            "anchor_field": "记录日期",
+            "period_days": 7,
+            "current_date": "2026-06-27",
+        }
+    }
     normalized = normalize_write_record(
         {
             "op": "upsert",
             "fields": {"达人ID": "creator-a", "关联商品销量": "90"},
-            "update_merge_strategies": {"关联商品销量": "max_numeric"},
+            "update_merge_strategies": merge_strategy,
             "skip_unchanged_update_fields": True,
             "conditional_update_fields": ["更新日期"],
         },
         {},
     )
 
-    assert normalized["update_merge_strategies"] == {"关联商品销量": "max_numeric"}
+    assert normalized["update_merge_strategies"] == merge_strategy
     assert normalized["skip_unchanged_update_fields"] is True
     assert normalized["conditional_update_fields"] == ["更新日期"]
 
 
-def test_lower_sales_and_identical_fields_produce_no_update_or_date_change() -> None:
+def test_periodic_max_keeps_lower_sales_and_dates_before_expiry() -> None:
     update_fields = fields_for_update(
-        {
-            "update_excluded_fields": ["记录日期"],
-            "update_merge_strategies": {"关联商品销量": "max_numeric"},
-            "skip_unchanged_update_fields": True,
-            "conditional_update_fields": ["更新日期"],
-        },
+        _periodic_merge_record(current_date="2026-06-26"),
         {
             "关联商品销量": "80",
             "关联节日": ["万圣节"],
-            "记录日期": "2026-07-24",
-            "更新日期": "2026-07-25",
+            "记录日期": "2026-06-26",
+            "更新日期": "2026-06-26",
         },
         existing_fields={
             "关联商品销量": "120",
             "关联节日": ["万圣节"],
-            "记录日期": "2026-07-01",
-            "更新日期": "2026-07-24",
+            "记录日期": "2026-06-20",
+            "更新日期": "2026-06-25",
         },
         field_schema={"关联节日": {"type": 4}},
+    )
+
+    assert update_fields == {}
+
+
+def test_periodic_max_updates_higher_sales_without_moving_anchor_before_expiry() -> None:
+    update_fields = fields_for_update(
+        _periodic_merge_record(current_date="2026-06-26"),
+        {
+            "关联商品销量": "150",
+            "记录日期": "2026-06-26",
+            "更新日期": "2026-06-26",
+        },
+        existing_fields={
+            "关联商品销量": "120",
+            "记录日期": "2026-06-20",
+            "更新日期": "2026-06-25",
+        },
+    )
+
+    assert update_fields == {
+        "关联商品销量": "150",
+        "更新日期": "2026-06-26",
+    }
+
+
+@pytest.mark.parametrize("incoming", ["80", "120", "150"])
+def test_periodic_max_resets_at_exact_boundary_for_lower_equal_or_higher_sales(
+    incoming: str,
+) -> None:
+    update_fields = fields_for_update(
+        _periodic_merge_record(current_date="2026-06-27"),
+        {
+            "关联商品销量": incoming,
+            "记录日期": "2026-06-27",
+            "更新日期": "2026-06-27",
+        },
+        existing_fields={
+            "关联商品销量": "120",
+            "记录日期": "2026-06-20",
+            "更新日期": "2026-06-25",
+        },
+    )
+
+    assert update_fields["记录日期"] == "2026-06-27"
+    assert update_fields["更新日期"] == "2026-06-27"
+    if incoming == "120":
+        assert "关联商品销量" not in update_fields
+    else:
+        assert update_fields["关联商品销量"] == incoming
+
+
+def test_periodic_max_same_day_retry_stays_in_new_cycle() -> None:
+    update_fields = fields_for_update(
+        _periodic_merge_record(current_date="2026-06-27"),
+        {
+            "关联商品销量": "70",
+            "记录日期": "2026-06-27",
+            "更新日期": "2026-06-27",
+        },
+        existing_fields={
+            "关联商品销量": "80",
+            "记录日期": "2026-06-27",
+            "更新日期": "2026-06-27",
+        },
+    )
+
+    assert update_fields == {}
+
+
+@pytest.mark.parametrize(
+    ("anchor", "reason"),
+    [
+        ("invalid", "missing_or_invalid"),
+        ("2026-06-28", "future"),
+        ("", "missing_or_invalid"),
+    ],
+)
+def test_periodic_max_repairs_invalid_anchor_without_lowering_sales_and_warns(
+    anchor: str,
+    reason: str,
+) -> None:
+    warnings: list[str] = []
+    update_fields = fields_for_update(
+        _periodic_merge_record(current_date="2026-06-27"),
+        {
+            "关联商品销量": "80",
+            "记录日期": "2026-06-27",
+            "更新日期": "2026-06-27",
+        },
+        existing_fields={
+            "关联商品销量": "120",
+            "记录日期": anchor,
+            "更新日期": "2026-06-25",
+        },
+        warning_callback=warnings.append,
+    )
+
+    assert update_fields == {
+        "记录日期": "2026-06-27",
+        "更新日期": "2026-06-27",
+    }
+    assert warnings == [f"periodic_max_numeric_repaired_anchor:记录日期:{reason}"]
+
+
+def test_periodic_max_parses_feishu_millisecond_date_anchor() -> None:
+    anchor_millis = int(
+        datetime(2026, 6, 20, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+        * 1000
+    )
+    update_fields = fields_for_update(
+        _periodic_merge_record(current_date="2026-06-26"),
+        {
+            "关联商品销量": "80",
+            "记录日期": "2026-06-26",
+            "更新日期": "2026-06-26",
+        },
+        existing_fields={
+            "关联商品销量": "120",
+            "记录日期": anchor_millis,
+            "更新日期": "2026-06-25",
+        },
     )
 
     assert update_fields == {}
@@ -822,6 +997,8 @@ def test_creator_sync_uses_unique_id_for_write_and_uid_for_fetch(
                 ],
                 "source_product_images": [{"file_token": "img-a"}],
                 "holidays": ["万圣节"],
+                "related_product_sales_reset_days": 7,
+                "task_business_date": "2026-06-27",
                 "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
             }
         )
@@ -861,6 +1038,12 @@ def test_creator_sync_uses_unique_id_for_write_and_uid_for_fetch(
     assert captured["feishu_write"]["records"][0][
         "creator_run_max_sales_28d"
     ] == 120
+    assert captured["feishu_write"]["records"][0][
+        "related_product_sales_reset_days"
+    ] == 7
+    assert captured["feishu_write"]["records"][0][
+        "task_business_date"
+    ] == "2026-06-27"
     assert captured["feishu_write"]["records"][0]["source_product_images"] == [
         {"file_token": "img-a"}
     ]

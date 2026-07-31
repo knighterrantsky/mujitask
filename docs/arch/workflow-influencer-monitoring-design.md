@@ -1,6 +1,6 @@
 # TK 达人监控 Workflow 设计
 
-日期：`2026-07-25`
+日期：`2026-07-28`
 
 状态：已批准，已实现（部署配置待接入）
 
@@ -17,7 +17,7 @@
 
 本流程的业务输入仅包括 `TK竞品收集`、FastMoss 返回数据和 `TK达人监控目标表` 自身记录。其他达人业务表、workflow、job、projection 和字段 contract 均不是本流程的输入、输出或运行时依赖。
 
-本文描述目标架构，不表示代码和机器契约已经存在。进入实现阶段时必须新增 workflow / field contract、完成代码 roadmap 登记并通过对应 completion gate，才能把该 Task 列为当前可运行入口。
+本文与 workflow contract、字段 contract 和当前实现共同描述该 Task 的运行事实；稳定 code 保持不变，兼容演进通过 `contract_revision` 和带默认值的可选字段完成。
 
 ## 2. Task
 
@@ -26,7 +26,7 @@
 | Task 名称 | TK 达人监控 |
 | `task_code` | `monitor_tk_influencers` |
 | `workflow_code` | `monitor_tk_influencers` |
-| `contract_revision` | `1` |
+| `contract_revision` | `2` |
 | 触发方式 | `schedule`；实现验收时允许手动提交同一 Task |
 | 正常频率 | 每天一次 |
 | 来源逻辑表 | `feishu://mujitask/tk_competitor` |
@@ -42,7 +42,8 @@
 
 ```json
 {
-  "min_video_sales_28d": 50
+  "min_video_sales_28d": 50,
+  "related_product_sales_reset_days": 28
 }
 ```
 
@@ -51,14 +52,18 @@
 - `min_video_sales_28d` 必须是非负整数。
 - 未传时由 Task entry 补默认值 `50`。
 - 判断条件固定为 `video_product_sales_28d > min_video_sales_28d`。
+- `related_product_sales_reset_days` 必须是正整数，未传时由 Task entry 补默认值 `28`。
+- `related_product_sales_reset_days` 只控制目标表销量最高值的保留周期，不改变 FastMoss `date_type=28` 指标窗口。
+- Task entry 在创建请求时按 `Asia/Shanghai` 固定内部 `task_business_date`；同一 Task 的 job、重试和补偿均沿用该日期，外部入口不能覆盖。
 - Base URL、`table_id`、`view_id`、FastMoss transport 参数和内部 mapper code 不作为外部业务输入。
 
 ### 2.2 Task 幂等
 
 - schedule 入口优先使用调度系统提供的 `schedule_fire_id` 形成 Task idempotency key。
 - 手动或补偿提交使用 `request_id` 形成 Task idempotency key。
-- 即使同一业务日产生两次不同 Task，目标表的达人唯一键、销量 `max`、图片/节日/店铺集合合并仍必须保证外部副作用幂等。
+- 即使同一业务日按顺序产生两次不同 Task，目标表的达人唯一键、周期内销量 `max`、图片/节日/店铺集合合并仍必须保证外部副作用幂等。
 - 不把“同一天”作为禁止再次执行的硬条件，避免第一次部分失败后无法补偿。
+- Runtime 队列保证同一时间最多运行一个 `monitor_tk_influencers` Task；定时、手动和补偿提交不得重叠执行。
 
 ### 2.3 顶层输出
 
@@ -68,6 +73,8 @@ Task summary 至少包含：
 {
   "result_status": "success | partial_success | failed",
   "effective_min_video_sales_28d": 50,
+  "effective_related_product_sales_reset_days": 28,
+  "task_business_date": "2026-07-28",
   "source_row_count": 0,
   "valid_product_count": 0,
   "deduped_product_count": 0,
@@ -100,7 +107,7 @@ Task summary 至少包含：
 - 采集达人画像、指标、联系方式和合作店铺。
 - 通过平台 Fact DB 和媒体能力沉淀事实与允许的达人头像。
 - 以 `达人ID` 为唯一键向独立目标表 upsert。
-- 按“销量取历史最高值、关联信息做集合合并”的策略写回。
+- 按“销量在每个达人独立周期内取最高值、周期到期后由下一次达标观测重置、关联信息做集合合并”的策略写回。
 
 本 workflow 不负责：
 
@@ -110,7 +117,7 @@ Task summary 至少包含：
 - 使用商品关联达人列表代替商品关联视频。
 - 为目标表引入新的业务字段。
 - 配置 OpenClaw cron、固定飞书物理路由或处理测试/生产 Base 差异。
-- 因销量下降删除达人、降低销量或清空关联数据。
+- 在达人没有达标观测时，仅因周期到期主动扫描、删除达人、降低销量或清空关联数据。
 
 允许部分成功：
 
@@ -382,7 +389,7 @@ result 示例：
 #### 6.3.2 实现固化门禁
 
 FastMoss 参数、排序、销量字段和阈值分页的外部技术验证已经完成，不再作为待办实抓项。
-实现阶段必须完成：
+当前 completion gate 固化以下检查：
 
 1. 将脱敏请求和返回样例固化为 transport mapper fixture。
 2. 测试 `sold_count -> video_product_sales_28d` 映射。
@@ -453,6 +460,8 @@ payload 示例：
     "unique_id": "heidiann__"
   },
   "creator_run_max_sales_28d": 120,
+  "related_product_sales_reset_days": 28,
+  "task_business_date": "2026-07-28",
   "product_hits": [
     {
       "product_id": "1732266893752242590",
@@ -535,9 +544,9 @@ result 只保存下游 summary 所需的 compact 结构：
 | --- | --- |
 | `influencer_monitor_source_adapter` | 全量 SKU 选择、商品身份解析、相同 SKU 来源上下文合并 |
 | `product_video_creator_discovery` | 商品粒度视频分页、销量标准化、阈值筛选、单 SKU 达人最大值 |
-| `influencer_monitor_candidate_policy` | 严格阈值、数值校验和单 SKU / 跨 SKU `max` 规则 |
+| `influencer_monitor_candidate_policy` | 严格阈值、周期参数校验和单 SKU / 跨 SKU `max` 规则 |
 | `influencer_monitor_sync` | 一个 unique 达人的详情、事实、头像和目标表 upsert 原子业务单元 |
-| `influencer_monitor_projection_mapper` | 新目标表字段映射、历史最高销量和关联字段合并 |
+| `influencer_monitor_projection_mapper` | 新目标表字段映射、周期最高销量策略声明和关联字段合并 |
 
 边界约束：
 
@@ -572,7 +581,7 @@ result 只保存下游 summary 所需的 compact 结构：
 | `达人ID` | FastMoss/TikTok `unique_id` | 去除首部 `@` 后写入；创建必填、唯一 upsert key、创建后不改；数字 `uid` 不写入 |
 | `带货商品图` | 全部 qualifying product hits 对应的 `TK竞品收集.图片` | 按 `source product_id + asset/attachment identity` 去重并集，不删除目标行有效图片 |
 | `关联节日` | 全部 qualifying product hits 对应来源行的节日 | 标准化文本后集合并集，不删除目标行有效值 |
-| `关联商品销量` | `creator_run_max_sales_28d` | `max(existing, observed)` |
+| `关联商品销量` | `creator_run_max_sales_28d` | 周期未到期取 `max(existing, observed)`；周期到期时写 `observed`，允许低于旧周期值 |
 | `达人头像` | FastMoss `avatar_url` 物化后的稳定 asset ref | 物化成功时填充或刷新；空值或物化失败不清除目标行有效头像 |
 | `粉丝数` | FastMoss `follower_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；不参与筛选；`>=10000` 除以 `10000` 后四舍五入到最近整数并显示为 `xW`，`<10000` 显示为 `小于1W` |
 | `28天视频数` | FastMoss `aweme_28d_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖 |
@@ -580,24 +589,32 @@ result 只保存下游 summary 所需的 compact 结构：
 | `带货直播 GMV` | FastMoss `live_sale_amount` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；展示规则与 `粉丝数` 相同 |
 | `合作店铺` | FastMoss `cooperation_shops` | 标准化后与目标行做集合并集；只写飞书字段允许选项；未知选项跳过并 warning；不删除已有值 |
 | `达人联系方式` | FastMoss normalized contacts | 邮箱优先，否则取第一个有效联系方式；空值不覆盖 |
-| `记录日期` | Task 业务日期 | 只在创建时写 |
-| `更新日期` | Task 业务日期 | 创建时写；后续仅在实际 diff 时写 |
+| `记录日期` | Task 业务日期 | 创建、周期重置或空/非法/未来锚点修复时写；普通周期内新高不移动 |
+| `更新日期` | Task 业务日期 | 创建、其他维护字段 diff、周期重置或锚点修复时写 |
 
 销量计算必须在数值域完成：
 
 ```text
 observed = creator_run_max_sales_28d
+today = task_business_date
+period = related_product_sales_reset_days
 
 if target row does not exist:
     effective = observed
-else if existing is a valid number:
+    anchor = today
+else if recorded_date is empty, invalid, or later than today:
     effective = max(existing, observed)
-else if existing is empty:
+    anchor = today
+    emit warning
+else if (today - recorded_date).days >= period:
     effective = observed
+    anchor = today
 else:
-    do not guess or coerce silently
-    fail this creator write with invalid_existing_sales_value
+    effective = max(existing, observed)
+    keep recorded_date
 ```
+
+只有本次 Task 聚合出了该达人的达标观测才执行上述判断。没有达标观测时，即使周期已经到期，也不写销量、`记录日期` 或 `更新日期`。旧 job 未携带新字段时按 `period=28` 执行，保证兼容。
 
 目标表其他字段：
 
@@ -636,7 +653,7 @@ feishu://mujitask/tk_influencer_monitoring
 
 - 每条视频行的近 28 天销量写为视频-商品 28 天窗口表现。
 - 单 SKU 下达人最大值可写为达人-商品 28 天窗口表现，并在 payload 中保留 `aggregation=max_video_sales_28d` 和 winning video identity。
-- 目标表“历史最高值”是业务投影规则，不反向修改事实观测；Fact DB 仍保留每次任务看到的当前 28 天窗口值。
+- 目标表“周期内最高值”是业务投影规则，不反向修改事实观测；Fact DB 仍保留每次任务看到的当前 28 天窗口值。
 - 不把近 28 天销量写进视频主档或商品-视频关系字段。
 
 如果实现检查确认上述 performance 表的 repository / mapper 尚未接入 `fact_bundle_upsert`，只扩展平台 Fact owner 和机器契约；当前设计不要求新增 Fact DB 表或业务私有数据库。
@@ -686,7 +703,7 @@ sequenceDiagram
     API->>FastMoss: fetch creator profile/metrics/contact/shops
     API->>Fact: upsert creator facts and relations
     API->>Obj: sync creator avatar only
-    API->>Feishu: upsert monitor row by creator id with max/merge policy
+    API->>Feishu: upsert monitor row by creator id with periodic-max/merge policy
     API->>DB: mark creator sync terminal
     Exec->>DB: finalize task and insert notification_outbox
     Outbox->>DB: claim notification_outbox
@@ -748,7 +765,8 @@ target upsert:
 - 临时网络错误、限流和可恢复服务端错误最多重试 3 次。
 - FastMoss auth/session/security 错误进入一次 browser recovery，不与普通 retry 混为同一成功事实。
 - 非法商品身份、非法销量值和目标表已有销量无法解析属于不可重试业务/数据错误。
-- Creator job 重试必须重新读取目标表当前值，再执行 `max` 和 diff，不能使用首次尝试缓存值覆盖并发更新。
+- 目标表 `记录日期` 为空、非法或晚于 Task 业务日期时记录 warning，并按 `max(existing, observed)` 安全修复锚点，不因此降低销量。
+- Creator job 重试必须重新读取目标表当前值，再执行周期判断、`max` 和 diff，不能使用首次尝试缓存值覆盖已有更新。
 
 ### 12.3 Progress
 
@@ -761,9 +779,9 @@ target upsert:
 - 视频、达人、商品和关系按平台 Fact DB 唯一键 upsert。
 - performance observation 使用稳定 `performance_id` 或 source request identity 防止同一 job retry 重复写同一观测。
 - 目标表按 `达人ID` upsert。
-- 销量使用 `max`，重复执行不会增加数值。
+- 销量在有效周期内使用 `max`；到期重置后，同一 Task 业务日期的顺序重试仍落在新周期内，不会再次降低或累加数值。
 - 商品图、节日和店铺使用集合/来源商品去重，重复执行不会追加重复项。
-- `记录日期` 只在创建时写；无字段 diff 时不更新 `更新日期`。
+- `记录日期` 只在创建、周期重置或异常锚点修复时写；周期未到期且无字段 diff 时不更新 `更新日期`。
 
 ## 13. Summary / Outbox
 
@@ -771,7 +789,7 @@ target upsert:
 
 必须包含：
 
-- 本次有效阈值。
+- 本次有效阈值、销量重置周期和 Task 业务日期。
 - 来源总行数、有效行数、去重 SKU 数。
 - 商品发现成功、空结果、失败数。
 - 抓取视频数、达标视频数。
@@ -788,16 +806,16 @@ target upsert:
 - 完整达人联系方式 envelope。
 - 未裁剪的附件或媒体 URL 清单。
 
-## 14. 实现阶段机器契约与组件清单
+## 14. 机器契约与组件清单
 
-实现阶段至少需要新增或更新：
+本流程由以下机器契约和组件共同实现：
 
 | 类型 | 目标 |
 | --- | --- |
 | feature roadmap | 为 `monitor_tk_influencers` 建立独立 feature code、allowed paths 和 done gate |
 | workflow contract | `contracts/workflow/monitor_tk_influencers.yaml` |
 | implementation manifest | `src/automation_business_scaffold/contracts/workflow/monitor_tk_influencers.yaml` |
-| target field contract | 独立 `TK达人监控` 字段 contract，冻结 `关联商品销量=max_observed_video_sales_28d` |
+| target field contract | 独立 `TK达人监控` 字段 contract，冻结 `关联商品销量=periodic_max_numeric` 和 `记录日期` 锚点语义 |
 | Task entry | `domains/tiktok/tasks/monitor_tk_influencers.py` |
 | Workflow owner | `domains/tiktok/workflows/monitor_tk_influencers.py` 或按当前项目结构契约落位 |
 | source adapter | `influencer_monitor_source_adapter` |
@@ -809,16 +827,16 @@ target upsert:
 | summary / outbox projection | 新增本 workflow 专属摘要映射与文案，底层调用平台 outbox transport |
 | tests | workflow contract、adapter、分页阈值、聚合、projection、Runtime integration、partial success、architecture ownership |
 
-实现前不得：
+持续约束：
 
 - 将其他达人 workflow、job、projection、adapter、policy 或业务字段 contract 列为本流程依赖。
-- 在没有独立 field/workflow contract 时声明流程实现完成。
+- field/workflow contract 与实现、测试必须同步演进。
 - 新增未经 architecture ownership contract 声明的 helper-like 抽象。
 - 把物理飞书路由写死到源码、contract 或测试。
 
-## 15. 设计验收场景
+## 15. 验收场景
 
-实现测试至少覆盖：
+测试至少覆盖：
 
 1. `d_type=0` 与 `date_type=28` 分别表达全部发布时间和 28 天指标窗口。
 2. 阈值默认 `50`，严格排除 `50`、包含 `51`。
@@ -829,13 +847,13 @@ target upsert:
 5. 重复 SKU 合并来源上下文后只派发一个商品 job。
 6. 同 SKU 同达人多视频取最大值。
 7. 跨 SKU 同达人取最大值。
-8. 目标已有值更高时不降低。
-9. 目标已有值更低时提高到本次最大值。
+8. 周期未到期时，目标已有值更高不降低，目标已有值更低提高到本次最大值，且两者都不移动 `记录日期`。
+9. `记录日期=6-20`、周期 `7` 天时，`6-26` 未到期，`6-27` 到期；到期后本次值无论高、等、低都开启新周期。
 10. 较低但仍达标的商品关系不提高销量，但继续合并其商品图和节日。
 11. 未达标商品关系不合并商品图和节日。
 12. 空视频和无达标达人均为商品业务成功。
 13. 单商品失败、单达人失败产生 `partial_success`，不阻塞无关实体。
-14. 相同参数重复运行不重复创建、不累加销量、不重复关联字段。
+14. 相同参数顺序重复运行不重复创建、不累加销量、不重复关联字段；周期重置后的同日重试不再次降低销量。
 15. 使用 `2026-07-25` 脱敏实抓 fixture 验证 `order=1,2`、
     `sold_count -> video_product_sales_28d`、跨页非递增和本地 HTTP 重放一致性。
 16. 采集器使用 `pagesize=5`，不会发送大于 FastMoss 上限 `10` 的值。
@@ -844,6 +862,8 @@ target upsert:
 18. 排序非单调时关闭提前停止并完整分页。
 19. 目标物理路由只从配置解析，业务 payload 和 contract 不固定环境 ID。
 20. architecture ownership 测试确认本流程业务 owner 只依赖允许的通用 capability，不 import 或调用其他达人业务组件。
+21. 没有达标观测时不触发过期重置；空/非法/未来 `记录日期` 使用安全修复并产生 warning。
+22. 旧 job 缺少新字段时使用默认周期 `28`；Task 参数变化从下一次请求起立即基于已有锚点生效。
 
 ## 16. 关联文档
 

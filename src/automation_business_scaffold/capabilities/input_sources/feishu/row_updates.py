@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from automation_business_scaffold.capabilities.input_sources.feishu.field_envelopes import (
     attachment_write_items,
@@ -27,6 +30,9 @@ class EmptyPreparedFields(Exception):
     pass
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 def execute_one_write(
     client: Any,
     target: FeishuTableTarget,
@@ -34,6 +40,7 @@ def execute_one_write(
     *,
     payload: Mapping[str, Any] | None = None,
     field_schema: Mapping[str, Mapping[str, Any]] | None = None,
+    warning_callback: Any | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     op = text(record.get("op"))
     fields = mapping(record.get("fields"))
@@ -50,6 +57,7 @@ def execute_one_write(
             fields,
             existing_fields=find_existing_record_fields(client, target, record_id),
             field_schema=schema,
+            warning_callback=warning_callback,
         )
         prepared_fields = _prepare_non_empty_fields(
             client,
@@ -76,6 +84,7 @@ def execute_one_write(
                 fields,
                 existing_fields=mapping(existing_row.get("fields")),
                 field_schema=schema,
+                warning_callback=warning_callback,
             )
             prepared_fields = _prepare_non_empty_fields(
                 client,
@@ -104,6 +113,7 @@ def execute_one_write(
             fields,
             existing_fields=find_existing_record_fields(client, target, record_id),
             field_schema=schema,
+            warning_callback=warning_callback,
         )
         prepared_fields = _prepare_non_empty_fields(
             client,
@@ -142,6 +152,7 @@ def fields_for_update(
     *,
     existing_fields: Mapping[str, Any] | None = None,
     field_schema: Mapping[str, Mapping[str, Any]] | None = None,
+    warning_callback: Any | None = None,
 ) -> dict[str, Any]:
     excluded = {text(value) for value in list(record.get("update_excluded_fields") or []) if text(value)}
     selected = {key: value for key, value in dict(fields).items() if text(key) not in excluded}
@@ -166,6 +177,7 @@ def fields_for_update(
         field_schema=field_schema or {},
         replace_fields={text(value) for value in list(record.get("update_replace_fields") or []) if text(value)},
         merge_strategies=mapping(record.get("update_merge_strategies")),
+        warning_callback=warning_callback,
     )
     if bool(record.get("skip_unchanged_update_fields")) and existing_fields:
         existing = mapping(existing_fields)
@@ -189,14 +201,15 @@ def merge_update_fields(
     field_schema: Mapping[str, Mapping[str, Any]],
     replace_fields: set[str] | None = None,
     merge_strategies: Mapping[str, Any] | None = None,
+    warning_callback: Any | None = None,
 ) -> dict[str, Any]:
     if not existing_fields:
         return dict(fields)
     replace_field_names = replace_fields or set()
     strategies = {
-        text(key): text(value)
+        text(key): value
         for key, value in mapping(merge_strategies).items()
-        if text(key) and text(value)
+        if text(key)
     }
     merged: dict[str, Any] = {}
     for field_name, value in fields.items():
@@ -215,8 +228,23 @@ def merge_update_fields(
         if is_multi_select_field(schema):
             merged[field_name] = _merge_text_lists(existing_fields.get(field_name), value)
             continue
-        if strategies.get(field_name_text) == "max_numeric":
+        raw_strategy = strategies.get(field_name_text)
+        strategy = mapping(raw_strategy)
+        strategy_name = text(strategy.get("strategy")) if strategy else text(raw_strategy)
+        if strategy_name == "max_numeric":
             merged[field_name] = _merge_numeric_max(existing_fields.get(field_name), value)
+            continue
+        if strategy_name == "periodic_max_numeric":
+            merged_value, anchor_update = _merge_periodic_numeric(
+                existing_fields.get(field_name),
+                value,
+                strategy=strategy,
+                existing_fields=existing_fields,
+                warning_callback=warning_callback,
+            )
+            merged[field_name] = merged_value
+            if anchor_update:
+                merged[anchor_update[0]] = anchor_update[1]
             continue
         if text(field_name) == "关联商品销量":
             merged[field_name] = _merge_numeric_sum(existing_fields.get(field_name), value)
@@ -233,6 +261,137 @@ def _merge_numeric_max(existing: Any, incoming: Any) -> str:
     if existing_number is None:
         return _format_trimmed_decimal(incoming_number)
     return _format_trimmed_decimal(max(existing_number, incoming_number))
+
+
+def _merge_periodic_numeric(
+    existing: Any,
+    incoming: Any,
+    *,
+    strategy: Mapping[str, Any],
+    existing_fields: Mapping[str, Any],
+    warning_callback: Any | None,
+) -> tuple[str, tuple[str, str] | None]:
+    anchor_field = text(strategy.get("anchor_field"))
+    if not anchor_field:
+        raise ValueError("periodic_max_numeric requires anchor_field.")
+    period_days = _positive_integer(strategy.get("period_days"))
+    current_date = _date_value(strategy.get("current_date"))
+    if current_date is None:
+        raise ValueError("periodic_max_numeric requires a valid current_date.")
+
+    incoming_number = _numeric_value(incoming)
+    if incoming_number is None:
+        raise ValueError("periodic_max_numeric requires a numeric incoming value.")
+    existing_number = _numeric_value(existing)
+    if existing not in (None, "") and existing_number is None:
+        raise ValueError("periodic_max_numeric existing value is not numeric.")
+
+    anchor_date = _date_value(existing_fields.get(anchor_field))
+    anchor_reason = ""
+    if anchor_date is None:
+        anchor_reason = "missing_or_invalid"
+    elif anchor_date > current_date:
+        anchor_reason = "future"
+    if anchor_reason:
+        _periodic_merge_warning(
+            anchor_field,
+            anchor_reason,
+            warning_callback=warning_callback,
+        )
+        value = incoming_number if existing_number is None else max(
+            existing_number,
+            incoming_number,
+        )
+        return _format_trimmed_decimal(value), (
+            anchor_field,
+            current_date.isoformat(),
+        )
+
+    if (current_date - anchor_date).days >= period_days:
+        return _format_trimmed_decimal(incoming_number), (
+            anchor_field,
+            current_date.isoformat(),
+        )
+
+    value = incoming_number if existing_number is None else max(
+        existing_number,
+        incoming_number,
+    )
+    return _format_trimmed_decimal(value), None
+
+
+def _periodic_merge_warning(
+    anchor_field: str,
+    reason: str,
+    *,
+    warning_callback: Any | None,
+) -> None:
+    warning = f"periodic_max_numeric_repaired_anchor:{anchor_field}:{reason}"
+    LOGGER.warning(warning)
+    if callable(warning_callback):
+        warning_callback(warning)
+
+
+def _positive_integer(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("periodic_max_numeric period_days must be a positive integer.")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "periodic_max_numeric period_days must be a positive integer."
+        ) from exc
+    if normalized <= 0 or str(value).strip() not in {
+        str(normalized),
+        f"{normalized}.0",
+    }:
+        raise ValueError(
+            "periodic_max_numeric period_days must be a positive integer."
+        )
+    return normalized
+
+
+def _date_value(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, Mapping):
+        value = first_non_empty(
+            value.get("value"),
+            value.get("timestamp"),
+            value.get("date"),
+            value.get("text"),
+        )
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) or str(value).strip().isdigit():
+        try:
+            timestamp = float(value)
+            if abs(timestamp) >= 10_000_000_000:
+                timestamp /= 1000
+            return datetime.fromtimestamp(
+                timestamp,
+                tz=ZoneInfo("Asia/Shanghai"),
+            ).date()
+        except (OSError, OverflowError, ValueError):
+            return None
+    normalized = text_value(value).strip()
+    if not normalized:
+        return None
+    try:
+        return date.fromisoformat(normalized.replace("/", "-"))
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+    return parsed.date()
 
 
 def find_existing_record_id(

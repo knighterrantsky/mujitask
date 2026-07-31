@@ -121,6 +121,7 @@ Projection mapper 的功能是把业务结果、workflow result 或 fact/result 
 | `business_entity_key` | 业务幂等 key |
 | `upsert_key` | 无 record id 时用于查找已有行的唯一字段 |
 | `fields` | 本次实际写入飞书的字段 |
+| `update_merge_strategies` | 可选字段合并策略；简单策略可用字符串，依赖已有行上下文的策略使用结构化配置 |
 | `source_context` | 写回来源上下文 |
 
 Projection mapper 必须根据配置定义处理字段:
@@ -130,6 +131,7 @@ Projection mapper 必须根据配置定义处理字段:
 - 人工保留字段默认不覆盖已有值。
 - 系统覆盖字段必须显式列出后才允许覆盖。
 - 写入 key 必须稳定，避免重复创建或误更新。
+- 结构化合并策略必须显式声明策略名和全部上下文，例如 `periodic_max_numeric` 同时声明锚点字段、周期天数和本次业务日期；通用 Feishu handler 只执行配置，不硬编码业务表字段名。
 
 Projection mapper 不能:
 

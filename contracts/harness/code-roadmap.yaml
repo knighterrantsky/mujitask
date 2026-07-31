@@ -563,7 +563,9 @@ features:
       - The task and workflow are independent and must not import another influencer workflow, job, projection, mapper, or field contract.
       - Every parseable source SKU is eligible regardless of influencer-search or product status; delisted and region-unavailable acceptance uses contract fixtures without external probing.
       - Product videos use all publish dates, sold_count window 28, strict configurable threshold, per-product creator max, and cross-product creator max.
-      - The target row identity is canonical creator_id and 关联商品销量 uses max merge without changing the default additive behavior used by existing flows.
+      - The target row identity is canonical creator_id and 关联商品销量 uses a configurable per-creator periodic max merge without changing the default additive behavior used by existing flows.
+      - The Task snapshots an Asia/Shanghai business date and a positive related_product_sales_reset_days value; missing legacy values default to 28 days.
+      - Expired rows reset only on the next qualifying creator observation; missing, invalid, or future record dates are repaired without lowering sales and emit a warning.
       - No source table status field is written.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 

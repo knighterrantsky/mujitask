@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from automation_framework.runtime import WorkflowSpec
 
 from automation_business_scaffold.contracts.workflow import RuntimeTaskShell
@@ -11,6 +14,7 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
 )
 from automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy import (
     normalize_min_video_sales_28d,
+    normalize_related_product_sales_reset_days,
 )
 from automation_business_scaffold.domains.tiktok.workflows import (
     build_monitor_tk_influencers_workflow,
@@ -43,12 +47,22 @@ class MonitorTKInfluencersTask(RuntimeTaskShell):
         payload["min_video_sales_28d"] = normalize_min_video_sales_28d(
             payload.get("min_video_sales_28d")
         )
+        payload[
+            "related_product_sales_reset_days"
+        ] = normalize_related_product_sales_reset_days(
+            payload.get("related_product_sales_reset_days")
+        )
+        payload["task_business_date"] = _task_business_date()
         payload.setdefault("source_table_ref", SOURCE_TABLE_REF)
         payload.setdefault("target_table_ref", TARGET_TABLE_REF)
         payload.setdefault("fastmoss_live_fetch", True)
         payload.setdefault("fastmoss_phone_env", "FASTMOSS_PHONE")
         payload.setdefault("fastmoss_password_env", "FASTMOSS_PASSWORD")
         return run_monitor_tk_influencers_request(payload)
+
+
+def _task_business_date() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
 
 __all__ = [

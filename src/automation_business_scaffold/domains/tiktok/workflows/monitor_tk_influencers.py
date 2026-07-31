@@ -23,7 +23,6 @@ from automation_business_scaffold.domains.tiktok.jobs import (
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
-    DEFAULT_CONTRACT_REVISION,
     STANDARD_ERROR_CONTRACT,
     STANDARD_SUMMARY_CONTRACT,
     influencer_idempotency_rules,
@@ -40,7 +39,7 @@ def build_monitor_tk_influencers_definition() -> WorkflowDefinition:
     return WorkflowDefinition(
         task_code=INFLUENCER_MONITOR_TASK_CODE,
         workflow_code=WORKFLOW_CODE,
-        contract_revision=DEFAULT_CONTRACT_REVISION,
+        contract_revision="2",
         trigger_modes=("schedule", "manual", "cli"),
         entry_stage_code="read_competitor_products",
         payload_contract=contract(
@@ -49,6 +48,16 @@ def build_monitor_tk_influencers_definition() -> WorkflowDefinition:
                 "min_video_sales_28d",
                 "Strict minimum FastMoss video-product sales in the 28-day window; default 50.",
                 type_hint="int",
+            ),
+            optional_field(
+                "related_product_sales_reset_days",
+                "Positive per-creator target sales peak reset period in Shanghai natural days; default 28.",
+                type_hint="int",
+            ),
+            optional_field(
+                "task_business_date",
+                "Internal immutable Asia/Shanghai task creation date shared by all jobs and retries.",
+                type_hint="str",
             ),
             optional_field(
                 "source_table_ref",

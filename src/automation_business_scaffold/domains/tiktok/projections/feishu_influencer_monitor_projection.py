@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy import (
+    normalize_related_product_sales_reset_days,
+)
 
 
 INFLUENCER_MONITOR_FIELD_ALLOWLIST = (
@@ -33,7 +38,18 @@ def influencer_monitor_projection_mapper(
         record.get("creator_id"),
         creator_fact.get("unique_id"),
     )
-    today = _first_text(record.get("write_date"), payload.get("write_date"), date.today())
+    today = _first_text(
+        record.get("task_business_date"),
+        payload.get("task_business_date"),
+        record.get("write_date"),
+        payload.get("write_date"),
+        _current_business_date(),
+    )
+    reset_days = normalize_related_product_sales_reset_days(
+        record.get("related_product_sales_reset_days")
+        if record.get("related_product_sales_reset_days") not in (None, "")
+        else payload.get("related_product_sales_reset_days")
+    )
     fields = _compact(
         {
             "达人ID": creator_id,
@@ -78,7 +94,14 @@ def influencer_monitor_projection_mapper(
             "fields": fields,
             "update_excluded_fields": ["记录日期"],
             "update_replace_fields": ["达人头像"],
-            "update_merge_strategies": {"关联商品销量": "max_numeric"},
+            "update_merge_strategies": {
+                "关联商品销量": {
+                    "strategy": "periodic_max_numeric",
+                    "anchor_field": "记录日期",
+                    "period_days": reset_days,
+                    "current_date": today,
+                }
+            },
             "skip_unchanged_update_fields": True,
             "conditional_update_fields": ["更新日期"],
             "source_context": {
@@ -93,6 +116,10 @@ def influencer_monitor_projection_mapper(
             },
         }
     )
+
+
+def _current_business_date() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
 
 def _creator_metric(creator_fact: Mapping[str, Any], *names: str) -> Any:

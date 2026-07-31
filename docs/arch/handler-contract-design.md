@@ -500,9 +500,12 @@ P0 冻结以下边界:
 | --- | --- |
 | `records[].op` | `append`、`update`、`upsert` 三类稳定写命令；真实 Feishu API 的 create/update 细节不外泄给 workflow。 |
 | `records[].fields` | 已由 projection mapper 产出的飞书字段名和值；handler 只负责 schema 校验、附件/日期等传输格式转换和写入。 |
+| `records[].update_merge_strategies` | 可选字段合并策略；字符串保留简单策略兼容性，结构化策略可声明 `strategy` 及所需的锚点字段、周期和业务日期。 |
 | `business_entity_key` | 业务幂等键，新增行时用于去重或冲突处理；更新行优先使用 `record_id`。 |
 | `idempotency_context.dedupe_key` | Runtime job 重跑时避免重复副作用的稳定键。 |
 | `records[].status` | 行级结果，允许 `success`、`skipped`、`failed`；父 workflow 根据行级结果汇总 `partial_success`。 |
+
+`periodic_max_numeric` 是配置驱动的结构化合并策略：projection mapper 指定数值字段对应的 `anchor_field`、正整数 `period_days` 和固定 `current_date`。Feishu handler 读取目标行后，周期内执行数值 `max`；到期时写入本次值并刷新锚点；锚点为空、非法或在未来时记录 warning，按数值 `max` 安全修复。handler 不内置具体业务字段名。
 
 ### 5.4 Projection Mapper
 
