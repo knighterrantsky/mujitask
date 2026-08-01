@@ -86,7 +86,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                     "SKUID": " 123 ",
                     "达人ID": " creator ",
                     "检查时间": "2026/05/20",
-                    "播放量": "1,234",
+                    "播放量(W)": 0.1234,
                     "视频数量": 2,
                     "更新时间": "2026-05-21T09:00:00",
                 },
@@ -101,7 +101,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                     "视频链接": {"link": "https://example.test/v"},
                     "视频发布时间": "2026.05.18",
                     "检查时间": "2026-05-19",
-                    "播放量": "5",
+                    "播放量(W)": 0.0005,
                     "视频数量": "1",
                     "更新时间": "2026/05/22",
                 },
@@ -118,7 +118,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
             "creator_unique_id": "creator",
             "existing_video_url": "",
             "existing_video_published_date": "",
-            "existing_play_count": 1234,
+            "existing_play_count": 0.1234,
             "existing_video_count": 2,
             "last_checked_at": "2026-05-20",
             "last_updated_at": "2026-05-21",
@@ -126,7 +126,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                 "SKUID": " 123 ",
                 "达人ID": " creator ",
                 "检查时间": "2026/05/20",
-                "播放量": "1,234",
+                "播放量(W)": 0.1234,
                 "视频数量": 2,
                 "更新时间": "2026-05-21T09:00:00",
             },
@@ -142,7 +142,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                     "SKUID": " 123 ",
                     "达人ID": " creator ",
                     "检查时间": "2026/05/20",
-                    "播放量": "1,234",
+                    "播放量(W)": 0.1234,
                     "视频数量": 2,
                     "更新时间": "2026-05-21T09:00:00",
                 },
@@ -155,7 +155,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
             "creator_unique_id": "creator4",
             "existing_video_url": "https://example.test/v",
             "existing_video_published_date": "2026-05-18",
-            "existing_play_count": 5,
+            "existing_play_count": 0.0005,
             "existing_video_count": 1,
             "last_checked_at": "2026-05-19",
             "last_updated_at": "2026-05-22",
@@ -165,7 +165,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                 "视频链接": {"link": "https://example.test/v"},
                 "视频发布时间": "2026.05.18",
                 "检查时间": "2026-05-19",
-                "播放量": "5",
+                "播放量(W)": 0.0005,
                 "视频数量": "1",
                 "更新时间": "2026/05/22",
             },
@@ -183,7 +183,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                     "视频链接": {"link": "https://example.test/v"},
                     "视频发布时间": "2026.05.18",
                     "检查时间": "2026-05-19",
-                    "播放量": "5",
+                    "播放量(W)": 0.0005,
                     "视频数量": "1",
                     "更新时间": "2026/05/22",
                 },
@@ -925,7 +925,7 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(
                     "视频链接": "",
                     "视频发布时间": "",
                     "检查时间": "",
-                    "播放量": 0,
+                    "播放量(W)": 0,
                     "视频数量": 0,
                 },
                 "mock_fastmoss_video_overviews": {
@@ -953,14 +953,14 @@ def test_creator_video_metric_refresh_persists_snapshots_and_writes_aggregate(
             "link": "https://www.tiktok.com/@creator/video/2",
             "text": "https://www.tiktok.com/@creator/video/2",
         },
-        "播放量": "<1W",
+        "播放量(W)": 0.004,
         "视频数量": 2,
         "视频发布时间": "2026-05-19",
         "更新时间": "2026-05-28",
     }
 
 
-def test_creator_video_metric_refresh_writes_less_than_1w_when_existing_play_count_blank(
+def test_creator_video_metric_refresh_writes_numeric_w_when_existing_play_count_blank(
     monkeypatch, runtime_db_url
 ) -> None:
     fact_store = TKFactStore(db_url=runtime_db_url)
@@ -1025,12 +1025,12 @@ def test_creator_video_metric_refresh_writes_less_than_1w_when_existing_play_cou
     write_payload = captured["payload"]
     assert isinstance(write_payload, dict)
     assert write_payload["records"][0]["fields"] == {
-        "播放量": "<1W",
+        "播放量(W)": 0.5866,
         "更新时间": "2026-05-31",
     }
     assert result.status == "success"
     assert result.result["feishu_written"] is True
-    assert result.result["written_fields"] == ["播放量", "更新时间"]
+    assert result.result["written_fields"] == ["播放量(W)", "更新时间"]
 
 
 def test_creator_video_metric_refresh_overview_failure_writes_no_partial_feishu(
@@ -1743,7 +1743,7 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "text": "https://www.tiktok.com/@creator/video/123",
         },
         "视频发布时间": "2026-05-20",
-        "播放量": "<1W",
+        "播放量(W)": 0.0042,
         "视频数量": 2,
         "更新时间": "2026-05-22",
     }
@@ -1758,7 +1758,7 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "checked_at": "2026-05-22",
             "existing_video_url": "https://www.tiktok.com/@creator/video/existing",
             "existing_video_published_date": "2026-05-18",
-            "existing_play_count": 40000,
+            "existing_play_count": 4.0,
             "existing_video_count": 1,
         },
         {},
@@ -1768,7 +1768,7 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "link": "https://www.tiktok.com/@creator/video/123",
             "text": "https://www.tiktok.com/@creator/video/123",
         },
-        "播放量": "12W",
+        "播放量(W)": 12.0345,
         "视频数量": 2,
         "更新时间": "2026-05-22",
     }
@@ -1785,12 +1785,12 @@ def test_outreach_projection_writes_metric_fields_and_can_overwrite_highest_vide
             "existing_video_published_date": "2026-05-20",
             "existing_play_count": None,
             "existing_video_count": 1,
-            "source_fields": {"播放量": ""},
+            "source_fields": {"播放量(W)": ""},
         },
         {},
     )
     assert blank_play_count["fields"] == {
-        "播放量": "<1W",
+        "播放量(W)": 0.5866,
         "更新时间": "2026-05-22",
     }
 
@@ -2072,7 +2072,7 @@ def test_outreach_summary_uses_row_level_metric_refresh_counts() -> None:
                         "video_count": 2,
                         "total_play_count": 40,
                         "feishu_written": True,
-                        "written_fields": ["视频链接", "播放量", "视频数量"],
+                        "written_fields": ["视频链接", "播放量(W)", "视频数量"],
                     },
                 },
                 {

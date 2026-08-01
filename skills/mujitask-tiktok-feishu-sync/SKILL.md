@@ -188,6 +188,20 @@ Rules:
 - User says `不限制候选数`, `全部`, or `所有满足条件商品` -> `0`.
 - User says `最多 50 个`, `抓 50 条`, or `候选 50 条` -> `50`.
 
+### `creator_sold_count_min`
+
+Strict lower bound for a creator's sales on the current source product.
+
+Defaults:
+
+- `influencer_pool_sync`: `50`
+
+Rules:
+
+- Extract only when the user configures the influencer-pool creator sales threshold.
+- The comparison remains strict greater-than; a value equal to the threshold does not qualify.
+- The value must be a non-negative integer.
+
 ### `batch_keyword_items`
 
 Confirmed batch keyword rows containing only keyword and sales threshold.
@@ -242,6 +256,10 @@ Default inputs:
 - Conversation activation: explicit manual submission only
 
 Use when the user explicitly asks to sync influencer-pool data, expand influencers from competitor products, or update `TK达人池`.
+
+Default inputs:
+
+- `creator_sold_count_min`: `50`
 
 ### `influencer_outreach_sync`
 
@@ -385,7 +403,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor
 ### `influencer_pool_sync`
 
 ```bash
-bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync"
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync" --creator-sold-count-min "<creator_sold_count_min>"
 ```
 
 ### `influencer_outreach_sync`
@@ -580,6 +598,10 @@ Reply:
 
 User: 达人池同步
 Intent: `influencer_pool_sync`
+Inputs:
+
+- `creator_sold_count_min`: `50`
+
 Reply:
 
 ```text

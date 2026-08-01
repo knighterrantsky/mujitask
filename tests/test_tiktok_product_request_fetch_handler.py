@@ -263,6 +263,34 @@ def test_tiktok_product_request_fetch_missing_router_data_requests_browser_fallb
     assert result.result["request_attempt"]["fallback_signal"] is True
 
 
+def test_tiktok_product_request_fetch_unusual_activity_requests_browser_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fetch(product_url: str, *, timeout: int = 30, session=None, request_pacer=None):  # noqa: ANN001
+        del product_url, timeout, session, request_pacer
+        raise TikTokProductExtractionError("Request blocked due to unusual activity. Please try again later.")
+
+    monkeypatch.setattr(handler_module, "fetch_tiktok_product_record", fake_fetch)
+
+    result = handler_module.tiktok_product_request_fetch_handler(
+        _context(
+            {
+                "product_identity": {
+                    "product_id": "1730892854181139253",
+                    "product_url": "https://www.tiktok.com/shop/pdp/1730892854181139253",
+                },
+                "fallback_allowed": True,
+            }
+        )
+    )
+
+    assert result.status == "fallback_required"
+    assert result.result["fallback_required"] is True
+    assert result.result["fallback_reason"] == "request_signal_security_check"
+    assert result.result["request_attempt"]["attempted"] is True
+    assert result.result["request_attempt"]["fallback_signal"] is True
+
+
 def test_tiktok_product_request_fetch_unavailable_is_terminal_without_browser_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

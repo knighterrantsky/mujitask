@@ -583,10 +583,10 @@ result 只保存下游 summary 所需的 compact 结构：
 | `关联节日` | 全部 qualifying product hits 对应来源行的节日 | 标准化文本后集合并集，不删除目标行有效值 |
 | `关联商品销量` | `creator_run_max_sales_28d` | 周期未到期取 `max(existing, observed)`；周期到期时写 `observed`，允许低于旧周期值 |
 | `达人头像` | FastMoss `avatar_url` 物化后的稳定 asset ref | 物化成功时填充或刷新；空值或物化失败不清除目标行有效头像 |
-| `粉丝数` | FastMoss `follower_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；不参与筛选；`>=10000` 除以 `10000` 后四舍五入到最近整数并显示为 `xW`，`<10000` 显示为 `小于1W` |
-| `28天视频数` | FastMoss `aweme_28d_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖 |
-| `带货视频 GMV` | FastMoss `video_sale_amount` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；展示规则与 `粉丝数` 相同 |
-| `带货直播 GMV` | FastMoss `live_sale_amount` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；展示规则与 `粉丝数` 相同 |
+| `粉丝数(W)` | FastMoss `follower_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；不参与筛选；写入原始值除以 `10000` 后的 JSON 数字 |
+| `28天视频数` | FastMoss `aweme_28d_count` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；写入 JSON 数字 |
+| `带货视频 GMV(W)` | FastMoss `video_sale_amount` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；写入原始值除以 `10000` 后的 JSON 数字 |
+| `带货直播 GMV(W)` | FastMoss `live_sale_amount` | 达人详情成功且数值有效时刷新；空值或非法值不覆盖；写入原始值除以 `10000` 后的 JSON 数字 |
 | `合作店铺` | FastMoss `cooperation_shops` | 标准化后与目标行做集合并集；只写飞书字段允许选项；未知选项跳过并 warning；不删除已有值 |
 | `达人联系方式` | FastMoss normalized contacts | 邮箱优先，否则取第一个有效联系方式；空值不覆盖 |
 | `记录日期` | Task 业务日期 | 创建、周期重置或空/非法/未来锚点修复时写；普通周期内新高不移动 |

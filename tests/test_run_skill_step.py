@@ -1400,8 +1400,16 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
     assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
     assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
     assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
+    assert "creator_sold_count_min=50" in params
     assert emitted["request_id"] == "req-influencer-123"
     assert emitted["request_status"] == "pending"
+
+    second_exit_code = module.main(
+        ["influencer-pool-sync-submit", "--creator-sold-count-min", "100"]
+    )
+
+    assert second_exit_code == 0
+    assert "creator_sold_count_min=100" in list(captured_calls[1]["params"])
 
 
 def test_main_influencer_outreach_sync_returns_after_submit(tmp_path, monkeypatch):

@@ -53,6 +53,11 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 type_hint="dict[str, Any]",
             ),
             optional_field(
+                "creator_sold_count_min",
+                "Strict lower bound for source-product creator sales; defaults to 50.",
+                type_hint="int",
+            ),
+            optional_field(
                 "reply_target",
                 "Reply target used by the final outbox.",
                 type_hint="str",

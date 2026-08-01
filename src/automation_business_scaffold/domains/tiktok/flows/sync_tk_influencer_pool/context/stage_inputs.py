@@ -553,7 +553,7 @@ def _timeout_seconds_for(job_code: str) -> float:
 def _build_candidate_filter(request_payload: Mapping[str, Any]) -> dict[str, Any]:
     filter_spec = dict(request_payload.get("candidate_filter") or {})
     filter_spec.setdefault("candidate_status", ["", "待查找", "失败重试", "处理中"])
-    filter_spec.setdefault("skip_product_status", ["已下架/区域不可售"])
+    filter_spec.pop("skip_product_status", None)
     source_record_ids = list(request_payload.get("source_record_ids") or [])
     if source_record_ids:
         filter_spec["source_record_ids"] = source_record_ids
@@ -697,6 +697,8 @@ def _relation_policy_from_request(request_payload: Mapping[str, Any]) -> dict[st
         value = request_payload.get(key)
         if value not in (None, ""):
             policy.setdefault(key, value)
+    policy.setdefault("creator_sold_count_min", 50)
+    policy.setdefault("creator_follower_count_min", 5000)
     return policy
 
 def _creator_relation_policy_from_request(request_payload: Mapping[str, Any]) -> dict[str, Any]:

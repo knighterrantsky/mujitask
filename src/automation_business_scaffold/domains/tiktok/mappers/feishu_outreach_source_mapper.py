@@ -13,7 +13,7 @@ OUTREACH_READ_FIELD_NAMES = (
     "视频链接",
     "视频发布时间",
     "检查时间",
-    "播放量",
+    "播放量(W)",
     "视频数量",
     "更新时间",
 )
@@ -48,8 +48,8 @@ def outreach_source_adapter(
                 fields, "视频发布时间", "existing_video_published_date", "video_published_date"
             )
         )
-        existing_play_count = _field_optional_int(
-            fields, "播放量", "existing_play_count", "play_count"
+        existing_play_count = _field_optional_number(
+            fields, "播放量(W)", "existing_play_count", "play_count"
         )
         existing_video_count = _field_int(fields, "视频数量", "existing_video_count", "video_count")
         last_checked_at = _normalize_date(_field_text(fields, "检查时间", "last_checked_at"))
@@ -127,7 +127,7 @@ def group_outreach_rows_by_product(
                     "existing_video_published_date": _text(
                         row.get("existing_video_published_date")
                     ),
-                    "existing_play_count": _optional_int(row.get("existing_play_count")),
+                    "existing_play_count": _optional_number(row.get("existing_play_count")),
                     "existing_video_count": _int(row.get("existing_video_count")),
                     "last_checked_at": _text(row.get("last_checked_at")),
                     "last_updated_at": _text(row.get("last_updated_at")),
@@ -183,21 +183,21 @@ def _field_int(fields: Mapping[str, Any], *names: str) -> int:
     return _int(_field_text(fields, *names))
 
 
-def _field_optional_int(fields: Mapping[str, Any], *names: str) -> int | None:
+def _field_optional_number(fields: Mapping[str, Any], *names: str) -> float | None:
     for name in names:
         if name not in fields:
             continue
         text = _text_value(fields.get(name))
         if not text:
             return None
-        return _int(text)
+        return _number(text)
     return None
 
 
-def _optional_int(value: Any) -> int | None:
+def _optional_number(value: Any) -> float | None:
     if value in (None, ""):
         return None
-    return _int(value)
+    return _number(value)
 
 
 def _request_query_window(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -336,6 +336,16 @@ def _int(value: Any) -> int:
         return int(float(text))
     except ValueError:
         return 0
+
+
+def _number(value: Any) -> float | None:
+    text = _text_value(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _first_non_empty(*values: Any) -> str:

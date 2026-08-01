@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import requests
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
@@ -28,9 +28,6 @@ FASTMOSS_ACCOUNT_CENTER_REFERER = "https://www.fastmoss.com/zh/account/center"
 FASTMOSS_AUTHOR_SEARCH_REFERER_TEMPLATE = (
     "https://www.fastmoss.com/zh/influencer/search?"
     "shop_window={shop_window}&page={page}&words={words}&words_search_type={words_search_type}"
-)
-FASTMOSS_GOODS_SEARCH_REFERER_TEMPLATE = (
-    "https://www.fastmoss.com/zh/e-commerce/search?region={region}&page={page}&words={words}"
 )
 FASTMOSS_GOODS_DETAIL_REFERER_TEMPLATE = "https://www.fastmoss.com/zh/e-commerce/detail/{product_id}"
 FASTMOSS_AUTHOR_DETAIL_REFERER_TEMPLATE = "https://www.fastmoss.com/zh/influencer/detail/{uid}"
@@ -744,6 +741,7 @@ class FastMossHTTPSession:
                 words=normalized_words,
                 page=page,
                 region=region_value,
+                off_shelves=_clean_params(extra_params).get("off_shelves"),
             ),
             region=region_value,
             stage="product.search",
@@ -1497,12 +1495,16 @@ class FastMossHTTPSession:
         words: str,
         page: int,
         region: str,
+        off_shelves: Any = None,
     ) -> str:
-        return FASTMOSS_GOODS_SEARCH_REFERER_TEMPLATE.format(
-            region=region,
-            page=page,
-            words=words,
-        )
+        query: dict[str, Any] = {
+            "region": region,
+            "page": page,
+            "words": words,
+        }
+        if off_shelves not in (None, ""):
+            query["off_shelves"] = off_shelves
+        return f"{FASTMOSS_BASE_URL}/zh/e-commerce/search?{urlencode(query)}"
 
     def _build_author_detail_referer(self, uid: str | int) -> str:
         return FASTMOSS_AUTHOR_DETAIL_REFERER_TEMPLATE.format(uid=self._normalize_uid(uid))

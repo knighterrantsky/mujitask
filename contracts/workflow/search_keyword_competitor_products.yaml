@@ -96,6 +96,7 @@ stages:
     purpose: 汇总搜索、新增、跳过和刷新结果
 
 protected_invariants:
+  - FastMoss 商品搜索状态固定为全部；keyword_search_parameter_mapper 必须写入 filters.source_params.off_shelves=-1，/api/goods/V2/search 和 browser fallback 搜索页必须保留该参数，且不得生成或依赖 Next.js _rsc
   - 已存在商品直接跳过，不重复新增，也不重写现有记录
   - 新商品先写 SKU-ID、产品链接和 备注=通过搜索关键字：{关键词}
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
@@ -107,6 +108,7 @@ protected_invariants:
   - fastmoss_product_fetch、fastmoss_creator_fetch、fastmoss_shop_fetch、fastmoss_video_fetch 遇到 MSG_SAFE_0001 时必须返回业务化 browser request（兼容期可包含 fallback_required）、reason=fastmoss_api_security_verification 和脱敏 verification_request；成功解风控后只允许重试原 handler 一次
   - FastMoss 与 TikTok 商品页验证码逻辑独立；FastMoss browser fallback 使用 FastMoss/Tencent selector profile 和 framework SliderCaptchaResolver，并在本地短期 artifact_root 保留 slider_captcha_audit_artifact_refs；这些诊断引用不得成为 MinIO 对象或跨进程业务输入
   - 验证码等待只在已识别风控信号后发生；正常 FastMoss 搜索、正常 TikTok request、正常 TikTok 商品页采集不得进入滑块等待
+  - TikTok request 返回 Request blocked due to unusual activity 时属于明确风控信号，必须直接返回 fallback_required、reason=request_signal_security_check 并进入 TikTok browser fallback，不得按通用 request_failure 连续重试后终止
   - image_timeout_ms 是元素出现的最大等待，不是固定 sleep；滑动后最多轮询 5 秒验证结果，弹窗消失后延迟 2 秒二次确认
   - TikTok 商品页默认 simple_target=false；FastMoss/TikTok 可以共用 framework SliderCaptchaResolver，但不得共用业务 handler、成功判据或 cookie/token 持久化策略
   - slider 审计必须记录 ddddocr 原始坐标、坐标换算、拖动距离、前后截图、失败态文本、滑动后轮询结果和二次确认结果
@@ -114,6 +116,7 @@ protected_invariants:
   - FastMoss browser fallback 失败或 API 原接口重试后仍为 MSG_SAFE_0001 时，终态错误为 fastmoss_security_verification_required
   - FastMoss session/cookie 恢复属于 infrastructure/fastmoss；last_auth_failed_at 已标记的 cookie 不得复用，刷新后仍 auth 失败时终态错误为 fastmoss_session_conflict_or_external_login
   - 新商品详情抓取判定不可访问时，保留种子字段并写 商品状态=已下架/区域不可售
+  - 新商品详情抓取判定已下架或区域不可售时，必须继续 FastMoss 商品详情采集和 FastMoss 所属字段写回；该状态仅跳过 TikTok 浏览器兜底和媒体同步
   - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status or final result_status; pending/running/waiting/finished/cancelled are lifecycle states, success/partial_success/failed/skipped are terminal result_status values
   - Waiting competitor_row_refresh is the only pending row-level fallback fact, and task_execution is the browser task fact; handler output may request a browser handler, but executor/runtime owns browser task scheduling and browser result writeback to the original row job
   - TikTok browser fallback may substitute the current TikTok collection stage output only through task_execution.result_json normalized_product_result; local diagnostic artifact indexes are not downstream inputs or MinIO refs. FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage

@@ -45,10 +45,16 @@ def _map_influencer_pool_record(record: Mapping[str, Any], payload: Mapping[str,
             "关联节日": _list_text(record.get("holiday")),
             "关联商品销量": related_product_sales,
             "达人头像": _influencer_avatar_refs(record),
-            "粉丝数": _format_w_unit_display(_creator_metric(record, "follower_count", "fans_count")),
-            "28天视频数": _stringify_scalar(_creator_metric(record, "aweme_28d_count", "aweme_28_count", "video_count")),
-            "带货视频 GMV": _format_w_unit_display(_creator_metric(record, "video_sale_amount", "video_gmv")),
-            "带货直播 GMV": _format_w_unit_display(_creator_metric(record, "live_sale_amount", "live_gmv")),
+            "粉丝数(W)": _numeric_w_unit(_creator_metric(record, "follower_count", "fans_count")),
+            "28天视频数": _numeric_scalar(
+                _creator_metric(record, "aweme_28d_count", "aweme_28_count", "video_count")
+            ),
+            "带货视频 GMV(W)": _numeric_w_unit(
+                _creator_metric(record, "video_sale_amount", "video_gmv")
+            ),
+            "带货直播 GMV(W)": _numeric_w_unit(
+                _creator_metric(record, "live_sale_amount", "live_gmv")
+            ),
             "合作店铺": _influencer_shop_names(record),
             "达人联系方式": _creator_contact_text(record),
             "记录日期": date.today().isoformat(),
@@ -285,16 +291,18 @@ def _strip_entity_ref(value: Any) -> str:
     return text
 
 
-def _format_w_unit_display(value: Any) -> str:
-    if value in (None, ""):
-        return ""
+def _numeric_w_unit(value: Any) -> float | str:
     number = _number_value(value)
     if number is None:
-        return _text(value)
-    if abs(number) >= 10_000:
-        sign = "-" if number < 0 else ""
-        return f"{sign}{int(abs(number) / 10_000 + 0.5)}W"
-    return "小于1W"
+        return ""
+    return number / 10_000
+
+
+def _numeric_scalar(value: Any) -> int | float | str:
+    number = _number_value(value)
+    if number is None:
+        return ""
+    return int(number) if number.is_integer() else number
 
 
 def _stringify_scalar(value: Any) -> str:

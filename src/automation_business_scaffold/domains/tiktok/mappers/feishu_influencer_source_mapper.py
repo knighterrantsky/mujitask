@@ -21,7 +21,6 @@ def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Ma
             request_payload.get("max_source_rows"),
         )
     )
-    skip_statuses = set(_list_text(spec.get("skip_product_status")))
     candidate_status = _list_text(spec.get("candidate_status"))
     source_record_ids = {
         record_id
@@ -44,9 +43,6 @@ def _adapt_influencer_source_rows(raw_rows: list[Mapping[str, Any]], payload: Ma
             dropped_empty += 1
             continue
         product_status = _field_text(fields, "商品状态", "product_status")
-        if product_status and product_status in skip_statuses:
-            skipped_unavailable += 1
-            continue
         influencer_status = _field_text(fields, "达人查找状态", "influencer_search_status")
         if candidate_status and influencer_status not in set(candidate_status):
             skipped_status += 1

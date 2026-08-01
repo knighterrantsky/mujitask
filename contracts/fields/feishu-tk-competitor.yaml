@@ -37,8 +37,13 @@ auto_maintained_fields:
 
 pending_policy:
   candidate_when_any_auto_maintained_field_empty: true
-  skip_when_product_status:
-    - 已下架/区域不可售
+  unavailable_candidate_when_any_fastmoss_field_empty:
+    - Fastmoss价格
+    - 佣金率
+    - 昨日销量
+    - 近7天销量
+    - 近90天销量
+  skip_when_product_status: []
   non_pending_fields:
     - 商品状态
     - 达人查找状态
@@ -192,7 +197,7 @@ fields:
     update_policy: system_overwrite_on_unavailable
     overwrite_policy: system_may_write_status
     write_target: feishu.TK竞品收集.商品状态
-    reset_rule: 人工修改 产品链接 或 SKU-ID 后，需要人工清空本字段才重新抓取
+    reset_rule: 人工修改 产品链接 或 SKU-ID 后，需要人工清空本字段才重新抓取 TikTok 商品侧信息；FastMoss 补齐和达人池采集不受本字段阻止
 
   - display_name: 达人查找状态
     canonical_name: influencer_search_status

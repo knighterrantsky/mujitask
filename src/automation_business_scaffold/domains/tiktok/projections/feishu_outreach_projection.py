@@ -36,9 +36,11 @@ def outreach_result_projection_mapper(record: Mapping[str, Any], payload: Mappin
     if published_date and not _text_value(existing_published_date):
         fields["视频发布时间"] = published_date
     if "total_play_count" in record or "play_count" in record:
-        play_count = _format_feishu_play_count(_first_non_empty(record.get("total_play_count"), record.get("play_count")))
-        if play_count != _existing_play_count_display(record):
-            fields["播放量"] = play_count
+        play_count = _play_count_w(
+            _first_non_empty(record.get("total_play_count"), record.get("play_count"))
+        )
+        if play_count != _existing_play_count_w(record):
+            fields["播放量(W)"] = play_count
     if "video_count" in record:
         video_count = _int(record.get("video_count"))
         if video_count != _int(_first_non_empty(record.get("existing_video_count"), _mapping(record.get("source_fields")).get("视频数量"))):
@@ -77,21 +79,18 @@ def _link_value(value: Any) -> Any:
     return {"link": url, "text": url} if url else ""
 
 
-def _format_feishu_play_count(value: Any) -> str:
-    play_count = max(0, _int(value))
-    if play_count < 10000:
-        return "<1W"
-    return f"{play_count // 10000}W"
+def _play_count_w(value: Any) -> float:
+    return max(0, _int(value)) / 10_000
 
 
-def _existing_play_count_display(record: Mapping[str, Any]) -> str:
+def _existing_play_count_w(record: Mapping[str, Any]) -> float | None:
     source_fields = _mapping(record.get("source_fields"))
-    if "播放量" in source_fields:
-        return _text_value(source_fields.get("播放量"))
+    if "播放量(W)" in source_fields:
+        return _optional_number(source_fields.get("播放量(W)"))
     existing_play_count = record.get("existing_play_count")
     if existing_play_count not in (None, ""):
-        return _format_feishu_play_count(existing_play_count)
-    return ""
+        return _optional_number(existing_play_count)
+    return None
 
 
 def _text_value(value: Any) -> str:
@@ -110,6 +109,16 @@ def _int(value: Any) -> int:
         return int(float(text))
     except (TypeError, ValueError):
         return 0
+
+
+def _optional_number(value: Any) -> float | None:
+    text = _text_value(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _source_context_from_record(record: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

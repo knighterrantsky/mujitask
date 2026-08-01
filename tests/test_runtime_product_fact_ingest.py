@@ -405,14 +405,7 @@ def test_product_fact_browser_fallback_path_from_request_handler(
     )
     assert browser_worker["execution"]["item_code"] == "tiktok_product_browser_fetch"
     assert browser_worker["execution_status"] == "success"
-    assert browser_worker["parent_updates"] == [
-            {
-                "request_id": request_id,
-                "stage_code": "selection_row_browser_fallback",
-                "released": True,
-                "next_executor_status": "pending",
-            }
-        ]
+    assert "parent_updates" not in browser_worker
 
     after_browser_wait = runtime_orchestrator.execute_executor_once(_runtime_params(runtime_db_url))
     assert after_browser_wait["current_stage"] == "collect_selection_rows"

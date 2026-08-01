@@ -1783,7 +1783,10 @@ def test_keyword_search_parameter_mapper_builds_fastmoss_search_payload() -> Non
     assert mapped["search_mode"] == "keyword"
     assert mapped["keyword"] == SEARCH_QUERY
     assert mapped["search_query"] == SEARCH_QUERY
-    assert mapped["filters"] == {"country_code": "US"}
+    assert mapped["filters"] == {
+        "country_code": "US",
+        "source_params": {"off_shelves": -1},
+    }
     assert mapped["limit"] == 5
     assert mapped["sort"] == {"field": "day7_sold_count", "direction": "desc", "source_order": "2,2"}
     assert mapped["output_conditions"]["business_conditions"]["min_day7_sold_count"] == "200"
@@ -1822,6 +1825,66 @@ def test_keyword_search_parameter_mapper_applies_selection_defaults() -> None:
         "min_day7_sold_count": "500",
         "min_price_range_max_amount": "10.99",
     }
+    assert mapped["filters"]["source_params"] == {"off_shelves": -1}
+
+
+def test_keyword_search_parameter_mapper_forces_all_product_statuses() -> None:
+    mapped = keyword_search_parameter_mapper(
+        {
+            "search_keyword": SEARCH_QUERY,
+            "filters": {
+                "country_code": "US",
+                "source_params": {"off_shelves": 0, "category": "home"},
+            },
+        }
+    )
+
+    assert mapped["filters"]["source_params"] == {
+        "off_shelves": -1,
+        "category": "home",
+    }
+    assert "_rsc" not in mapped["filters"]["source_params"]
+
+
+def test_fastmoss_search_browser_fallback_preserves_all_status_parameter() -> None:
+    search_request = keyword_search_parameter_mapper(
+        {
+            "search_keyword": "swing ghost",
+            "filters": {"country_code": "US"},
+        }
+    )
+    fastmoss_settings = {
+        "base_url": "https://www.fastmoss.com",
+        "region": "US",
+    }
+
+    verification_request = fastmoss_security_handler._resolve_verification_request(
+        {},
+        search_request=search_request,
+    )
+    page_url = fastmoss_security_handler._build_fastmoss_security_page_url(
+        search_request,
+        verification_request=verification_request,
+        fastmoss_settings=fastmoss_settings,
+    )
+
+    assert verification_request["path"] == "/api/goods/V2/search"
+    assert verification_request["params"]["off_shelves"] == -1
+    assert page_url == (
+        "https://www.fastmoss.com/zh/e-commerce/search?"
+        "region=US&page=1&words=swing+ghost&off_shelves=-1"
+    )
+    assert "_rsc" not in page_url
+
+    stale_referer_page_url = fastmoss_security_handler._build_fastmoss_security_page_url(
+        search_request,
+        verification_request={
+            **verification_request,
+            "referer": "https://www.fastmoss.com/zh/e-commerce/search?region=US&page=1&words=swing+ghost",
+        },
+        fastmoss_settings=fastmoss_settings,
+    )
+    assert stale_referer_page_url == page_url
 
 
 def test_keyword_search_parameter_mapper_selection_total_sales_skips_day7_default() -> None:

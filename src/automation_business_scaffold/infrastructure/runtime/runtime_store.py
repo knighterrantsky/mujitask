@@ -811,6 +811,9 @@ class RuntimeStore:
         if finished_at is not None:
             assignments.append("finished_at = :finished_at")
             values["finished_at"] = finished_at
+        elif status in TERMINAL_REQUEST_STATUSES:
+            assignments.append("finished_at = COALESCE(finished_at, :finished_at)")
+            values["finished_at"] = values["updated_at"]
         with self._engine.begin() as connection:
             connection.execute(
                 self._text(

@@ -447,10 +447,11 @@ def test_competitor_row_refresh_returns_fastmoss_security_browser_fallback_reque
     ]
 
 
-def test_competitor_row_refresh_unavailable_skips_browser_media_and_fastmoss(
+def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fact_payloads: list[dict] = []
+    fastmoss_payloads: list[dict] = []
     write_payloads: list[dict] = []
 
     def fake_tiktok(context: HandlerContext) -> HandlerResult:
@@ -492,8 +493,32 @@ def test_competitor_row_refresh_unavailable_skips_browser_media_and_fastmoss(
             },
         )
 
-    def fail_if_called(context: HandlerContext) -> HandlerResult:
+    def fail_media(context: HandlerContext) -> HandlerResult:
         raise AssertionError(f"{context.handler_code} should not be called for unavailable products")
+
+    def fake_fastmoss(context: HandlerContext) -> HandlerResult:
+        fastmoss_payloads.append(dict(context.payload))
+        return HandlerResult.success(
+            context,
+            result={
+                "product_fact_bundle": {
+                    "products": [
+                        {
+                            "product_id": "123456789",
+                            "facts": {"commission_rate": "12%"},
+                        }
+                    ]
+                },
+                "metrics_snapshot": {
+                    "overview": {
+                        "fastmoss_price": "18.88",
+                        "yday_sold_count": "5",
+                        "day7_sold_count": "30",
+                        "day90_sold_count": "99",
+                    }
+                },
+            },
+        )
 
     def fake_fact(context: HandlerContext) -> HandlerResult:
         fact_payloads.append(dict(context.payload))
@@ -504,8 +529,8 @@ def test_competitor_row_refresh_unavailable_skips_browser_media_and_fastmoss(
         return HandlerResult.success(context, result={"written_count": 1})
 
     monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
-    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fail_if_called)
-    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fail_media)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
     monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
     monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
 
@@ -530,9 +555,92 @@ def test_competitor_row_refresh_unavailable_skips_browser_media_and_fastmoss(
         ("tiktok_request", "success"),
         ("browser_fallback", "skipped"),
         ("media_sync", "skipped"),
-        ("fastmoss_fetch", "skipped"),
+        ("fastmoss_fetch", "success"),
         ("fact_db_upsert", "success"),
         ("feishu_writeback", "success"),
     ]
+    assert len(fastmoss_payloads) == 1
     assert fact_payloads[0]["fact_bundle"]["products"][0]["status"] == "off_shelf_or_region_unavailable"
+    projection_fields = write_payloads[0]["records"][0]["projection_fields"]
+    assert projection_fields["商品状态"] == "已下架/区域不可售"
+    assert projection_fields["Fastmoss价格"] == "18.88"
+    assert projection_fields["佣金率"] == "12%"
+    assert projection_fields["近7天销量"] == "30"
+
+
+def test_competitor_row_refresh_unavailable_keeps_status_when_fastmoss_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_payloads: list[dict] = []
+
+    def fake_tiktok(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "normalized_product_result": {
+                    "product": {
+                        "product_id": "123456789",
+                        "normalized_url": "https://www.tiktok.com/shop/pdp/123456789",
+                        "status": "off_shelf_or_region_unavailable",
+                        "facts": {"availability_status": "unavailable"},
+                    },
+                    "fact_bundle": {
+                        "products": [
+                            {
+                                "product_id": "123456789",
+                                "status": "off_shelf_or_region_unavailable",
+                            }
+                        ]
+                    },
+                }
+            },
+        )
+
+    def fail_media(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} should not run for unavailable products")
+
+    def fail_fastmoss(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.failed(
+            context,
+            error=HandlerError(
+                error_type="request_failure",
+                error_code="fastmoss_request_failed",
+                message="FastMoss unavailable",
+                retryable=True,
+            ),
+        )
+
+    def fake_fact(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "database"})
+
+    def fake_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"written_count": 1})
+
+    monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
+    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fail_media)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fail_fastmoss)
+    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
+    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
+
+    result = handler_module.competitor_row_refresh_handler(
+        _context(
+            {
+                "source_record_id": "row-1",
+                "source_table_ref": "feishu://mujitask/TK竞品收集",
+                "product_identity": {
+                    "product_id": "123456789",
+                    "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                },
+                "source_context": {"source_fields": {"SKU-ID": "123456789"}},
+            }
+        )
+    )
+
+    assert result.status == "partial_success"
+    assert result.result["row_status"] == "unavailable"
     assert write_payloads[0]["records"][0]["projection_fields"]["商品状态"] == "已下架/区域不可售"
+    assert any(
+        step["step"] == "fastmoss_fetch" and step["status"] == "failed"
+        for step in result.result["step_timeline"]
+    )

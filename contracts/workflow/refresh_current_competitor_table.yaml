@@ -68,5 +68,6 @@ protected_invariants:
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch / fastmoss_security_browser_resolve child task_execution
   - 商品状态不是 13 个自动维护字段，不参与 pending 判断
   - 商品不可访问、已下架或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售
+  - 商品状态=已下架/区域不可售 只终止 TikTok 商品侧浏览器和媒体采集，不得终止 FastMoss 商品补齐；已标记记录仅在 FastMoss 所属字段缺失时进入后续定时补齐
 
 known_architecture_gaps: []

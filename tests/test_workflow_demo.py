@@ -61,6 +61,10 @@ def test_tiktok_fastmoss_product_ingest_workflow_uses_formal_runtime_shell():
 def test_cli_runner_lists_only_formal_runtime_tasks():
     assert list_registered_tasks() == [
         {
+            "name": "monitor_tk_influencers",
+            "description": "Submit, inspect, or advance the independent TK influencer monitoring request.",
+        },
+        {
             "name": "refresh_competitor_row_by_url",
             "description": "Submit, inspect, or advance a competitor row refresh runtime request located by product URL.",
         },
@@ -83,5 +87,9 @@ def test_cli_runner_lists_only_formal_runtime_tasks():
         {
             "name": "tiktok_fastmoss_product_ingest",
             "description": "Submit, inspect, or advance the TikTok plus FastMoss product ingest runtime request.",
+        },
+        {
+            "name": "tiktok_influencer_outreach_sync",
+            "description": "Submit, inspect, or advance the influencer outreach sync runtime request.",
         },
     ]

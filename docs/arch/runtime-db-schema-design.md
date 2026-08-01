@@ -81,6 +81,8 @@ Runtime DB 必须区分“执行生命周期”和“业务结果”。`status` 
 | `finished` | `task_request` / `api_worker_job` / `task_execution` | 运行生命周期结束，必须同时写入 `result_status` |
 | `cancelled` | `task_request` / `api_worker_job` / `task_execution` | 执行被取消或取消链路已收敛；它是生命周期状态，不是业务结果 |
 
+Runtime 记录首次进入 `finished` 或 `cancelled` 终态时必须写入 `finished_at`；后续重复的终态更新只能补齐空值，不得覆盖已经存在的结束时间。`task_request` 通过兼容状态 `success`、`partial_success`、`failed` 或 `skipped` 进入 `finished` 时同样遵守该约束。
+
 统一结果状态:
 
 | result_status | 含义 |

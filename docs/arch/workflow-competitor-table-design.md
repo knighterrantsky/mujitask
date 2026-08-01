@@ -73,7 +73,7 @@ flowchart TD
 
 `competitor_row_refresh` 是行级 job_code。TikTok request、media sync、FastMoss fetch、Fact DB upsert 和飞书写回是该 job 内部步骤，不作为同一条飞书记录的并行 sibling jobs。browser fallback 使用独立 `task_execution`，因为它需要独占 browser profile 资源；runtime 关联由 executor/runtime 根据唯一 waiting row job 和 browser task fact 维护，不通过 handler payload 传递 `fallback_source_job_id` 这类字段。
 
-TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或缺少商品详情脚本时，`competitor_row_refresh` 才能返回业务化 browser request；兼容期可带 `fallback_required`。executor/runtime 派发 `tiktok_product_browser_fetch` 子执行，并把当前行级主 job / request 置为 `status=waiting`。商品不可访问、已下架或区域不可售是 request 阶段可判定的终态，应直接写回 `商品状态=已下架/区域不可售` 并停止该行后续 browser fallback、媒体同步和 FastMoss 补齐；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
+TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或缺少商品详情脚本时，`competitor_row_refresh` 才能返回业务化 browser request；兼容期可带 `fallback_required`。executor/runtime 派发 `tiktok_product_browser_fetch` 子执行，并把当前行级主 job / request 置为 `status=waiting`。商品已下架或区域不可售是 request 阶段可判定的 TikTok 可用性终态，应直接写回 `商品状态=已下架/区域不可售` 并停止 browser fallback 与媒体同步，但必须继续 FastMoss 补齐；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
 
 ### 3.2.1 行级逻辑阻塞与 Browser Fallback 通信
 
@@ -124,7 +124,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 - `TK竞品收集` 的 13 个自动维护字段定义。
 - 商品身份提取规则，例如 `SKU-ID` 在本流程中映射为商品 ID / `product_id`。
 - 候选判断规则，即“只有 13 个自动维护字段存在空值的记录才进入刷新候选集”。
-- `商品状态 = 已下架/区域不可售` 的跳过规则。
+- `商品状态 = 已下架/区域不可售` 时只按 FastMoss 所属字段缺失判断候选的规则。
 - 空行、坏行、重复行的丢弃与去重规则。
 - `source_rows`、`candidate_keys`、`writeback_context`、`adapter_summary` 的构造规则。
 
@@ -134,7 +134,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 - 哪些字段允许系统覆盖，哪些字段默认不覆盖人工值。
 - `商品状态` 不属于 13 个自动维护字段，也不参与 pending 判断。
 - `商品状态` 属于系统状态投影；当商品明确不可访问、已下架或区域不可售时，mapper 必须允许写回 `商品状态=已下架/区域不可售`。
-- `商品状态` 是系统覆盖字段，不属于人工保留字段；人工修改 `产品链接` 或 `SKU-ID` 后，需要人工清空该字段才重新进入抓取。
+- `商品状态` 是系统覆盖字段，不属于人工保留字段；人工修改 `产品链接` 或 `SKU-ID` 后，需要人工清空该字段才重新进入 TikTok 商品侧抓取，FastMoss 补齐与达人池采集不受影响。
 
 `feishu_table_read` / `feishu_table_write` 及其 `common` helper 只负责:
 
@@ -145,7 +145,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 它们不负责:
 
 - 定义竞品表的 13 个自动维护字段。
-- 定义 `已下架/区域不可售` 的业务跳过语义。
+- 定义 `已下架/区域不可售` 的 TikTok 终止、FastMoss 与达人池继续语义。
 - 决定一行是否属于待刷新候选。
 - 决定竞品表写回时哪些字段属于系统默认覆盖。
 
@@ -430,8 +430,7 @@ payload:
   "source_table_ref": "feishu://mujitask/TK竞品收集",
   "field_names": ["产品链接", "SKU-ID", "图片", "标题", "节日", "卖家", "价格", "Fastmoss价格", "佣金率", "昨日销量", "近7天销量", "近90天销量", "记录日期", "商品状态"],
   "filter_spec": {
-    "candidate_policy": "missing_auto_maintained_fields",
-    "skip_product_status": ["已下架/区域不可售"]
+    "candidate_policy": "missing_auto_maintained_fields"
   },
   "adapter_code": "competitor_table_source_adapter",
   "snapshot_policy": {

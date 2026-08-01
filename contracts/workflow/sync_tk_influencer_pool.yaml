@@ -20,6 +20,20 @@ projection_mappers:
   - influencer_pool_projection_mapper
   - competitor_influencer_status_projection_mapper
 
+payload_contract:
+  creator_sold_count_min:
+    type: integer
+    required: false
+    minimum: 0
+    default: 50
+    comparison: strict_greater_than
+    source_metric: fastmoss.product_related_creator.sold_count
+    compatibility: Existing nested relation_policy.creator_sold_count_min remains accepted.
+
+payload_defaults:
+  creator_sold_count_min: 50
+  creator_follower_count_min: 5000
+
 persistence_requirements:
   requires_fact_db: true
   requires_object_storage: true
@@ -60,16 +74,17 @@ stages:
 
 protected_invariants:
   - TK达人池 保持一人一行，按 达人ID upsert
+  - 达人筛选使用粉丝量严格大于 5000 且当前来源商品关系 sold_count 严格大于 creator_sold_count_min；销量参数默认 50，并允许在每次 Task 提交时配置
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 达人查找状态 的正式状态值只有 待查找、处理中、已完成、失败重试
-  - 商品状态=已下架/区域不可售 的竞品记录不进入达人查找
+  - 商品状态=已下架/区域不可售 不阻止竞品记录进入达人查找；候选资格只按 达人查找状态、有效商品身份和达人筛选阈值判断
   - 达人同步不新增业务专用 Runtime job 表，目标执行单元统一进入 api_worker_job
   - 达人同步按 商品发现 job + 达人同步 job 两层 fan-out，不按每个 API 拆 Runtime job，也不把整条商品下所有达人塞进一个大 job
   - product_creator_discovery / influencer_creator_sync 遇到 FastMoss auth/session/security 错误时必须进入 fastmoss_security_browser_fallback；browser 成功后只允许重试原 api_worker_job 一次，重试后仍失败则按该商品或达人失败收敛
   - influencer_creator_sync 必须在同一个业务 job 内完成达人详情、事实入库、达人池飞书 upsert；当某个商品下所有达人同步 job 都已终态时，同一个 job 同步回写该商品的达人查找状态
   - writeback_competitor_status 只作为无匹配达人、发现失败、重试耗尽或异常残留 source rows 的批量兜底和对账路径
   - 合作商品数 不作为本期更新字段
-  - 粉丝数、带货视频 GMV、带货直播 GMV 在数据库保留原始数字，飞书展示按整数 W 单位四舍五入格式化，小于 1W 显示为 小于1W
+  - 粉丝数(W)、带货视频 GMV(W)、带货直播 GMV(W) 写入原始数字除以 10000 后的 JSON 数字，28天视频数写 JSON 数字；不得写 W、小于1W 或数字字符串
   - 达人联系方式按邮箱优先选择；没有邮箱时选择第一个有效联系方式；没有任何联系方式时不写入且不覆盖已有值
 
 known_architecture_gaps: []

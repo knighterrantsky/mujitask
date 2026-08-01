@@ -27,6 +27,16 @@ _COMPETITOR_AUTO_FIELDS = (
     "记录日期",
 )
 
+_COMPETITOR_FASTMOSS_FIELDS = (
+    "Fastmoss价格",
+    "佣金率",
+    "昨日销量",
+    "近7天销量",
+    "近90天销量",
+)
+
+_UNAVAILABLE_PRODUCT_STATUS = "已下架/区域不可售"
+
 
 def _adapt_competitor_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
     spec = _mapping(payload.get("filter_spec"))
@@ -55,10 +65,20 @@ def _adapt_competitor_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[s
         if explicit_identity_lookup and not _identity_matches(identity, target_identity):
             continue
         product_status = _field_text(fields, "商品状态", "product_status")
-        if not explicit_row_selection and product_status and product_status in skip_statuses:
+        if (
+            not explicit_row_selection
+            and product_status
+            and product_status in skip_statuses
+            and product_status != _UNAVAILABLE_PRODUCT_STATUS
+        ):
             skipped_unavailable += 1
             continue
-        missing_auto_fields = [field for field in auto_fields if not _field_has_value(fields.get(field))]
+        candidate_fields = (
+            _COMPETITOR_FASTMOSS_FIELDS
+            if product_status == _UNAVAILABLE_PRODUCT_STATUS
+            else auto_fields
+        )
+        missing_auto_fields = [field for field in candidate_fields if not _field_has_value(fields.get(field))]
         if (
             not explicit_row_selection
             and candidate_policy == "missing_auto_maintained_fields"

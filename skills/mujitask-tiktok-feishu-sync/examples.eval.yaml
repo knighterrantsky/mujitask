@@ -67,7 +67,9 @@ cases:
   - id: influencer-pool-sync
     user: 达人池同步
     expected_intent: influencer_pool_sync
-    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync"
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync" --creator-sold-count-min "<creator_sold_count_min>"
+    expected_inputs:
+      creator_sold_count_min: 50
     expected_task_code: sync_tk_influencer_pool
     must_not_include:
       - keyword_competitor_search

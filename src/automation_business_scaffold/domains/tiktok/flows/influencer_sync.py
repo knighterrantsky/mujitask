@@ -797,8 +797,18 @@ def _related_creators(product_payload: Mapping[str, Any]) -> list[dict[str, Any]
 
 
 def _candidate_matches_policy(candidate: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
-    sold_min = int(policy.get("creator_sold_count_min") or policy.get("min_sold_count") or 50)
-    follower_min = int(policy.get("creator_follower_count_min") or policy.get("min_follower_count") or 5000)
+    sold_min = _policy_int(
+        policy,
+        "creator_sold_count_min",
+        "min_sold_count",
+        default=50,
+    )
+    follower_min = _policy_int(
+        policy,
+        "creator_follower_count_min",
+        "min_follower_count",
+        default=5000,
+    )
     metrics = coerce_mapping(candidate.get("metrics"))
     sold_count = _int_value(candidate.get("sold_count"), metrics.get("sold_count"), metrics.get("sales_count"))
     follower_count = _int_value(candidate.get("follower_count"), metrics.get("follower_count"), metrics.get("fans_count"))
@@ -833,8 +843,20 @@ def _normalize_creator_candidate(
         "display_name": first_non_empty(candidate.get("display_name"), candidate.get("nickname"), candidate.get("creator_name")),
         "metrics": {**metrics, "sold_count": sold_count, "follower_count": follower_count},
         "matched_conditions": {
-            "creator_sold_count_min": sold_count > int(relation_policy.get("creator_sold_count_min") or 50),
-            "creator_follower_count_min": follower_count > int(relation_policy.get("creator_follower_count_min") or 5000),
+            "creator_sold_count_min": sold_count
+            > _policy_int(
+                relation_policy,
+                "creator_sold_count_min",
+                "min_sold_count",
+                default=50,
+            ),
+            "creator_follower_count_min": follower_count
+            > _policy_int(
+                relation_policy,
+                "creator_follower_count_min",
+                "min_follower_count",
+                default=5000,
+            ),
         },
         "source_context": {
             **dict(source_context),
@@ -842,6 +864,18 @@ def _normalize_creator_candidate(
             "product_id": first_non_empty(source_context.get("product_id")),
         },
     }
+
+
+def _policy_int(
+    policy: Mapping[str, Any],
+    *keys: str,
+    default: int,
+) -> int:
+    for key in keys:
+        value = policy.get(key)
+        if value not in (None, ""):
+            return int(value)
+    return default
 
 
 def _creator_fetch_payload(payload: Mapping[str, Any], *, product_hits: list[dict[str, Any]]) -> dict[str, Any]:

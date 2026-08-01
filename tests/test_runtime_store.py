@@ -231,6 +231,36 @@ def test_runtime_status_lifecycle_is_separate_from_result_status(runtime_db_url)
     assert summary_ready.current_stage == "ready_for_summary"
 
 
+def test_terminal_task_request_update_sets_finished_at_once(runtime_db_url):
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold",
+        task_code="sync_tk_influencer_pool",
+        payload={"table_url": "https://example.com/table"},
+        requested_by="pytest",
+    )
+
+    finished = store.update_task_request(
+        request_id=request.request_id,
+        status="success",
+        current_stage="completed",
+    )
+
+    assert finished.status == "finished"
+    assert finished.result_status == "success"
+    assert finished.finished_at > 0.0
+    first_finished_at = finished.finished_at
+
+    updated_again = store.update_task_request(
+        request_id=request.request_id,
+        status="finished",
+        result_status="success",
+        summary={"total": 1},
+    )
+
+    assert updated_again.finished_at == first_finished_at
+
+
 def test_cancel_pending_request_finishes_cancelled(runtime_db_url):
     store = RuntimeStore(db_url=runtime_db_url)
     request = store.submit_task_request(

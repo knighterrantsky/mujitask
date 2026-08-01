@@ -87,9 +87,15 @@ pending_policy:
     - selection_record_id
   direct_product_mode_uses_payload_identity: true
   candidate_when_any_required_field_empty: true
+  unavailable_candidate_required_fields:
+    - 当前价格
+    - 总销量
+    - 上架日期
+    - 180天销量
+    - 出单种类占比图
+    - 销量趋势图
   ignore_empty_optional_fields_for_candidate: true
   skip_when_product_status:
-    - 已下架/区域不可售
     - 链接不可访问
 
 fields:

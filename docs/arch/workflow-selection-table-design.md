@@ -78,8 +78,8 @@ flowchart TD
     C1 -->|成功| E["4. Media sync"]
     D1 -->|成功| D3["使用 browser normalized result<br/>继续当前行级 pipeline"]
     D3 --> E
-    C1 -->|商品不可访问| C2["跳过 media/FastMoss/图表<br/>Fact DB upsert + 回写 商品状态=已下架/区域不可售"]
-    C2 --> G
+    C1 -->|商品已下架/区域不可售| C2["跳过 TikTok media<br/>保留 unavailable 状态"]
+    C2 --> F
     E --> F["5. FastMoss fetch"]
     F --> F1{"API 成功?"}
     F1 -->|风控/MSG_SAFE_0001| F2["5b. FastMoss browser task_execution<br/>刷新 cookie cache → 重试原 FastMoss API"]
@@ -217,7 +217,7 @@ flowchart TD
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `required_candidate_fields` | 11 个必填补全字段（见需求文档 3.4 节） | 全部已填充则跳过；可选补充字段缺失不触发候选 |
-| `skip_statuses` | `["已下架/区域不可售", "链接不可访问"]` | 不可访问记录跳过 |
+| `skip_statuses` | `["链接不可访问"]` | 链接无效记录跳过；已下架/区域不可售只按 FastMoss 必填字段缺失判断候选 |
 | `upsert_key` | `商品ID` | 写回主键 |
 | `fill_missing_only` | `true` | 所有新增字段不覆盖已有值 |
 | `refresh_identity_fields` | `["商品ID", "商品链接"]` | 身份字段始终刷新 |
@@ -487,7 +487,7 @@ stateDiagram-v2
 | TikTok request 返回 browser fallback 请求 | 标记当前行 `status=waiting`，由 executor/runtime 派发 browser `task_execution` 并回写结果；该状态不是行级终态，不进入父任务 success 计数 |
 | TikTok browser fallback 成功但行级主 job尚未形成终态 | 继续等待行级主 job 消费 browser output；不得进入 `ready_for_summary` |
 | TikTok request 失败 + browser fallback 失败 | 行级 job 标记 `failed`，不执行写回 |
-| 商品已下架/区域不可售 | 回写 `商品状态=已下架/区域不可售`，行级 job 标记 `skipped` |
+| 商品已下架/区域不可售 | 回写 `商品状态=已下架/区域不可售`，跳过 TikTok media，继续 FastMoss 与 FastMoss 图表；FastMoss 失败时行级结果为 `partial_success` |
 | FastMoss API 失败 | 行级 job 继续执行，TikTok 侧 8 个字段仍正常写回，标记 `partial_success` |
 | FastMoss 风控 fallback 失败 | 同上，FastMoss 侧 6 个字段留空 |
 | Fact DB upsert 失败 | 行级 job 标记 `failed`，可重试 |

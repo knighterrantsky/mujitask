@@ -315,7 +315,10 @@ def _fallback_reason_from_message(message: str) -> str:
     normalized = coerce_str(message).lower()
     if not normalized:
         return ""
-    if any(token in normalized for token in ("captcha", "verify", "security check", "security-check")):
+    if any(
+        token in normalized
+        for token in ("captcha", "verify", "security check", "security-check", "unusual activity")
+    ):
         return "request_signal_security_check"
     if any(token in normalized for token in ("login", "sign in", "sign-in")):
         return "request_signal_login_required"

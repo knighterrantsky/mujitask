@@ -322,9 +322,10 @@ def test_monitor_projection_declares_periodic_max_merge_and_business_date_contra
 
     assert record["upsert_key"] == {"field": "达人ID", "value": "alice"}
     assert record["fields"]["关联商品销量"] == "120"
-    assert record["fields"]["粉丝数"] == "16W"
-    assert record["fields"]["带货视频 GMV"] == "244W"
-    assert record["fields"]["带货直播 GMV"] == "小于1W"
+    assert record["fields"]["粉丝数(W)"] == 15.55
+    assert record["fields"]["28天视频数"] == 12
+    assert record["fields"]["带货视频 GMV(W)"] == 244.23
+    assert record["fields"]["带货直播 GMV(W)"] == 0.9999
     assert record["fields"]["记录日期"] == "2026-06-27"
     assert record["fields"]["更新日期"] == "2026-06-27"
     assert record["update_merge_strategies"] == {

@@ -58,6 +58,15 @@ _SELECTION_REQUIRED_WRITEBACK_FIELDS = (
     "销量趋势图",
 )
 
+_SELECTION_FASTMOSS_REQUIRED_WRITEBACK_FIELDS = (
+    "当前价格",
+    "总销量",
+    "上架日期",
+    "180天销量",
+    "出单种类占比图",
+    "销量趋势图",
+)
+
 _FASTMOSS_PRODUCT_DATE_TZ = timezone(timedelta(hours=-5))
 
 
@@ -335,90 +344,85 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
         step_timeline.append(_skipped_timeline_entry("media_sync", reason="no_assets"))
 
     fastmoss_payload: dict[str, Any] = {}
-    if product_unavailable:
-        step_timeline.append(
-            _skipped_timeline_entry("fastmoss_fetch", reason="product_unavailable")
-        )
-    else:
-        fastmoss_context = _child_context(
-            context,
-            handler_code="fastmoss_product_fetch",
-            payload={
-                **request_payload,
-                **payload,
-                "request_payload": request_payload,
-                "source_record_id": source_record_id,
-                "product_identity": identity,
-                "source_context": source_context,
-                "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
-                "fastmoss_overview_window_days": _first_present(
-                    payload.get("fastmoss_overview_window_days"),
-                    request_payload.get("fastmoss_overview_window_days"),
-                    [7, 28, 90, 180],
-                ),
-                "fastmoss_window_days": first_non_empty(
-                    payload.get("fastmoss_window_days"),
-                    request_payload.get("fastmoss_window_days"),
-                    180,
-                ),
-                "fastmoss_sku_window_days": first_non_empty(
-                    payload.get("fastmoss_sku_window_days"),
-                    request_payload.get("fastmoss_sku_window_days"),
-                    28,
-                ),
-            },
-            step_code="fastmoss_fetch",
-        )
-        fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
-        step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
-        if fastmoss_result.status == "fallback_required":
-            if not _fastmoss_security_browser_fallback_attempted(payload, request_payload):
-                step_timeline.append(
-                    {
-                        "step": "fastmoss_security_browser_fallback",
-                        "status": "fallback_required",
-                        "fallback_handler": "fastmoss_security_browser_resolve",
-                    }
-                )
-                return _browser_fallback_required_pipeline_result(
-                    context,
-                    identity=identity,
-                    source_record_id=source_record_id,
-                    business_key=business_key,
-                    step_timeline=step_timeline,
-                    runtime_evidence=runtime_evidence,
-                    normalized_product_result=normalized_product_result,
-                    media_result=media_result_payload,
-                    fallback_handler="fastmoss_security_browser_resolve",
-                    fallback_payload={
-                        **dict(request_payload),
-                        **dict(payload),
-                        **dict(fastmoss_result.result),
-                        "request_payload": dict(request_payload),
-                        "source_record_id": source_record_id,
-                        "product_identity": dict(identity),
-                    },
-                    fallback_reason="fastmoss_api_security_verification",
-                )
-            runtime_evidence["fastmoss_security_browser_fallback"] = {
-                "status": "already_attempted",
-            }
+    fastmoss_context = _child_context(
+        context,
+        handler_code="fastmoss_product_fetch",
+        payload={
+            **request_payload,
+            **payload,
+            "request_payload": request_payload,
+            "source_record_id": source_record_id,
+            "product_identity": identity,
+            "source_context": source_context,
+            "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
+            "fastmoss_overview_window_days": _first_present(
+                payload.get("fastmoss_overview_window_days"),
+                request_payload.get("fastmoss_overview_window_days"),
+                [7, 28, 90, 180],
+            ),
+            "fastmoss_window_days": first_non_empty(
+                payload.get("fastmoss_window_days"),
+                request_payload.get("fastmoss_window_days"),
+                180,
+            ),
+            "fastmoss_sku_window_days": first_non_empty(
+                payload.get("fastmoss_sku_window_days"),
+                request_payload.get("fastmoss_sku_window_days"),
+                28,
+            ),
+        },
+        step_code="fastmoss_fetch",
+    )
+    fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
+    step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
+    if fastmoss_result.status == "fallback_required":
+        if not _fastmoss_security_browser_fallback_attempted(payload, request_payload):
             step_timeline.append(
                 {
                     "step": "fastmoss_security_browser_fallback",
-                    "status": "skipped",
-                    "reason": "already_attempted",
+                    "status": "fallback_required",
+                    "fallback_handler": "fastmoss_security_browser_resolve",
                 }
             )
-        fastmoss_payload = dict(fastmoss_result.result)
-        if fastmoss_result.status in {"failed", "fallback_required"}:
-            optional_step_failed = True
-            warnings.append(
-                first_non_empty(
-                    fastmoss_result.error.message if fastmoss_result.error else "",
-                    "FastMoss fetch failed.",
-                )
+            return _browser_fallback_required_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                runtime_evidence=runtime_evidence,
+                normalized_product_result=normalized_product_result,
+                media_result=media_result_payload,
+                fallback_handler="fastmoss_security_browser_resolve",
+                fallback_payload={
+                    **dict(request_payload),
+                    **dict(payload),
+                    **dict(fastmoss_result.result),
+                    "request_payload": dict(request_payload),
+                    "source_record_id": source_record_id,
+                    "product_identity": dict(identity),
+                },
+                fallback_reason="fastmoss_api_security_verification",
             )
+        runtime_evidence["fastmoss_security_browser_fallback"] = {
+            "status": "already_attempted",
+        }
+        step_timeline.append(
+            {
+                "step": "fastmoss_security_browser_fallback",
+                "status": "skipped",
+                "reason": "already_attempted",
+            }
+        )
+    fastmoss_payload = dict(fastmoss_result.result)
+    if fastmoss_result.status in {"failed", "fallback_required"}:
+        optional_step_failed = True
+        warnings.append(
+            first_non_empty(
+                fastmoss_result.error.message if fastmoss_result.error else "",
+                "FastMoss fetch failed.",
+            )
+        )
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
@@ -469,10 +473,10 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
     projection_fields: dict[str, Any] = {}
     write_result = success_result(context, result={})
     if source_table_ref and _writeback_enabled(request_payload, payload):
-        if product_unavailable:
+        if product_unavailable and fastmoss_result.status in {"failed", "fallback_required"}:
             chart_image_paths = {}
             step_timeline.append(
-                _skipped_timeline_entry("chart_render", reason="product_unavailable")
+                _skipped_timeline_entry("chart_render", reason="fastmoss_fetch_failed")
             )
         else:
             try:
@@ -527,12 +531,19 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
             media_result=media_result_payload,
             chart_image_paths=chart_image_paths,
         )
+        required_writeback_fields = (
+            _SELECTION_FASTMOSS_REQUIRED_WRITEBACK_FIELDS
+            if product_unavailable
+            else _SELECTION_REQUIRED_WRITEBACK_FIELDS
+        )
         missing_required_fields = (
             []
             if product_unavailable
+            and fastmoss_result.status in {"failed", "fallback_required"}
             else _missing_required_selection_writeback_fields(
                 source_context=source_context,
                 projection_fields=projection_fields,
+                required_fields=required_writeback_fields,
             )
         )
         if missing_required_fields:
@@ -546,7 +557,7 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
                 retryable=True,
                 details={
                     "missing_required_fields": missing_required_fields,
-                    "required_fields": list(_SELECTION_REQUIRED_WRITEBACK_FIELDS),
+                    "required_fields": list(required_writeback_fields),
                 },
             )
             step_timeline.append(
@@ -666,7 +677,7 @@ def run_selection_row_refresh_pipeline(context: HandlerContext) -> HandlerResult
         "fact_persistence_mode": result["fact_upsert"].get("persistence_mode"),
         "writeback_written_count": result["writeback_result"].get("written_count", 0),
     }
-    if row_status == "partial_success":
+    if row_status == "partial_success" or optional_step_failed or write_result.status == "skipped":
         return partial_success_result(
             context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings))
         )
@@ -1351,10 +1362,11 @@ def _missing_required_selection_writeback_fields(
     *,
     source_context: Mapping[str, Any],
     projection_fields: Mapping[str, Any],
+    required_fields: tuple[str, ...] = _SELECTION_REQUIRED_WRITEBACK_FIELDS,
 ) -> list[str]:
     source_fields = _source_fields(source_context)
     missing: list[str] = []
-    for field_name in _SELECTION_REQUIRED_WRITEBACK_FIELDS:
+    for field_name in required_fields:
         if _has_writeback_value(source_fields.get(field_name)):
             continue
         if _has_writeback_value(projection_fields.get(field_name)):
