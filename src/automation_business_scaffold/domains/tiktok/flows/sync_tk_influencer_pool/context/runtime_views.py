@@ -50,12 +50,41 @@ from .stage_inputs import *
 from .decision_models import *
 
 
-def _collect_product_candidates(*, store: RuntimeStore, request: Any) -> list[dict[str, Any]]:
-    read_result = select_latest_successful_api_job_result(
-        _stage_api_jobs(store=store, request_id=request.request_id, stage_code=READ_STAGE_CODE, job_code="feishu_table_read"),
-        "feishu_table_read",
+def _build_source_read_outcome(*, store: RuntimeStore, request: Any) -> dict[str, Any]:
+    read_jobs = _stage_api_jobs(
+        store=store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
     )
-    rows = list(read_result.get("source_rows") or [])
+    successful_read_job = select_latest_successful_api_job(read_jobs, "feishu_table_read")
+    if successful_read_job is None:
+        return {
+            "status": "failed",
+            "source_rows": [],
+            "adapter_summary": {},
+            "warnings": ["source_read_failed"],
+        }
+    read_result = extract_effective_result_payload(successful_read_job)
+    source_rows = read_result.get("source_rows")
+    if not isinstance(source_rows, list):
+        return {
+            "status": "invalid",
+            "source_rows": [],
+            "adapter_summary": coerce_mapping(read_result.get("adapter_summary")),
+            "warnings": ["source_read_result_invalid"],
+        }
+    return {
+        "status": "success",
+        "source_rows": source_rows,
+        "adapter_summary": coerce_mapping(read_result.get("adapter_summary")),
+        "warnings": [],
+    }
+
+
+def _collect_product_candidates(*, store: RuntimeStore, request: Any) -> list[dict[str, Any]]:
+    read_outcome = _build_source_read_outcome(store=store, request=request)
+    rows = list(read_outcome["source_rows"])
     candidates: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, Mapping):

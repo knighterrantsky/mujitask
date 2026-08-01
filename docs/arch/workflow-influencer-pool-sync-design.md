@@ -62,6 +62,13 @@ flowchart TD
 
 默认 outbox 文案由 `domains/tiktok/projections/outbox_message_projection.py` 生成，标题为 `TK达人池同步完成`。默认 `plain_text_detail` 必须使用简单商品口径，包含商品总数、商品成功数、商品失败数、子任务成功数，以及每个 SKU 的 `record/status/更新达人数量/创建达人数量/warnings` 摘要；不使用“商品组”作为面向用户的描述。可通过 task payload `outbox_message_format` 或 `outbox_message_template` 覆盖输出格式。
 
+读取阶段和父任务终态必须按读取证据判定：
+
+- `feishu_table_read` 成功且结果包含合法的 `source_rows=[]` 时，表示正常零候选，直接进入 summary 并以 `success` 完成。
+- 找不到成功的读取 job，或成功结果缺少合法 `source_rows` 时，直接进入 summary 并以 `failed` 完成。
+- `source_rows` 非空但全部缺少 `source_record_id` 或有效商品身份时，以 `failed` 完成；如果仍有部分有效商品，则继续 fan-out，有效商品全部成功时父任务也只能以 `partial_success` 完成。
+- summary 必须独立复核读取 job 和结果结构，不依赖 stage transition details 推断最终状态。
+
 ## 5. Job 设计
 
 | Job | 表 / job 类型 | Worker | Handler | Flow / Mapper |

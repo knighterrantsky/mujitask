@@ -179,6 +179,11 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
                 condition="candidate read job is terminal and product candidates were normalized",
             ),
             TransitionDefinition(
+                from_stage_code="read_competitor_candidates",
+                to_stage_code="ready_for_summary",
+                condition="candidate read failed, returned invalid source rows, or produced no product candidates",
+            ),
+            TransitionDefinition(
                 from_stage_code="dispatch_product_jobs",
                 to_stage_code="discover_related_creators",
                 condition="product discovery jobs have been created or all candidates were skipped",
@@ -222,15 +227,15 @@ def build_sync_tk_influencer_pool_definition() -> WorkflowDefinition:
         summary_policy=notification_summary_policy(
             SummaryStatusRule(
                 final_status="success",
-                when="all product groups completed and creator detail jobs ended in success or skipped",
+                when="source read succeeded with no product candidates, or all product groups completed successfully",
             ),
             SummaryStatusRule(
                 final_status="partial_success",
-                when="at least one influencer projection succeeded but some product or creator jobs failed",
+                when="valid source products completed but some source rows were invalid, or some product or creator jobs failed",
             ),
             SummaryStatusRule(
                 final_status="failed",
-                when="no influencer projection was written or orchestration failed irrecoverably",
+                when="source read failed or was invalid, all source rows were invalid, or all product groups failed",
             ),
             notes=(
                 "Summary should preserve product-group and creator-level counts for operator review.",

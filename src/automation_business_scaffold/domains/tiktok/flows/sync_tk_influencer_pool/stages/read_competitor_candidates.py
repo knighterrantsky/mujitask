@@ -61,6 +61,20 @@ def _advance_stage_read_competitor_candidates(*, store: RuntimeStore, request: A
             current_stage=READ_STAGE_CODE,
             message="Competitor candidate read is still running.",
         )
+    source_read_outcome = _build_source_read_outcome(store=store, request=request)
+    if source_read_outcome["status"] != "success":
+        return _advance_stage_result(
+            next_stage=SUMMARY_STAGE_CODE,
+            details={
+                "stage_transition": "competitor_candidate_read_failed",
+                "source_read_status": source_read_outcome["status"],
+            },
+        )
+    if not _collect_product_candidates(store=store, request=request):
+        return _advance_stage_result(
+            next_stage=SUMMARY_STAGE_CODE,
+            details={"stage_transition": "no_competitor_candidates"},
+        )
     return _advance_stage_result(
         next_stage=DISPATCH_PRODUCT_STAGE_CODE,
         details={"stage_transition": "competitor_candidates_ready"},

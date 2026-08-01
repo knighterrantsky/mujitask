@@ -75,6 +75,9 @@ stages:
 protected_invariants:
   - TK达人池 保持一人一行，按 达人ID upsert
   - 达人筛选使用粉丝量严格大于 5000 且当前来源商品关系 sold_count 严格大于 creator_sold_count_min；销量参数默认 50，并允许在每次 Task 提交时配置
+  - 来源表读取成功但没有符合条件的商品时，workflow 以 success 完成，不得判为 failed
+  - 来源表读取任务失败、成功结果缺少合法 source_rows，或来源行全部缺少有效商品身份时，workflow 必须以 failed 完成，不得伪装成零候选 success
+  - 来源表同时包含有效和异常商品行时继续处理有效行，但最终状态不得高于 partial_success，并在 summary 中记录 source_rows_invalid
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 达人查找状态 的正式状态值只有 待查找、处理中、已完成、失败重试
   - 商品状态=已下架/区域不可售 不阻止竞品记录进入达人查找；候选资格只按 达人查找状态、有效商品身份和达人筛选阈值判断

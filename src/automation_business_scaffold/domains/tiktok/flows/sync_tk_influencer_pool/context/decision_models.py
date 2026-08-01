@@ -63,18 +63,33 @@ def _count_product_group_statuses(group_summaries: list[dict[str, Any]]) -> dict
         counts[status] = counts.get(status, 0) + 1
     return counts
 
-def _derive_final_status(group_summaries: list[dict[str, Any]]) -> str:
-    if not group_summaries:
+def _derive_final_status(
+    group_summaries: list[dict[str, Any]],
+    *,
+    source_read_status: str,
+) -> str:
+    if source_read_status not in {"success", "partial_success"}:
         return "failed"
+    if not group_summaries:
+        return "success"
     status_counts = _count_product_group_statuses(group_summaries)
     if status_counts.get("failed", 0) == len(group_summaries):
         return "failed"
     if status_counts.get("failed", 0) > 0 or status_counts.get("partial_success", 0) > 0:
         return "partial_success"
+    if source_read_status == "partial_success":
+        return "partial_success"
     return "success"
 
-def _build_summary_warnings(group_summaries: list[dict[str, Any]]) -> list[str]:
+def _build_summary_warnings(
+    group_summaries: list[dict[str, Any]],
+    *,
+    source_read_warnings: list[str],
+) -> list[str]:
     warnings: list[str] = []
+    for warning in source_read_warnings:
+        if isinstance(warning, str) and warning and warning not in warnings:
+            warnings.append(warning)
     for group in group_summaries:
         for warning in list(group.get("warnings") or []):
             if isinstance(warning, str) and warning and warning not in warnings:
