@@ -39,6 +39,10 @@
 4. 运行测试
 5. 只在必要时调整 framework 接入代码
 
+部署安装必须把 `pyproject.toml` 中完整的 framework requirement 交给 `uv/pip`。当部署脚本把
+GitHub 来源替换为已下载的本地源码目录时，只允许替换 requirement 的来源部分，包名和 extras
+必须原样保留；部署脚本不得枚举或单独安装 `captcha` 等隐式依赖。
+
 ## 5. 外部运行依赖
 
 | 服务 | 用途 | 说明 |

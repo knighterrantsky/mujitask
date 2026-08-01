@@ -412,9 +412,8 @@ with open(sys.argv[1], "rb") as handle:
     data = tomllib.load(handle)
 
 for dep in data.get("project", {}).get("dependencies", []):
-    if dep.startswith("automation-framework @ ") or dep.startswith(
-        "automation-framework["
-    ):
+    dependency_name = dep.partition(" @ ")[0].partition("[")[0].strip()
+    if dependency_name == "automation-framework":
         continue
     print(dep)
 PY
@@ -435,13 +434,14 @@ install_framework_from_pyproject() {
   LAST_FRAMEWORK_ARCHIVE_URL=""
   read_framework_dependency_json "$pyproject_path" > "$framework_json"
 
-  local framework_kind framework_source
+  local framework_kind framework_source framework_dependency
   framework_kind="$(python_json_get "kind" "$framework_json" | tr -d '\r')"
   framework_source="$(python_json_get "source" "$framework_json" | tr -d '\r')"
+  framework_dependency="$(python_json_get "dependency" "$framework_json" | tr -d '\r')"
   [[ -n "$framework_source" ]] || fail "automation-framework dependency source is missing in $pyproject_path."
 
   if [[ "$framework_kind" == "git" ]]; then
-    local framework_repo_url framework_ref framework_slug framework_archive framework_root
+    local framework_repo_url framework_ref framework_slug framework_archive framework_root framework_install_requirement
     framework_repo_url="$(python_json_get "repo_url" "$framework_json" | tr -d '\r')"
     framework_ref="$(python_json_get "ref" "$framework_json" | tr -d '\r')"
     if framework_slug="$(parse_github_slug "$framework_repo_url" 2>/dev/null)"; then
@@ -450,14 +450,19 @@ install_framework_from_pyproject() {
       log "Downloading automation-framework pinned in pyproject.toml"
       download_file "$LAST_FRAMEWORK_ARCHIVE_URL" "$framework_archive"
       framework_root="$(extract_archive "$framework_archive" "$TMP_ROOT/framework-extracted")"
+      framework_install_requirement="$(
+        "$PYTHON_BIN" "$OPENCLAW_DEPLOY_UTILS" replace-direct-requirement-source \
+          --dependency "$framework_dependency" \
+          --source-path "$framework_root"
+      )"
       log "Installing automation-framework from downloaded source"
-      "$UV_BIN" pip install --python "$venv_python" "$framework_root"
+      "$UV_BIN" pip install --python "$venv_python" "$framework_install_requirement"
       return 0
     fi
   fi
 
   log "Installing automation-framework directly from pyproject.toml"
-  "$UV_BIN" pip install --python "$venv_python" "$framework_source"
+  "$UV_BIN" pip install --python "$venv_python" "$framework_dependency"
 }
 
 detect_chrome_bin() {

@@ -118,12 +118,14 @@ def read_framework_dependency(path: Path) -> dict[str, str]:
         )
 
     dependency = matches[0]
-    source = dependency.split(" @ ", 1)[1].strip()
+    requirement_head, _, source = dependency.partition(" @ ")
     result = {
         "dependency": dependency,
-        "source": source,
+        "requirement_head": requirement_head.strip(),
+        "source": source.strip(),
         "kind": "direct",
     }
+    source = result["source"]
     if source.startswith("git+"):
         git_source = source[len("git+") :]
         base, _, fragment = git_source.partition("#")
@@ -135,6 +137,13 @@ def read_framework_dependency(path: Path) -> dict[str, str]:
         if fragment:
             result["fragment"] = fragment
     return result
+
+
+def replace_direct_requirement_source(dependency: str, source_path: Path) -> str:
+    requirement_head, separator, _ = dependency.partition(" @ ")
+    if not separator or not requirement_head.strip():
+        raise ValueError(f"Direct dependency requirement expected: {dependency!r}")
+    return f"{requirement_head.strip()} @ {source_path.resolve().as_uri()}"
 
 
 def deploy_state_supports_update(path: Path) -> bool:
@@ -237,6 +246,10 @@ def _build_parser() -> argparse.ArgumentParser:
     framework_parser = subparsers.add_parser("read-framework-dependency")
     framework_parser.add_argument("--path", required=True)
 
+    replace_source_parser = subparsers.add_parser("replace-direct-requirement-source")
+    replace_source_parser.add_argument("--dependency", required=True)
+    replace_source_parser.add_argument("--source-path", required=True)
+
     support_parser = subparsers.add_parser("check-update-support")
     support_parser.add_argument("--path", required=True)
 
@@ -284,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "read-framework-dependency":
         print(json.dumps(read_framework_dependency(Path(args.path)), ensure_ascii=False))
+        return 0
+
+    if args.command == "replace-direct-requirement-source":
+        print(replace_direct_requirement_source(args.dependency, Path(args.source_path)))
         return 0
 
     if args.command == "check-update-support":

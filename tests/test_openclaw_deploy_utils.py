@@ -157,6 +157,7 @@ def test_read_framework_dependency_prefers_pyproject_as_single_source(tmp_path: 
 
     assert dependency == {
         "dependency": "automation-framework @ git+https://github.com/example/framework.git@v0.3.6",
+        "requirement_head": "automation-framework",
         "source": "git+https://github.com/example/framework.git@v0.3.6",
         "kind": "git",
         "repo_url": "https://github.com/example/framework.git",
@@ -178,11 +179,60 @@ def test_read_framework_dependency_accepts_extras(tmp_path: Path) -> None:
 
     assert dependency == {
         "dependency": "automation-framework[captcha] @ git+https://github.com/example/framework.git@v0.3.8",
+        "requirement_head": "automation-framework[captcha]",
         "source": "git+https://github.com/example/framework.git@v0.3.8",
         "kind": "git",
         "repo_url": "https://github.com/example/framework.git",
         "ref": "v0.3.8",
     }
+
+
+def test_replace_direct_requirement_source_preserves_declared_extras(tmp_path: Path) -> None:
+    source_path = tmp_path / "framework source"
+    source_path.mkdir()
+
+    for requirement_head in (
+        "automation-framework",
+        "automation-framework[captcha]",
+        "automation-framework[browser,captcha]",
+    ):
+        dependency = f"{requirement_head} @ git+https://github.com/example/framework.git@v0.3.8"
+
+        rewritten = MODULE.replace_direct_requirement_source(dependency, source_path)
+
+        assert rewritten == f"{requirement_head} @ {source_path.resolve().as_uri()}"
+
+
+def test_replace_direct_requirement_source_cli_uses_file_uri(tmp_path: Path, capsys) -> None:
+    source_path = tmp_path / "framework source"
+    source_path.mkdir()
+
+    result = MODULE.main(
+        [
+            "replace-direct-requirement-source",
+            "--dependency",
+            "automation-framework[captcha] @ git+https://github.com/example/framework.git@v0.3.8",
+            "--source-path",
+            str(source_path),
+        ]
+    )
+
+    assert result == 0
+    assert capsys.readouterr().out.strip() == (
+        f"automation-framework[captcha] @ {source_path.resolve().as_uri()}"
+    )
+
+
+def test_deploy_common_installs_complete_framework_requirement_only_once() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    assert 'dependency_name = dep.partition(" @ ")[0].partition("[")[0].strip()' in text
+    assert 'if dependency_name == "automation-framework":' in text
+    assert "replace-direct-requirement-source" in text
+    assert '"$framework_install_requirement"' in text
+    assert '"$framework_dependency"' in text
+    assert "framework_extras" not in text
 
 
 def test_deploy_script_embeds_single_file_payloads() -> None:

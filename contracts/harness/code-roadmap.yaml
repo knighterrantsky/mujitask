@@ -221,6 +221,48 @@ features:
       - Framework public API and migration guidance remain sourced from the framework package or repository.
       - Browser capability smoke tests must pass after the framework upgrade.
 
+  - feature_code: framework_dependency_installation
+    status: complete
+    feature_type: platform_upgrade
+    default_context:
+      - docs/dev/dependencies.md
+      - pyproject.toml
+      - examples/openclaw/openclaw_deploy_common.sh
+      - examples/openclaw/openclaw_deploy_utils.py
+      - scripts/deploy/macos/deploy.sh
+      - tests/test_openclaw_deploy_utils.py
+      - tests/test_framework_dependency.py
+    source_contracts:
+      - docs/dev/dependencies.md
+      - pyproject.toml
+    allowed_paths:
+      - docs/dev/dependencies.md
+      - examples/openclaw/openclaw_deploy_common.sh
+      - examples/openclaw/openclaw_deploy_utils.py
+      - contracts/harness/code-roadmap.yaml
+      - tests/test_openclaw_deploy_utils.py
+      - tests/test_framework_dependency.py
+    forbidden_paths:
+      - .platform/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/**
+      - src/automation_business_scaffold/capabilities/**
+      - src/automation_business_scaffold/control_plane/**
+    done_gate:
+      tests:
+        - tests/test_openclaw_deploy_utils.py
+        - tests/test_framework_dependency.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_completion_claim_gate.py
+      commands:
+        - bash -n examples/openclaw/openclaw_deploy_common.sh scripts/deploy/macos/deploy.sh
+        - uv run --extra dev pytest tests/test_openclaw_deploy_utils.py tests/test_framework_dependency.py tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
+    completion_rules:
+      - pyproject.toml is the only source for the framework package name, source, version, and extras.
+      - Replacing a GitHub source with an extracted local source must preserve the complete requirement head and delegate extras installation to uv/pip.
+      - Deployment must install automation-framework exactly once and must not enumerate extra dependency names.
+
   - feature_code: ops_deployment_migration_flow
     status: complete
     feature_type: ops_runbook
