@@ -10,10 +10,10 @@ participates_in_pending: false
 
 allowed_values:
   - value: 已下架/区域不可售
-    category: terminal_skip
+    category: tiktok_terminal_fastmoss_active
     written_by_system: true
     meaning: 商品明确不可访问、已下架、不存在或区域不可售
-    next_default_action: skip_refresh_and_influencer_sync
+    next_default_action: skip_tiktok_media_but_continue_missing_fastmoss_fields_and_influencer_sync
 
 write_rules:
   - condition: product_unavailable_or_region_blocked
@@ -24,4 +24,4 @@ write_rules:
 reset_rules:
   - trigger: 人工修改 产品链接 或 SKU-ID
     action: 人工清空 商品状态
-    effect: 允许该行重新进入抓取候选判断
+    effect: 允许该行重新进入 TikTok 商品侧抓取候选判断；FastMoss 补齐和达人池采集不依赖该重置

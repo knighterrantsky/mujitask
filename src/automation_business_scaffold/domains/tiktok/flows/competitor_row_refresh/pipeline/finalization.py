@@ -243,83 +243,80 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
         step_timeline.append(_skipped_timeline_entry("media_sync", reason="no_assets"))
 
     fastmoss_payload: dict[str, Any] = {}
-    if product_unavailable:
-        step_timeline.append(_skipped_timeline_entry("fastmoss_fetch", reason="product_unavailable"))
-    else:
-        fastmoss_context = _child_context(
-            context,
-            handler_code="fastmoss_product_fetch",
-            payload={
-                **request_payload,
-                **payload,
-                "request_payload": request_payload,
-                "source_record_id": source_record_id,
-                "product_identity": identity,
-                "source_context": source_context,
-                "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
-                "fastmoss_overview_window_days": _first_present(
-                    payload.get("fastmoss_overview_window_days"),
-                    request_payload.get("fastmoss_overview_window_days"),
-                    [7, 28, 90],
-                ),
-                "fastmoss_window_days": first_non_empty(
-                    payload.get("fastmoss_window_days"),
-                    request_payload.get("fastmoss_window_days"),
-                    90,
-                ),
-                "fastmoss_sku_window_days": first_non_empty(
-                    payload.get("fastmoss_sku_window_days"),
-                    request_payload.get("fastmoss_sku_window_days"),
-                    28,
-                ),
-            },
-            step_code="fastmoss_fetch",
-        )
-        fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
-        step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
-        if fastmoss_result.status == "fallback_required":
-            if not _fastmoss_security_browser_fallback_attempted(payload, request_payload):
-                step_timeline.append(
-                    {
-                        "step": "fastmoss_security_browser_fallback",
-                        "status": "fallback_required",
-                        "fallback_handler": "fastmoss_security_browser_resolve",
-                    }
-                )
-                return _browser_fallback_required_pipeline_result(
-                    context,
-                    identity=identity,
-                    source_record_id=source_record_id,
-                    business_key=business_key,
-                    step_timeline=step_timeline,
-                    runtime_evidence=runtime_evidence,
-                    normalized_product_result=normalized_product_result,
-                    media_result=media_result_payload,
-                    fallback_handler="fastmoss_security_browser_resolve",
-                    fallback_payload={
-                        **dict(request_payload),
-                        **dict(payload),
-                        **dict(fastmoss_result.result),
-                        "request_payload": dict(request_payload),
-                        "source_record_id": source_record_id,
-                        "product_identity": dict(identity),
-                    },
-                    fallback_reason="fastmoss_api_security_verification",
-                )
-            runtime_evidence["fastmoss_security_browser_fallback"] = {
-                "status": "already_attempted",
-            }
+    fastmoss_context = _child_context(
+        context,
+        handler_code="fastmoss_product_fetch",
+        payload={
+            **request_payload,
+            **payload,
+            "request_payload": request_payload,
+            "source_record_id": source_record_id,
+            "product_identity": identity,
+            "source_context": source_context,
+            "detail_level": first_non_empty(payload.get("detail_level"), "standard"),
+            "fastmoss_overview_window_days": _first_present(
+                payload.get("fastmoss_overview_window_days"),
+                request_payload.get("fastmoss_overview_window_days"),
+                [7, 28, 90],
+            ),
+            "fastmoss_window_days": first_non_empty(
+                payload.get("fastmoss_window_days"),
+                request_payload.get("fastmoss_window_days"),
+                90,
+            ),
+            "fastmoss_sku_window_days": first_non_empty(
+                payload.get("fastmoss_sku_window_days"),
+                request_payload.get("fastmoss_sku_window_days"),
+                28,
+            ),
+        },
+        step_code="fastmoss_fetch",
+    )
+    fastmoss_result = fastmoss_product_fetch_handler(fastmoss_context)
+    step_timeline.append(_timeline_entry("fastmoss_fetch", fastmoss_result))
+    if fastmoss_result.status == "fallback_required":
+        if not _fastmoss_security_browser_fallback_attempted(payload, request_payload):
             step_timeline.append(
                 {
                     "step": "fastmoss_security_browser_fallback",
-                    "status": "skipped",
-                    "reason": "already_attempted",
+                    "status": "fallback_required",
+                    "fallback_handler": "fastmoss_security_browser_resolve",
                 }
             )
-        fastmoss_payload = dict(fastmoss_result.result)
-        if fastmoss_result.status in {"failed", "fallback_required"}:
-            optional_step_failed = True
-            warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
+            return _browser_fallback_required_pipeline_result(
+                context,
+                identity=identity,
+                source_record_id=source_record_id,
+                business_key=business_key,
+                step_timeline=step_timeline,
+                runtime_evidence=runtime_evidence,
+                normalized_product_result=normalized_product_result,
+                media_result=media_result_payload,
+                fallback_handler="fastmoss_security_browser_resolve",
+                fallback_payload={
+                    **dict(request_payload),
+                    **dict(payload),
+                    **dict(fastmoss_result.result),
+                    "request_payload": dict(request_payload),
+                    "source_record_id": source_record_id,
+                    "product_identity": dict(identity),
+                },
+                fallback_reason="fastmoss_api_security_verification",
+            )
+        runtime_evidence["fastmoss_security_browser_fallback"] = {
+            "status": "already_attempted",
+        }
+        step_timeline.append(
+            {
+                "step": "fastmoss_security_browser_fallback",
+                "status": "skipped",
+                "reason": "already_attempted",
+            }
+        )
+    fastmoss_payload = dict(fastmoss_result.result)
+    if fastmoss_result.status in {"failed", "fallback_required"}:
+        optional_step_failed = True
+        warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
@@ -479,7 +476,7 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
         "fact_persistence_mode": result["fact_upsert"].get("persistence_mode"),
         "writeback_written_count": result["writeback_result"].get("written_count", 0),
     }
-    if row_status == "partial_success":
+    if row_status == "partial_success" or optional_step_failed or write_result.status == "skipped":
         return partial_success_result(context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings)))
     if warnings:
         return success_result(context, summary=summary, result=result, warnings=tuple(dict.fromkeys(warnings)))

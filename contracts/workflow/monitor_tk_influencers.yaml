@@ -3,7 +3,7 @@ contract_type: workflow_contract
 status: complete
 task_code: monitor_tk_influencers
 workflow_code: monitor_tk_influencers
-contract_revision: 1
+contract_revision: 2
 domain: tiktok
 
 business_truth:
@@ -26,6 +26,19 @@ business_payload:
     type: non_negative_integer
     default: 50
     comparison: strict_greater_than
+  related_product_sales_reset_days:
+    type: positive_integer
+    default: 28
+    date_basis: Asia/Shanghai_natural_day
+    purpose: per_creator_target_peak_retention_cycle
+internal_task_snapshot:
+  task_business_date:
+    source: task_creation_date_in_Asia/Shanghai
+    externally_overridable: false
+    immutable_across_jobs_retries_and_compensation: true
+  parameter_values_immutable_after_submit: true
+  missing_new_field_compatibility:
+    related_product_sales_reset_days: 28
 forbidden_business_payload:
   - physical_feishu_base_url
   - physical_feishu_table_id
@@ -105,10 +118,19 @@ creator_candidate_contract:
 writeback_contract:
   target_identity_field: 达人ID
   target_identity_policy: one_row_per_creator
-  related_product_sales_policy: max_existing_and_current
+  related_product_sales_policy:
+    strategy: periodic_max_numeric
+    anchor_field: 记录日期
+    period_parameter: related_product_sales_reset_days
+    current_date_field: task_business_date
+    within_period: max_existing_and_current
+    on_or_after_expiry: replace_with_current_observation_and_refresh_anchor
+    no_qualifying_observation: no_write_even_when_expired
+    invalid_empty_or_future_anchor: max_existing_and_current_then_repair_anchor_with_warning
   empty_value_overwrite: forbidden
   no_actual_change_policy: skip_write_and_keep_update_date
   source_table_writeback: forbidden
+  concurrency_policy: one_monitor_task_at_a_time
 
 fact_contract:
   requires_fact_db: true
@@ -136,3 +158,5 @@ summary:
     - creator_unchanged_count
     - creator_failed_count
     - early_stopped_product_count
+    - effective_related_product_sales_reset_days
+    - task_business_date

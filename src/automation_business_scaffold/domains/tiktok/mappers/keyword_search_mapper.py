@@ -28,6 +28,9 @@ def keyword_search_parameter_mapper(payload: Mapping[str, Any]) -> dict[str, Any
         payload.get("keyword"),
     )
     filters = dict(_mapping(explicit.get("filters")) or _mapping(payload.get("filters")))
+    source_params = dict(_mapping(filters.get("source_params")))
+    source_params["off_shelves"] = -1
+    filters["source_params"] = source_params
     output_conditions = dict(_mapping(explicit.get("output_conditions")) or _mapping(payload.get("output_conditions")))
     business_conditions = dict(_mapping(output_conditions.get("business_conditions")))
     selection_mode = _first_text(explicit.get("keyword_workflow_mode"), payload.get("keyword_workflow_mode")) == "selection"

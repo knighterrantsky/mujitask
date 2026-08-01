@@ -958,7 +958,7 @@ def test_fastmoss_http_session_search_products_uses_goods_v2_search(monkeypatch:
         pagesize=20,
         region="US",
         order="2,2",
-        extra_params={"category": "home"},
+        extra_params={"category": "home", "off_shelves": -1},
         check_auth=False,
     )
 
@@ -972,7 +972,12 @@ def test_fastmoss_http_session_search_products_uses_goods_v2_search(monkeypatch:
         "region": "US",
         "words": "desk lamp",
         "category": "home",
+        "off_shelves": -1,
     }
+    assert captured["referer"] == (
+        "https://www.fastmoss.com/zh/e-commerce/search?"
+        "region=US&page=2&words=desk+lamp&off_shelves=-1"
+    )
     assert captured["region"] == "US"
     assert captured["stage"] == "product.search"
     assert captured["check_auth"] is False

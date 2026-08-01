@@ -156,16 +156,19 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
         if failure_units
         else "success"
     )
+    request_payload = coerce_mapping(getattr(request, "payload", {}))
     return {
         "final_status": final_status,
         "result_status": final_status,
         "title": "TK达人监控完成",
         "effective_min_video_sales_28d": int(
-            coerce_mapping(getattr(request, "payload", {})).get(
-                "min_video_sales_28d", 50
-            )
+            request_payload.get("min_video_sales_28d", 50)
             or 50
         ),
+        "effective_related_product_sales_reset_days": int(
+            request_payload.get("related_product_sales_reset_days", 28) or 28
+        ),
+        "task_business_date": str(request_payload.get("task_business_date") or ""),
         "source_row_count": int(adapter_summary.get("input_row_count") or 0),
         "valid_product_count": int(
             adapter_summary.get("valid_product_row_count") or 0

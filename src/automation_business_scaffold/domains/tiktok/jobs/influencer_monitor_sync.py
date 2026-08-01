@@ -38,6 +38,16 @@ INFLUENCER_MONITOR_SYNC_JOB = JobDefinition(
             "All qualifying product relationships for field union.",
             type_hint="list[dict[str, Any]]",
         ),
+        optional_field(
+            "related_product_sales_reset_days",
+            "Positive target sales peak reset period; legacy jobs default to 28.",
+            type_hint="int",
+        ),
+        optional_field(
+            "task_business_date",
+            "Immutable Asia/Shanghai task creation date used for the creator cycle decision.",
+            type_hint="str",
+        ),
     ),
     result_contract=contract(
         "influencer_monitor_sync_result",

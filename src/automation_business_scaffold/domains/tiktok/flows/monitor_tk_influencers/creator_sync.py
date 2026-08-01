@@ -220,6 +220,10 @@ def influencer_monitor_sync_handler(context: HandlerContext) -> HandlerResult:
         "creator_run_max_sales_28d": payload.get(
             "creator_run_max_sales_28d"
         ),
+        "related_product_sales_reset_days": payload.get(
+            "related_product_sales_reset_days"
+        ),
+        "task_business_date": payload.get("task_business_date"),
         "product_hits": list(payload.get("product_hits") or []),
         "source_product_images": list(
             payload.get("source_product_images") or []

@@ -26,7 +26,16 @@ REQUIRED_CANDIDATE_FIELDS = (
     "销量趋势图",
 )
 
-SKIP_STATUSES = ("已下架/区域不可售", "链接不可访问")
+UNAVAILABLE_PRODUCT_STATUS = "已下架/区域不可售"
+SKIP_STATUSES = ("链接不可访问",)
+UNAVAILABLE_FASTMOSS_REQUIRED_FIELDS = (
+    "当前价格",
+    "总销量",
+    "上架日期",
+    "180天销量",
+    "出单种类占比图",
+    "销量趋势图",
+)
 
 
 def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -66,7 +75,12 @@ def _adapt_selection_rows(raw_rows: list[Mapping[str, Any]], payload: Mapping[st
             dropped_empty += 1
             continue
 
-        if not _has_missing_required_candidate_fields(fields):
+        candidate_fields = (
+            UNAVAILABLE_FASTMOSS_REQUIRED_FIELDS
+            if product_status == UNAVAILABLE_PRODUCT_STATUS
+            else REQUIRED_CANDIDATE_FIELDS
+        )
+        if not _has_missing_required_candidate_fields(fields, candidate_fields=candidate_fields):
             skipped_all_filled += 1
             continue
 
@@ -185,8 +199,12 @@ def _raw_result_ref(payload: Mapping[str, Any], key: Any) -> str:
     return f"artifact://{namespace}/{request_id}/{safe_key}.json"
 
 
-def _has_missing_required_candidate_fields(fields: Mapping[str, Any]) -> bool:
-    for field_name in REQUIRED_CANDIDATE_FIELDS:
+def _has_missing_required_candidate_fields(
+    fields: Mapping[str, Any],
+    *,
+    candidate_fields: tuple[str, ...] = REQUIRED_CANDIDATE_FIELDS,
+) -> bool:
+    for field_name in candidate_fields:
         value = fields.get(field_name)
         if not _field_has_value(value):
             return True

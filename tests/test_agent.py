@@ -13,11 +13,13 @@ def test_agent_lists_current_tasks():
     assert response.status_code == 200
     assert response.json() == {
         "tasks": [
+            "monitor_tk_influencers",
             "refresh_competitor_row_by_url",
             "refresh_current_competitor_table",
             "search_keyword_competitor_products",
             "search_keyword_selection_products",
             "sync_tk_influencer_pool",
             "tiktok_fastmoss_product_ingest",
+            "tiktok_influencer_outreach_sync",
         ]
     }

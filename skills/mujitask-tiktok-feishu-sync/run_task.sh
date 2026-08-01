@@ -10,6 +10,7 @@ sales_7d_threshold=""
 total_sales_threshold=""
 price_range_max_threshold=""
 max_candidates=""
+creator_sold_count_min=""
 target_intent=""
 items_json=""
 
@@ -41,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-candidates)
       max_candidates="${2:-}"
+      shift 2
+      ;;
+    --creator-sold-count-min)
+      creator_sold_count_min="${2:-}"
       shift 2
       ;;
     --target-intent)
@@ -76,7 +81,8 @@ case "$intent" in
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" "${args[@]}"
     ;;
   influencer_pool_sync)
-    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-pool-sync-submit
+    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-pool-sync-submit \
+      --creator-sold-count-min "${creator_sold_count_min:-50}"
     ;;
   influencer_outreach_sync)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-outreach-sync-submit

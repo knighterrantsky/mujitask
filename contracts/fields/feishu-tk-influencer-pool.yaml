@@ -20,10 +20,10 @@ auto_maintained_fields:
   - 关联节日
   - 关联商品销量
   - 达人头像
-  - 粉丝数
+  - 粉丝数(W)
   - 28天视频数
-  - 带货视频 GMV
-  - 带货直播 GMV
+  - 带货视频 GMV(W)
+  - 带货直播 GMV(W)
   - 合作店铺
   - 达人联系方式
   - 记录日期
@@ -31,18 +31,21 @@ auto_maintained_fields:
 
 display_rules:
   w_unit_fields:
-    - 粉丝数
-    - 带货视频 GMV
-    - 带货直播 GMV
-  w_unit_threshold: 10000
-  w_unit_rounding: nearest_integer_half_up
-  below_threshold_display: 小于1W
+    - 粉丝数(W)
+    - 带货视频 GMV(W)
+    - 带货直播 GMV(W)
+  field_type: number
+  source_to_field_divisor: 10000
+  write_value_type: json_number
+  forbidden_text_values:
+    - W
+    - 小于1W
   w_unit_examples:
-    "9999": 小于1W
-    "10000": 1W
-    "15400": 2W
-    "155500": 16W
-    "2442300": 244W
+    "9999": 0.9999
+    "10000": 1
+    "15400": 1.54
+    "155500": 15.55
+    "2442300": 244.23
 
 fields:
   - display_name: 达人ID
@@ -86,14 +89,15 @@ fields:
     source_of_truth: fastmoss.creator.avatar_url
     write_target: feishu.TK达人池.达人头像
 
-  - display_name: 粉丝数
+  - display_name: 粉丝数(W)
     canonical_name: follower_count
     role: auto_maintained_metric
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.follower_count
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
-    write_target: feishu.TK达人池.粉丝数
+    field_type: number
+    source_to_field_divisor: 10000
+    write_target: feishu.TK达人池.粉丝数(W)
 
   - display_name: 28天视频数
     canonical_name: aweme_28d_count
@@ -101,25 +105,28 @@ fields:
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.aweme_28d_count
+    field_type: number
     write_target: feishu.TK达人池.28天视频数
 
-  - display_name: 带货视频 GMV
+  - display_name: 带货视频 GMV(W)
     canonical_name: video_sale_amount
     role: auto_maintained_metric
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.video_sale_amount
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
-    write_target: feishu.TK达人池.带货视频 GMV
+    field_type: number
+    source_to_field_divisor: 10000
+    write_target: feishu.TK达人池.带货视频 GMV(W)
 
-  - display_name: 带货直播 GMV
+  - display_name: 带货直播 GMV(W)
     canonical_name: live_sale_amount
     role: auto_maintained_metric
     update_policy: refresh_on_successful_creator_detail
     overwrite_policy: system_may_refresh_metric
     source_of_truth: fastmoss.creator.live_sale_amount
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
-    write_target: feishu.TK达人池.带货直播 GMV
+    field_type: number
+    source_to_field_divisor: 10000
+    write_target: feishu.TK达人池.带货直播 GMV(W)
 
   - display_name: 合作店铺
     canonical_name: partner_shops

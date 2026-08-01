@@ -76,6 +76,7 @@ stages:
     job_code: task_completed_notification
 
 protected_invariants:
+  - FastMoss 商品搜索状态固定为全部；keyword_search_parameter_mapper 必须写入 filters.source_params.off_shelves=-1，/api/goods/V2/search 和 browser fallback 搜索页必须保留该参数，且不得生成或依赖 Next.js _rsc.
   - Existing selection rows are skipped by insert_if_absent and must not be overwritten by keyword seed import.
   - Skipped existing rows must not trigger selection_row_refresh fan-out.
   - Formal refresh fan-out must pass requires_fact_db=true and requires_object_storage=true; Fact DB dry_run or local media success is invalid.
@@ -88,6 +89,7 @@ protected_invariants:
   - If FastMoss returns a price range, the maximum price in that range is used for the price threshold.
   - Price filtering is a candidate filter, not a pagination early-stop condition.
   - Detail refresh must reuse selection_row_refresh and selection_table_projection_mapper behavior.
+  - 商品状态=已下架/区域不可售 only terminates TikTok browser/media collection; newly inserted rows must continue FastMoss base/overview/SKU collection and FastMoss-derived chart writeback while preserving the unavailable status.
   - selection_row_refresh may report a business browser request with fallback_handler and browser_fallback_payload; compatibility result may still include fallback_required, but it is not a Runtime DB lifecycle status or final row status.
   - selection_row_refresh.status=waiting is the only pending row-level fallback fact; executor/runtime must enqueue or wait for task_execution, then write the bounded browser normalized result, cookie cache metadata, or failure summary back to the same selection_row_refresh row job before it can become pending again or terminal.
   - pending/running/waiting/finished/cancelled are execution lifecycle states; success/partial_success/failed/skipped are terminal result_status values.
@@ -98,6 +100,9 @@ payload_defaults:
   sales_7d_threshold: 500
   product_price_threshold: 10.99
   keyword_workflow_mode: selection
+  filters:
+    source_params:
+      off_shelves: -1
 
 write_policy:
   seed_write_mode: insert_if_absent

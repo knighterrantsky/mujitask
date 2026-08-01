@@ -4,6 +4,9 @@ import json
 
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerResult
 from automation_business_scaffold.domains.tiktok.flows import influencer_sync
+from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context import (
+    stage_inputs as influencer_stage_inputs,
+)
 from automation_business_scaffold.domains.tiktok.flows.sync_tk_influencer_pool.context.models import (
     DISCOVER_CREATORS_STAGE_CODE,
     DISPATCH_PRODUCT_STAGE_CODE,
@@ -32,6 +35,54 @@ from automation_business_scaffold.control_plane.executor.request_aggregation imp
     build_runtime_request_payload,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+
+
+def test_influencer_candidate_policy_uses_strict_configurable_sales_threshold() -> None:
+    assert (
+        influencer_sync._candidate_matches_policy(  # noqa: SLF001
+            {"sold_count": 50, "follower_count": 5_001},
+            {},
+        )
+        is False
+    )
+    assert (
+        influencer_sync._candidate_matches_policy(  # noqa: SLF001
+            {"sold_count": 51, "follower_count": 5_001},
+            {},
+        )
+        is True
+    )
+    assert (
+        influencer_sync._candidate_matches_policy(  # noqa: SLF001
+            {"sold_count": 101, "follower_count": 5_001},
+            {"creator_sold_count_min": 100},
+        )
+        is True
+    )
+    assert (
+        influencer_sync._candidate_matches_policy(  # noqa: SLF001
+            {"sold_count": 100, "follower_count": 5_001},
+            {"creator_sold_count_min": 100},
+        )
+        is False
+    )
+    assert (
+        influencer_sync._candidate_matches_policy(  # noqa: SLF001
+            {"sold_count": 51, "follower_count": 5_000},
+            {},
+        )
+        is False
+    )
+
+
+def test_influencer_relation_policy_defaults_sales_threshold_to_50() -> None:
+    assert influencer_stage_inputs._relation_policy_from_request({}) == {  # noqa: SLF001
+        "creator_sold_count_min": 50,
+        "creator_follower_count_min": 5_000,
+    }
+    assert influencer_stage_inputs._relation_policy_from_request(  # noqa: SLF001
+        {"creator_sold_count_min": 100}
+    )["creator_sold_count_min"] == 100
 
 
 def test_product_creator_discovery_runtime_result_is_compact(monkeypatch) -> None:
@@ -611,6 +662,8 @@ def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url:
     assert finalized["final_status"] == "success"
     assert finalized["summary"]["product_group_count"] == 1
     assert finalized["summary"]["product_group_status_counts"] == {"success": 1}
+    finalized_request = store.load_task_request(request_id=request.request_id)
+    assert finalized_request.finished_at > 0.0
     assert finalized["outbox"]
     assert finalized["outbox"][0]["event_type"] == "task_request.completed"
     message_text = finalized["outbox"][0]["payload"]["message_text"]

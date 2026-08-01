@@ -165,7 +165,6 @@ DEFAULT_COMPETITOR_READ_FIELDS = (*DEFAULT_COMPETITOR_AUTO_FIELDS, "商品状态
 
 DEFAULT_COMPETITOR_FILTER_SPEC = {
     "candidate_policy": "missing_auto_maintained_fields",
-    "skip_product_status": ["已下架/区域不可售"],
 }
 
 SUPPORTED_REFRESH_TASK_CODES = {"refresh_current_competitor_table", "refresh_competitor_row_by_url"}

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy import (
+    normalize_related_product_sales_reset_days,
+)
 
 
 INFLUENCER_MONITOR_FIELD_ALLOWLIST = (
@@ -12,10 +17,10 @@ INFLUENCER_MONITOR_FIELD_ALLOWLIST = (
     "关联节日",
     "关联商品销量",
     "达人头像",
-    "粉丝数",
+    "粉丝数(W)",
     "28天视频数",
-    "带货视频 GMV",
-    "带货直播 GMV",
+    "带货视频 GMV(W)",
+    "带货直播 GMV(W)",
     "合作店铺",
     "达人联系方式",
     "记录日期",
@@ -33,7 +38,18 @@ def influencer_monitor_projection_mapper(
         record.get("creator_id"),
         creator_fact.get("unique_id"),
     )
-    today = _first_text(record.get("write_date"), payload.get("write_date"), date.today())
+    today = _first_text(
+        record.get("task_business_date"),
+        payload.get("task_business_date"),
+        record.get("write_date"),
+        payload.get("write_date"),
+        _current_business_date(),
+    )
+    reset_days = normalize_related_product_sales_reset_days(
+        record.get("related_product_sales_reset_days")
+        if record.get("related_product_sales_reset_days") not in (None, "")
+        else payload.get("related_product_sales_reset_days")
+    )
     fields = _compact(
         {
             "达人ID": creator_id,
@@ -45,10 +61,10 @@ def influencer_monitor_projection_mapper(
                 else record.get("video_product_sales_28d")
             ),
             "达人头像": _avatar_refs(record),
-            "粉丝数": _format_w(
+            "粉丝数(W)": _numeric_w_unit(
                 _creator_metric(creator_fact, "follower_count", "fans_count")
             ),
-            "28天视频数": _scalar(
+            "28天视频数": _numeric_scalar(
                 _creator_metric(
                     creator_fact,
                     "aweme_28d_count",
@@ -56,10 +72,10 @@ def influencer_monitor_projection_mapper(
                     "video_count",
                 )
             ),
-            "带货视频 GMV": _format_w(
+            "带货视频 GMV(W)": _numeric_w_unit(
                 _creator_metric(creator_fact, "video_sale_amount", "video_gmv")
             ),
-            "带货直播 GMV": _format_w(
+            "带货直播 GMV(W)": _numeric_w_unit(
                 _creator_metric(creator_fact, "live_sale_amount", "live_gmv")
             ),
             "合作店铺": _shop_names(record),
@@ -78,7 +94,14 @@ def influencer_monitor_projection_mapper(
             "fields": fields,
             "update_excluded_fields": ["记录日期"],
             "update_replace_fields": ["达人头像"],
-            "update_merge_strategies": {"关联商品销量": "max_numeric"},
+            "update_merge_strategies": {
+                "关联商品销量": {
+                    "strategy": "periodic_max_numeric",
+                    "anchor_field": "记录日期",
+                    "period_days": reset_days,
+                    "current_date": today,
+                }
+            },
             "skip_unchanged_update_fields": True,
             "conditional_update_fields": ["更新日期"],
             "source_context": {
@@ -93,6 +116,10 @@ def influencer_monitor_projection_mapper(
             },
         }
     )
+
+
+def _current_business_date() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
 
 def _creator_metric(creator_fact: Mapping[str, Any], *names: str) -> Any:
@@ -224,14 +251,18 @@ def _shop_names(record: Mapping[str, Any]) -> list[str]:
     return names
 
 
-def _format_w(value: Any) -> str:
+def _numeric_w_unit(value: Any) -> float | str:
     number = _number(value)
     if number is None:
         return ""
-    if abs(number) < 10_000:
-        return "小于1W"
-    sign = "-" if number < 0 else ""
-    return f"{sign}{int(abs(number) / 10_000 + 0.5)}W"
+    return number / 10_000
+
+
+def _numeric_scalar(value: Any) -> int | float | str:
+    number = _number(value)
+    if number is None:
+        return ""
+    return int(number) if number.is_integer() else number
 
 
 def _scalar(value: Any) -> str:

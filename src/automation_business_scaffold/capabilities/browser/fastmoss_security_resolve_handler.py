@@ -800,6 +800,11 @@ def _resolve_original_search_params(
     pagination = coerce_mapping(search_request.get("pagination"))
     sort = coerce_mapping(search_request.get("sort"))
     filters = coerce_mapping(search_request.get("filters"))
+    extra_params = {
+        **coerce_mapping(filters.get("extra")),
+        **coerce_mapping(filters.get("source_params")),
+        **coerce_mapping(search_request.get("extra_params")),
+    }
     return {
         "keyword": first_non_empty(search_request.get("keyword"), search_request.get("search_query"), search_request.get("words")),
         "region": first_non_empty(search_request.get("region"), filters.get("region"), filters.get("country_code"), fastmoss_settings.get("region"), "US"),
@@ -809,7 +814,7 @@ def _resolve_original_search_params(
             10,
         ),
         "order": first_non_empty(sort.get("source_order"), search_request.get("source_order"), search_request.get("order"), "2,2"),
-        "extra_params": coerce_mapping(search_request.get("extra_params")),
+        "extra_params": extra_params,
     }
 
 
@@ -819,7 +824,14 @@ def _build_fastmoss_search_page_url(
     fastmoss_settings: Mapping[str, Any],
 ) -> str:
     params = _resolve_original_search_params(search_request, fastmoss_settings=fastmoss_settings)
-    query = urlencode({"region": params["region"], "page": params["page"], "words": params["keyword"]})
+    query_params: dict[str, Any] = {
+        "region": params["region"],
+        "page": params["page"],
+        "words": params["keyword"],
+    }
+    if params["extra_params"].get("off_shelves") not in (None, ""):
+        query_params["off_shelves"] = params["extra_params"]["off_shelves"]
+    query = urlencode(query_params)
     return f"{str(fastmoss_settings['base_url']).rstrip('/')}/zh/e-commerce/search?{query}"
 
 
@@ -829,12 +841,17 @@ def _build_fastmoss_security_page_url(
     verification_request: Mapping[str, Any],
     fastmoss_settings: Mapping[str, Any],
 ) -> str:
-    referer = first_non_empty(verification_request.get("referer"))
-    if referer:
-        return referer
     path = first_non_empty(verification_request.get("path"))
     params = coerce_mapping(verification_request.get("params"))
     base_url = str(fastmoss_settings["base_url"]).rstrip("/")
+    if path == FASTMOSS_PRODUCT_SEARCH_ENDPOINT:
+        return _build_fastmoss_search_page_url(
+            search_request,
+            fastmoss_settings=fastmoss_settings,
+        )
+    referer = first_non_empty(verification_request.get("referer"))
+    if referer:
+        return referer
     product_id = first_non_empty(params.get("product_id"), params.get("goods_id"))
     if product_id or "/api/goods/" in path:
         return f"{base_url}/zh/e-commerce/detail/{product_id}" if product_id else f"{base_url}/zh/e-commerce/search"

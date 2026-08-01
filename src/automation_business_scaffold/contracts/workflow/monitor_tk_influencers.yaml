@@ -1,6 +1,7 @@
 schema_version: 1
 workflow_origin: new_workflow
 workflow_code: monitor_tk_influencers
+contract_revision: 2
 domain: tiktok
 agent_artifact:
   skill_code: mujitask-tiktok-feishu-sync
@@ -26,10 +27,14 @@ custom_logic:
     - code: influencer_monitor_candidate_policy
       module: automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy
       export: select_product_video_creator_candidates
+      additional_exports:
+        - normalize_min_video_sales_28d
+        - normalize_related_product_sales_reset_days
   projections:
     - code: influencer_monitor_projection_mapper
       module: automation_business_scaffold.domains.tiktok.projections.feishu_influencer_monitor_projection
       export: influencer_monitor_projection_mapper
+      write_strategy: periodic_max_numeric
 outbox:
   job_code: task_completed_notification
   handler_code: outbox_dispatch

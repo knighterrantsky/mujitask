@@ -46,6 +46,16 @@ def execute_write_records(
     written_count = 0
     skipped_count = 0
     failed_count = 0
+    warnings: list[str] = []
+
+    def record_warning(message: str) -> None:
+        if message not in warnings:
+            warnings.append(message)
+        _emit_write_progress(
+            progress_callback,
+            "feishu_table_write.record.warning",
+            message,
+        )
     _emit_write_progress(progress_callback, "feishu_table_write.schema.start", "Loading Feishu field schema.")
     field_schema = load_field_schema(client, target)
     _emit_write_progress(
@@ -182,6 +192,7 @@ def execute_write_records(
                 command,
                 payload=payload,
                 field_schema=field_schema,
+                warning_callback=record_warning,
             )
         except EmptyPreparedFields:
             skipped_count += 1
@@ -235,7 +246,7 @@ def execute_write_records(
             ),
         )
 
-    return {
+    result = {
         "written_count": written_count,
         "skipped_count": skipped_count,
         "failed_count": failed_count,
@@ -247,6 +258,9 @@ def execute_write_records(
         },
         "raw_response_ref": raw_batch_ref(payload) if mapping(payload.get("raw_capture_policy")).get("store_raw_response") else "",
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _emit_write_progress(callback: Any | None, progress_stage: str, message: str) -> None:

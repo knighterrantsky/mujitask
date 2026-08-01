@@ -237,8 +237,7 @@ payload:
   "source_table_ref": "feishu://mujitask/TK竞品收集",
   "field_names": ["产品链接", "SKU-ID", "节日", "商品状态", "达人查找状态", "Fastmoss价格"],
   "filter_spec": {
-    "candidate_status": ["待查找", "失败重试", "处理中", ""],
-    "skip_product_status": ["已下架/区域不可售"]
+    "candidate_status": ["待查找", "失败重试", "处理中", ""]
   },
   "adapter_code": "influencer_pool_source_adapter",
   "snapshot_policy": {
@@ -458,10 +457,10 @@ result:
         "fields": {
           "达人ID": "7228697870020199470",
           "达人头像": [{"asset_ref": "asset://creator/7228697870020199470/avatar"}],
-          "粉丝数": "13W",
-          "28天视频数": "16",
-          "带货视频 GMV": "3W",
-          "带货直播 GMV": "小于1W",
+          "粉丝数(W)": 13.25,
+          "28天视频数": 16,
+          "带货视频 GMV(W)": 3.4,
+          "带货直播 GMV(W)": 0.8,
           "带货商品图": [{"asset_ref": "asset://product/1731194997356205027/main-image"}],
           "关联商品销量": "72",
           "关联节日": ["毕业季"],

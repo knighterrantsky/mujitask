@@ -506,6 +506,7 @@ features:
     feature_type: business_feature
     requires_architecture_delta_gate: true
     default_context:
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-monitoring.md
       - docs/arch/workflow-influencer-monitoring-design.md
       - docs/ops/deployment.md
@@ -517,6 +518,7 @@ features:
       - tests/test_monitor_tk_influencers.py
       - tests/test_runtime_monitor_tk_influencers.py
     source_contracts:
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-monitoring.md
       - docs/arch/workflow-influencer-monitoring-design.md
       - contracts/workflow/monitor_tk_influencers.yaml
@@ -524,6 +526,7 @@ features:
       - contracts/facts/product-fact-collection.yaml
     allowed_paths:
       - contracts/**
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-monitoring.md
       - docs/arch/workflow-influencer-monitoring-design.md
       - docs/ops/deployment.md
@@ -563,7 +566,9 @@ features:
       - The task and workflow are independent and must not import another influencer workflow, job, projection, mapper, or field contract.
       - Every parseable source SKU is eligible regardless of influencer-search or product status; delisted and region-unavailable acceptance uses contract fixtures without external probing.
       - Product videos use all publish dates, sold_count window 28, strict configurable threshold, per-product creator max, and cross-product creator max.
-      - The target row identity is canonical creator_id and 关联商品销量 uses max merge without changing the default additive behavior used by existing flows.
+      - The target row identity is canonical creator_id and 关联商品销量 uses a configurable per-creator periodic max merge without changing the default additive behavior used by existing flows.
+      - The Task snapshots an Asia/Shanghai business date and a positive related_product_sales_reset_days value; missing legacy values default to 28 days.
+      - Expired rows reset only on the next qualifying creator observation; missing, invalid, or future record dates are repaired without lowering sales and emit a warning.
       - No source table status field is written.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
 
@@ -884,6 +889,8 @@ features:
     default_context:
       - docs/arch/system-architecture-design.md
       - docs/domains/tk-competitor/README.md
+      - docs/business/requirements/refresh-current-competitor-table.md
+      - docs/arch/workflow-competitor-table-design.md
       - contracts/fields/feishu-tk-competitor.yaml
       - contracts/states/tk-competitor-product-status.yaml
       - contracts/workflow/refresh_current_competitor_table.yaml
@@ -891,10 +898,14 @@ features:
       - tests/test_runtime_refresh_current_competitor_table.py
       - tests/test_competitor_row_refresh_handler.py
     source_contracts:
+      - docs/business/requirements/refresh-current-competitor-table.md
+      - docs/arch/workflow-competitor-table-design.md
       - contracts/fields/feishu-tk-competitor.yaml
       - contracts/states/tk-competitor-product-status.yaml
       - contracts/workflow/refresh_current_competitor_table.yaml
     allowed_paths:
+      - docs/business/requirements/refresh-current-competitor-table.md
+      - docs/arch/workflow-competitor-table-design.md
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
@@ -906,8 +917,9 @@ features:
         - tests/test_runtime_refresh_current_competitor_table.py
         - tests/test_runtime_refresh_executor_integration.py
         - tests/test_competitor_row_refresh_handler.py
+        - tests/test_feishu_common_handlers.py
       commands:
-        - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_runtime_refresh_executor_integration.py tests/test_competitor_row_refresh_handler.py
+        - uv run --extra dev pytest tests/test_runtime_refresh_current_competitor_table.py tests/test_runtime_refresh_executor_integration.py tests/test_competitor_row_refresh_handler.py tests/test_feishu_common_handlers.py
     completion_rules:
       - Must preserve field/status/workflow contracts.
       - Must not add deprecated owners as new implementation owner.
@@ -916,6 +928,8 @@ features:
   - feature_code: tk_influencer_pool_sync
     status: complete
     default_context:
+      - docs/business/business-requirements.md
+      - docs/business/requirements/sync-tk-influencer-pool.md
       - docs/arch/system-architecture-design.md
       - docs/domains/tk-influencer-pool/README.md
       - contracts/fields/feishu-tk-influencer-pool.yaml
@@ -924,10 +938,16 @@ features:
       - src/automation_business_scaffold/domains/tiktok/
       - tests/test_runtime_sync_tk_influencer_pool.py
     source_contracts:
+      - docs/business/business-requirements.md
+      - docs/business/requirements/sync-tk-influencer-pool.md
       - contracts/fields/feishu-tk-influencer-pool.yaml
       - contracts/states/tk-competitor-influencer-search-status.yaml
       - contracts/workflow/sync_tk_influencer_pool.yaml
     allowed_paths:
+      - docs/business/business-requirements.md
+      - docs/business/requirements/sync-tk-influencer-pool.md
+      - docs/arch/workflow-influencer-pool-sync-design.md
+      - skills/mujitask-tiktok-feishu-sync/**
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/control_plane/**
@@ -939,8 +959,10 @@ features:
         - tests/test_runtime_sync_tk_influencer_pool.py
         - tests/test_runtime_influencer_executor_integration.py
         - tests/test_runtime_influencer_business_e2e.py
+        - tests/test_run_skill_step.py
+        - tests/test_feishu_common_handlers.py
       commands:
-        - uv run --extra dev pytest tests/test_runtime_sync_tk_influencer_pool.py tests/test_runtime_influencer_executor_integration.py tests/test_runtime_influencer_business_e2e.py
+        - uv run --extra dev pytest tests/test_runtime_sync_tk_influencer_pool.py tests/test_runtime_influencer_executor_integration.py tests/test_runtime_influencer_business_e2e.py tests/test_run_skill_step.py tests/test_feishu_common_handlers.py
     completion_rules:
       - Must preserve influencer field/state/workflow contracts.
       - Must not add dedicated business runtime tables or deprecated owners.
@@ -963,9 +985,11 @@ features:
       - docs/arch/workflow-competitor-table-design.md
       - contracts/workflow/search_keyword_competitor_products.yaml
     allowed_paths:
+      - docs/business/requirements/search-keyword-competitor-products.md
       - src/automation_business_scaffold/domains/tiktok/**
       - src/automation_business_scaffold/capabilities/**
       - src/automation_business_scaffold/contracts/**
+      - src/automation_business_scaffold/infrastructure/fastmoss/http_session.py
       - contracts/**
       - docs/arch/**
       - tests/**
@@ -974,10 +998,11 @@ features:
       tests:
         - tests/test_runtime_search_keyword_competitor_products.py
         - tests/test_runtime_keyword_executor_integration.py
+        - tests/test_tiktok_product_request_fetch_handler.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
       commands:
-        - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
+        - uv run --extra dev pytest tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_tiktok_product_request_fetch_handler.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
     completion_rules:
       - Keyword seed import must run as one business job that reuses FastMoss search and Feishu table write.
       - Seed write mapper must preserve SKU-ID, normalized product link, keyword source remark, and insert_if_absent semantics.
@@ -1013,6 +1038,7 @@ features:
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/contracts/**
       - src/automation_business_scaffold/infrastructure/artifacts/**
+      - src/automation_business_scaffold/infrastructure/fastmoss/http_session.py
       - scripts/deploy/**
       - examples/openclaw/**
       - docs/business/**
@@ -1023,6 +1049,7 @@ features:
       tests:
         - tests/test_fastmoss_product_search_handler.py
         - tests/test_feishu_common_handlers.py
+        - tests/test_selection_row_refresh_safety.py
         - tests/test_runtime_search_keyword_competitor_products.py
         - tests/test_runtime_keyword_executor_integration.py
         - tests/test_run_skill_step.py
@@ -1039,7 +1066,7 @@ features:
         - tests/test_agent.py
         - tests/test_workflow_demo.py
       commands:
-        - uv run --extra dev pytest tests/test_fastmoss_product_search_handler.py tests/test_feishu_common_handlers.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_tiktok_fastmoss_product_ingest.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_workflow_defs_contract.py tests/test_browser_fallback_boundary.py tests/test_registry.py tests/test_project_structure_contract.py tests/test_agent.py tests/test_workflow_demo.py
+        - uv run --extra dev pytest tests/test_fastmoss_product_search_handler.py tests/test_feishu_common_handlers.py tests/test_selection_row_refresh_safety.py tests/test_runtime_search_keyword_competitor_products.py tests/test_runtime_keyword_executor_integration.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_tiktok_fastmoss_product_ingest.py tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_workflow_defs_contract.py tests/test_browser_fallback_boundary.py tests/test_registry.py tests/test_project_structure_contract.py tests/test_agent.py tests/test_workflow_demo.py
     completion_rules:
       - FastMoss search-list filtering must apply before selection seed insertion.
       - Selection keyword defaults are 7-day sales >= 500 and price range maximum >= 10.99.
@@ -1052,18 +1079,21 @@ features:
     default_context:
       - docs/arch/system-architecture-design.md
       - docs/domains/product-fact-ingest/README.md
+      - docs/business/requirements/tk-selection-collection.md
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
       - contracts/fields/feishu-tk-selection.yaml
       - src/automation_business_scaffold/domains/tiktok/
       - src/automation_business_scaffold/capabilities/
       - tests/test_tiktok_fastmoss_product_ingest.py
     source_contracts:
+      - docs/business/requirements/tk-selection-collection.md
       - contracts/workflow/tiktok_fastmoss_product_ingest.yaml
       - contracts/facts/product-fact-collection.yaml
       - contracts/fields/feishu-tk-selection.yaml
       - docs/arch/fact-db-schema-design.md
       - docs/arch/storage-architecture-design.md
     allowed_paths:
+      - docs/business/requirements/tk-selection-collection.md
       - docs/arch/**
       - docs/dev/**
       - docs/ops/**
@@ -1079,6 +1109,8 @@ features:
     done_gate:
       tests:
         - tests/test_tiktok_fastmoss_product_ingest.py
+        - tests/test_selection_row_refresh_safety.py
+        - tests/test_feishu_common_handlers.py
         - tests/test_runtime_product_fact_ingest.py
         - tests/test_runtime_product_ingest_module.py
         - tests/test_run_skill_step.py
@@ -1088,7 +1120,7 @@ features:
         - tests/test_config.py
         - tests/test_openclaw_deploy_utils.py
       commands:
-        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_runtime_product_fact_ingest.py tests/test_runtime_product_ingest_module.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_config.py tests/test_openclaw_deploy_utils.py
+        - uv run --extra dev pytest tests/test_tiktok_fastmoss_product_ingest.py tests/test_selection_row_refresh_safety.py tests/test_feishu_common_handlers.py tests/test_runtime_product_fact_ingest.py tests/test_runtime_product_ingest_module.py tests/test_run_skill_step.py tests/test_fact_bundle_upsert_handler.py tests/test_media_asset_sync_handler.py tests/integration/test_real_skill_submit_persistence.py tests/test_config.py tests/test_openclaw_deploy_utils.py
     completion_rules:
       - Must preserve request-first/browser-fallback workflow contract.
       - Formal skill submit must not pass run_mode or raw Runtime DB/Fact DB/Object Storage config.
@@ -1154,6 +1186,7 @@ features:
     feature_type: business_feature
     requires_architecture_delta_gate: true
     default_context:
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
@@ -1169,12 +1202,14 @@ features:
       - tests/test_tiktok_influencer_outreach_sync.py
       - tests/test_tk_fact_store.py
     source_contracts:
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - contracts/facts/product-fact-collection.yaml
     allowed_paths:
+      - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
@@ -1207,7 +1242,7 @@ features:
         - uv run --extra dev pytest tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
         - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
     completion_rules:
-      - Source adapter reads SKUID, 达人ID, 视频链接, 视频发布时间, 检查时间, 播放量, 视频数量, and 更新时间 without skipping existing video-link rows.
+      - Source adapter reads SKUID, 达人ID, 视频链接, 视频发布时间, 检查时间, 播放量(W), 视频数量, and 更新时间 without skipping existing video-link rows.
       - Product video jobs index tk_videos and tk_video_product_relations; list play_count is not used as final playback.
       - Creator metric refresh jobs query all known SKU + creator videos, require all overview calls to succeed, append video metric snapshots, aggregate metrics, and write the Feishu row.
       - Workflow has no standalone writeback_outreach_rows stage; row writeback is inside outreach_creator_video_metric_refresh.

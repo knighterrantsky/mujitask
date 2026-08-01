@@ -94,6 +94,7 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
     written_count = int(write_result.get("written_count") or 0)
     skipped_count = int(write_result.get("skipped_count") or 0)
     failed_count = int(write_result.get("failed_count") or 0)
+    write_warnings = [str(value) for value in write_result.get("warnings") or []]
     summary = {
         "target_table_ref": first_non_empty(payload.get("target_table_ref"), target.table_ref),
         "mapper_code": first_non_empty(payload.get("mapper_code")),
@@ -107,9 +108,14 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
                 context,
                 summary=summary,
                 result=write_result,
-                warnings=("All Feishu write records were skipped.",),
+                warnings=[*write_warnings, "All Feishu write records were skipped."],
             )
-        return success_result(context, summary=summary, result=write_result)
+        return success_result(
+            context,
+            summary=summary,
+            result=write_result,
+            warnings=write_warnings,
+        )
 
     partial_allowed = coerce_bool(coerce_mapping(payload.get("write_policy")).get("partial_success_allowed"), default=True)
     if partial_allowed and (written_count > 0 or skipped_count > 0):
@@ -117,7 +123,7 @@ def feishu_table_write_handler(context: HandlerContext) -> HandlerResult:
             context,
             summary=summary,
             result=write_result,
-            warnings=("Some Feishu records failed to write.",),
+            warnings=[*write_warnings, "Some Feishu records failed to write."],
         )
     error = _error_from_failed_write_records(write_result)
     return failed_result(context, error=error, summary=summary, result=write_result)

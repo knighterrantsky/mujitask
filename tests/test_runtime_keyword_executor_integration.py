@@ -409,6 +409,9 @@ def test_keyword_executor_integration_happy_path(
     seed_import_jobs = _stage_jobs(seed_wait, stage_code="keyword_seed_import", job_code="keyword_seed_import")
     assert len(seed_import_jobs) == 1
     assert seed_import_jobs[0]["payload"]["search_request"]["search_query"] == SEARCH_QUERY
+    assert seed_import_jobs[0]["payload"]["search_request"]["filters"]["source_params"] == {
+        "off_shelves": -1
+    }
     assert seed_import_jobs[0]["payload"]["seed_write"]["mapper_code"] == "competitor_seed_projection_mapper"
 
     seed_worker = runtime_orchestrator.execute_api_worker_once(_runtime_params(runtime_db_url))

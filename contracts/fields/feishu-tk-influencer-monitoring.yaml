@@ -19,10 +19,10 @@ auto_maintained_fields:
   - 关联节日
   - 关联商品销量
   - 达人头像
-  - 粉丝数
+  - 粉丝数(W)
   - 28天视频数
-  - 带货视频 GMV
-  - 带货直播 GMV
+  - 带货视频 GMV(W)
+  - 带货直播 GMV(W)
   - 合作店铺
   - 达人联系方式
   - 记录日期
@@ -49,33 +49,49 @@ fields:
     source_of_truth: TK竞品收集.节日
   - display_name: 关联商品销量
     canonical_name: related_product_sales
-    role: historical_max_metric
-    update_policy: max_existing_and_current
+    role: periodic_max_metric
+    update_policy: max_existing_and_current_before_expiry_else_current_observation
     source_of_truth: fastmoss.goods_video.sold_count
   - display_name: 达人头像
     canonical_name: influencer_avatar
     role: auto_maintained
     update_policy: refresh_with_valid_durable_asset
     empty_policy: do_not_overwrite
-  - display_name: 粉丝数
+  - display_name: 粉丝数(W)
     canonical_name: follower_count
     role: auto_maintained_metric
     update_policy: refresh_when_valid
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
+    field_type: number
+    source_to_field_divisor: 10000
   - display_name: 28天视频数
     canonical_name: aweme_28d_count
     role: auto_maintained_metric
     update_policy: refresh_when_valid
-  - display_name: 带货视频 GMV
+    field_type: number
+  - display_name: 带货视频 GMV(W)
     canonical_name: video_sale_amount
     role: auto_maintained_metric
     update_policy: refresh_when_valid
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
-  - display_name: 带货直播 GMV
+    field_type: number
+    source_to_field_divisor: 10000
+  - display_name: 带货直播 GMV(W)
     canonical_name: live_sale_amount
     role: auto_maintained_metric
     update_policy: refresh_when_valid
-    display_rule: rounded_w_unit_when_gte_10000_else_less_than_1w
+    field_type: number
+    source_to_field_divisor: 10000
+
+display_rules:
+  w_unit_fields:
+    - 粉丝数(W)
+    - 带货视频 GMV(W)
+    - 带货直播 GMV(W)
+  field_type: number
+  source_to_field_divisor: 10000
+  write_value_type: json_number
+  forbidden_text_values:
+    - W
+    - 小于1W
   - display_name: 合作店铺
     canonical_name: partner_shops
     role: auto_maintained_relation
@@ -87,8 +103,9 @@ fields:
     empty_policy: do_not_overwrite
   - display_name: 记录日期
     canonical_name: recorded_date
-    role: auto_maintained
-    update_policy: create_only
+    role: periodic_max_anchor
+    update_policy: create_reset_or_repair_only
+    date_basis: Asia/Shanghai_natural_day
   - display_name: 更新日期
     canonical_name: updated_date
     role: auto_maintained
@@ -100,7 +117,12 @@ write_policy:
   update_replace_fields:
     - 达人头像
   update_merge_strategies:
-    关联商品销量: max_numeric
+    关联商品销量:
+      strategy: periodic_max_numeric
+      anchor_field: 记录日期
+      period_parameter: related_product_sales_reset_days
+      current_date_field: task_business_date
+      invalid_anchor_policy: max_then_repair_with_warning
   skip_unchanged_update_fields: true
   conditional_update_fields:
     - 更新日期

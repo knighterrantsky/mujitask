@@ -21,7 +21,12 @@ CHECK_STAGE_CODE = "index_product_videos"
 REFRESH_STAGE_CODE = "refresh_creator_video_metrics_and_writeback"
 SUMMARY_STAGE_CODE = "ready_for_summary"
 OUTBOX_DETAIL_ROW_LIMIT = 20
-OUTBOX_ROW_DETAIL_FIELDS = {"视频链接", "视频数量", "播放量", "视频发布时间"}
+OUTBOX_ROW_DETAIL_FIELDS = {
+    "视频链接",
+    "视频数量",
+    "播放量(W)",
+    "视频发布时间",
+}
 
 
 def finalize_request(
@@ -168,7 +173,7 @@ def _build_summary(*, store: Any, request: Any) -> dict[str, Any]:
                 no_video_checked += 1
             if "视频数量" in written_fields:
                 video_count_changed += 1
-            if "播放量" in written_fields:
+            if "播放量(W)" in written_fields:
                 play_count_changed += 1
             if "视频链接" in written_fields:
                 highest_video_changed += 1

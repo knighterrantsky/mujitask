@@ -26,6 +26,28 @@ custom_logic:
     - code: outreach_result_projection_mapper
       module: automation_business_scaffold.domains.tiktok.projections.feishu_outreach_projection
       export: outreach_result_projection_mapper
+feishu_field_contract:
+  read_fields:
+    - SKUID
+    - 达人ID
+    - 视频链接
+    - 视频发布时间
+    - 检查时间
+    - 播放量(W)
+    - 视频数量
+    - 更新时间
+  numeric_fields:
+    播放量(W):
+      source_metric: aggregate.total_play_count
+      source_to_field_divisor: 10000
+      write_value_type: json_number
+      forbidden_text_values:
+        - <1W
+        - nW
+    粉丝数(W):
+      workflow_write_policy: unchanged_not_maintained_by_this_workflow
+  protected_invariants:
+    - The workflow behavior and FastMoss API set remain unchanged; only the maintained playback field name and numeric write format change.
 outbox:
   job_code: task_completed_notification
   handler_code: outbox_dispatch

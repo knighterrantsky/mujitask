@@ -27,6 +27,7 @@ def test_monitor_workflow_is_a_registered_independent_formal_task() -> None:
     assert TASK_CODE in FORMAL_TASK_CODES
     assert TASK_CODE in WORKFLOW_RUNTIME_MODULES
     workflow = get_workflow_definition(TASK_CODE)
+    assert workflow.contract_revision == "2"
     assert workflow.entry_stage_code == READ_STAGE_CODE
     assert [stage.stage_code for stage in workflow.stages] == [
         "read_competitor_products",
@@ -46,6 +47,7 @@ def test_monitor_task_submits_fastmoss_credential_env_references(monkeypatch) ->
         return {"status": "pending"}
 
     monkeypatch.setattr(task_module, "run_monitor_tk_influencers_request", fake_run)
+    monkeypatch.setattr(task_module, "_task_business_date", lambda: "2026-06-27")
 
     result = task_module.MonitorTKInfluencersTask().run_runtime_request(
         {"control_action": "submit"}
@@ -56,6 +58,45 @@ def test_monitor_task_submits_fastmoss_credential_env_references(monkeypatch) ->
     assert captured["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
     assert "fastmoss_phone" not in captured
     assert "fastmoss_password" not in captured
+    assert captured["min_video_sales_28d"] == 50
+    assert captured["related_product_sales_reset_days"] == 28
+    assert captured["task_business_date"] == "2026-06-27"
+
+
+def test_monitor_task_snapshots_custom_reset_days_and_rejects_invalid_value(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        task_module,
+        "run_monitor_tk_influencers_request",
+        lambda payload: captured.update(payload) or {"status": "pending"},
+    )
+    monkeypatch.setattr(task_module, "_task_business_date", lambda: "2026-06-27")
+
+    task_module.MonitorTKInfluencersTask().run_runtime_request(
+        {
+            "control_action": "submit",
+            "related_product_sales_reset_days": 7,
+            "task_business_date": "2099-01-01",
+        }
+    )
+
+    assert captured["related_product_sales_reset_days"] == 7
+    assert captured["task_business_date"] == "2026-06-27"
+
+    try:
+        task_module.MonitorTKInfluencersTask().run_runtime_request(
+            {
+                "control_action": "submit",
+                "related_product_sales_reset_days": 0,
+            }
+        )
+    except ValueError as exc:
+        assert "positive integer" in str(exc)
+    else:
+        raise AssertionError("zero reset days must be rejected")
 
 
 def test_summary_stage_is_not_released_back_to_pending() -> None:
@@ -229,6 +270,8 @@ def test_sync_stage_deduplicates_creator_and_uses_cross_product_max() -> None:
         request_id = "req-monitor-sync"
         payload = {
             "target_table_ref": "feishu://mujitask/tk_influencer_monitoring",
+            "related_product_sales_reset_days": 7,
+            "task_business_date": "2026-06-27",
         }
 
     def discovery_job(product_id: str, sales: int, image: str) -> dict:
@@ -304,6 +347,8 @@ def test_sync_stage_deduplicates_creator_and_uses_cross_product_max() -> None:
         "unique_id": "alice",
     }
     assert payload["creator_run_max_sales_28d"] == 120
+    assert payload["related_product_sales_reset_days"] == 7
+    assert payload["task_business_date"] == "2026-06-27"
     assert [hit["product_id"] for hit in payload["product_hits"]] == [
         "sku-a",
         "sku-b",

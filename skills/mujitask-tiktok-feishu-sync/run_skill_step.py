@@ -415,6 +415,7 @@ def _influencer_pool_sync_submit_params(
     worker_max_iterations: int = 1,
     worker_stop_when_idle: bool | None = None,
     include_contact: bool = False,
+    creator_sold_count_min: int = 50,
     request_delay_min_seconds: float = 1.0,
     request_delay_max_seconds: float = 3.0,
 ) -> tuple[list[str], dict[str, str]]:
@@ -457,6 +458,7 @@ def _influencer_pool_sync_submit_params(
             "status_field_name=状态",
             "url_field_name=产品链接",
             f"max_author_detail_jobs_per_source_row={max(max_author_detail_jobs_per_source_row, 0)}",
+            f"creator_sold_count_min={creator_sold_count_min}",
             f"queue_mode={queue_mode}",
             f"worker_kinds={worker_kinds}",
             f"worker_max_iterations={max(worker_max_iterations, 0)}",
@@ -985,6 +987,13 @@ def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile-ref", default="")
 
 
+def _non_negative_int_arg(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Submit Mujitask OpenClaw skill tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1037,6 +1046,11 @@ def _build_parser() -> argparse.ArgumentParser:
     influencer_parser.add_argument("--worker-max-iterations", type=int, default=1)
     influencer_parser.add_argument("--worker-stop-when-idle", action="store_true")
     influencer_parser.add_argument("--include-contact", action="store_true")
+    influencer_parser.add_argument(
+        "--creator-sold-count-min",
+        type=_non_negative_int_arg,
+        default=50,
+    )
     influencer_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
     influencer_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
 
@@ -1335,6 +1349,7 @@ def main(argv: list[str] | None = None) -> int:
             worker_max_iterations=max(args.worker_max_iterations, 0),
             worker_stop_when_idle=bool(args.worker_stop_when_idle),
             include_contact=bool(args.include_contact),
+            creator_sold_count_min=args.creator_sold_count_min,
             request_delay_min_seconds=float(args.request_delay_min_seconds),
             request_delay_max_seconds=float(args.request_delay_max_seconds),
         )

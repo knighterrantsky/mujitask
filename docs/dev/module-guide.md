@@ -74,7 +74,7 @@ skills/mujitask-tiktok-feishu-sync/
 
 Skill 只负责意图识别、参数提取、提交顶层 task 和返回 request_id，不负责 workflow 主编排。
 
-## 7. 6 个 Task 快速索引
+## 7. Task 快速索引
 
 | task_code | workflow 文件 | flow 文件 |
 | --- | --- | --- |
@@ -84,6 +84,14 @@ Skill 只负责意图识别、参数提取、提交顶层 task 和返回 request
 | `sync_tk_influencer_pool` | `workflows/sync_tk_influencer_pool.py` | `flows/sync_tk_influencer_pool/` |
 | `tiktok_fastmoss_product_ingest` | `workflows/tiktok_fastmoss_product_ingest.py` | `flows/tiktok_fastmoss_product_ingest/` |
 | `refresh_competitor_row_by_url` | `workflows/refresh_competitor_row_by_url.py` | `flows/competitor_row_refresh/` |
+| `monitor_tk_influencers` | `workflows/monitor_tk_influencers.py` | `flows/monitor_tk_influencers/` |
+
+### 7.1 达人监控销量周期的修改边界
+
+- 顶层参数默认值和校验放在 `domains/tiktok/policies/influencer_monitor_candidate_policy.py`，Task entry 在创建请求时固定参数与 `Asia/Shanghai` 业务日期。
+- 单 SKU、跨 SKU 的本次销量聚合属于 domain policy；目标表周期内 `max`、到期重置和异常锚点修复由 `influencer_monitor_projection_mapper` 声明结构化写入策略。
+- `capabilities/input_sources/feishu/row_updates.py` 只执行配置驱动的通用合并策略，不写入 `关联商品销量`、`记录日期` 等表级业务常量。
+- 修改该规则时同步更新 business requirement、workflow/field contract、架构设计、projection/Runtime/Feishu 测试，并运行 `python scripts/harness/claim_done.py tk_influencer_monitoring --run-gates`。
 
 ## 8. 5 个 Daemon 快速索引
 

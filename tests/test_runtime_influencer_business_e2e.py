@@ -647,10 +647,10 @@ def test_sync_tk_influencer_pool_real_business_e2e_persists_facts_and_writes_fei
     assert pool_fields["达人ID"] == CREATOR_ID
     assert pool_fields["关联节日"] == ["毕业季"]
     assert pool_fields["关联商品销量"] == "72"
-    assert pool_fields["粉丝数"] == "13W"
-    assert pool_fields["28天视频数"] == "16"
-    assert pool_fields["带货视频 GMV"] == "3W"
-    assert pool_fields["带货直播 GMV"] == "小于1W"
+    assert pool_fields["粉丝数(W)"] == 12.8
+    assert pool_fields["28天视频数"] == 16
+    assert pool_fields["带货视频 GMV(W)"] == 3.2
+    assert pool_fields["带货直播 GMV(W)"] == 0
     assert pool_fields["合作店铺"] == ["Graduation Shop"]
     assert pool_fields["达人联系方式"] == "hello@example.com"
     assert pool_fields["带货商品图"] == [{"file_token": "tok-product-image"}]

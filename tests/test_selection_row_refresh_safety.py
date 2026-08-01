@@ -429,10 +429,11 @@ def test_selection_row_refresh_fails_before_write_when_required_chart_render_mis
     assert called["feishu_write"] == 0
 
 
-def test_selection_row_refresh_unavailable_writes_status_without_required_charts(
+def test_selection_row_refresh_unavailable_collects_fastmoss_and_required_charts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fact_payloads: list[dict[str, object]] = []
+    fastmoss_payloads: list[dict[str, object]] = []
     write_payloads: list[dict[str, object]] = []
 
     def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
@@ -464,11 +465,46 @@ def test_selection_row_refresh_unavailable_writes_status_without_required_charts
             },
         )
 
-    def fail_if_called(context: HandlerContext) -> HandlerResult:
+    def fail_media(context: HandlerContext) -> HandlerResult:
         raise AssertionError(f"{context.handler_code} should not run for unavailable products")
 
-    def fail_chart_render(**kwargs: object) -> dict[str, object]:
-        raise AssertionError("required chart rendering should be skipped for unavailable products")
+    def fake_fastmoss_fetch(context: HandlerContext) -> HandlerResult:
+        fastmoss_payloads.append(dict(context.payload))
+        return HandlerResult.success(
+            context,
+            result={
+                "product_fact_bundle": {
+                    "raw_api_responses": [
+                        {
+                            "source_endpoint": "goods.base",
+                            "response_payload": {
+                                "data": {
+                                    "product": {
+                                        "sold_count": 1163,
+                                        "launch_time": 1755612244,
+                                    }
+                                }
+                            },
+                        },
+                        {
+                            "source_endpoint": "goods.overview",
+                            "request_params": {"d_type": 180},
+                            "response_payload": {
+                                "data": {"overview": {"sold_count": 1134}}
+                            },
+                        },
+                    ]
+                },
+                "metrics_snapshot": {"overview": {"front_price": "18.88"}},
+            },
+        )
+
+    def fake_chart_render(**kwargs: object) -> dict[str, object]:
+        assert kwargs["strict"] is True
+        return {
+            "distribution_chart": [{"local_path": "/tmp/distribution.png"}],
+            "trend_chart": [{"local_path": "/tmp/trend.png"}],
+        }
 
     def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
         fact_payloads.append(dict(context.payload))
@@ -481,9 +517,11 @@ def test_selection_row_refresh_unavailable_writes_status_without_required_charts
     monkeypatch.setattr(
         selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
     )
-    monkeypatch.setattr(selection_row_refresh, "media_asset_sync_handler", fail_if_called)
-    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fail_if_called)
-    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fail_chart_render)
+    monkeypatch.setattr(selection_row_refresh, "media_asset_sync_handler", fail_media)
+    monkeypatch.setattr(
+        selection_row_refresh, "fastmoss_product_fetch_handler", fake_fastmoss_fetch
+    )
+    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fake_chart_render)
     monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
     monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
 
@@ -495,17 +533,106 @@ def test_selection_row_refresh_unavailable_writes_status_without_required_charts
         ("tiktok_request", "success"),
         ("browser_fallback", "skipped"),
         ("media_sync", "skipped"),
-        ("fastmoss_fetch", "skipped"),
+        ("fastmoss_fetch", "success"),
         ("fact_db_upsert", "success"),
-        ("chart_render", "skipped"),
+        ("chart_render", "success"),
         ("feishu_writeback", "success"),
     ]
+    assert len(fastmoss_payloads) == 1
     assert (
         fact_payloads[0]["fact_bundle"]["products"][0]["status"]
         == "off_shelf_or_region_unavailable"
     )
+    projection_fields = write_payloads[0]["records"][0]["projection_fields"]
+    assert projection_fields["商品状态"] == "已下架/区域不可售"
+    assert projection_fields["当前价格"] == 18.88
+    assert projection_fields["总销量"] == 1163
+    assert projection_fields["上架日期"] == "2025-08-19"
+    assert projection_fields["180天销量"] == 1134
+    assert projection_fields["出单种类占比图"] == [
+        {"local_path": "/tmp/distribution.png"}
+    ]
+    assert projection_fields["销量趋势图"] == [{"local_path": "/tmp/trend.png"}]
+
+
+def test_selection_row_refresh_unavailable_keeps_status_when_fastmoss_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_payloads: list[dict[str, object]] = []
+
+    def fake_tiktok_fetch(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(
+            context,
+            result={
+                "normalized_product_result": {
+                    "product_id": PRODUCT_ID,
+                    "normalized_product_url": PRODUCT_URL,
+                    "availability_status": "unavailable",
+                    "product": {
+                        "product_id": PRODUCT_ID,
+                        "normalized_url": PRODUCT_URL,
+                        "status": "off_shelf_or_region_unavailable",
+                    },
+                    "fact_bundle": {
+                        "products": [
+                            {
+                                "product_id": PRODUCT_ID,
+                                "status": "off_shelf_or_region_unavailable",
+                            }
+                        ]
+                    },
+                }
+            },
+        )
+
+    def fail_media(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} should not run for unavailable products")
+
+    def fail_fastmoss(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.failed(
+            context,
+            error=HandlerError(
+                error_type="request_failure",
+                error_code="fastmoss_request_failed",
+                message="FastMoss unavailable",
+                retryable=True,
+            ),
+        )
+
+    def fail_chart_render(**kwargs: object) -> dict[str, object]:
+        raise AssertionError("charts should not render without FastMoss data")
+
+    def fake_fact_upsert(context: HandlerContext) -> HandlerResult:
+        return HandlerResult.success(context, result={"persistence_mode": "database"})
+
+    def fake_feishu_write(context: HandlerContext) -> HandlerResult:
+        write_payloads.append(dict(context.payload))
+        return HandlerResult.success(context, result={"written_count": 1})
+
+    monkeypatch.setattr(
+        selection_row_refresh, "tiktok_product_request_fetch_handler", fake_tiktok_fetch
+    )
+    monkeypatch.setattr(selection_row_refresh, "media_asset_sync_handler", fail_media)
+    monkeypatch.setattr(selection_row_refresh, "fastmoss_product_fetch_handler", fail_fastmoss)
+    monkeypatch.setattr(selection_row_refresh, "_render_selection_charts", fail_chart_render)
+    monkeypatch.setattr(selection_row_refresh, "fact_bundle_upsert_handler", fake_fact_upsert)
+    monkeypatch.setattr(selection_row_refresh, "feishu_table_write_handler", fake_feishu_write)
+
+    result = selection_row_refresh.run_selection_row_refresh_pipeline(_context(writeback_enabled=True))
+
+    assert result.status == "partial_success"
+    assert result.result["row_status"] == "unavailable"
     assert write_payloads[0]["records"][0]["projection_fields"]["商品状态"] == "已下架/区域不可售"
-    assert result.result["writeback_projection"]["fields"]["商品状态"] == "已下架/区域不可售"
+    assert any(
+        step["step"] == "fastmoss_fetch" and step["status"] == "failed"
+        for step in result.result["step_timeline"]
+    )
+    assert any(
+        step["step"] == "chart_render"
+        and step["status"] == "skipped"
+        and step["reason"] == "fastmoss_fetch_failed"
+        for step in result.result["step_timeline"]
+    )
 
 
 def test_selection_row_refresh_validates_required_fields_before_feishu_write(

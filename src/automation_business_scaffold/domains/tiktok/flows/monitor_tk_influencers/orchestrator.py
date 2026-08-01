@@ -20,6 +20,7 @@ from automation_business_scaffold.domains.tiktok.mappers.influencer_monitor_sour
 from automation_business_scaffold.domains.tiktok.policies.influencer_monitor_candidate_policy import (
     aggregate_creator_candidates,
     normalize_min_video_sales_28d,
+    normalize_related_product_sales_reset_days,
 )
 from automation_business_scaffold.domains.tiktok.workflows import (
     get_workflow_definition,
@@ -300,6 +301,9 @@ def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
     )
     if not jobs:
         request_payload = dict(request.payload or {})
+        reset_days = normalize_related_product_sales_reset_days(
+            request_payload.get("related_product_sales_reset_days")
+        )
         job_def = WORKFLOW.resolve_stage_jobs(SYNC_STAGE_CODE)[0]
         dispatch_jobs = []
         for candidate in aggregate_creator_candidates(
@@ -329,6 +333,8 @@ def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
                 "creator_run_max_sales_28d": candidate[
                     "creator_run_max_sales_28d"
                 ],
+                "related_product_sales_reset_days": reset_days,
+                "task_business_date": request_payload.get("task_business_date"),
                 "product_hits": list(candidate.get("product_hits") or []),
                 "source_product_images": list(
                     candidate.get("source_product_images") or []

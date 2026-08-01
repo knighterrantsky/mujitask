@@ -456,7 +456,7 @@ def _build_write_fields(
     existing_published = first_non_empty(payload.get("existing_video_published_date"), _text_value(source_fields.get("视频发布时间")))
     desired: dict[str, Any] = {
         "视频链接": aggregate_video_url,
-        "播放量": _format_feishu_play_count(aggregate.get("total_play_count")),
+        "播放量(W)": _play_count_w(aggregate.get("total_play_count")),
         "视频数量": int(aggregate.get("video_count") or 0),
     }
     if not existing_published and aggregate.get("earliest_published_date"):
@@ -464,7 +464,7 @@ def _build_write_fields(
     existing = {
         "视频链接": existing_video_url,
         "视频发布时间": existing_published,
-        "播放量": _existing_play_count_display(payload, source_fields),
+        "播放量(W)": _existing_play_count_w(payload, source_fields),
         "视频数量": _int(first_non_empty(payload.get("existing_video_count"), source_fields.get("视频数量"))),
     }
     fields = _diff_fields(desired, existing)
@@ -602,6 +602,10 @@ def _diff_fields(desired: Mapping[str, Any], existing: Mapping[str, Any]) -> dic
                 fields[key] = value
             continue
         existing_value = existing.get(key)
+        if key == "播放量(W)":
+            if _optional_number(value) != _optional_number(existing_value):
+                fields[key] = value
+            continue
         if str(value) != str(existing_value if existing_value is not None else ""):
             fields[key] = value
     return fields
@@ -632,20 +636,20 @@ def _link_value(value: Any) -> dict[str, str] | str:
     return {"link": url, "text": url} if url else ""
 
 
-def _format_feishu_play_count(value: Any) -> str:
-    play_count = max(0, _int(value))
-    if play_count < 10000:
-        return "<1W"
-    return f"{play_count // 10000}W"
+def _play_count_w(value: Any) -> float:
+    return max(0, _int(value)) / 10_000
 
 
-def _existing_play_count_display(payload: Mapping[str, Any], source_fields: Mapping[str, Any]) -> str:
-    if "播放量" in source_fields:
-        return _text_value(source_fields.get("播放量"))
+def _existing_play_count_w(
+    payload: Mapping[str, Any],
+    source_fields: Mapping[str, Any],
+) -> float | None:
+    if "播放量(W)" in source_fields:
+        return _optional_number(source_fields.get("播放量(W)"))
     existing_play_count = payload.get("existing_play_count")
     if existing_play_count not in (None, ""):
-        return _format_feishu_play_count(existing_play_count)
-    return ""
+        return _optional_number(existing_play_count)
+    return None
 
 
 def _text_value(value: Any) -> str:
@@ -664,6 +668,16 @@ def _int(value: Any) -> int:
         return int(float(text))
     except (TypeError, ValueError):
         return 0
+
+
+def _optional_number(value: Any) -> float | None:
+    text = _text_value(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _base_summary(product_id: str, creator_unique_id: str, source_record_id: str, status: str) -> dict[str, Any]:

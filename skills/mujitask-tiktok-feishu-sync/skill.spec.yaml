@@ -126,6 +126,14 @@ inputs:
     extraction_rules:
       - User says `不限制候选数`, `全部`, or `所有满足条件商品` -> `0`.
       - User says `最多 50 个`, `抓 50 条`, or `候选 50 条` -> `50`.
+  creator_sold_count_min:
+    description: Strict lower bound for a creator's sales on the current source product.
+    defaults_by_intent:
+      influencer_pool_sync: 50
+    extraction_rules:
+      - Extract only when the user configures the influencer-pool creator sales threshold.
+      - The comparison remains strict greater-than; a value equal to the threshold does not qualify.
+      - The value must be a non-negative integer.
   batch_keyword_items:
     description: Confirmed batch keyword rows containing only keyword and sales threshold.
     extraction_rules:
@@ -212,10 +220,12 @@ intents:
       design:
         - docs/arch/workflow-influencer-pool-sync-design.md
     description: Use when the user explicitly asks to sync influencer-pool data, expand influencers from competitor products, or update `TK达人池`.
-    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync"
+    command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync" --creator-sold-count-min "<creator_sold_count_min>"
     required_inputs: []
-    optional_inputs: []
-    default_values: {}
+    optional_inputs:
+      - creator_sold_count_min
+    default_values:
+      creator_sold_count_min: 50
     side_effects:
       - submit runtime task_request
       - read TK竞品收集 and TK达人池
@@ -503,6 +513,8 @@ examples:
     reply: "先展示确认预览；用户确认后回复 `request_id: <request_id>`."
   - user: 达人池同步
     intent: influencer_pool_sync
+    inputs:
+      creator_sold_count_min: 50
     reply: "先展示确认预览；用户确认后回复 `request_id: <request_id>`."
   - user: 补全这个商品 https://www.tiktok.com/shop/pdp/123
     intent: product_url_complete

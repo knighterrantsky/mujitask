@@ -330,6 +330,37 @@ def test_influencer_source_adapter_honors_max_source_rows() -> None:
     assert result["adapter_summary"]["max_source_rows"] == 1
 
 
+def test_influencer_source_adapter_keeps_unavailable_products() -> None:
+    rows = [
+        {
+            "record_id": "rec-unavailable",
+            "fields": {
+                "SKU-ID": "1732183562851553564",
+                "产品链接": "https://www.tiktok.com/shop/pdp/1732183562851553564",
+                "商品状态": "已下架/区域不可售",
+                "达人查找状态": "待查找",
+            },
+        }
+    ]
+
+    result = influencer_pool_source_adapter(
+        rows,
+        {
+            "source_table_ref": "feishu://source",
+            "filter_spec": {
+                "candidate_status": ["待查找"],
+                "skip_product_status": ["已下架/区域不可售"],
+            },
+        },
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == [
+        "rec-unavailable"
+    ]
+    assert result["source_rows"][0]["business_fields"]["product_status"] == "已下架/区域不可售"
+    assert result["adapter_summary"]["skipped_unavailable_count"] == 0
+
+
 def test_selection_source_adapter_skips_complete_required_fields_even_when_optional_missing() -> None:
     rows = [
         {
@@ -387,6 +418,43 @@ def test_selection_source_adapter_queues_rows_missing_required_fields() -> None:
 
     assert result["adapter_summary"]["source_row_count"] == 1
     assert result["source_rows"][0]["source_record_id"] == "rec-missing-trend"
+
+
+def test_selection_source_adapter_uses_fastmoss_fields_for_unavailable_products() -> None:
+    common_fields = {
+        "商品状态": "已下架/区域不可售",
+        "当前价格": "18.88",
+        "总销量": "1163",
+        "上架日期": "2025-08-19",
+        "180天销量": "1134",
+        "出单种类占比图": [{"file_token": "distribution"}],
+    }
+    rows = [
+        {
+            "record_id": "rec-unavailable-complete",
+            "fields": {
+                **common_fields,
+                "商品ID": "1732295206515806399",
+                "商品链接": "https://www.tiktok.com/shop/pdp/1732295206515806399",
+                "销量趋势图": [{"file_token": "trend"}],
+            },
+        },
+        {
+            "record_id": "rec-unavailable-missing-trend",
+            "fields": {
+                **common_fields,
+                "商品ID": "1732295206515806400",
+                "商品链接": "https://www.tiktok.com/shop/pdp/1732295206515806400",
+            },
+        },
+    ]
+
+    result = selection_table_source_adapter(rows, {"source_table_ref": "feishu://selection"})
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == [
+        "rec-unavailable-missing-trend"
+    ]
+    assert result["adapter_summary"]["skipped_all_filled_count"] == 1
 
 
 def test_table_source_adapters_compact_source_fields() -> None:
@@ -565,6 +633,53 @@ def test_feishu_table_read_treats_missing_competitor_commission_rate_as_pending(
 
     assert result.status == "success"
     assert result.result["source_rows"][0]["missing_auto_fields"] == ["佣金率"]
+
+
+def test_competitor_source_adapter_uses_fastmoss_fields_for_unavailable_products() -> None:
+    common_fields = {
+        "商品状态": "已下架/区域不可售",
+        "Fastmoss价格": "18.88",
+        "佣金率": "12%",
+        "昨日销量": "5",
+        "近90天销量": "99",
+    }
+    rows = [
+        {
+            "record_id": "rec-unavailable-complete",
+            "fields": {
+                **common_fields,
+                "SKU-ID": "1732323487665722003",
+                "产品链接": "https://www.tiktok.com/shop/pdp/1732323487665722003",
+                "近7天销量": "30",
+            },
+        },
+        {
+            "record_id": "rec-unavailable-missing-day7",
+            "fields": {
+                **common_fields,
+                "SKU-ID": "1732323487665722004",
+                "产品链接": "https://www.tiktok.com/shop/pdp/1732323487665722004",
+            },
+        },
+    ]
+
+    result = competitor_table_source_adapter(
+        rows,
+        {
+            "source_table_ref": "feishu://competitor",
+            "filter_spec": {
+                "candidate_policy": "missing_auto_maintained_fields",
+                "skip_product_status": ["已下架/区域不可售"],
+            },
+        },
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == [
+        "rec-unavailable-missing-day7"
+    ]
+    assert result["source_rows"][0]["missing_auto_fields"] == ["近7天销量"]
+    assert result["adapter_summary"]["skipped_complete_count"] == 1
+    assert result["adapter_summary"]["skipped_unavailable_count"] == 0
 
 
 def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric() -> None:
@@ -1754,6 +1869,103 @@ def test_feishu_table_write_accumulates_related_product_sales_on_update(monkeypa
 
     assert result.status == "success"
     assert FakeClient.updated[0]["fields"]["关联商品销量"] == "135"
+
+
+def test_feishu_table_write_periodic_max_repairs_anchor_and_returns_warning(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        updated: list[dict[str, Any]] = []
+
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+        def list_all_fields(self, app_token, table_id):
+            del app_token, table_id
+            return [
+                {"field_name": "达人ID", "type": 1},
+                {"field_name": "关联商品销量", "type": 1},
+                {"field_name": "记录日期", "type": 1},
+                {"field_name": "更新日期", "type": 1},
+            ]
+
+        def list_all_records(
+            self,
+            app_token,
+            table_id,
+            page_size=100,
+            filter_expr=None,
+            view_id=None,
+        ):
+            del app_token, table_id, page_size, filter_expr, view_id
+            return [
+                {
+                    "record_id": "rec-creator",
+                    "fields": {
+                        "达人ID": "creator-1",
+                        "关联商品销量": "120",
+                        "记录日期": "invalid",
+                        "更新日期": "2026-06-25",
+                    },
+                }
+            ]
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            del app_token, table_id
+            self.updated.append({"record_id": record_id, "fields": dict(fields)})
+            return {"code": 0, "data": {"record": {"record_id": record_id}}}
+
+    FakeClient.updated = []
+    monkeypatch.setattr(
+        "automation_business_scaffold.capabilities.input_sources.feishu.table_common.FeishuBitableClient",
+        FakeClient,
+    )
+    payload = _table_payload(
+        target_table_ref="feishu://mujitask/tk_influencer_monitoring",
+        write_mode="upsert",
+        records=[
+            {
+                "op": "upsert",
+                "upsert_key": {"field": "达人ID", "value": "creator-1"},
+                "fields": {
+                    "达人ID": "creator-1",
+                    "关联商品销量": "80",
+                    "记录日期": "2026-06-27",
+                    "更新日期": "2026-06-27",
+                },
+                "update_excluded_fields": ["记录日期"],
+                "update_merge_strategies": {
+                    "关联商品销量": {
+                        "strategy": "periodic_max_numeric",
+                        "anchor_field": "记录日期",
+                        "period_days": 7,
+                        "current_date": "2026-06-27",
+                    }
+                },
+                "skip_unchanged_update_fields": True,
+                "conditional_update_fields": ["更新日期"],
+            }
+        ],
+    )
+
+    result = build_bound_api_handler_registry().dispatch(
+        "feishu_table_write",
+        _context("feishu_table_write", payload),
+    )
+
+    assert result.status == "success"
+    assert FakeClient.updated == [
+        {
+            "record_id": "rec-creator",
+            "fields": {
+                "记录日期": "2026-06-27",
+                "更新日期": "2026-06-27",
+            },
+        }
+    ]
+    assert result.warnings == (
+        "periodic_max_numeric_repaired_anchor:记录日期:missing_or_invalid",
+    )
 
 
 def test_competitor_influencer_status_writeback_does_not_touch_remark() -> None:
