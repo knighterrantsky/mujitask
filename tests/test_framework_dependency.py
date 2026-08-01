@@ -43,3 +43,16 @@ def test_pyproject_pins_framework_dependency_and_example_files_exist():
     profiles = json.loads((ROOT / "config" / "browser_profiles.example.json").read_text(encoding="utf-8"))
     assert "local-chrome" in profiles
     assert (ROOT / "examples" / "workflow_draft.review-only.yaml").exists()
+
+
+def test_browser_profiles_are_machine_local_and_only_example_is_canonical():
+    ignored_paths = {
+        line.strip()
+        for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    profiles = json.loads((ROOT / "config" / "browser_profiles.example.json").read_text(encoding="utf-8"))
+
+    assert "config/browser_profiles.json" in ignored_paths
+    assert list(profiles) == ["local-chrome"]
+    assert profiles["local-chrome"]["profile_id"] == "local-chrome"

@@ -129,6 +129,11 @@ Amazon 飞书机器人 App ID / App Secret 由 OpenClaw 的
 
 不建议把 Runtime DB / MinIO 作为唯一来源只放在 `.env`。
 
+`config/browser_profiles.json` 同样属于机器本地配置。它应从
+`config/browser_profiles.example.json` 复制后按本机浏览器会话修改，并由 Git 忽略；版本库只维护
+不含本机状态的 example 文件。同一个 CDP endpoint / user data directory 只保留一个 profile ref，
+不要为同一会话维护重复别名。
+
 ## 3. 当前自动加载覆盖范围
 
 以下入口现在都会自动读取项目配置文件：
