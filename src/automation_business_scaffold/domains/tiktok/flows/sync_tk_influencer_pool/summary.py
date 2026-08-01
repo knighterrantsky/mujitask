@@ -97,12 +97,37 @@ def finalize_request(
 
 def finalize_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id: str) -> dict[str, Any]:
     request = _load_request(store=store, request_id=request_id)
+    source_read_outcome = _build_source_read_outcome(store=store, request=request)
     group_summaries = _build_product_group_summaries(store=store, request=request)
+    source_read_status = str(source_read_outcome["status"])
+    source_read_warnings = list(source_read_outcome["warnings"])
+    source_rows = list(source_read_outcome["source_rows"])
+    adapter_summary = dict(source_read_outcome["adapter_summary"])
+    try:
+        invalid_source_row_count = max(int(adapter_summary.get("dropped_empty_count") or 0), 0)
+    except (TypeError, ValueError):
+        invalid_source_row_count = 0
+        source_read_status = "invalid"
+        source_read_warnings.append("source_read_result_invalid")
+    invalid_source_row_count += max(len(source_rows) - len(group_summaries), 0)
+    if source_read_status == "success" and invalid_source_row_count > 0:
+        source_read_status = "partial_success" if group_summaries else "invalid"
+        source_read_warnings.append("source_rows_invalid")
     group_counts = _count_product_group_statuses(group_summaries)
-    final_status = _derive_final_status(group_summaries)
-    warnings = _build_summary_warnings(group_summaries)
+    final_status = _derive_final_status(
+        group_summaries,
+        source_read_status=source_read_status,
+    )
+    warnings = _build_summary_warnings(
+        group_summaries,
+        source_read_warnings=source_read_warnings,
+    )
     summary_payload = {
         "final_status": final_status,
+        "source_read_status": source_read_status,
+        "source_row_count": len(source_rows),
+        "invalid_source_row_count": invalid_source_row_count,
+        "source_adapter_summary": adapter_summary,
         "product_group_count": len(group_summaries),
         "product_groups": group_summaries,
         "product_group_status_counts": group_counts,
@@ -116,6 +141,7 @@ def finalize_sync_tk_influencer_pool_request(*, store: RuntimeStore, request_id:
         "workflow_code": WORKFLOW_CODE,
         "task_code": TASK_CODE,
         "product_groups": group_summaries,
+        "source_read_status": source_read_status,
         "final_status": final_status,
     }
     channel_code = str(request.source_channel_code or "noop")

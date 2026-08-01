@@ -349,6 +349,35 @@ def _mark_stage_job_success(store: RuntimeStore, *, request_id: str, stage_code:
     )
 
 
+def _mark_stage_job_failed(store: RuntimeStore, *, request_id: str, stage_code: str, job_code: str) -> dict[str, object]:
+    job = next(
+        job
+        for job in store.list_api_worker_jobs_for_request(request_id=request_id, job_code=job_code)
+        if (job.get("payload") or {}).get("stage_code") == stage_code
+    )
+    store.update_task_request(
+        request_id=request_id,
+        status="waiting",
+        current_stage=stage_code,
+        progress_stage=stage_code,
+    )
+    claimed = store.claim_next_api_worker_job(
+        worker_id="pytest-api",
+        lease_seconds=30.0,
+        request_id=request_id,
+        job_code=job_code,
+    )
+    assert claimed is not None and claimed["job_id"] == job["job_id"]
+    return store.mark_api_worker_job_retry_or_failed(
+        job_id=str(job["job_id"]),
+        run_id=str(claimed["run_id"]),
+        error_text="Feishu source read failed",
+        error_type="transport",
+        error_code="source_read_failed",
+        force_terminal=True,
+    )
+
+
 def _mark_stage_job_fastmoss_fallback_required(
     store: RuntimeStore,
     *,
@@ -518,6 +547,244 @@ def test_sync_tk_influencer_pool_read_job_carries_max_source_rows(runtime_db_url
     assert len(read_jobs) == 1
     assert read_jobs[0]["payload"]["max_source_rows"] == 1
     assert read_jobs[0]["payload"]["request_payload"]["max_source_rows"] == 1
+
+
+def test_sync_tk_influencer_pool_no_candidates_finishes_successfully(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    workflow = get_workflow_definition(TASK_CODE)
+    request = _create_request(store)
+
+    read_result = advance_stage(store=store, request=request, workflow=workflow, stage_code=READ_STAGE_CODE)
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_result)
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+        result={
+            "source_rows": [],
+            "adapter_summary": {
+                "input_row_count": 73,
+                "source_row_count": 0,
+                "skipped_status_count": 73,
+            },
+        },
+    )
+    released = release_request_after_child_completion(store, request_id=request.request_id)
+    assert released and released[0]["stage_code"] == READ_STAGE_CODE
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=READ_STAGE_CODE,
+    )
+    assert read_advance == {
+        "action": "advance",
+        "next_stage": SUMMARY_STAGE_CODE,
+        "details": {"stage_transition": "no_competitor_candidates"},
+    }
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_advance)
+
+    finalized = finalize_request(
+        store=store,
+        request=store.load_task_request(request_id=request.request_id),
+        workflow=workflow,
+    )
+
+    assert finalized["request_status"] == "success"
+    assert finalized["final_status"] == "success"
+    assert finalized["summary"]["source_read_status"] == "success"
+    assert finalized["summary"]["source_row_count"] == 0
+    assert finalized["summary"]["invalid_source_row_count"] == 0
+    assert finalized["summary"]["product_group_count"] == 0
+    assert finalized["summary"]["child_total_count"] == 1
+    assert finalized["summary"]["child_success_count"] == 1
+    assert finalized["outbox"][0]["payload"]["message_text"].endswith("子任务：1/1 成功")
+
+
+def test_sync_tk_influencer_pool_read_failure_finishes_failed(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    workflow = get_workflow_definition(TASK_CODE)
+    request = _create_request(store)
+
+    read_result = advance_stage(store=store, request=request, workflow=workflow, stage_code=READ_STAGE_CODE)
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_result)
+    failed_job = _mark_stage_job_failed(
+        store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+    )
+    assert failed_job["result_status"] == "failed"
+    released = release_request_after_child_completion(store, request_id=request.request_id)
+    assert released and released[0]["stage_code"] == READ_STAGE_CODE
+
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=READ_STAGE_CODE,
+    )
+    assert read_advance == {
+        "action": "advance",
+        "next_stage": SUMMARY_STAGE_CODE,
+        "details": {
+            "stage_transition": "competitor_candidate_read_failed",
+            "source_read_status": "failed",
+        },
+    }
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_advance)
+
+    finalized = finalize_request(
+        store=store,
+        request=store.load_task_request(request_id=request.request_id),
+        workflow=workflow,
+    )
+
+    assert finalized["request_status"] == "failed"
+    assert finalized["summary"]["source_read_status"] == "failed"
+    assert finalized["summary"]["product_group_count"] == 0
+    assert finalized["summary"]["warnings"] == ["source_read_failed"]
+
+
+def test_sync_tk_influencer_pool_invalid_read_result_finishes_failed(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    workflow = get_workflow_definition(TASK_CODE)
+    request = _create_request(store)
+
+    read_result = advance_stage(store=store, request=request, workflow=workflow, stage_code=READ_STAGE_CODE)
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_result)
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+        result={"adapter_summary": {"input_row_count": 1}},
+    )
+    released = release_request_after_child_completion(store, request_id=request.request_id)
+    assert released and released[0]["stage_code"] == READ_STAGE_CODE
+
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=READ_STAGE_CODE,
+    )
+    assert read_advance["next_stage"] == SUMMARY_STAGE_CODE
+    assert read_advance["details"]["source_read_status"] == "invalid"
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_advance)
+
+    finalized = finalize_request(
+        store=store,
+        request=store.load_task_request(request_id=request.request_id),
+        workflow=workflow,
+    )
+
+    assert finalized["request_status"] == "failed"
+    assert finalized["summary"]["source_read_status"] == "invalid"
+    assert finalized["summary"]["warnings"] == ["source_read_result_invalid"]
+
+
+def test_sync_tk_influencer_pool_malformed_source_rows_finish_failed(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    workflow = get_workflow_definition(TASK_CODE)
+    request = _create_request(store)
+
+    read_result = advance_stage(store=store, request=request, workflow=workflow, stage_code=READ_STAGE_CODE)
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_result)
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+        result={
+            "source_rows": [{"source_record_id": "row-without-product"}],
+            "adapter_summary": {"input_row_count": 1, "source_row_count": 1},
+        },
+    )
+    released = release_request_after_child_completion(store, request_id=request.request_id)
+    assert released and released[0]["stage_code"] == READ_STAGE_CODE
+
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=READ_STAGE_CODE,
+    )
+    assert read_advance["next_stage"] == SUMMARY_STAGE_CODE
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_advance)
+
+    finalized = finalize_request(
+        store=store,
+        request=store.load_task_request(request_id=request.request_id),
+        workflow=workflow,
+    )
+
+    assert finalized["request_status"] == "failed"
+    assert finalized["summary"]["source_read_status"] == "invalid"
+    assert finalized["summary"]["source_row_count"] == 1
+    assert finalized["summary"]["invalid_source_row_count"] == 1
+    assert finalized["summary"]["warnings"] == ["source_rows_invalid"]
+
+
+def test_sync_tk_influencer_pool_mixed_source_rows_continue_as_partial_success(runtime_db_url: str) -> None:
+    store = RuntimeStore(db_url=runtime_db_url)
+    workflow = get_workflow_definition(TASK_CODE)
+    request = _create_request(store)
+
+    read_result = advance_stage(store=store, request=request, workflow=workflow, stage_code=READ_STAGE_CODE)
+    _apply_stage_result(store, request_id=request.request_id, stage_result=read_result)
+    _mark_stage_job_success(
+        store,
+        request_id=request.request_id,
+        stage_code=READ_STAGE_CODE,
+        job_code="feishu_table_read",
+        result={
+            "source_rows": [
+                {
+                    "source_record_id": "row-valid",
+                    "product_id": "product-valid",
+                    "product_identity": {"product_id": "product-valid"},
+                },
+                {"source_record_id": "row-without-product"},
+            ],
+            "adapter_summary": {"input_row_count": 2, "source_row_count": 2},
+        },
+    )
+    released = release_request_after_child_completion(store, request_id=request.request_id)
+    assert released and released[0]["stage_code"] == READ_STAGE_CODE
+
+    request = store.load_task_request(request_id=request.request_id)
+    read_advance = advance_stage(
+        store=store,
+        request=request,
+        workflow=workflow,
+        stage_code=READ_STAGE_CODE,
+    )
+    assert read_advance["next_stage"] == DISPATCH_PRODUCT_STAGE_CODE
+    store.update_task_request(
+        request_id=request.request_id,
+        status="pending",
+        current_stage=SUMMARY_STAGE_CODE,
+        progress_stage=SUMMARY_STAGE_CODE,
+    )
+
+    finalized = finalize_request(
+        store=store,
+        request=store.load_task_request(request_id=request.request_id),
+        workflow=workflow,
+    )
+
+    assert finalized["request_status"] == "partial_success"
+    assert finalized["summary"]["source_read_status"] == "partial_success"
+    assert finalized["summary"]["source_row_count"] == 2
+    assert finalized["summary"]["invalid_source_row_count"] == 1
+    assert finalized["summary"]["product_group_count"] == 1
+    assert "source_rows_invalid" in finalized["summary"]["warnings"]
 
 
 def test_sync_tk_influencer_pool_runtime_module_walks_all_stages(runtime_db_url: str) -> None:
