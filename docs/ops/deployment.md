@@ -466,6 +466,15 @@ bash skills/mujitask-tiktok-feishu-sync/run_keyword_search_step.sh \
 bash skills/mujitask-tiktok-feishu-sync/run_influencer_pool_sync_step.sh
 ```
 
+- 达人监控表更新：
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh \
+  --intent "influencer_monitoring" \
+  --min-video-sales-28d 50 \
+  --related-product-sales-reset-days 28
+```
+
 说明：
 
 - 这些默认入口都是“同步提交、异步执行”。

@@ -3,13 +3,14 @@ name: "mujitask-tiktok-feishu-sync"
 description: >-
   Submits OpenClaw task requests for the current TikTok/TK Feishu workflows:
   competitor-table refresh, competitor keyword search, batch keyword search,
-  influencer-pool sync, influencer outreach sync, selection-table ingest, and selection
-  keyword search. Use only when the user explicitly asks to run, sync, update, complete,
-  search, collect, or write data to TK竞品收集, TK选品收集, TK达人池, or TK达人建联表. Do not use for
-  conceptual questions, strategy discussion, skill review, configuration support, or
-  general FastMoss questions without an explicit table/workflow target.
+  influencer-pool sync, influencer monitoring, influencer outreach sync, selection-table
+  ingest, and selection keyword search. Use only when the user explicitly asks to run,
+  sync, update, complete, search, collect, or write data to TK竞品收集, TK选品收集, TK达人池,
+  TK达人监控表, or TK达人建联表. Do not use for conceptual questions, strategy discussion, skill
+  review, configuration support, or general FastMoss questions without an explicit
+  table/workflow target.
 metadata:
-  short-description: "TK选品、竞品、达人池与FastMoss任务提交"
+  short-description: "TK选品、竞品、达人池、达人监控与FastMoss任务提交"
 ---
 
 # mujitask-tiktok-feishu-sync
@@ -36,6 +37,7 @@ Formal workflow requirements:
 - `refresh_current_competitor_table` -> `docs/business/requirements/refresh-current-competitor-table.md`
 - `search_keyword_competitor_products` -> `docs/business/requirements/search-keyword-competitor-products.md`
 - `sync_tk_influencer_pool` -> `docs/business/requirements/sync-tk-influencer-pool.md`
+- `monitor_tk_influencers` -> `docs/business/requirements/tk-influencer-monitoring.md`
 - `tiktok_influencer_outreach_sync` -> `docs/business/requirements/tk-influencer-outreach.md`
 - `tiktok_fastmoss_product_ingest` -> `docs/business/requirements/tk-selection-collection.md`
 - `search_keyword_selection_products` -> `docs/business/requirements/search-keyword-selection-products.md`
@@ -45,6 +47,7 @@ Design documents:
 - `refresh_current_competitor_table` -> `docs/arch/workflow-competitor-table-design.md`
 - `search_keyword_competitor_products` -> `docs/arch/workflow-competitor-table-design.md`
 - `sync_tk_influencer_pool` -> `docs/arch/workflow-influencer-pool-sync-design.md`
+- `monitor_tk_influencers` -> `docs/arch/workflow-influencer-monitoring-design.md`
 - `tiktok_influencer_outreach_sync` -> `docs/arch/workflow-influencer-outreach-design.md`
 - `tiktok_fastmoss_product_ingest` -> `docs/arch/workflow-selection-table-design.md`
 - `search_keyword_selection_products` -> `docs/arch/workflow-selection-table-design.md`
@@ -60,6 +63,7 @@ Use this skill only when the user explicitly asks to submit one of these workflo
 - Preview any task submission inputs, then submit only after explicit confirmation.
 - Preview a batch of keyword-search rows for `TK竞品收集` or `TK选品收集`, then submit only after explicit confirmation.
 - Sync influencer data from `TK竞品收集` to `TK达人池`.
+- Discover qualifying creators from `TK竞品收集` and update `TK达人监控表`.
 - Check and write outreach video/check-time results for `TK达人建联表`.
 - Ingest or complete data for `TK选品收集`.
 - Search keyword products and write new selection seed rows to `TK选品收集`.
@@ -89,6 +93,7 @@ Do not use this skill when the user is only:
 - asking to analyze, edit, review, or debug this skill
 - discussing TikTok competitor strategy without asking to update the current Feishu table
 - discussing product-selection strategy without asking to write to `TK选品收集`
+- discussing influencer monitoring strategy without asking to update `TK达人监控表`
 - discussing influencer outreach strategy without asking to update `TK达人建联表`
 - asking about credentials, tokens, environment variables, browser profiles, Runtime DB, deployment, or troubleshooting
 - saying only “FastMoss”, “TK竞品”, “写入飞书”, or “更新当前表” without a clear workflow or target table
@@ -202,6 +207,34 @@ Rules:
 - The comparison remains strict greater-than; a value equal to the threshold does not qualify.
 - The value must be a non-negative integer.
 
+### `min_video_sales_28d`
+
+Strict lower bound for a FastMoss video's product sales in the 28-day metric window.
+
+Defaults:
+
+- `influencer_monitoring`: `50`
+
+Rules:
+
+- Extract only when the user configures the `TK达人监控表` qualifying-video sales threshold.
+- The comparison remains strict greater-than; a value equal to the threshold does not qualify.
+- The value must be a non-negative integer.
+
+### `related_product_sales_reset_days`
+
+Per-creator retention period for the target row's maximum related-product sales value.
+
+Defaults:
+
+- `influencer_monitoring`: `28`
+
+Rules:
+
+- Extract only when the user configures the `TK达人监控表` maximum-sales reset period.
+- The period uses Asia/Shanghai natural days and must be a positive integer.
+- This parameter does not change the FastMoss 28-day sales metric window.
+
 ### `batch_keyword_items`
 
 Confirmed batch keyword rows containing only keyword and sales threshold.
@@ -260,6 +293,27 @@ Use when the user explicitly asks to sync influencer-pool data, expand influence
 Default inputs:
 
 - `creator_sold_count_min`: `50`
+
+### `influencer_monitoring`
+
+- Kind: formal_workflow
+- Task code: `monitor_tk_influencers`
+- Source table: `TK竞品收集`
+- Target table: `TK达人监控表`
+- Trigger mode from requirements: daily scheduled task or manual trigger
+- Conversation activation: explicit manual submission only
+
+Use when the user explicitly asks to run, update, sync, or refresh `TK达人监控表` or `达人监控表`.
+
+Business behavior summary:
+
+- This workflow reads all parseable competitor SKUs, discovers qualifying FastMoss videos, and updates one target row per creator.
+- The qualifying-video threshold defaults to 50 and the per-creator maximum-sales reset period defaults to 28 days.
+
+Default inputs:
+
+- `min_video_sales_28d`: `50`
+- `related_product_sales_reset_days`: `28`
 
 ### `influencer_outreach_sync`
 
@@ -379,10 +433,11 @@ Use only when the user explicitly mentions competitor row, competitor URL, or `�
 7. If the user asks to complete, ingest, scan, or update `TK选品收集` without keyword-search semantics, choose `selection_table_ingest`.
 8. If the user asks to manually refresh, sync, or update the current competitor table, choose `competitor_table_refresh`.
 9. If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
-10. If the user asks to run, sync, update, or check `TK达人建联表` or `达人建联表`, choose `influencer_outreach_sync`.
-11. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
-12. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
-13. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
+10. If the user asks to run, sync, update, or refresh `TK达人监控表` or `达人监控表`, choose `influencer_monitoring`.
+11. If the user asks to run, sync, update, or check `TK达人建联表` or `达人建联表`, choose `influencer_outreach_sync`.
+12. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
+13. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
+14. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
 
 ## Commands
 
@@ -404,6 +459,12 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "keyword_competitor
 
 ```bash
 bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_pool_sync" --creator-sold-count-min "<creator_sold_count_min>"
+```
+
+### `influencer_monitoring`
+
+```bash
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_monitoring" --min-video-sales-28d "<min_video_sales_28d>" --related-product-sales-reset-days "<related_product_sales_reset_days>"
 ```
 
 ### `influencer_outreach_sync`
@@ -475,6 +536,7 @@ Examples:
 - Do not treat the initial task request itself as confirmation; it only authorizes generating a preview.
 - Do not route `选品表` requests to competitor workflows.
 - Do not route `竞品表` requests to selection workflows.
+- Do not route `达人监控表` requests to `达人池` or `达人建联表` workflows.
 - Do not use a generic keyword-search workflow when the target table is ambiguous.
 - Do not submit batch keyword searches during preview; wait for explicit confirmation.
 - Do not accept filters, custom max candidates, price threshold, or other optional parameters in v1 batch keyword rows.
@@ -498,6 +560,7 @@ Examples:
 - Batch keyword search row modification after preview: regenerate preview and wait for confirmation again.
 - Single-URL workflow with multiple URLs: ask for one URL.
 - TikTok URL without table semantics: use `product_url_complete` only if the user asks to complete a product; otherwise ask for the intended workflow.
+- Influencer request without an exact target table: ask whether the user means `TK达人池`, `TK达人监控表`, or `TK达人建联表`.
 - Wrapper exits without `request_id`: treat as failed submission.
 - Wrapper returns failed/error: return only the safe failure summary.
 - Runtime / Feishu / FastMoss / browser unavailable: do not switch to another workflow.
@@ -601,6 +664,19 @@ Intent: `influencer_pool_sync`
 Inputs:
 
 - `creator_sold_count_min`: `50`
+
+Reply:
+
+```text
+先展示确认预览；用户确认后回复 `request_id: <request_id>`.
+```
+
+User: 更新达人监控表
+Intent: `influencer_monitoring`
+Inputs:
+
+- `min_video_sales_28d`: `50`
+- `related_product_sales_reset_days`: `28`
 
 Reply:
 

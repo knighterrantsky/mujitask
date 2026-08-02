@@ -11,6 +11,8 @@ total_sales_threshold=""
 price_range_max_threshold=""
 max_candidates=""
 creator_sold_count_min=""
+min_video_sales_28d=""
+related_product_sales_reset_days=""
 target_intent=""
 items_json=""
 
@@ -48,6 +50,14 @@ while [[ $# -gt 0 ]]; do
       creator_sold_count_min="${2:-}"
       shift 2
       ;;
+    --min-video-sales-28d)
+      min_video_sales_28d="${2:-}"
+      shift 2
+      ;;
+    --related-product-sales-reset-days)
+      related_product_sales_reset_days="${2:-}"
+      shift 2
+      ;;
     --target-intent)
       target_intent="${2:-}"
       shift 2
@@ -83,6 +93,11 @@ case "$intent" in
   influencer_pool_sync)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-pool-sync-submit \
       --creator-sold-count-min "${creator_sold_count_min:-50}"
+    ;;
+  influencer_monitoring)
+    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-monitoring-submit \
+      --min-video-sales-28d "${min_video_sales_28d:-50}" \
+      --related-product-sales-reset-days "${related_product_sales_reset_days:-28}"
     ;;
   influencer_outreach_sync)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-outreach-sync-submit
