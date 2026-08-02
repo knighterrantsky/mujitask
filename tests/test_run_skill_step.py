@@ -151,6 +151,17 @@ def test_lightweight_submitter_supports_influencer_outreach_sync():
     assert submitter is runner.run_tiktok_influencer_outreach_sync_request
 
 
+def test_lightweight_submitter_supports_influencer_monitoring():
+    module = _load_lightweight_submit_module()
+    root = Path(__file__).resolve().parents[1]
+
+    from automation_business_scaffold.control_plane.executor import runner
+
+    submitter = module._load_submitter(root, "monitor_tk_influencers")
+
+    assert submitter is runner.run_monitor_tk_influencers_request
+
+
 def test_lightweight_submit_rejects_worker_control_actions(tmp_path, monkeypatch):
     module = _load_lightweight_submit_module()
     result_file = tmp_path / "result.json"
@@ -1410,6 +1421,98 @@ def test_main_influencer_pool_sync_returns_after_submit(tmp_path, monkeypatch):
 
     assert second_exit_code == 0
     assert "creator_sold_count_min=100" in list(captured_calls[1]["params"])
+
+
+def test_main_influencer_monitoring_returns_after_submit(tmp_path, monkeypatch):
+    module = _load_run_skill_step_module()
+    install_dir = tmp_path / "install"
+    cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
+    python_bin = install_dir / ".venv" / "bin" / "python"
+    cli_bin.parent.mkdir(parents=True, exist_ok=True)
+    cli_bin.write_text("", encoding="utf-8")
+    python_bin.write_text("", encoding="utf-8")
+
+    captured_calls: list[dict[str, object]] = []
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_skill_env",
+        lambda _path: {
+            "INSTALL_DIR": str(install_dir),
+            **FEISHU_TABLE_ROUTE_ENV,
+            "MUJITASK_FEISHU_ACCESS_TOKEN": "token",
+            "FASTMOSS_PHONE": "18000000000",
+            "FASTMOSS_PASSWORD": "secret",
+            "INFLUENCER_POOL_FASTMOSS_PHONE_ENV": "FASTMOSS_PHONE",
+            "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV": "FASTMOSS_PASSWORD",
+        },
+    )
+
+    def fake_run_lightweight_submit_capture_payload(**kwargs):
+        captured_calls.append(kwargs)
+        return (
+            0,
+            {
+                "status": "success",
+                "control_action": "submit",
+                "request_id": "req-monitoring-123",
+                "request_status": "pending",
+            },
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_run_lightweight_submit_capture_payload",
+        fake_run_lightweight_submit_capture_payload,
+    )
+    monkeypatch.setattr(module, "_emit_final_result", lambda payload: emitted.update(payload) or 0)
+
+    exit_code = module.main(["influencer-monitoring-submit"])
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["task_name"] == "monitor_tk_influencers"
+    params = list(captured_calls[0]["params"])
+    assert "control_action=submit" in params
+    assert f"table_url={FEISHU_TABLE_URLS['tk_competitor']}" in params
+    assert f"target_table_url={FEISHU_TABLE_URLS['tk_influencer_monitoring']}" in params
+    assert "source_table_ref=feishu://mujitask/tk_competitor" in params
+    assert "target_table_ref=feishu://mujitask/tk_influencer_monitoring" in params
+    assert "min_video_sales_28d=50" in params
+    assert "related_product_sales_reset_days=28" in params
+    assert emitted["request_id"] == "req-monitoring-123"
+
+    second_exit_code = module.main(
+        [
+            "influencer-monitoring-submit",
+            "--min-video-sales-28d",
+            "75",
+            "--related-product-sales-reset-days",
+            "7",
+        ]
+    )
+
+    assert second_exit_code == 0
+    second_params = list(captured_calls[1]["params"])
+    assert "min_video_sales_28d=75" in second_params
+    assert "related_product_sales_reset_days=7" in second_params
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--min-video-sales-28d", "-1", "non-negative integer"),
+        ("--related-product-sales-reset-days", "0", "positive integer"),
+    ],
+)
+def test_influencer_monitoring_parser_rejects_invalid_thresholds(flag, value, message, capsys):
+    module = _load_run_skill_step_module()
+
+    with pytest.raises(SystemExit):
+        module._build_parser().parse_args(["influencer-monitoring-submit", flag, value])
+
+    assert message in capsys.readouterr().err
 
 
 def test_main_influencer_outreach_sync_returns_after_submit(tmp_path, monkeypatch):

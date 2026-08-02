@@ -481,6 +481,58 @@ def _influencer_pool_sync_submit_params(
     return _append_runtime_params(params, skill_env), extra_env
 
 
+def _influencer_monitoring_submit_params(
+    *,
+    skill_env: dict[str, str],
+    include_submit_control_action: bool = True,
+    min_video_sales_28d: int = 50,
+    related_product_sales_reset_days: int = 28,
+) -> tuple[list[str], dict[str, str]]:
+    table_refs = _load_feishu_table_refs(skill_env)
+    source_table_url = _resolve_table_url(skill_env, table_refs, TK_COMPETITOR_TABLE_ALIAS)
+    target_table_url = _resolve_table_url(
+        skill_env,
+        table_refs,
+        TK_INFLUENCER_MONITORING_TABLE_ALIAS,
+    )
+    source_table_ref = _feishu_table_ref(TK_COMPETITOR_TABLE_ALIAS)
+    target_table_ref = _feishu_table_ref(TK_INFLUENCER_MONITORING_TABLE_ALIAS)
+    feishu_access_token_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
+        or FEISHU_ACCESS_TOKEN_ENV
+    )
+    fastmoss_phone_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
+        or "FASTMOSS_PHONE"
+    )
+    fastmoss_password_env = (
+        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
+        or "FASTMOSS_PASSWORD"
+    )
+    params = _append_feishu_table_refs(
+        [
+            f"source_table_ref={source_table_ref}",
+            f"target_table_ref={target_table_ref}",
+            f"table_url={source_table_url}",
+            f"target_table_url={target_table_url}",
+            f"access_token_env={feishu_access_token_env}",
+            f"fastmoss_phone_env={fastmoss_phone_env}",
+            f"fastmoss_password_env={fastmoss_password_env}",
+            f"min_video_sales_28d={min_video_sales_28d}",
+            f"related_product_sales_reset_days={related_product_sales_reset_days}",
+        ],
+        table_refs,
+    )
+    if include_submit_control_action:
+        params.append("control_action=submit")
+    extra_env = {
+        feishu_access_token_env: _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV),
+        fastmoss_phone_env: _optional_env_value(skill_env, "FASTMOSS_PHONE"),
+        fastmoss_password_env: _optional_env_value(skill_env, "FASTMOSS_PASSWORD"),
+    }
+    return _append_runtime_params(params, skill_env), extra_env
+
+
 def _influencer_outreach_sync_submit_params(
     *,
     skill_env: dict[str, str],
@@ -994,6 +1046,13 @@ def _non_negative_int_arg(value: str) -> int:
     return parsed
 
 
+def _positive_int_arg(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Submit Mujitask OpenClaw skill tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1053,6 +1112,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     influencer_parser.add_argument("--request-delay-min-seconds", type=float, default=1.0)
     influencer_parser.add_argument("--request-delay-max-seconds", type=float, default=3.0)
+
+    monitor_parser = subparsers.add_parser("influencer-monitoring-submit")
+    monitor_parser.add_argument(
+        "--min-video-sales-28d",
+        type=_non_negative_int_arg,
+        default=50,
+    )
+    monitor_parser.add_argument(
+        "--related-product-sales-reset-days",
+        type=_positive_int_arg,
+        default=28,
+    )
 
     subparsers.add_parser("influencer-outreach-sync-submit")
 
@@ -1361,6 +1432,23 @@ def main(argv: list[str] | None = None) -> int:
             stdout_prefix="influencer-pool-sync-submit-step",
             extra_env={**extra_env, **influencer_pool_env},
             accepted_message="Influencer pool sync task accepted for asynchronous execution.",
+        )
+
+    if args.command == "influencer-monitoring-submit":
+        params, monitoring_env = _influencer_monitoring_submit_params(
+            skill_env=skill_env,
+            include_submit_control_action=True,
+            min_video_sales_28d=args.min_video_sales_28d,
+            related_product_sales_reset_days=args.related_product_sales_reset_days,
+        )
+        return _submit(
+            install_dir=install_dir,
+            python_bin=python_bin,
+            task_name="monitor_tk_influencers",
+            params=params,
+            stdout_prefix="influencer-monitoring-submit-step",
+            extra_env={**extra_env, **monitoring_env},
+            accepted_message="Influencer monitoring task accepted for asynchronous execution.",
         )
 
     if args.command == "influencer-outreach-sync-submit":

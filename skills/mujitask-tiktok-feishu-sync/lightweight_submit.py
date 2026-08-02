@@ -18,6 +18,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
         sys.path.insert(0, src_path)
 
     from automation_business_scaffold.control_plane.executor.runner import (  # pylint: disable=import-outside-toplevel
+        run_monitor_tk_influencers_request,
         run_refresh_competitor_row_by_url_request,
         run_refresh_current_competitor_table_request,
         run_search_keyword_competitor_products_request,
@@ -28,6 +29,7 @@ def _load_submitter(install_dir: Path, task_name: str) -> Callable[[dict[str, An
     )
 
     submitters: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+        "monitor_tk_influencers": run_monitor_tk_influencers_request,
         "refresh_competitor_row_by_url": run_refresh_competitor_row_by_url_request,
         "refresh_current_competitor_table": run_refresh_current_competitor_table_request,
         "search_keyword_competitor_products": run_search_keyword_competitor_products_request,

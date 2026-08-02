@@ -75,6 +75,18 @@ cases:
       - keyword_competitor_search
       - competitor_table_refresh
 
+  - id: influencer-monitoring
+    user: 更新达人监控表，视频销量阈值 50，最高销量每 28 天重置
+    expected_intent: influencer_monitoring
+    expected_command: bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_monitoring" --min-video-sales-28d "<min_video_sales_28d>" --related-product-sales-reset-days "<related_product_sales_reset_days>"
+    expected_inputs:
+      min_video_sales_28d: 50
+      related_product_sales_reset_days: 28
+    expected_task_code: monitor_tk_influencers
+    must_not_include:
+      - influencer_pool_sync
+      - influencer_outreach_sync
+
   - id: influencer-outreach-sync
     user: 跑一次达人建联表检查
     expected_intent: influencer_outreach_sync

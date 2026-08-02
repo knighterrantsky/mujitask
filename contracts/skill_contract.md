@@ -48,6 +48,7 @@ skill.spec.yaml -> tools/render_skill.py -> SKILL.md -> tools/validate_skill.py 
 refresh_current_competitor_table
 search_keyword_competitor_products
 sync_tk_influencer_pool
+monitor_tk_influencers
 tiktok_influencer_outreach_sync
 tiktok_fastmoss_product_ingest
 search_keyword_selection_products

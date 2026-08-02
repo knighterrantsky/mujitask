@@ -620,6 +620,7 @@ features:
       - scripts/deploy/macos/**
       - examples/openclaw/openclaw_deploy_common.sh
       - skills/mujitask-tiktok-feishu-sync/**
+      - tools/validate_skill.py
       - README.md
       - tests/**
     forbidden_paths:
