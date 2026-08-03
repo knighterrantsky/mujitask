@@ -245,8 +245,8 @@ def test_competitor_row_refresh_handler_success_path(monkeypatch: pytest.MonkeyP
     assert [step["step"] for step in result.result["step_timeline"]] == [
         "tiktok_request",
         "browser_fallback",
-        "media_sync",
         "fastmoss_fetch",
+        "media_sync",
         "fact_db_upsert",
         "feishu_writeback",
     ]
@@ -486,17 +486,17 @@ def test_competitor_row_refresh_returns_fastmoss_security_browser_fallback_reque
     assert [step["step"] for step in result.result["step_timeline"]] == [
         "tiktok_request",
         "browser_fallback",
-        "media_sync",
         "fastmoss_fetch",
         "fastmoss_security_browser_fallback",
     ]
 
 
-def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
+def test_competitor_row_refresh_unavailable_uses_fastmoss_presentation_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fact_payloads: list[dict] = []
     fastmoss_payloads: list[dict] = []
+    media_payloads: list[dict] = []
     write_payloads: list[dict] = []
 
     def fake_tiktok(context: HandlerContext) -> HandlerResult:
@@ -538,8 +538,29 @@ def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
             },
         )
 
-    def fail_media(context: HandlerContext) -> HandlerResult:
-        raise AssertionError(f"{context.handler_code} should not be called for unavailable products")
+    def fake_media(context: HandlerContext) -> HandlerResult:
+        media_payloads.append(dict(context.payload))
+        durable_asset = {
+            "source_url": "https://fastmoss.example.com/product.jpg",
+            "bucket": "bucket",
+            "object_key": "fastmoss/product/123456789.jpg",
+            "content_digest": "c" * 64,
+            "size_bytes": 10,
+            "sync_state": "uploaded",
+            "file_name": "123456789.jpg",
+            "mime_type": "image/jpeg",
+            "entity_type": "product",
+            "entity_external_id": "123456789",
+            "media_role": "product_image",
+            "source_platform": "fastmoss",
+        }
+        return HandlerResult.success(
+            context,
+            result={
+                "synced_assets": [durable_asset],
+                "media_fact_bundle": {"media_assets": [durable_asset]},
+            },
+        )
 
     def fake_fastmoss(context: HandlerContext) -> HandlerResult:
         fastmoss_payloads.append(dict(context.payload))
@@ -550,10 +571,32 @@ def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
                     "products": [
                         {
                             "product_id": "123456789",
+                            "title": "Graduation Party Set",
+                            "shop_name": "FastMoss Shop",
                             "facts": {"commission_rate": "12%"},
                         }
                     ]
                 },
+                "media_refs": [
+                    {
+                        "entity_key": "fastmoss_product:123456789",
+                        "media_type": "product_image",
+                        "source_url": "https://fastmoss.example.com/product.jpg",
+                        "source_platform": "fastmoss",
+                    },
+                    {
+                        "entity_key": "fastmoss_creator:creator-1",
+                        "media_type": "avatar",
+                        "source_url": "https://fastmoss.example.com/avatar.jpg",
+                        "source_platform": "fastmoss",
+                    },
+                    {
+                        "entity_key": "fastmoss_product:999999999",
+                        "media_type": "product_image",
+                        "source_url": "https://fastmoss.example.com/wrong-product.jpg",
+                        "source_platform": "fastmoss",
+                    },
+                ],
                 "metrics_snapshot": {
                     "overview": {
                         "fastmoss_price": "18.88",
@@ -574,7 +617,7 @@ def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
         return HandlerResult.success(context, result={"written_count": 1})
 
     monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fake_tiktok)
-    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fail_media)
+    monkeypatch.setattr(flow_module, "media_asset_sync_handler", fake_media)
     monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fake_fastmoss)
     monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fake_fact)
     monkeypatch.setattr(flow_module, "feishu_table_write_handler", fake_write)
@@ -599,18 +642,72 @@ def test_competitor_row_refresh_unavailable_skips_media_but_collects_fastmoss(
     assert [(step["step"], step["status"]) for step in result.result["step_timeline"]] == [
         ("tiktok_request", "success"),
         ("browser_fallback", "skipped"),
-        ("media_sync", "skipped"),
         ("fastmoss_fetch", "success"),
+        ("media_sync", "success"),
         ("fact_db_upsert", "success"),
         ("feishu_writeback", "success"),
     ]
     assert len(fastmoss_payloads) == 1
+    assert len(media_payloads) == 1
+    assert media_payloads[0]["asset_refs"] == [
+        {
+            "entity_key": "fastmoss_product:123456789",
+            "media_type": "product_image",
+            "source_url": "https://fastmoss.example.com/product.jpg",
+            "source_platform": "fastmoss",
+        }
+    ]
     assert fact_payloads[0]["fact_bundle"]["products"][0]["status"] == "off_shelf_or_region_unavailable"
+    assert fact_payloads[0]["fact_bundle"]["media_assets"][0]["source_platform"] == "fastmoss"
     projection_fields = write_payloads[0]["records"][0]["projection_fields"]
     assert projection_fields["商品状态"] == "已下架/区域不可售"
+    assert projection_fields["图片"] == {
+        "bucket": "bucket",
+        "object_key": "fastmoss/product/123456789.jpg",
+        "content_digest": "c" * 64,
+        "file_name": "123456789.jpg",
+        "mime_type": "image/jpeg",
+    }
+    assert projection_fields["标题"] == "Graduation Party Set"
+    assert projection_fields["节日"] == "毕业季"
+    assert projection_fields["卖家"] == "FastMoss Shop"
+    assert "价格" not in projection_fields
     assert projection_fields["Fastmoss价格"] == "18.88"
     assert projection_fields["佣金率"] == "12%"
     assert projection_fields["近7天销量"] == "30"
+
+
+def test_competitor_projection_does_not_use_fastmoss_presentation_without_unavailable_signal() -> None:
+    fields = flow_module._build_competitor_projection_fields(
+        source_context={"source_fields": {}},
+        normalized_product_result={
+            "product": {
+                "product_id": "123456789",
+                "normalized_url": "https://www.tiktok.com/shop/pdp/123456789",
+            },
+            "fact_bundle": {"products": [{"product_id": "123456789"}]},
+        },
+        fastmoss_result={
+            "product_fact_bundle": {
+                "products": [
+                    {
+                        "product_id": "123456789",
+                        "title": "FastMoss title must not leak",
+                        "shop_name": "FastMoss shop must not leak",
+                    }
+                ]
+            },
+            "metrics_snapshot": {"overview": {"real_price": "18.88"}},
+        },
+        media_result={},
+    )
+
+    assert "图片" not in fields
+    assert "标题" not in fields
+    assert "节日" not in fields
+    assert "卖家" not in fields
+    assert "价格" not in fields
+    assert fields["Fastmoss价格"] == "18.88"
 
 
 def test_competitor_row_refresh_unavailable_keeps_status_when_fastmoss_fails(

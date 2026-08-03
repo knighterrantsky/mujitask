@@ -38,6 +38,10 @@ auto_maintained_fields:
 pending_policy:
   candidate_when_any_auto_maintained_field_empty: true
   unavailable_candidate_when_any_fastmoss_field_empty:
+    - 图片
+    - 标题
+    - 节日
+    - 卖家
     - Fastmoss价格
     - 佣金率
     - 昨日销量
@@ -55,6 +59,38 @@ pending_policy:
     - 第一波高峰期
     - 第二波高峰期
     - 价格趋势
+
+fastmoss_presentation_fallback:
+  trigger:
+    required_tiktok_terminal_status: off_shelf_or_region_unavailable
+    resulting_feishu_product_status: 已下架/区域不可售
+    require_explicit_unavailable_evidence: true
+  allowed_fields:
+    - 图片
+    - 标题
+    - 节日
+    - 卖家
+  forbidden_triggers:
+    - network_failure
+    - timeout
+    - http_5xx
+    - http_429
+    - security_control
+    - login_required
+    - captcha
+    - generic_access_restricted
+    - proxy_failure
+    - extraction_failure
+  source_mapping:
+    图片: fastmoss.goods.base.product.image -> media_asset_sync durable_ref
+    标题: fastmoss.goods.base.product.title
+    节日: infer_from_fastmoss_title_using_current_holiday_policy
+    卖家: fastmoss.goods.base.shop.shop_name
+  holiday_unmatched_value: 其他
+  update_policy: fill_missing_only
+  overwrite_policy: do_not_overwrite_non_empty
+  raw_remote_image_url_writeback: forbidden
+  tiktok_price_fallback_from_fastmoss_price: forbidden
 
 fields:
   - display_name: 产品链接
@@ -85,6 +121,8 @@ fields:
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: tiktok_product.media_or_synced_asset
+    fallback_source: fastmoss.goods.base.product.image -> media_asset_sync durable_ref
+    fallback_gate: tiktok_explicitly_off_shelf_or_region_unavailable_only
     write_target: feishu.TK竞品收集.图片
 
   - display_name: 标题
@@ -94,6 +132,8 @@ fields:
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: tiktok_product.title
+    fallback_source: fastmoss.goods.base.product.title
+    fallback_gate: tiktok_explicitly_off_shelf_or_region_unavailable_only
     write_target: feishu.TK竞品收集.标题
 
   - display_name: 节日
@@ -103,6 +143,9 @@ fields:
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
     source_of_truth: product_context_or_user_seed
+    fallback_source: inferred_from_fastmoss.goods.base.product.title
+    fallback_gate: tiktok_explicitly_off_shelf_or_region_unavailable_only
+    unmatched_fallback_value: 其他
     write_target: feishu.TK竞品收集.节日
 
   - display_name: 卖家
@@ -111,7 +154,9 @@ fields:
     participates_in_pending: true
     update_policy: fill_missing_only
     overwrite_policy: do_not_overwrite_non_empty
-    source_of_truth: tiktok_or_fastmoss_seller
+    source_of_truth: tiktok_product.seller
+    fallback_source: fastmoss.goods.base.shop.shop_name
+    fallback_gate: tiktok_explicitly_off_shelf_or_region_unavailable_only
     write_target: feishu.TK竞品收集.卖家
 
   - display_name: 价格
@@ -197,7 +242,7 @@ fields:
     update_policy: system_overwrite_on_unavailable
     overwrite_policy: system_may_write_status
     write_target: feishu.TK竞品收集.商品状态
-    reset_rule: 人工修改 产品链接 或 SKU-ID 后，需要人工清空本字段才重新抓取 TikTok 商品侧信息；FastMoss 补齐和达人池采集不受本字段阻止
+    reset_rule: 人工修改 产品链接 或 SKU-ID 后，需要人工清空本字段才重新抓取 TikTok 商品侧信息；FastMoss 自有字段补齐、明确不可售后的展示字段回退和达人池采集不受本字段阻止
 
   - display_name: 达人查找状态
     canonical_name: influencer_search_status

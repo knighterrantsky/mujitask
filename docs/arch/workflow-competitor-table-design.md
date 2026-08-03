@@ -17,7 +17,7 @@
 - `competitor_row_refresh`
 - `tiktok_product_browser_fetch`
 
-其中 `competitor_row_refresh` 是一条竞品记录的行级主 job，内部串行调用 TikTok request、media sync、FastMoss product fetch、Fact DB upsert 和飞书写回能力。`tiktok_product_browser_fetch` 和 `fastmoss_security_browser_resolve` 只在行级主 job 确认需要浏览器兜底时作为 child `task_execution` 创建；child execution 成功后按 workflow 定义由原行级 pipeline 消费或重试原 stage，不能直接计为行级成功。
+其中 `competitor_row_refresh` 是一条竞品记录的行级主 job，内部串行调用 TikTok request、FastMoss product fetch、按来源门禁选择的 media sync、Fact DB upsert 和飞书写回能力。`tiktok_product_browser_fetch` 和 `fastmoss_security_browser_resolve` 只在行级主 job 确认需要浏览器兜底时作为 child `task_execution` 创建；child execution 成功后按 workflow 定义由原行级 pipeline 消费或重试原 stage，不能直接计为行级成功。
 
 本 workflow 只决定竞品表来源行如何筛选、每行采集什么商品、以及最终写回 `TK竞品收集` 的哪些字段。商品、店铺、媒体、FastMoss 指标、关系和 raw response 的事实入库必须遵守 [fact-db-schema-design.md](./fact-db-schema-design.md) 与 [workflow-design-guidelines.md](./workflow-design-guidelines.md) 的统一事实采集 contract，不能在竞品表流程里另写一套私有事实写入逻辑；商品媒体物化边界同时受 `contracts/facts/product-fact-collection.yaml` 约束。
 
@@ -41,14 +41,17 @@ flowchart TD
     E --> F["TikTok request"]
     F --> G{"明确需要 browser fallback?"}
     G -->|是| H["tiktok_product_browser_fetch<br/>child task_execution"]
-    G -->|否| I["media sync"]
+    G -->|否| I["FastMoss fetch"]
     H --> H2["competitor_row_refresh<br/>消费 browser result 引用"]
     H2 --> I
-    I --> J["FastMoss fetch"]
-    J --> K["Fact DB upsert"]
-    K --> L["Feishu writeback"]
-    L --> M["ready_for_summary"]
-    M --> N["notification_outbox"]
+    I --> J{"TikTok 明确不可售?"}
+    J -->|否| K["TikTok media sync"]
+    J -->|是| K2["FastMoss 展示字段回退<br/>+ FastMoss media sync"]
+    K --> L["Fact DB upsert"]
+    K2 --> L
+    L --> M["Feishu writeback"]
+    M --> N["ready_for_summary"]
+    N --> O["notification_outbox"]
 ```
 
 ### 3.1 Stage 设计
@@ -58,7 +61,7 @@ flowchart TD
 | `submitted` | 创建顶层 `task_request` | `task_request` |
 | `read_competitor_rows` | 读取 `TK竞品收集`，只输出 13 个自动维护字段存在空值且未被跳过的候选行 | `api_worker_job` |
 | `dispatch_row_refresh_jobs` | 初始化 row cursor / queue，按 workflow 声明的 concurrency 派发行级采集 job；客户可见竞品采集默认 `row_pipeline_concurrency=1` | `task_request` |
-| `refresh_competitor_rows` | 等待 active 行级 pipeline 产出 `status=finished` + `result_status`；当前行经过 request、必要 browser fallback、media、FastMoss、Fact DB、飞书写回后才允许放行下一行 | `api_worker_job` / `task_execution` |
+| `refresh_competitor_rows` | 等待 active 行级 pipeline 产出 `status=finished` + `result_status`；当前行经过 request、必要 browser fallback、FastMoss、按来源门禁选择的 media、Fact DB、飞书写回后才允许放行下一行 | `api_worker_job` / `task_execution` |
 | `ready_for_summary` | executor 汇总所有最终行级结果并写通知 outbox；不得存在未处理 wait/fallback 引用或 active browser execution | `task_request` / `notification_outbox` |
 
 ### 3.2 Job / Handler / Flow
@@ -66,14 +69,16 @@ flowchart TD
 | Job | item_code / job_code | Worker | Handler | Flow / Mapper |
 | --- | --- | --- | --- | --- |
 | 竞品表读取 | `feishu_table_read` | `api_worker` | `feishu_table_read` | `competitor_table_source_adapter` |
-| 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | TikTok request flow -> media sync -> FastMoss product flow -> fact upsert -> `competitor_table_projection_mapper` |
+| 行级竞品刷新 | `competitor_row_refresh` | `api_worker` | `competitor_row_refresh` | TikTok request flow -> FastMoss product flow -> source-gated media sync -> fact upsert -> `competitor_table_projection_mapper` |
 | TikTok browser fallback | `tiktok_product_browser_fetch` | `browser_worker` | `tiktok_product_browser_fetch` | 由 workflow / 行级 fallback stage 派发，结果由原 `competitor_row_refresh` 按引用消费 |
 | FastMoss browser fallback | `fastmoss_security_browser_resolve` | `browser_worker` | `fastmoss_security_browser_resolve` | FastMoss provider 风控解除；成功后只允许原行级 pipeline 重试原 API 一次 |
 | 通知发送 | outbox message | `outbox_dispatcher` | `outbox_dispatch` | 飞书/OpenClaw/console 发送 |
 
-`competitor_row_refresh` 是行级 job_code。TikTok request、media sync、FastMoss fetch、Fact DB upsert 和飞书写回是该 job 内部步骤，不作为同一条飞书记录的并行 sibling jobs。browser fallback 使用独立 `task_execution`，因为它需要独占 browser profile 资源；runtime 关联由 executor/runtime 根据唯一 waiting row job 和 browser task fact 维护，不通过 handler payload 传递 `fallback_source_job_id` 这类字段。
+`competitor_row_refresh` 是行级 job_code。TikTok request、FastMoss fetch、按来源门禁选择的 media sync、Fact DB upsert 和飞书写回是该 job 内部步骤，不作为同一条飞书记录的并行 sibling jobs。browser fallback 使用独立 `task_execution`，因为它需要独占 browser profile 资源；runtime 关联由 executor/runtime 根据唯一 waiting row job 和 browser task fact 维护，不通过 handler payload 传递 `fallback_source_job_id` 这类字段。
 
-TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、访问受限或缺少商品详情脚本时，`competitor_row_refresh` 才能返回业务化 browser request；兼容期可带 `fallback_required`。executor/runtime 派发 `tiktok_product_browser_fetch` 子执行，并把当前行级主 job / request 置为 `status=waiting`。商品已下架或区域不可售是 request 阶段可判定的 TikTok 可用性终态，应直接写回 `商品状态=已下架/区域不可售` 并停止 browser fallback 与媒体同步，但必须继续 FastMoss 补齐；普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接 fallback。
+TikTok request 必须实际发起并写入 attempt 证据。只有返回明确风控、登录、验证码、普通访问受限或缺少商品详情脚本时，`competitor_row_refresh` 才能返回业务化 browser request；兼容期可带 `fallback_required`。executor/runtime 派发 `tiktok_product_browser_fetch` 子执行，并把当前行级主 job / request 置为 `status=waiting`。商品已下架、不存在或区域不可售是 request 阶段可判定的 TikTok 可用性终态，应直接写回 `商品状态=已下架/区域不可售` 并停止 browser fallback 与 TikTok 来源媒体采集，但必须继续 FastMoss 补齐；如果竞品表 `图片` 为空且 FastMoss 返回有效商品图片，仍允许既有 `media_asset_sync` 物化 FastMoss media ref。普通网络失败、超时、5xx、429 或代理临时异常先按 retry policy 重试，不能直接进入商品展示字段回退。
+
+FastMoss 商品展示字段回退使用严格门禁。只有 TikTok normalized result 已明确形成 `off_shelf_or_region_unavailable`，并允许写回 `商品状态=已下架/区域不可售` 时，投影才可以使用 FastMoss 补齐当前为空的 `图片 / 标题 / 节日 / 卖家`。映射固定为 FastMoss 商品图片、商品标题、由 FastMoss 标题按当前节日规则推断的节日、FastMoss 店铺名称；节日无法匹配时写 `其他`。网络失败、超时、`5xx`、`429`、风控、登录、验证码、普通访问受限、代理异常和解析失败均不得触发这四个字段的 FastMoss 回退。回退始终 `fill_missing_only`，不得覆盖已有值；`Fastmoss价格` 不得回填 TikTok `价格`。
 
 ### 3.2.1 行级逻辑阻塞与 Browser Fallback 通信
 
@@ -83,7 +88,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 
 - `fallback_required` 是兼容期 handler wait signal，不是 Runtime DB `status`，不是行级终态，不能计入父任务 success，也不能让 `ready_for_summary` 提前开始。当前行等待 browser 时，`competitor_row_refresh.status=waiting` 是唯一 fallback 待处理事实；browser `task_execution` 是浏览器任务事实。
 - 同一顶层请求在 `row_pipeline_concurrency=1` 时最多只能有一个 waiting row job 和一个未终态 browser `task_execution`。workflow 不依赖 `after_browser_candidates`、`fallback_source_job_id` 或派生 candidate 数量判断下一步。
-- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` success 只证明浏览器能力完成，不等于竞品行刷新完成；executor/runtime 把 browser normalized result 引用写回原 `competitor_row_refresh`，原 job 继续 media sync、FastMoss、Fact DB、Feishu writeback，并产出最终行级状态。
+- TikTok browser fallback 属于替代当前 TikTok 采集 stage 输出。Browser `task_execution` success 只证明浏览器能力完成，不等于竞品行刷新完成；executor/runtime 把 browser normalized result 引用写回原 `competitor_row_refresh`，原 job 继续 FastMoss、按来源门禁选择的 media sync、Fact DB、Feishu writeback，并产出最终行级状态。
 - FastMoss security fallback 属于解除阻塞后重跑当前 FastMoss stage。Browser handler 成功后直接持久化 `fastmoss_session_cookie_cache` 并返回脱敏 metadata；executor/runtime 把脱敏 metadata 写回原 `competitor_row_refresh`，原 FastMoss handler 读取 cookie cache 后重试原 API 一次，不通过 payload 传递 cookie value。
 - Browser `task_execution` failed 只终结当前行，当前行按业务规则进入 `failed` 或 `partial_success`，然后 row cursor 才能继续下一行。
 - `refresh_current_competitor_table` 默认 `row_pipeline_concurrency=1`；关键词竞品详情补齐也默认沿用同一行级 pipeline gate。后续如需 bounded concurrency，必须在 workflow contract 中声明幂等边界、FIFO/lane、summary gate 和并发上限。
@@ -110,7 +115,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 因此，本流程的正确约束是:
 
 - 一条候选飞书记录最多创建一个 `competitor_row_refresh` 主 job。
-- TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回都是该主 job 的内部步骤，不得再按 API 调用粒度拆成 sibling jobs。
+- TikTok request、FastMoss、按来源门禁选择的 media sync、Fact DB upsert、飞书写回都是该主 job 的内部步骤，不得再按 API 调用粒度拆成 sibling jobs。
 - 只有 `tiktok_product_browser_fetch` 这种确实需要独立 browser 资源生命周期的步骤，才允许作为 child `task_execution` 从主 job 内派生。
 - 行级主 job 可以决定执行顺序和 fallback，但不能改变 TikTok / FastMoss / media / Fact DB 的统一事实 contract。
 - 飞书写回 mapper 只负责业务投影字段，不负责事实入库。
@@ -124,7 +129,7 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 - `TK竞品收集` 的 13 个自动维护字段定义。
 - 商品身份提取规则，例如 `SKU-ID` 在本流程中映射为商品 ID / `product_id`。
 - 候选判断规则，即“只有 13 个自动维护字段存在空值的记录才进入刷新候选集”。
-- `商品状态 = 已下架/区域不可售` 时只按 FastMoss 所属字段缺失判断候选的规则。
+- `商品状态 = 已下架/区域不可售` 时，只按 `图片 / 标题 / 节日 / 卖家` 四个严格门禁回退字段和 `Fastmoss价格 / 佣金率 / 昨日销量 / 近7天销量 / 近90天销量` 五个 FastMoss 自有字段缺失判断候选的规则；`价格` 等无法回退的 TikTok 字段不触发不可售行候选。
 - 空行、坏行、重复行的丢弃与去重规则。
 - `source_rows`、`candidate_keys`、`writeback_context`、`adapter_summary` 的构造规则。
 
@@ -132,8 +137,9 @@ TikTok request 必须实际发起并写入 attempt 证据。只有返回明确�
 
 - 13 个自动维护字段的写回映射。
 - 哪些字段允许系统覆盖，哪些字段默认不覆盖人工值。
+- `图片 / 标题 / 节日 / 卖家` 使用 FastMoss 回退时，必须同时验证 TikTok 明确不可售证据和 `fill_missing_only`，不得把其他 TikTok 失败状态解释为回退授权。
 - `商品状态` 不属于 13 个自动维护字段，也不参与 pending 判断。
-- `商品状态` 属于系统状态投影；当商品明确不可访问、已下架或区域不可售时，mapper 必须允许写回 `商品状态=已下架/区域不可售`。
+- `商品状态` 属于系统状态投影；当 TikTok normalized result 明确判定商品下架、不存在或区域不可售时，mapper 必须允许写回 `商品状态=已下架/区域不可售`，不得从普通请求或解析失败推断该状态。
 - `商品状态` 是系统覆盖字段，不属于人工保留字段；人工修改 `产品链接` 或 `SKU-ID` 后，需要人工清空该字段才重新进入 TikTok 商品侧抓取，FastMoss 补齐与达人池采集不受影响。
 
 `feishu_table_read` / `feishu_table_write` 及其 `common` helper 只负责:
@@ -188,8 +194,12 @@ sequenceDiagram
         Exec->>DB: mark same row job pending with browser result ref
         API->>DB: reclaim competitor_row_refresh
     end
-    API->>Obj: sync current row media assets when needed
     API->>DB: fetch current row FastMoss product data
+    alt TikTok explicitly unavailable and presentation field missing
+        API->>Obj: sync allowlisted FastMoss product image when available
+    else TikTok product usable
+        API->>Obj: sync current row TikTok media assets when needed
+    end
     API->>Fact: upsert product facts and observations
     API->>Feishu: write current row projection
     API->>DB: mark competitor_row_refresh terminal
@@ -385,7 +395,7 @@ sequenceDiagram
 - 顶层 task 表示一次用户请求。
 - `keyword_seed_import` / `read_competitor_rows` 是阶段性 job 或编排动作，只负责产生候选行和可继续处理的飞书行。
 - 每条待处理竞品记录创建一个 `competitor_row_refresh` 行级主 job。
-- `competitor_row_refresh` 内部按固定顺序串行执行 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert、飞书写回。
+- `competitor_row_refresh` 内部按固定顺序串行执行 TikTok request、必要 browser fallback、FastMoss fetch、按严格来源门禁选择的 media sync、Fact DB upsert、飞书写回。
 - browser fallback 是当前行级 job 派生并等待的子 `task_execution`，不是与当前行并行推进的 sibling job。
 - `competitor_row_refresh` 绑定串行 queue lane，按 `available_at` / `queue_seq` / `created_at` FIFO claim；同一 lane 同一时刻最多一个 running job。
 - TikTok、FastMoss 和飞书外部请求之间必须使用统一 request pacing 并记录 request start/end、pacing delay / cooldown 和 fallback reason 等 runtime evidence。默认 pacing 区间为 `0.5s` 到 `1.0s`，可通过全局配置、provider 级配置或 job payload 覆盖。
@@ -477,7 +487,7 @@ result:
 
 ### 7.2 竞品采集: Fact projection 到详情写回 / `competitor_row_refresh`
 
-`competitor_row_refresh` 是单条竞品记录的主 job。它内部串行完成 TikTok request、必要 browser fallback、media sync、FastMoss fetch、Fact DB upsert 和飞书写回，只对外产出一个行级执行结果。`competitor_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。可复用业务事实进入 Fact DB，长期业务媒体进入 MinIO；TikTok/FastMoss raw response、完整 media sync 明细、飞书完整写入记录和截图不得自动上传 MinIO。Runtime result 只保留受控结构化字段、计数和完整业务对象引用。截图可以作为本地内部 artifact 保存，但 `前台截图`、`Fastmoss截图` 不属于 13 个自动维护字段，也不参与待更新判断。
+`competitor_row_refresh` 是单条竞品记录的主 job。它内部串行完成 TikTok request、必要 browser fallback、FastMoss fetch、按严格来源门禁选择的 media sync、Fact DB upsert 和飞书写回，只对外产出一个行级执行结果。`competitor_row_refresh.result_json` 只保存下游 stage 和 summary 需要的小型结构化输出，例如行状态、商品身份、内部步骤状态、Fact DB 写入计数、飞书写回计数和必要 record id。可复用业务事实进入 Fact DB，长期业务媒体进入 MinIO；TikTok/FastMoss raw response、完整 media sync 明细、飞书完整写入记录和截图不得自动上传 MinIO。Runtime result 只保留受控结构化字段、计数和完整业务对象引用。截图可以作为本地内部 artifact 保存，但 `前台截图`、`Fastmoss截图` 不属于 13 个自动维护字段，也不参与待更新判断。
 
 job result:
 
@@ -496,12 +506,13 @@ job result:
       "fallback_reason": ""
     },
     {
-      "step": "media_sync",
+      "step": "fastmoss_fetch",
       "status": "success"
     },
     {
-      "step": "fastmoss_fetch",
-      "status": "success"
+      "step": "media_sync",
+      "status": "success",
+      "source_platform": "tiktok"
     },
     {
       "step": "fact_db_upsert",

@@ -28,12 +28,23 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.contracts.workflow.execution_helpers import (
     build_projection_write_payload,
 )
+from automation_business_scaffold.domains.tiktok.flows.competitor_row_refresh.policies.writeback import (
+    has_writeback_value,
+)
 
 feishu_table_write_handler = api_handler_callable("feishu_table_write")
 fastmoss_product_fetch_handler = api_handler_callable("fastmoss_product_fetch")
 media_asset_sync_handler = api_handler_callable("media_asset_sync")
 fact_bundle_upsert_handler = api_handler_callable("fact_bundle_upsert")
 tiktok_product_request_fetch_handler = api_handler_callable("tiktok_product_request_fetch")
+
+_HOLIDAY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "情人节": ("情人节", "valentine", "valentines", "valentine's"),
+    "复活节": ("复活节", "easter"),
+    "毕业季": ("毕业季", "毕业", "graduation", "graduate", "grad"),
+    "万圣节": ("万圣节", "halloween"),
+    "圣诞节": ("圣诞节", "christmas", "xmas"),
+}
 
 
 def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResult:
@@ -238,44 +249,7 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
         )
 
     product_unavailable = _is_unavailable_product_result(normalized_product_result)
-    asset_refs = _collect_asset_refs(normalized_product_result)
     media_result_payload: dict[str, Any] = {}
-    if product_unavailable:
-        step_timeline.append(_skipped_timeline_entry("media_sync", reason="product_unavailable"))
-    elif asset_refs:
-        media_context = _child_context(
-            context,
-            handler_code="media_asset_sync",
-            payload={
-                **request_payload,
-                **payload,
-                "request_payload": request_payload,
-                "source_record_id": source_record_id,
-                "asset_refs": asset_refs,
-                "entity_keys": [business_key],
-                "product_id": first_non_empty(identity.get("product_id")),
-                "source_context": source_context,
-                "sync_referenced_files": True,
-                "require_materialized_assets": coerce_bool(
-                    first_non_empty(
-                        payload.get("require_materialized_assets"),
-                        request_payload.get("require_materialized_assets"),
-                        True,
-                    ),
-                    default=True,
-                ),
-            },
-            step_code="media_sync",
-        )
-        media_result = media_asset_sync_handler(media_context)
-        step_timeline.append(_timeline_entry("media_sync", media_result))
-        if media_result.status == "failed":
-            optional_step_failed = True
-            warnings.append(first_non_empty(media_result.error.message if media_result.error else "", "Media sync failed."))
-        else:
-            media_result_payload = dict(media_result.result)
-    else:
-        step_timeline.append(_skipped_timeline_entry("media_sync", reason="no_assets"))
 
     fastmoss_payload: dict[str, Any] = {}
     fastmoss_context = _child_context(
@@ -352,6 +326,58 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
     if fastmoss_result.status in {"failed", "fallback_required"}:
         optional_step_failed = True
         warnings.append(first_non_empty(fastmoss_result.error.message if fastmoss_result.error else "", "FastMoss fetch failed."))
+
+    source_image_exists = has_writeback_value(_source_fields(source_context).get("图片"))
+    if product_unavailable:
+        asset_refs = (
+            []
+            if source_image_exists
+            else _collect_fastmoss_product_asset_refs(
+                fastmoss_payload,
+                product_id=first_non_empty(identity.get("product_id")),
+            )
+        )
+    else:
+        asset_refs = _collect_asset_refs(normalized_product_result)
+
+    if asset_refs:
+        media_context = _child_context(
+            context,
+            handler_code="media_asset_sync",
+            payload={
+                **request_payload,
+                **payload,
+                "request_payload": request_payload,
+                "source_record_id": source_record_id,
+                "asset_refs": asset_refs,
+                "entity_keys": [business_key],
+                "product_id": first_non_empty(identity.get("product_id")),
+                "source_context": source_context,
+                "sync_referenced_files": True,
+                "require_materialized_assets": coerce_bool(
+                    first_non_empty(
+                        payload.get("require_materialized_assets"),
+                        request_payload.get("require_materialized_assets"),
+                        True,
+                    ),
+                    default=True,
+                ),
+            },
+            step_code="media_sync",
+        )
+        media_result = media_asset_sync_handler(media_context)
+        step_timeline.append(_timeline_entry("media_sync", media_result))
+        if media_result.status == "failed":
+            optional_step_failed = True
+            warnings.append(first_non_empty(media_result.error.message if media_result.error else "", "Media sync failed."))
+        else:
+            media_result_payload = dict(media_result.result)
+    elif product_unavailable and source_image_exists:
+        step_timeline.append(_skipped_timeline_entry("media_sync", reason="existing_image_preserved"))
+    elif product_unavailable:
+        step_timeline.append(_skipped_timeline_entry("media_sync", reason="fastmoss_product_image_missing"))
+    else:
+        step_timeline.append(_skipped_timeline_entry("media_sync", reason="no_assets"))
 
     fact_bundle = merge_fact_bundles(
         _fact_bundle_without_media(coerce_mapping(normalized_product_result.get("fact_bundle"))),
@@ -1030,6 +1056,34 @@ def _collect_asset_refs(normalized_product_result: Mapping[str, Any]) -> list[di
     return assets
 
 
+def _collect_fastmoss_product_asset_refs(
+    fastmoss_result: Mapping[str, Any],
+    *,
+    product_id: str,
+) -> list[dict[str, Any]]:
+    if not product_id:
+        return []
+    assets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    expected_entity_key = f"fastmoss_product:{product_id}"
+    for item in coerce_mapping_list(fastmoss_result.get("media_refs")):
+        source_url = first_non_empty(item.get("source_url"))
+        entity_key = first_non_empty(item.get("entity_key"))
+        media_type = first_non_empty(item.get("media_type"), item.get("media_role"))
+        if str(item.get("source_platform") or "").strip().lower() != "fastmoss":
+            continue
+        if entity_key != expected_entity_key:
+            continue
+        if not entity_key.startswith("fastmoss_product:") or media_type != "product_image" or not source_url:
+            continue
+        dedupe_key = f"{source_url}:{media_type}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        assets.append(dict(item))
+    return assets
+
+
 def _build_competitor_projection_fields(
     *,
     source_context: Mapping[str, Any],
@@ -1058,26 +1112,48 @@ def _build_competitor_projection_fields(
         fastmoss_products[0] if fastmoss_products else {},
     )
     fastmoss_product_facts = coerce_mapping(fastmoss_product.get("facts"))
-    main_image = _first_present(
-        _first_media_asset_ref(media_result),
-        _first_media_asset_ref(normalized_product_result),
-        logical_fields.get("main_image_url"),
+    product_unavailable = _is_unavailable_product_result(normalized_product_result)
+    fastmoss_presentation_product = (
+        fastmoss_product
+        if product_id and first_non_empty(fastmoss_product.get("product_id")) == product_id
+        else {}
+    )
+    fastmoss_title = first_non_empty(fastmoss_presentation_product.get("title"))
+    main_image = (
+        _first_media_asset_ref(media_result)
+        if product_unavailable
+        else _first_present(
+            _first_media_asset_ref(media_result),
+            _first_media_asset_ref(normalized_product_result),
+            logical_fields.get("main_image_url"),
+        )
+    )
+    title = first_non_empty(
+        logical_fields.get("title"),
+        product.get("title"),
+        fastmoss_title if product_unavailable else "",
+    )
+    holiday = first_non_empty(logical_fields.get("holiday"), product.get("holiday"))
+    if product_unavailable and not holiday and fastmoss_title:
+        holiday = _infer_product_holiday(fastmoss_title)
+    seller = first_non_empty(
+        logical_fields.get("shop_name"),
+        product.get("seller_name"),
+        product.get("shop_name"),
+        fastmoss_presentation_product.get("shop_name") if product_unavailable else "",
     )
 
     fields = {
         "SKU-ID": first_non_empty(product.get("product_id"), normalized_product_result.get("product_id")),
         "产品链接": first_non_empty(product.get("normalized_url"), product.get("product_url"), normalized_product_result.get("normalized_product_url")),
         "图片": main_image,
-        "标题": first_non_empty(logical_fields.get("title"), product.get("title")),
-        "节日": first_non_empty(logical_fields.get("holiday"), product.get("holiday")),
-        "卖家": first_non_empty(logical_fields.get("shop_name"), product.get("seller_name"), product.get("shop_name")),
+        "标题": title,
+        "节日": holiday,
+        "卖家": seller,
         "价格": _price_number_text(
             logical_fields.get("price_text"),
             product.get("price_text"),
             product.get("price_amount"),
-            overview_metrics.get("front_price"),
-            overview_metrics.get("real_price"),
-            overview_metrics.get("price"),
         ),
         "Fastmoss价格": _price_number_text(
             overview_metrics.get("fastmoss_price"),
@@ -1101,7 +1177,7 @@ def _build_competitor_projection_fields(
             _daily_sales_text(daily_metrics, window_days=90),
         ),
     }
-    if _is_unavailable_product_result(normalized_product_result):
+    if product_unavailable:
         fields["商品状态"] = "已下架/区域不可售"
     if _source_fields(source_context):
         fields["记录日期"] = first_non_empty(source_context.get("记录日期"))
@@ -1123,6 +1199,19 @@ def _is_unavailable_product_result(payload: Mapping[str, Any]) -> bool:
         return True
     product_status = first_non_empty(product.get("status"), facts.get("status"), payload.get("product_status"))
     return product_status == "off_shelf_or_region_unavailable"
+
+
+def _infer_product_holiday(title: str) -> str:
+    normalized_title = title.strip()
+    if not normalized_title:
+        return ""
+    lowered_title = normalized_title.lower()
+    for holiday, keywords in _HOLIDAY_KEYWORDS.items():
+        if holiday in normalized_title:
+            return holiday
+        if any(keyword.lower() in lowered_title for keyword in keywords):
+            return holiday
+    return "其他"
 
 
 def _first_present(*values: Any) -> Any:

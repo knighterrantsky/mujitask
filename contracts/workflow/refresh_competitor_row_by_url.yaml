@@ -45,7 +45,7 @@ stages:
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
     projection_mapper: competitor_table_projection_mapper
-    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回业务化 browser request 和 browser_fallback_payload。
+    purpose: 串行完成 TikTok request、必要 browser fallback、FastMoss、按来源门禁选择 media sync、Fact DB、飞书写回；如需 browser fallback，只返回业务化 browser request 和 browser_fallback_payload。
   - stage_code: browser_fallback
     job_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
     handler_code: browser_runloop
@@ -62,5 +62,6 @@ protected_invariants:
   - Waiting competitor_row_refresh 是唯一 row-level fallback 待处理事实，task_execution 是浏览器任务事实；competitor_row_refresh 只能返回业务化 browser request，不允许直接 import browser capability 或 run_supervised_handler inline fallback。
   - browser task_execution terminal 后，executor/runtime 把受控尺寸的 browser normalized result、cookie cache metadata 或失败摘要写回当前 competitor_row_refresh，并让同一个行级主 job 回到 pending 或收敛为终态；本地诊断 artifact 不得成为下游输入或 MinIO 引用，不得创建独立恢复 stage、派生 candidate 或第二个行级业务事实源。
   - fallback_required 与 browser task_execution success 都不是行级业务终态；ready_for_summary 只能汇总最终 competitor_row_refresh 结果，且不得存在 waiting row job 或 active browser execution。
+  - 本入口复用竞品字段严格回退门禁；只有 TikTok normalized result 明确形成 off_shelf_or_region_unavailable 时，才允许 FastMoss 补齐空白的 图片、标题、节日、卖家，其他 TikTok 失败状态不得触发该回退。
 
 known_architecture_gaps: []

@@ -638,6 +638,10 @@ def test_feishu_table_read_treats_missing_competitor_commission_rate_as_pending(
 def test_competitor_source_adapter_uses_fastmoss_fields_for_unavailable_products() -> None:
     common_fields = {
         "商品状态": "已下架/区域不可售",
+        "图片": "https://cdn.example.com/product.jpg",
+        "标题": "Unavailable product",
+        "节日": "其他",
+        "卖家": "Unavailable shop",
         "Fastmoss价格": "18.88",
         "佣金率": "12%",
         "昨日销量": "5",
@@ -680,6 +684,38 @@ def test_competitor_source_adapter_uses_fastmoss_fields_for_unavailable_products
     assert result["source_rows"][0]["missing_auto_fields"] == ["近7天销量"]
     assert result["adapter_summary"]["skipped_complete_count"] == 1
     assert result["adapter_summary"]["skipped_unavailable_count"] == 0
+
+
+def test_competitor_source_adapter_requeues_unavailable_rows_missing_presentation_fields() -> None:
+    result = competitor_table_source_adapter(
+        [
+            {
+                "record_id": "rec-unavailable-missing-presentation",
+                "fields": {
+                    "商品状态": "已下架/区域不可售",
+                    "SKU-ID": "1732323487665722005",
+                    "产品链接": "https://www.tiktok.com/shop/pdp/1732323487665722005",
+                    "Fastmoss价格": "18.88",
+                    "佣金率": "12%",
+                    "昨日销量": "5",
+                    "近7天销量": "30",
+                    "近90天销量": "99",
+                },
+            }
+        ],
+        {
+            "source_table_ref": "feishu://competitor",
+            "filter_spec": {
+                "candidate_policy": "missing_auto_maintained_fields",
+                "skip_product_status": ["已下架/区域不可售"],
+            },
+        },
+    )
+
+    assert [row["source_record_id"] for row in result["source_rows"]] == [
+        "rec-unavailable-missing-presentation"
+    ]
+    assert result["source_rows"][0]["missing_auto_fields"] == ["图片", "标题", "节日", "卖家"]
 
 
 def test_feishu_table_read_falls_back_to_product_link_when_sku_id_is_not_numeric() -> None:

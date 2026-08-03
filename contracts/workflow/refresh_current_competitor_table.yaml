@@ -44,7 +44,7 @@ stages:
     job_code: competitor_row_refresh
     handler_code: competitor_row_refresh
     projection_mapper: competitor_table_projection_mapper
-    purpose: 串行完成 TikTok request、media sync、FastMoss、Fact DB、飞书写回；如需 browser fallback，只返回业务化 browser request 和 browser_fallback_payload，不允许在 API worker 内联执行 browser handler
+    purpose: 串行完成 TikTok request、必要 browser fallback、FastMoss、按来源门禁选择 media sync、Fact DB、飞书写回；如需 browser fallback，只返回业务化 browser request 和 browser_fallback_payload，不允许在 API worker 内联执行 browser handler
   - stage_code: browser_fallback
     job_code: tiktok_product_browser_fetch / fastmoss_security_browser_resolve
     handler_code: browser_runloop
@@ -56,7 +56,7 @@ stages:
 
 protected_invariants:
   - 一条候选飞书记录最多创建一个 competitor_row_refresh 主 job
-  - TikTok request、media sync、FastMoss、Fact DB upsert、飞书写回属于该主 job 内部步骤
+  - TikTok request、FastMoss、按来源门禁选择的 media sync、Fact DB upsert、飞书写回属于该主 job 内部步骤
   - Waiting competitor_row_refresh is the only pending row-level fallback fact, task_execution is the browser task fact; competitor_row_refresh 只能返回业务化 browser request，不允许直接 import browser capability 或 run_supervised_handler inline fallback
   - API worker 不允许以 worker_type=browser_worker 或 ChildRunnerConfig 内联执行 tiktok_product_browser_fetch / fastmoss_security_browser_resolve
   - executor/runtime 必须基于唯一 waiting row job 派发或等待 browser task_execution，并负责把受控尺寸的 browser normalized result、cookie cache metadata 或失败摘要写回原 row job
@@ -67,7 +67,11 @@ protected_invariants:
   - 正式 workflow 使用 fact_bundle_upsert / media_asset_sync 时必须声明严格持久化需求；Runtime 从项目运行配置解析真实 Fact DB 和对象存储，缺配置不能 dry-run 或 local success
   - 只有确实需要独立 browser 生命周期时，才允许派生 tiktok_product_browser_fetch / fastmoss_security_browser_resolve child task_execution
   - 商品状态不是 13 个自动维护字段，不参与 pending 判断
-  - 商品不可访问、已下架或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售
-  - 商品状态=已下架/区域不可售 只终止 TikTok 商品侧浏览器和媒体采集，不得终止 FastMoss 商品补齐；已标记记录仅在 FastMoss 所属字段缺失时进入后续定时补齐
+  - TikTok normalized result 明确判定商品下架、不存在或区域不可售时，必须允许系统写回 商品状态=已下架/区域不可售
+  - 只有 TikTok normalized result 明确形成 off_shelf_or_region_unavailable 终态并写回 商品状态=已下架/区域不可售 时，competitor_row_refresh 才允许使用 FastMoss 回退当前为空的 图片、标题、节日、卖家
+  - TikTok 网络失败、超时、5xx、429、风控、登录、验证码、普通访问受限、代理异常或解析失败不得触发 FastMoss 的 图片、标题、节日、卖家 回退；这些状态仍按 TikTok retry 或 browser fallback contract 收敛
+  - 商品状态=已下架/区域不可售 只终止 TikTok 商品侧浏览器和 TikTok 来源媒体采集，不得终止 FastMoss 商品补齐；图片为空且 FastMoss 返回有效商品图片时，既有 media_asset_sync 可以物化 FastMoss media_ref
+  - 已标记不可售记录仅在 图片、标题、节日、卖家、Fastmoss价格、佣金率、昨日销量、近7天销量、近90天销量 任一字段缺失时进入后续定时补齐；价格等不可由 FastMoss 回退的 TikTok 字段不触发不可售行重采
+  - FastMoss 商品展示字段回退必须 fill_missing_only；不得覆盖飞书已有值，Fastmoss价格 不得回填 价格，FastMoss 原始远程图片 URL 不得直接作为飞书图片或 Fact DB 媒体事实写入
 
 known_architecture_gaps: []
