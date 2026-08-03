@@ -386,12 +386,17 @@ ensure_native_postgres() {
 
   ensure_brew_formula "${formula}"
 
-  log "Starting Postgres via Homebrew services: ${formula}"
-  brew services start "${formula}" >/dev/null
-
   local psql_bin createdb_bin
   psql_bin="$(homebrew_formula_bin "${formula}" psql)" || fail_deploy "Could not resolve psql from ${formula}."
   createdb_bin="$(homebrew_formula_bin "${formula}" createdb)" || fail_deploy "Could not resolve createdb from ${formula}."
+
+  if PGHOST="${socket_dir}" PGPORT="${port}" PGUSER="${admin_user}" "${psql_bin}" \
+    -d postgres -Atqc "select 1" >/dev/null 2>&1; then
+    log "Postgres is already accepting connections; reusing the existing service."
+  else
+    log "Starting Postgres via Homebrew services: ${formula}"
+    brew services start "${formula}" >/dev/null
+  fi
 
   local last_error=""
   for _ in {1..90}; do
