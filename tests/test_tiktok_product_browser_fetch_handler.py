@@ -199,6 +199,43 @@ def test_tiktok_product_browser_fetch_returns_unavailable_as_terminal_result(mon
     assert normalized["product"]["facts"]["availability_status"] == "unavailable"
 
 
+def test_tiktok_product_browser_fetch_does_not_retry_exhausted_cdp_recovery(monkeypatch) -> None:
+    class RecoveryExhaustedError(RuntimeError):
+        code = "chrome_cdp_session_recovery_failed"
+        reason = "reconnect_timeout"
+        phase = "reconnect"
+        recovery_attempted = True
+        recovery_count = 1
+
+    def fake_fetch(product_url: str, **kwargs: Any) -> _FakeProduct:
+        del product_url, kwargs
+        raise RecoveryExhaustedError("sanitized recovery failure")
+
+    monkeypatch.setattr(browser_handler, "fetch_tiktok_product_record_via_browser", fake_fetch)
+
+    result = browser_handler.tiktok_product_browser_fetch_handler(
+        _context(
+            {
+                "product_identity": {
+                    "product_id": "1732308866040173150",
+                    "product_url": "https://www.tiktok.com/shop/pdp/1732308866040173150",
+                }
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "tiktok_browser_fetch_failed"
+    assert result.error.retryable is False
+    assert result.error.details["browser_provider_error_code"] == (
+        "chrome_cdp_session_recovery_failed"
+    )
+    assert result.error.details["browser_provider_reason"] == "reconnect_timeout"
+    assert result.error.details["browser_provider_phase"] == "reconnect"
+    assert result.error.details["browser_provider_recovery_count"] == 1
+
+
 def test_tiktok_product_browser_fetch_recognizes_country_region_unprovided_message() -> None:
     message = product_page._extract_unavailable_message("此国家或地区未提供的商品")
 

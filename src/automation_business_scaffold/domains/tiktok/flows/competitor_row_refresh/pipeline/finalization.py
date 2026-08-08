@@ -84,6 +84,41 @@ def run_competitor_row_refresh_pipeline(context: HandlerContext) -> HandlerResul
 
     _emit_progress(context, "competitor_row_refresh.started", details={"source_record_id": source_record_id})
 
+    if coerce_bool(payload.get("browser_fallback_failed")):
+        fallback_handler = first_non_empty(payload.get("browser_fallback_handler"))
+        browser_execution_id = first_non_empty(payload.get("browser_execution_id"))
+        runtime_evidence["browser_fallback_used"] = True
+        step_timeline.append(
+            {
+                "step": "browser_fallback",
+                "status": "failed",
+                "fallback_handler": fallback_handler,
+                "browser_execution_id": browser_execution_id,
+            }
+        )
+        return _failed_pipeline_result(
+            context,
+            identity=identity,
+            source_record_id=source_record_id,
+            business_key=business_key,
+            step_timeline=step_timeline,
+            failed_step="browser_fallback",
+            error=build_error(
+                error_type="browser_failure",
+                error_code="competitor_row_browser_fallback_failed",
+                message="Competitor row browser fallback failed and must not be dispatched again.",
+                retryable=False,
+                details={
+                    "fallback_handler": fallback_handler,
+                    "browser_execution_id": browser_execution_id,
+                    "browser_execution_status": first_non_empty(
+                        payload.get("browser_execution_status")
+                    ),
+                },
+            ),
+            runtime_evidence=runtime_evidence,
+        )
+
     tiktok_context = _child_context(
         context,
         handler_code="tiktok_product_request_fetch",

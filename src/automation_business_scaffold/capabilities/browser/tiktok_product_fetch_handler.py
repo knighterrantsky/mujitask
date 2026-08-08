@@ -76,12 +76,25 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                     },
                 )
             except Exception as exc:
+                provider_error_code = str(getattr(exc, "code", "") or "")
+                error_details: dict[str, Any] = {"product_identity": identity}
+                if provider_error_code:
+                    error_details.update(
+                        {
+                            "browser_provider_error_code": provider_error_code,
+                            "browser_provider_reason": str(getattr(exc, "reason", "") or ""),
+                            "browser_provider_phase": str(getattr(exc, "phase", "") or ""),
+                            "browser_provider_recovery_count": int(
+                                getattr(exc, "recovery_count", 0) or 0
+                            ),
+                        }
+                    )
                 error = build_error(
                     error_type="browser_failure",
                     error_code="tiktok_browser_fetch_failed",
                     message=str(exc),
-                    retryable=True,
-                    details={"product_identity": identity},
+                    retryable=provider_error_code != "chrome_cdp_session_recovery_failed",
+                    details=error_details,
                 )
                 return failed_result(
                     context,
