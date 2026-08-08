@@ -258,6 +258,17 @@ def test_macos_deploy_runs_alembic_before_launchd_restart() -> None:
     assert text.index(migration_command) < text.index(launchd_command)
 
 
+def test_launch_agent_installer_retries_transient_kickstart_registration() -> None:
+    installer = (
+        ROOT / "scripts" / "execution_control" / "install_launch_agents.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "kickstart_launch_agent()" in installer
+    assert "for _ in {1..20}" in installer
+    assert 'launchctl kickstart -k "${service}"' in installer
+    assert 'kickstart_launch_agent "${label}"' in installer
+
+
 def test_macos_deploy_installs_tiktok_and_amazon_skills_into_distinct_workspaces() -> None:
     deploy_script = (ROOT / "scripts" / "deploy" / "macos" / "deploy.sh").read_text(
         encoding="utf-8"

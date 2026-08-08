@@ -28,6 +28,10 @@ _COMPETITOR_AUTO_FIELDS = (
 )
 
 _COMPETITOR_FASTMOSS_FIELDS = (
+    "图片",
+    "标题",
+    "节日",
+    "卖家",
     "Fastmoss价格",
     "佣金率",
     "昨日销量",

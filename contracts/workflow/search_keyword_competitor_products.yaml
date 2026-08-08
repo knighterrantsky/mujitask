@@ -116,7 +116,8 @@ protected_invariants:
   - FastMoss browser fallback 失败或 API 原接口重试后仍为 MSG_SAFE_0001 时，终态错误为 fastmoss_security_verification_required
   - FastMoss session/cookie 恢复属于 infrastructure/fastmoss；last_auth_failed_at 已标记的 cookie 不得复用，刷新后仍 auth 失败时终态错误为 fastmoss_session_conflict_or_external_login
   - 新商品详情抓取判定不可访问时，保留种子字段并写 商品状态=已下架/区域不可售
-  - 新商品详情抓取判定已下架或区域不可售时，必须继续 FastMoss 商品详情采集和 FastMoss 所属字段写回；该状态仅跳过 TikTok 浏览器兜底和媒体同步
+  - 新商品详情抓取判定已下架或区域不可售时，必须继续 FastMoss 商品详情采集、FastMoss 自有字段写回和严格门禁展示字段回退；该状态仅跳过 TikTok 浏览器兜底和 TikTok 来源媒体采集，图片为空时允许既有 media_asset_sync 物化 FastMoss 商品图片
+  - 只有 TikTok normalized result 明确形成 off_shelf_or_region_unavailable 时，才允许 FastMoss 补齐空白的 图片、标题、节日、卖家；网络失败、超时、5xx、429、风控、登录、验证码、普通访问受限、代理异常或解析失败不得触发该回退
   - fallback_required is a compatibility handler signal, not a Runtime DB lifecycle status or final result_status; pending/running/waiting/finished/cancelled are lifecycle states, success/partial_success/failed/skipped are terminal result_status values
   - Waiting competitor_row_refresh is the only pending row-level fallback fact, and task_execution is the browser task fact; handler output may request a browser handler, but executor/runtime owns browser task scheduling and browser result writeback to the original row job
   - TikTok browser fallback may substitute the current TikTok collection stage output only through task_execution.result_json normalized_product_result; local diagnostic artifact indexes are not downstream inputs or MinIO refs. FastMoss security browser fallback only persists fastmoss_session_cookie_cache and unblocks one retry of the original FastMoss API stage

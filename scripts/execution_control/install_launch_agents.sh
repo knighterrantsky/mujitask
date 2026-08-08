@@ -16,6 +16,22 @@ LABELS=(
   "com.happyzhao.mujitask.watchdog"
 )
 
+kickstart_launch_agent() {
+  local label="$1"
+  local service="gui/${UID_VALUE}/${label}"
+  local last_error=""
+
+  for _ in {1..20}; do
+    if last_error="$(launchctl kickstart -k "${service}" 2>&1)"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  printf '[install-launch-agents] Failed to kickstart %s: %s\n' "${label}" "${last_error}" >&2
+  return 1
+}
+
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${LOG_DIR}"
 
 chmod +x "${ROOT_DIR}/scripts/execution_control/run_launchd_agent.sh"
@@ -72,7 +88,7 @@ done
 for label in "${LABELS[@]}"; do
   plist_path="${LAUNCH_AGENTS_DIR}/${label}.plist"
   launchctl bootstrap "gui/${UID_VALUE}" "${plist_path}"
-  launchctl kickstart -k "gui/${UID_VALUE}/${label}"
+  kickstart_launch_agent "${label}"
 done
 
 launchctl list | grep 'com.happyzhao.mujitask' || true

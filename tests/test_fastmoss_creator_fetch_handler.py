@@ -79,7 +79,7 @@ def _creator_payload() -> dict:
                     {
                         "product_id": "1732183068040729370",
                         "title": "Graduation party decoration set",
-                        "cover": "https://example.com/product.png",
+                        "cover_list": ["https://example.com/product.png"],
                         "seller_id": "7496166867916327706",
                         "shop_title": "Roxy Shop",
                         "sold_count": 72,

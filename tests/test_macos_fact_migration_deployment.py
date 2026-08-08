@@ -453,6 +453,21 @@ def test_native_deploy_preserves_legacy_runtime_bootstrap_and_restricts_fact_rol
     assert 'REVOKE CREATE ON SCHEMA public FROM PUBLIC' in deploy
 
 
+def test_native_deploy_reuses_an_available_postgres_before_starting_homebrew_service() -> None:
+    deploy = _read(DEPLOY)
+    postgres_setup = deploy[
+        deploy.index("ensure_native_postgres() {") : deploy.index("ensure_native_minio() {")
+    ]
+
+    readiness_check = '-d postgres -Atqc "select 1" >/dev/null 2>&1'
+    reuse_message = "Postgres is already accepting connections; reusing the existing service."
+    service_start = 'brew services start "${formula}"'
+
+    assert readiness_check in postgres_setup
+    assert reuse_message in postgres_setup
+    assert postgres_setup.index(readiness_check) < postgres_setup.index(service_start)
+
+
 def test_fact_privilege_gate_checks_identity_tk_tables_and_actual_revision() -> None:
     deploy = _read(DEPLOY)
     identity_gate = deploy[

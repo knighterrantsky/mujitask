@@ -12,8 +12,30 @@ allowed_values:
   - value: 已下架/区域不可售
     category: tiktok_terminal_fastmoss_active
     written_by_system: true
-    meaning: 商品明确不可访问、已下架、不存在或区域不可售
-    next_default_action: skip_tiktok_media_but_continue_missing_fastmoss_fields_and_influencer_sync
+    meaning: TikTok normalized result 已明确判定商品下架、不存在或区域不可售
+    next_default_action: skip_tiktok_browser_and_tiktok_origin_media_but_continue_fastmoss_owned_fields_explicit_unavailable_presentation_fallback_and_influencer_sync
+
+fastmoss_presentation_fallback_authorization:
+  authorized_status: 已下架/区域不可售
+  allowed_fields:
+    - 图片
+    - 标题
+    - 节日
+    - 卖家
+  require_explicit_tiktok_unavailable_evidence: true
+  authorized_status_is_not_sufficient_without_explicit_tiktok_evidence: true
+  forbidden_when_only:
+    - network_failure
+    - timeout
+    - http_5xx
+    - http_429
+    - security_control
+    - login_required
+    - captcha
+    - generic_access_restricted
+    - proxy_failure
+    - extraction_failure
+  fill_missing_only: true
 
 write_rules:
   - condition: product_unavailable_or_region_blocked
