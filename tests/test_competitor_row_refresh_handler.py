@@ -352,6 +352,51 @@ def test_competitor_row_refresh_handler_returns_tiktok_browser_fallback_request(
     }
 
 
+def test_competitor_row_refresh_stops_after_failed_browser_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(context: HandlerContext) -> HandlerResult:
+        raise AssertionError(f"{context.handler_code} must not rerun after browser fallback failed")
+
+    monkeypatch.setattr(flow_module, "tiktok_product_request_fetch_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "fastmoss_product_fetch_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "fact_bundle_upsert_handler", fail_if_called)
+    monkeypatch.setattr(flow_module, "feishu_table_write_handler", fail_if_called)
+
+    result = handler_module.competitor_row_refresh_handler(
+        _context(
+            {
+                "source_record_id": "row-1",
+                "source_table_ref": "feishu://mujitask/TK竞品收集",
+                "product_identity": {
+                    "product_id": "123456789",
+                    "product_url": "https://www.tiktok.com/shop/pdp/123456789",
+                },
+                "browser_fallback_resolved": True,
+                "browser_fallback_failed": True,
+                "browser_fallback_handler": "tiktok_product_browser_fetch",
+                "browser_execution_id": "exec-browser-failed",
+                "browser_execution_status": "failed",
+                "source_context": {"source_fields": {}},
+            }
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "competitor_row_browser_fallback_failed"
+    assert result.error.retryable is False
+    assert result.result["failed_step"] == "browser_fallback"
+    assert result.result["step_timeline"] == [
+        {
+            "step": "browser_fallback",
+            "status": "failed",
+            "fallback_handler": "tiktok_product_browser_fetch",
+            "browser_execution_id": "exec-browser-failed",
+        }
+    ]
+
+
 def test_competitor_row_refresh_returns_fastmoss_security_browser_fallback_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
