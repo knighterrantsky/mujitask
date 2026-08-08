@@ -22,6 +22,7 @@ principles:
   - browser-runloop must execute browser handlers through child_process supervision, not inline supervision, so Sync Playwright never runs inside a host asyncio loop
   - browser fallback HTML, screenshots, page dumps, logs, and state are local runtime diagnostics only; they must not be written to MinIO or treated as cross-process business inputs
   - FastMoss security fallback persists cookie values only to fastmoss_session_cookie_cache; parent job payload/result may carry only redacted cookie cache metadata
+  - FastMoss product image refs use only goods.base.data.product.cover_list[0]; a missing cover_list, an empty array, or an invalid first item yields no product image ref, and later array items or alternate image fields must not be used as fallback
   - Feishu table-read raw rows, raw field snapshots, attachment envelopes, and source field evidence must not be written to MinIO; Runtime DB may carry only bounded compact source_rows/source_fields, empty_row_records, counts, and candidate keys
 
 required_pipeline_roles:

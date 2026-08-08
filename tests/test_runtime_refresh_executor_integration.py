@@ -706,7 +706,7 @@ def test_refresh_executor_real_business_e2e_with_bound_handlers(
                         "title": "Graduation Candy Boxes",
                         "real_price": "$14.50",
                         "commission_rate": "10%",
-                        "img": "https://cdn.example.com/fastmoss-main.jpg",
+                        "cover_list": ["https://cdn.example.com/fastmoss-main.jpg"],
                     },
                     "shop": {"seller_id": "seller-1", "name": "Party Supply Co", "region": "US"},
                 }

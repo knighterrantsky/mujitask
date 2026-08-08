@@ -50,7 +50,11 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
                     "title": "Valentine Gift",
                     "real_price": "$12.99",
                     "commission_rate": "8%",
-                    "img": "https://example.com/product.png",
+                    "cover_list": [
+                        "https://example.com/product-first.png",
+                        "https://example.com/product-second.png",
+                    ],
+                    "img": "https://example.com/product-fallback.png",
                 },
                 "shop": {
                     "seller_id": "7496166867916327706",
@@ -65,8 +69,83 @@ def test_map_fastmoss_goods_base_extracts_product_shop_relation_and_media():
     assert mapped["products"][0]["shop_id"] == "7496166867916327706"
     assert mapped["shops"][0]["shop_name"] == "Roxy Shop"
     assert mapped["relations"]["product_shops"][0]["shop_id"] == "7496166867916327706"
+    assert len(mapped["media_assets"]) == 1
     assert mapped["media_assets"][0]["entity_external_id"] == "1732183068040729370"
+    assert mapped["media_assets"][0]["source_url"] == "https://example.com/product-first.png"
     assert mapped["products"][0]["facts"] == {"commission_rate": "8%"}
+
+
+def test_map_fastmoss_goods_base_does_not_fallback_when_first_cover_is_invalid():
+    mapped = map_fastmoss_goods_base(
+        {
+            "data": {
+                "product": {
+                    "product_id": "1732183068040729370",
+                    "cover_list": ["", "https://example.com/product-second.png"],
+                    "img": "https://example.com/product-fallback.png",
+                    "image_url": "https://example.com/product-image-url.png",
+                    "cover": "https://example.com/product-cover.png",
+                }
+            }
+        }
+    )
+
+    assert mapped["media_assets"] == []
+
+
+def test_map_fastmoss_goods_base_does_not_use_alternate_fields_without_cover_list():
+    mapped = map_fastmoss_goods_base(
+        {
+            "data": {
+                "product": {
+                    "product_id": "1732183068040729370",
+                    "img": "https://example.com/product-fallback.png",
+                    "image": "https://example.com/product-image.png",
+                    "image_url": "https://example.com/product-image-url.png",
+                    "cover": "https://example.com/product-cover.png",
+                }
+            }
+        }
+    )
+
+    assert mapped["media_assets"] == []
+
+
+def test_fastmoss_product_fetch_exposes_only_first_cover_as_product_media_ref():
+    result = build_bound_api_handler_registry().dispatch(
+        "fastmoss_product_fetch",
+        _handler_context(
+            "fastmoss_product_fetch",
+            {
+                "product_identity": {"product_id": "1732183068040729370"},
+                "fastmoss_bundle": {
+                    "base": {
+                        "data": {
+                            "product": {
+                                "product_id": "1732183068040729370",
+                                "cover_list": [
+                                    "https://example.com/product-first.png",
+                                    "https://example.com/product-second.png",
+                                ],
+                                "img": "https://example.com/product-fallback.png",
+                            }
+                        }
+                    }
+                },
+            },
+        ),
+    )
+
+    assert result.status == "success"
+    assert result.result["media_refs"] == [
+        {
+            "entity_key": "fastmoss_product:1732183068040729370",
+            "media_type": "product_image",
+            "source_url": "https://example.com/product-first.png",
+            "source_platform": "fastmoss",
+        }
+    ]
+    assert result.result["product_fact_bundle"]["media_assets"] == []
 
 
 def test_map_fastmoss_goods_base_preserves_dash_commission_rate():

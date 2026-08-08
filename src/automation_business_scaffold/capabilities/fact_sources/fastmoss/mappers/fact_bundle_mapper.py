@@ -749,7 +749,12 @@ def _video_product_relation(
 
 def _product_media(product: Mapping[str, Any], row: Mapping[str, Any]) -> list[dict[str, Any]]:
     product_id = _first_non_empty(product.get("product_id"))
-    image_urls = _image_urls_from_row(row)
+    cover_list = row.get("cover_list")
+    image_url = ""
+    if isinstance(cover_list, list) and cover_list and isinstance(cover_list[0], str):
+        image_url = cover_list[0].strip()
+    if not product_id or not image_url:
+        return []
     return [
         {
             "entity_type": "product",
@@ -759,8 +764,6 @@ def _product_media(product: Mapping[str, Any], row: Mapping[str, Any]) -> list[d
             "source_platform": "fastmoss",
             "metadata": {"product_id": product_id},
         }
-        for image_url in image_urls
-        if product_id and image_url
     ]
 
 
@@ -840,29 +843,6 @@ def _as_sequence(value: Any) -> list[dict[str, Any]]:
 
 def _as_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _image_urls_from_row(row: Mapping[str, Any]) -> list[str]:
-    urls: list[str] = []
-    for key in (
-        "img",
-        "image",
-        "image_url",
-        "cover",
-        "cover_url",
-        "product_img",
-        "product_image",
-        "main_image",
-    ):
-        value = _first_non_empty(row.get(key))
-        if value and value not in urls:
-            urls.append(value)
-    for key in ("images", "image_list", "imgs"):
-        for item in _as_sequence(row.get(key)):
-            value = _first_non_empty(item.get("url"), item.get("src"), item.get("image_url"))
-            if value and value not in urls:
-                urls.append(value)
-    return urls
 
 
 def _join_spec_values(value: Any) -> str:
