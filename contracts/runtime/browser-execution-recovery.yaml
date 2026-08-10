@@ -1,0 +1,373 @@
+schema_version: 1
+contract_code: browser_execution_health_recovery
+status: active_contract
+
+scope:
+  runtime_table: task_execution
+  worker_type: browser_worker
+  covered_handler_codes:
+    - amazon_product_browser_fetch
+    - tiktok_product_browser_fetch
+  resource_identity: profile_ref
+  deployment_assumptions:
+    browser_runloop_count: 1
+    concurrent_manual_browser_once: forbidden
+    physical_profile_lane: deferred
+  non_goals:
+    - identify the vendor root cause of a website response
+    - infer a GCP VM outage from logs emitted inside that VM
+    - add a browser profile state table or a second browser scheduler
+    - add post-claim browser preflight to every browser task in this phase
+    - add automatic fresh-page operation retry or browser-runloop cooldown in this phase
+    - claim operation-level page-versus-session diagnosis for fastmoss_security_browser_resolve
+  unchanged_related_contracts:
+    - contracts/facts/product-fact-collection.yaml
+  related_contract_invariant: operation logging does not change product/media field semantics
+
+owners:
+  profile_health_probe:
+    path: src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+    responsibilities:
+      - resolve the exact configured browser profile
+      - run a bounded non-mutating functional probe
+      - execute at most one exact-profile browser lifecycle recovery when explicitly authorized
+      - return sanitized phase evidence without deciding Runtime retry or business status
+  execution_supervision:
+    paths:
+      - src/automation_business_scaffold/control_plane/supervisor/child_runner.py
+      - src/automation_business_scaffold/control_plane/supervisor/execution_supervisor.py
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/looping.py
+    responsibilities:
+      - detect progress inactivity with a monotonic clock before the Watchdog threshold
+      - preserve before-kill, after-kill, and after-restart evidence
+      - own the single browser restart budget for one stall diagnosis
+      - persist a compact diagnosis without creating a new Runtime state owner
+  operation_instrumentation:
+    paths:
+      - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok_product_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok/product_page.py
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+    responsibilities:
+      - report the exact blocking operation before invoking it
+      - report completion, failure, or a deliberately suppressed error
+      - preserve only allowlisted, sanitized Runtime progress and diagnosis fields
+
+functional_probe:
+  verdict_owner: profile_health_probe
+  hard_deadline_scope: probe_call_entry_through_cleanup_except_uninterruptible_process_start
+  process_start_time_counts_against_deadline: true
+  process_start_failure_verdict: inconclusive
+  process_start_deadline_overrun_verdict: inconclusive
+  mutation_before_verdict: forbidden
+  auto_start_before_verdict: false
+  auto_start_after_authorized_stop_only: true
+  ordered_steps:
+    - connect_cdp
+    - create_new_page
+    - navigate_about_blank
+    - evaluate_document_ready_state
+    - close_probe_page
+    - detach_probe_session
+  navigation_target: "about:blank"
+  evaluate_expression: document.readyState
+  timeouts_seconds:
+    connect_cdp: 30
+    create_new_page: 5
+    evaluate_document_ready_state: 5
+  cleanup:
+    probe_page_close_in_finally: required
+    probe_session_detach_or_disconnect_in_finally: required
+    probe_session_close: forbidden
+    detach_unavailable_behavior: cleanup_failure_without_closing_shared_browser
+    cleanup_failure_verdict: inconclusive
+    cleanup_failure_triggers_restart: false
+    no_probe_owned_resource_status: not_required
+  verdicts:
+    healthy: all_probe_and_cleanup_steps_complete
+    unhealthy: connect_page_or_evaluate_failed_with_allowlisted_browser_error
+    inconclusive: probe_result_cannot_be_obtained_or_cleanup_cannot_detach_safely
+  unhealthy_error_classes:
+    - cdp_connect_timeout
+    - websocket_disconnected
+    - browser_disconnected
+    - target_closed
+    - page_create_timeout
+    - cdp_command_timeout
+  does_not_prove:
+    - the original target is healthy
+    - the target website or its network path is healthy
+    - the collection JavaScript is correct
+    - the GCP VM is healthy or unhealthy
+
+operation_observability:
+  event_name: browser_operation
+  states:
+    - started
+    - completed
+    - failed
+    - suppressed_error
+    - sample
+  required_fields:
+    - execution_id
+    - run_id
+    - attempt_count
+    - child_pid
+    - operation_id
+    - operation
+    - state
+    - reported_at
+  completion_fields:
+    - elapsed_ms
+  failure_fields:
+    - error_class
+  allowlisted_operations:
+    - browser_target_resolve
+    - browser_provider_build
+    - browser_session_open
+    - browser_page_create
+    - page_navigation
+    - login_toast_wait
+    - initial_page_state_read
+    - security_check
+    - page_ready_wait
+    - page_content_read
+    - simple_page_evaluate
+    - collection_evaluate
+    - product_parse
+    - main_image_download
+    - main_image_capture
+    - failure_evidence_capture
+    - page_screenshot
+    - artifact_upload
+    - artifact_verify
+    - browser_session_close
+  sampling:
+    minimum_interval_seconds: 15
+    sync_playwright_from_background_thread: forbidden
+  passive_callbacks:
+    - network_response_capture
+  passive_callback_rule: no_synthetic_operation_lifecycle_and_no_inactivity_refresh
+  safe_logging:
+    stdout_single_line: required
+    flush_immediately: required
+    callback_failure_changes_business_result: false
+    forbidden_fields:
+      - cookie
+      - authorization
+      - request_headers
+      - response_headers
+      - html
+      - dom_snapshot
+      - raw_exception_message
+      - traceback
+      - full_url
+
+stall_protocol:
+  clock: monotonic
+  default_no_progress_cap_seconds: 150
+  diagnosis_and_persistence_reserve_seconds: 240
+  amazon_handler_budget_seconds: 300
+  amazon_total_execution_budget_seconds: 540
+  watchdog_no_progress_seconds: 300
+  required_order:
+    - emit_stall_detected_progress
+    - probe_before_kill
+    - terminate_child
+    - kill_child_if_required
+    - confirm_child_exit
+    - probe_after_kill_without_browser_restart
+    - restart_exact_browser_profile_only_if_before_and_after_kill_probes_failed
+    - probe_after_restart
+    - classify_and_persist_diagnosis
+  invariants:
+    - supervisor_stall_detection_occurs_before_watchdog_intervention
+    - every_probe_and_recovery_transition_refreshes_runtime_progress
+    - browser_restart_never_runs_until_child_exit_is_confirmed
+    - browser_restart_requires_both_before_kill_and_after_kill_probe_status_unhealthy
+    - an_unconfirmed_probe_process_exit_stops_the_probe_and_restart_chain
+    - probe_process_start_time_consumes_the_probe_deadline_and_the_started_process_only_receives_the_remaining_budget
+    - an active-operation progress event resets the inactivity deadline
+    - passive network-response callback events do not reset the outer-operation inactivity deadline
+    - nested_completed_operations_do_not_replace_the_outer_active_operation
+    - total_execution_budget_equals_handler_budget_plus_stall_diagnosis_and_recovery_reserve
+    - handler_wall_timeout_enters_the_same_stall_diagnosis_protocol
+    - runtime_child_timeout_override_cannot_consume_the_recovery_reserve
+  unconfirmed_child_exit:
+    browser_restart: forbidden
+    runloop_action: write_local_quarantine_before_terminal_execution_persistence
+    quarantine_path: runtime/daemons/browser_runloop.quarantine.json
+    marker_write: create_exclusive_mode_0600_and_fsync_before_terminal_persistence
+    marker_pid_fields: child_pids_with_child_pid_as_the_first_pid_compatibility_alias
+    marker_write_failure: persist_runtime_hold_stage_and_retry_marker_until_success
+    marker_retry_interval: browser_runloop_heartbeat_interval
+    runtime_hold_progress_stage: browser_runloop_quarantine_write_failed
+    watchdog_behavior_for_persisted_hold: skip_all_rules_without_terminalizing_or_killing_the_worker
+    dual_persistence_failure_boundary: if_both_marker_and_runtime_hold_stage_cannot_be_persisted_safety_is_not_guaranteed_across_forced_parent_restart
+    claim_behavior_while_quarantined: do_not_claim_any_browser_execution
+    automatic_clear: forbidden
+    clear_condition: operator_has_confirmed_every_child_pids_entry_is_gone_or_the_host_has_restarted
+    empty_or_unverifiable_pid_list_clear_condition: confirmed_host_restart_only
+
+recovery_budget:
+  max_browser_restart_per_stall_diagnosis: 1
+  max_health_probe_attempts: 3
+  max_stop_start_reconnect_seconds: 120
+  shared_deadline_scope: recovery_authorization_through_stop_and_post_restart_probe
+  process_start_boundary: probe_process_start_is_not_interruptible_but_its_elapsed_time_counts_against_the_deadline_and_failure_or_overrun_is_inconclusive
+  restart_owner: execution_supervision
+  regular_handler_restart_permission: forbidden
+  compatibility:
+    newly_enqueued_amazon_execution_seconds: 540
+    legacy_inflight_execution_seconds: preserved_without_rewrite
+    legacy_late_stall_full_recovery_reserve: best_effort
+    old_worker_effect: treats_the_540_second_total_as_one_longer_handler_timeout
+    rollback: new_enqueues_return_to_the_prior_timeout_while_existing_rows_keep_their_snapshot
+  final_error_codes:
+    browser_recovery_failed:
+      retryable: false
+      meaning: the single stall-diagnosis restart or the post-restart functional probe failed
+    child_process_stalled:
+      retryable: false
+      meaning: supervisor evidence that starts diagnosis; it is not a GCP VM diagnosis
+    browser_probe_termination_failed:
+      retryable: false
+      meaning: a bounded functional-probe process exit was not confirmed and the runloop is quarantined
+    child_termination_failed:
+      retryable: false
+      meaning: child exit was not confirmed and the browser runloop is quarantined
+
+restart_exclusions:
+  - security_check_dom_is_readable
+  - captcha_dom_is_readable
+  - http_403
+  - http_429
+  - http_503
+  - product_unavailable
+  - selector_or_parse_failure
+  - artifact_failure
+  - fact_db_failure
+  - feishu_failure
+
+diagnosis_envelope:
+  persistence: task_execution_summary_and_result
+  schema_migration_required: false
+  required_fields:
+    - last_operation
+    - last_operation_state
+    - probe_before_kill
+    - probe_after_kill
+    - probe_after_restart
+    - child_exit_confirmed
+    - restart_count
+    - failure_scope
+    - diagnosis_code
+    - diagnosis_confidence
+    - root_cause_confirmed
+    - external_host_evidence
+  failure_scopes:
+    - page_or_site
+    - target_or_session
+    - browser_instance
+    - non_browser_handler
+    - host_runtime_suspected
+    - gcp_instance_unreachable
+    - unknown
+  confidence_values:
+    - high
+    - medium
+    - low
+  root_cause_rule: scope_is_evidence_based_but_vendor_root_cause_is_not_inferred
+
+classification_matrix:
+  - evidence:
+      any_probe_process_exit_confirmed: false
+    failure_scope: unknown
+    diagnosis_code: browser_probe_exit_unconfirmed
+    diagnosis_confidence: low
+    root_cause_confirmed: false
+  - evidence:
+      last_operation: page_navigation_or_page_ready_wait
+      probe_before_kill: healthy
+    failure_scope: page_or_site
+    diagnosis_code: current_page_or_site_stall
+    diagnosis_confidence: medium
+    root_cause_confirmed: false
+  - evidence:
+      last_operation: collection_evaluate
+      probe_before_kill: healthy
+    failure_scope: target_or_session
+    diagnosis_code: current_target_or_collection_operation_stall
+    diagnosis_confidence: medium
+    root_cause_confirmed: false
+  - evidence:
+      last_operation: artifact_upload_or_verify_or_product_parse
+      probe_before_kill: healthy
+    failure_scope: non_browser_handler
+    diagnosis_code: non_browser_operation_stall
+    diagnosis_confidence: medium
+    root_cause_confirmed: false
+  - evidence:
+      last_operation_state: completed_or_unknown
+      probe_before_kill: healthy
+    failure_scope: unknown
+    diagnosis_code: no_active_operation_at_stall
+    diagnosis_confidence: low
+    root_cause_confirmed: false
+  - evidence:
+      probe_before_kill: unhealthy
+      probe_after_kill: healthy
+    failure_scope: target_or_session
+    diagnosis_code: child_session_or_transient_cdp_contention
+    diagnosis_confidence: medium
+    root_cause_confirmed: false
+  - evidence:
+      probe_before_kill: unhealthy
+      probe_after_kill: unhealthy
+      probe_after_restart: healthy
+    failure_scope: browser_instance
+    diagnosis_code: shared_chrome_cdp_recovered_after_restart
+    diagnosis_confidence: high
+    root_cause_confirmed: false
+  - evidence:
+      probe_before_kill: unhealthy
+      probe_after_kill: unhealthy
+      probe_after_restart: unhealthy
+      external_host_evidence: absent
+    failure_scope: host_runtime_suspected
+    diagnosis_code: browser_and_local_host_runtime_unresolved
+    diagnosis_confidence: low
+    root_cause_confirmed: false
+  - evidence:
+      external_host_evidence: vm_unreachable_from_independent_observer
+    failure_scope: gcp_instance_unreachable
+    diagnosis_code: gcp_vm_unreachable
+    diagnosis_confidence: high
+    root_cause_confirmed: false
+
+gcp_vm_evidence_boundary:
+  local_runtime_may_emit:
+    - host_runtime_suspected
+    - browser_instance
+  local_runtime_must_not_emit_without_external_evidence:
+    - gcp_instance_unreachable
+    - gcp_vm_stopped
+    - gcp_host_network_partition
+  accepted_external_evidence:
+    - heartbeat_missing_from_independent_host
+    - gcp_instance_status_api_reports_stopped_or_terminated
+    - independent_network_probe_reports_instance_unreachable
+  reason: code running inside the VM cannot write a conclusive log while that VM is stopped or unreachable
+
+runtime_persistence:
+  progress_role: watchdog_refresh_and_latest_safe_operation_only
+  stdout_role: bounded_local_operation_event_history
+  terminal_summary_role: compact_diagnosis_evidence
+  full_progress_history_in_runtime_db: forbidden
+  local_browser_diagnostics_upload_to_minio: forbidden
+  amazon_projection_rules:
+    - pre-page failures may omit a handler-produced browser_target_digest
+    - the claimed resource lane remains the identity source for the browser target digest
+    - browser diagnosis and governed browser error codes must not be replaced by artifact_validation_failed

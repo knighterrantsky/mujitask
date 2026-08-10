@@ -13,6 +13,7 @@
 | [fields](./fields) | 飞书业务表字段角色、更新策略、来源和写回目标 |
 | [facts](./facts) | 跨 workflow 的事实采集、Fact DB 与长期业务对象存储边界；MinIO 白名单以 `durable-business-object-storage.yaml` 为准 |
 | [harness](./harness) | code roadmap、completion claim gate 和任务完成声明契约 |
+| [runtime](./runtime) | browser execution 等 Runtime 控制面可观察、恢复、错误分类和证据边界 |
 | [skill_contract.md](./skill_contract.md) / [skill_spec.schema.json](./skill_spec.schema.json) | agent skill spec、生成产物和 CI 校验契约 |
 | [states](./states) | 业务状态字段的枚举、终态和重置规则 |
 | [workflow](./workflow) | workflow 的业务入口、字段契约、阶段和不变量索引 |
@@ -32,6 +33,7 @@
 - Amazon 商品详情字段与行状态分别以 `fields/feishu-amazon-products.yaml` 和 `states/amazon-product-collection-status.yaml` 为准；单行流程以 `workflow/refresh_amazon_product_row_by_asin.yaml` 为准，`采集标签=T` 的竞品表批量入口以 `workflow/refresh_current_amazon_product_table.yaml` 为准。
 - 改 Codex 根目录任务分类、默认上下文或禁止读取范围时，必须同步更新 `contracts/codex/**` 和对应测试。
 - 改 feature 完成判定、done gate 或 root prompt roadmap 时，必须同步更新 `contracts/harness/**`、`scripts/harness/**` 和对应测试。
+- 改 browser functional probe、child stall、browser restart budget、诊断分类或 GCP VM 证据边界时，必须同步更新 `runtime/browser-execution-recovery.yaml`、Runtime 控制面文档和对应测试。
 - 改 agent skill 入口、意图路由、输入抽取、输出回执或失败处理时，必须同步更新 `skills/{skill_code}/skill.spec.yaml`，重新生成 `SKILL.md`，并通过 `tools/validate_skill.py`。
 - 改业务域使用的 Skill、OpenClaw agent/workspace 或飞书账号/会话路由时，必须同步更新 `contracts/agents/business-agent-bindings.yaml`；密钥和真实 peer id 不得进入该契约。
 - `docs/reference/**` 和 `docs/business/requirements-backlog.md` 不能被 workflow contract 标为正式需求来源。

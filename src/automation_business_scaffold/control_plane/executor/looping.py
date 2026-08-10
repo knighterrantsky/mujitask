@@ -17,6 +17,8 @@ DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER = {
     "browser_worker": 900.0,
     "outbox_dispatcher": 60.0,
 }
+DEFAULT_BROWSER_CHILD_IDLE_TIMEOUT_SECONDS = 150.0
+BROWSER_STALL_DIAGNOSIS_RESERVE_SECONDS = 240.0
 
 
 def run_control_loop(
@@ -43,6 +45,13 @@ def run_control_loop(
         payload = once_func(params)
         last_payload = payload
         status = str(payload.get(idle_status_key, "") or "")
+        if status == "quarantined":
+            if settings.stop_when_idle or (
+                settings.max_iterations and iterations >= settings.max_iterations
+            ):
+                return payload
+            time.sleep(settings.poll_interval_seconds)
+            continue
         if status == "idle":
             idle_cycles += 1
             if settings.stop_when_idle and idle_cycles >= settings.max_idle_cycles:
@@ -93,13 +102,26 @@ def build_child_runner_config(
         return None
 
     timeout_raw = params.get("execution_child_timeout_seconds")
+    default_timeout_seconds = _default_child_timeout_seconds(
+        worker_type=worker_type,
+        runtime_timeout_seconds=runtime_timeout_seconds,
+    )
     timeout_seconds = (
-        _default_child_timeout_seconds(
-            worker_type=worker_type,
-            runtime_timeout_seconds=runtime_timeout_seconds,
-        )
+        default_timeout_seconds
         if timeout_raw in (None, "")
         else max(float(timeout_raw), 0.01)
+    )
+    if (
+        worker_type == "browser_worker"
+        and default_timeout_seconds is not None
+        and timeout_seconds is not None
+    ):
+        timeout_seconds = min(timeout_seconds, default_timeout_seconds)
+    idle_timeout_raw = params.get("execution_child_idle_timeout_seconds")
+    idle_timeout_seconds = (
+        _default_browser_idle_timeout_seconds(runtime_timeout_seconds)
+        if idle_timeout_raw in (None, "") and worker_type == "browser_worker"
+        else _coerce_positive_float(idle_timeout_raw)
     )
     poll_raw = params.get("execution_child_poll_interval_seconds")
     poll_interval_seconds = 0.02 if poll_raw in (None, "") else max(float(poll_raw), 0.005)
@@ -109,6 +131,7 @@ def build_child_runner_config(
     return ChildRunnerConfig(
         mode="child_process",
         timeout_seconds=timeout_seconds,
+        idle_timeout_seconds=idle_timeout_seconds,
         start_method=start_method,
         poll_interval_seconds=poll_interval_seconds,
         terminate_grace_seconds=terminate_grace_seconds,
@@ -125,8 +148,25 @@ def _default_child_runner_mode(*, worker_type: str, handler_code: str) -> str:
 def _default_child_timeout_seconds(*, worker_type: str, runtime_timeout_seconds: Any) -> float | None:
     runtime_timeout = _coerce_positive_float(runtime_timeout_seconds)
     if runtime_timeout is not None:
+        if worker_type == "browser_worker":
+            handler_timeout = runtime_timeout - BROWSER_STALL_DIAGNOSIS_RESERVE_SECONDS
+            if handler_timeout >= DEFAULT_BROWSER_CHILD_IDLE_TIMEOUT_SECONDS:
+                return handler_timeout
         return runtime_timeout
-    return DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER.get(worker_type)
+    default_timeout = DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER.get(worker_type)
+    if worker_type == "browser_worker" and default_timeout is not None:
+        return default_timeout - BROWSER_STALL_DIAGNOSIS_RESERVE_SECONDS
+    return default_timeout
+
+
+def _default_browser_idle_timeout_seconds(runtime_timeout_seconds: Any) -> float | None:
+    runtime_timeout = _coerce_positive_float(runtime_timeout_seconds)
+    if runtime_timeout is None:
+        return DEFAULT_BROWSER_CHILD_IDLE_TIMEOUT_SECONDS
+    available = runtime_timeout - BROWSER_STALL_DIAGNOSIS_RESERVE_SECONDS
+    if available <= 0:
+        return None
+    return min(DEFAULT_BROWSER_CHILD_IDLE_TIMEOUT_SECONDS, available)
 
 
 def _coerce_positive_float(value: Any) -> float | None:
@@ -142,6 +182,8 @@ def _coerce_positive_float(value: Any) -> float | None:
 
 
 __all__ = [
+    "BROWSER_STALL_DIAGNOSIS_RESERVE_SECONDS",
+    "DEFAULT_BROWSER_CHILD_IDLE_TIMEOUT_SECONDS",
     "DEFAULT_CHILD_TIMEOUT_SECONDS_BY_WORKER",
     "build_child_runner_config",
     "run_control_loop",

@@ -198,7 +198,8 @@ def test_runtime_workers_keep_browser_supervision_isolated_by_default() -> None:
     assert api_config is None
     assert browser_config is not None
     assert browser_config.mode == "child_process"
-    assert browser_config.timeout_seconds == 600.0
+    assert browser_config.timeout_seconds == 360.0
+    assert browser_config.idle_timeout_seconds == 150.0
     assert outbox_config is None
 
 
@@ -227,6 +228,69 @@ def test_runtime_child_process_policy_allows_explicit_timeout_override() -> None
     assert config is not None
     assert config.mode == "child_process"
     assert config.timeout_seconds == 1.5
+    assert config.idle_timeout_seconds is None
+
+
+def test_runtime_browser_child_idle_timeout_allows_explicit_override() -> None:
+    config = build_child_runner_config(
+        {"execution_child_idle_timeout_seconds": 12.5},
+        worker_type="browser_worker",
+        handler_code="tiktok_product_browser_fetch",
+        runtime_timeout_seconds=600.0,
+    )
+
+    assert config is not None
+    assert config.idle_timeout_seconds == 12.5
+
+
+def test_browser_child_timeout_override_cannot_consume_recovery_reserve() -> None:
+    config = build_child_runner_config(
+        {"execution_child_timeout_seconds": 500.0},
+        worker_type="browser_worker",
+        handler_code="amazon_product_browser_fetch",
+        runtime_timeout_seconds=540.0,
+    )
+
+    assert config is not None
+    assert config.timeout_seconds == 300.0
+
+
+def test_runtime_browser_child_idle_timeout_reserves_amazon_recovery_budget() -> None:
+    config = build_child_runner_config(
+        {},
+        worker_type="browser_worker",
+        handler_code="amazon_product_browser_fetch",
+        runtime_timeout_seconds=540.0,
+    )
+
+    assert config is not None
+    assert config.timeout_seconds == 300.0
+    assert config.idle_timeout_seconds == 150.0
+
+
+def test_legacy_browser_execution_keeps_its_original_wall_timeout() -> None:
+    config = build_child_runner_config(
+        {},
+        worker_type="browser_worker",
+        handler_code="amazon_product_browser_fetch",
+        runtime_timeout_seconds=300.0,
+    )
+
+    assert config is not None
+    assert config.timeout_seconds == 300.0
+    assert config.idle_timeout_seconds == 60.0
+
+
+def test_runtime_browser_child_idle_timeout_can_be_disabled() -> None:
+    config = build_child_runner_config(
+        {"execution_child_idle_timeout_seconds": 0},
+        worker_type="browser_worker",
+        handler_code="tiktok_product_browser_fetch",
+        runtime_timeout_seconds=600.0,
+    )
+
+    assert config is not None
+    assert config.idle_timeout_seconds is None
 
 
 def test_child_timeout_retries_then_failed_child_releases_parent_for_executor_convergence(

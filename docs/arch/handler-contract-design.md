@@ -1598,6 +1598,27 @@ worker 不应该:
 - 理解飞书某张表字段含义。
 - 决定业务投影字段。
 
+### 9.6 Browser operation 与恢复错误契约
+
+Browser handler 的页面采集结果仍使用既有 `HandlerResult`，但所有可能阻塞的操作必须通过 `context.metadata.progress_callback` 报告机器契约允许的 operation。事件状态只允许 `started/completed/failed/suppressed_error/sample`。handler 必须在进入实际 Sync Playwright、HTTP download、screenshot 或 artifact transport 调用以前先报告 `started`；callback 或 stdout 写入失败不得改变原业务结果。
+
+Browser handler 不拥有 Chrome stop/start 权限，也不自行叠加 provider、handler 和 Runtime 三层恢复次数。共享健康探针、stall 证据时序和 restart budget 以
+[`contracts/runtime/browser-execution-recovery.yaml`](../../contracts/runtime/browser-execution-recovery.yaml)
+为准，由 browser execution control path 统一管理。
+
+新增的稳定终态错误码如下：
+
+| error_code | retryable | 含义 |
+| --- | --- | --- |
+| `browser_recovery_failed` | false | 一次 exact-profile restart 或 restart 后完整功能探针失败 |
+| `child_process_stalled` | false | supervisor 捕获到 child 无进度并进入诊断；它是执行证据，不是 GCP VM 根因 |
+
+本阶段不新增“功能探针健康后自动换 page 重试”的 handler contract；若后续实现该能力，必须另行定义 operation attempt 与 Runtime retry 的唯一预算 owner，不能复用本节错误码暗示已经具备。
+
+`Security Check/captcha/403/429/503`、商品不存在、selector/parse、artifact、Fact DB 或飞书错误继续使用各自既有业务/transport error code，不能改写成 browser recovery error，也不能触发 Chrome restart。
+
+失败 handler 可以在 `summary/result` 中返回紧凑 `browser_diagnosis`，仅允许机器契约规定的稳定字段。`failure_scope` 与 `diagnosis_confidence` 必须一起出现，`root_cause_confirmed` 默认 false。没有实例外证据时，handler、Supervisor 和 domain projection 都不能输出 `gcp_instance_unreachable`；VM 内日志停止本身也不能作为该 error code 的本地证据。
+
 ## 10. 迁移顺序
 
 第一阶段: 契约先行

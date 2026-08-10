@@ -10,6 +10,7 @@ from automation_business_scaffold.control_plane.supervisor.child_runner import (
     ChildRunnerConfig,
     ChildRunnerEnvelope,
     ChildRunnerProgressEvent,
+    ChildStallCallback,
 )
 from automation_business_scaffold.contracts.handler.contract import HandlerContext, HandlerError, HandlerResult
 from automation_business_scaffold.contracts.handler.registry import HandlerInvocationContractError, HandlerRegistryError
@@ -196,6 +197,7 @@ class ExecutionSupervisor:
         context: HandlerContext,
         dispatch: DispatchCallable,
         child_runner_config: ChildRunnerConfig | None = None,
+        on_stall: ChildStallCallback | None = None,
     ) -> ExecutionSupervisorOutcome:
         started_at = time.time()
         runtime_context = self._bind_context(context)
@@ -210,6 +212,7 @@ class ExecutionSupervisor:
                     context=runtime_context,
                     dispatch=dispatch,
                     on_progress=self._report_child_progress,
+                    on_stall=on_stall,
                 )
                 worker_result = child_outcome.to_handler_result(runtime_context)
             else:
@@ -307,9 +310,11 @@ class ExecutionSupervisor:
     def _resolve_supervisor_status(self, child_outcome: ChildRunnerEnvelope | None) -> str:
         if child_outcome is None:
             return "completed"
+        if child_outcome.status == "termination_failed":
+            return "child_process_error"
         if child_outcome.timed_out:
             return "timed_out"
-        if child_outcome.status == "internal_error":
+        if child_outcome.status in {"internal_error", "stalled"}:
             return "child_process_error"
         return "completed"
 
@@ -387,6 +392,7 @@ def run_supervised_handler(
     heartbeat_interval_seconds: float,
     callbacks: ExecutionSupervisorCallbacks | None = None,
     child_runner_config: ChildRunnerConfig | None = None,
+    on_stall: ChildStallCallback | None = None,
 ) -> ExecutionSupervisorOutcome:
     supervisor = ExecutionSupervisor(
         heartbeat_interval_seconds=heartbeat_interval_seconds,
@@ -396,4 +402,5 @@ def run_supervised_handler(
         context=context,
         dispatch=dispatch,
         child_runner_config=child_runner_config,
+        on_stall=on_stall,
     )

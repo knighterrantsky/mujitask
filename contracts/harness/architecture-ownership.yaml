@@ -50,6 +50,74 @@ owners:
       - own workflow-level business filtering
       - duplicate FastMoss session/cookie recovery, login refresh, or external-login conflict policy
 
+  browser_profile_health:
+    paths:
+      - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+    entrypoints:
+      - ensure_browser_healthy
+      - open_automation_page
+    allowed_callers:
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/supervisor/**
+      - src/automation_business_scaffold/capabilities/browser/**
+    responsibilities:
+      - resolve one exact configured profile_ref and its provider through the existing browser bridge
+      - run the bounded connect/new-page/about-blank/evaluate/close functional probe without mutating browser state before the verdict
+      - execute at most one explicitly authorized exact-profile stop/start/reconnect recovery through a governed lifecycle command and public provider surface
+      - close the probe-owned page, then detach or disconnect the probe session without closing the shared CDP browser
+      - return sanitized phase evidence and classify missing detach support as cleanup failure
+    forbidden:
+      - decide Runtime retry, terminal status, cooldown, or workflow transitions
+      - classify captcha, Security Check, HTTP status, parse failure, artifact failure, Fact DB failure, or Feishu failure as browser health failure
+      - call private automation-framework methods or modify installed framework code
+      - restart a profile other than the exact resolved profile_ref
+      - call session.close on a shared CDP probe session
+      - claim that the GCP VM is unreachable from VM-local evidence
+
+  browser_execution_recovery:
+    paths:
+      - src/automation_business_scaffold/control_plane/supervisor/child_runner.py
+      - src/automation_business_scaffold/control_plane/supervisor/execution_supervisor.py
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/looping.py
+      - src/automation_business_scaffold/control_plane/executor/runner.py
+      - src/automation_business_scaffold/control_plane/runtime_config/settings.py
+      - src/automation_business_scaffold/control_plane/watchdog/scanner.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_current_amazon_product_table.py
+    responsibilities:
+      - detect progress inactivity with monotonic time before Watchdog stale-progress intervention
+      - preserve probe-before-kill, confirmed child exit, probe-after-kill, and probe-after-restart evidence in that order
+      - own the single restart budget and terminal recovery errors for one child stall diagnosis
+      - reserve recovery time separately from the browser handler wall-clock budget
+      - persist only the compact browser diagnosis allowlist and refresh progress during diagnosis and recovery
+      - keep Watchdog from terminalizing or killing a browser runloop whose quarantine-write-failed hold stage was persisted while the marker is retried
+    forbidden:
+      - interpret website DOM, captcha, HTTP status, product availability, or business fields
+      - invoke provider-specific stop scripts from TikTok, Amazon, or FastMoss handlers
+      - restart Chrome before the child process has exited
+      - write a GCP VM failure without independent external-host evidence
+      - introduce a parallel helper, service, manager, coordinator, collector, or orchestrator owner
+
+  browser_operation_observability:
+    paths:
+      - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok_product_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok/product_page.py
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+    responsibilities:
+      - provide the shared started/terminal operation envelope from the existing browser bridge
+      - emit started before each allowlisted blocking browser operation and completed or failed after it returns
+      - emit suppressed_error when existing business logic intentionally suppresses an exception
+      - throttle wait-loop samples and keep messages, details, error classes, and Runtime projection sanitized
+      - preserve pre-page browser failure and browser diagnosis codes without requiring page-created artifact evidence
+    forbidden:
+      - call browser lifecycle stop or restart commands
+      - emit cookie, authorization, header, HTML, DOM snapshot, full URL, raw exception message, or traceback
+      - call Sync Playwright from a background logging thread
+      - change the business result because progress logging failed
+
   browser_security_resolve:
     paths:
       - src/automation_business_scaffold/capabilities/browser/**

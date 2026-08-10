@@ -176,8 +176,11 @@ def build_refresh_current_amazon_product_table_definition() -> WorkflowDefinitio
             ),
             TimeoutRule(
                 target_code="amazon_product_browser_fetch",
-                timeout_seconds=300,
-                description="One primary Amazon browser collection timeout.",
+                timeout_seconds=540,
+                description=(
+                    "Amazon browser execution total: 300 seconds for collection plus a "
+                    "240-second supervisor diagnosis and recovery reserve."
+                ),
             ),
         ),
         summary_contract=contract(

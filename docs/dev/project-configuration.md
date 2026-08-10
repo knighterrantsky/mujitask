@@ -134,6 +134,13 @@ Amazon 飞书机器人 App ID / App Secret 由 OpenClaw 的
 不含本机状态的 example 文件。同一个 CDP endpoint / user data directory 只保留一个 profile ref，
 不要为同一会话维护重复别名。
 
+浏览器 stall 自动恢复必须由该 profile 的 `metadata.session_recovery` 显式授权。
+`stop_command` 使用当前机器上的绝对路径，并且只能指向当前用户或 root 持有、不可被 group/world
+写入的可执行文件。普通 handler 打开页面时会关闭 provider 内建的 connect-restart；只有 execution
+supervisor 在 child 已确认退出、两次功能探针均失败后，才会消费一次 stop/start 预算。
+这里的 `browser_instance` 只表示共享 Chrome/CDP 进程；GCP VM 停机或失联必须由 VM 外部心跳、
+GCP instance status API 或独立网络探针确认，本机日志最多记录 `host_runtime_suspected`。
+
 ## 3. 当前自动加载覆盖范围
 
 以下入口现在都会自动读取项目配置文件：
@@ -249,3 +256,7 @@ psql "$DATABASE_URL" -c "select state, count(*) from pg_stat_activity group by s
 ```
 
 生产运行的阈值、排障命令和 watchdog 口径见 [../ops/runtime-db-connection-stability.md](../ops/runtime-db-connection-stability.md)。
+
+## 8. Browser runloop quarantine marker
+
+`runtime/daemons/browser_runloop.quarantine.json` 只在 supervisor 无法确认 browser child 退出时写入。marker 存在期间，browser runloop 不 claim 任何新 browser execution，避免孤儿 child 与新任务并发操作共享 Chrome。`child_pids` 是必须逐个核验的完整 PID 列表，`child_pid` 只是首项兼容别名。marker 不会自动删除；删除前必须确认 `child_pids` 中所有 PID 均已不存在。列表为空、损坏或无法逐项核验时，只能在确认宿主机已经重启后清除 marker。

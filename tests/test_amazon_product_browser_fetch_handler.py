@@ -32,6 +32,9 @@ from automation_business_scaffold.contracts.handler.contract import (
     HandlerResult,
 )
 from automation_business_scaffold.control_plane.executor import worker_dispatch
+from automation_business_scaffold.control_plane.supervisor.child_runner import (
+    ChildRunnerEnvelope,
+)
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
     ExecutionProgressEvent,
     ExecutionSupervisorError,
@@ -239,10 +242,10 @@ def test_success_uploads_only_governed_normalized_capture_and_returns_compact_re
         _context(
             store=store,
             payload_overrides={
-                    "browser_profile_ref": "payload-must-be-ignored",
-                    "browser_workspace_id": "workspace-must-be-ignored",
-                    "browser_provider_token": "provider-token-must-be-ignored",
-                    "minio_secret_key": "payload-secret-must-be-ignored",
+                "browser_profile_ref": "payload-must-be-ignored",
+                "browser_workspace_id": "workspace-must-be-ignored",
+                "browser_provider_token": "provider-token-must-be-ignored",
+                "minio_secret_key": "payload-secret-must-be-ignored",
             },
         )
     )
@@ -630,7 +633,7 @@ def test_real_page_collection_uses_browser_bridge_and_does_not_screenshot_succes
             navigate_calls.append((url, wait_until, timeout_ms))
 
     @contextmanager
-    def open_page(*, profile_ref: str):
+    def open_page(*, profile_ref: str, progress_callback=None):
         assert profile_ref == "amazon-us-profile"
         yield SimpleNamespace(
             page=AutomationPage(),
@@ -725,10 +728,7 @@ def test_wait_for_amazon_page_clicks_at_most_one_visible_details_toggle() -> Non
     assert page.waits == [150, 150, 150]
     assert "#productDetails_feature_div" in page.locator_selector
     assert "#detailBullets_feature_div" in page.locator_selector
-    assert all(
-        "aria-expanded='false'" in selector
-        for selector in page.locator_selector.split(",")
-    )
+    assert all("aria-expanded='false'" in selector for selector in page.locator_selector.split(","))
     assert page.toggle.click_count == 1
 
 
@@ -770,6 +770,30 @@ def test_wait_for_amazon_page_uses_framework_humanized_scroll_when_available() -
 
     assert automation_page.scrolls == [1200, 1600, 2000]
     assert page.evaluate_calls == 0
+
+
+def test_amazon_page_wait_reports_caught_browser_timeout_as_suppressed() -> None:
+    events: list[dict[str, object]] = []
+    page = SimpleNamespace(
+        wait_for_load_state=lambda *args, **kwargs: None,
+        wait_for_selector=lambda *args, **kwargs: (_ for _ in ()).throw(
+            TimeoutError("not persisted")
+        ),
+    )
+
+    def report(operation: str, *, details: dict[str, object]) -> None:
+        assert operation == "page_ready_wait"
+        events.append(dict(details))
+
+    with browser_bridge.browser_operation(report, "page_ready_wait") as operation_handle:
+        handler_module._wait_for_amazon_page(
+            page,
+            timeout_ms=5_000,
+            operation_handle=operation_handle,
+        )
+
+    assert [event["state"] for event in events] == ["started", "suppressed_error"]
+    assert events[-1]["error_class"] == "TimeoutError"
 
 
 def test_screenshot_capture_fails_closed_when_sensitive_masking_fails() -> None:
@@ -924,7 +948,7 @@ def test_natural_same_origin_json_response_is_used_but_not_persisted_separately(
     page = Page()
 
     @contextmanager
-    def open_page(*, profile_ref: str):
+    def open_page(*, profile_ref: str, progress_callback=None):
         assert profile_ref == "amazon-us-profile"
         yield SimpleNamespace(
             page=page,
@@ -1219,7 +1243,7 @@ def test_real_page_collection_screenshots_blocked_redirect(monkeypatch) -> None:
     page = Page()
 
     @contextmanager
-    def open_page(*, profile_ref: str):
+    def open_page(*, profile_ref: str, progress_callback=None):
         yield SimpleNamespace(page=page, target_key="target-key")
 
     monkeypatch.setattr(handler_module, "open_automation_page", open_page)
@@ -1264,7 +1288,7 @@ def test_navigation_http_failures_are_retryable_and_remain_local_only(
             return b"temporary-response-screenshot"
 
     @contextmanager
-    def open_page(*, profile_ref: str):
+    def open_page(*, profile_ref: str, progress_callback=None):
         assert profile_ref == "amazon-us-profile"
         yield SimpleNamespace(page=Page(), target_key="target-key")
 
@@ -1305,7 +1329,7 @@ def test_empty_or_unreadable_page_content_is_a_retryable_technical_failure(
             return b"page-read-failure"
 
     @contextmanager
-    def open_page(*, profile_ref: str):
+    def open_page(*, profile_ref: str, progress_callback=None):
         yield SimpleNamespace(page=Page(), target_key="target-key")
 
     store = FakeArtifactStore()
@@ -1390,6 +1414,53 @@ def test_invalid_asin_fails_without_browser_or_artifact_side_effects(monkeypatch
     assert result.error.error_code == "invalid_asin"
     assert opened == []
     assert store.uploads == {}
+
+
+def test_invalid_asin_pre_page_failure_survives_real_runtime_projection() -> None:
+    context = HandlerContext(
+        request_id=RUNTIME_REQUEST_ID,
+        job_id=RUNTIME_EXECUTION_ID,
+        handler_code="amazon_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"requested_asin": "not-an-asin"},
+        resource_code=f"browser:amazon:{RUNTIME_TARGET_DIGEST}",
+    )
+    error = HandlerError(
+        error_type="browser_failure",
+        error_code="invalid_asin",
+        message="invalid asin",
+        retryable=False,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=context,
+        worker_result=HandlerResult.failed(
+            context,
+            error=error,
+            result={"collection_status": "failed", "artifact_refs": [], "raw_capture_refs": []},
+        ),
+        supervisor_status="handler_failed",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        error=ExecutionSupervisorError(
+            error_type=error.error_type,
+            error_code=error.error_code,
+            message=error.message,
+            retryable=False,
+            terminal=True,
+        ),
+    )
+    projection = worker_dispatch.get_runtime_result_projection(
+        "amazon_product_browser_fetch"
+    )
+
+    storage = projection.project_storage(outcome)
+    failure = projection.failure_policy(outcome)
+
+    assert storage.result["browser_target_digest"] == RUNTIME_TARGET_DIGEST
+    assert storage.result["collection_status"] == "failed"
+    assert failure.error_code == "invalid_asin"
 
 
 @pytest.mark.parametrize(
@@ -1598,9 +1669,7 @@ def test_oversized_runtime_html_is_not_persisted_or_size_checked(monkeypatch) ->
 
     assert result.status == "success"
     assert len(store.uploads) == 1
-    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == [
-        "normalized_capture"
-    ]
+    assert [ref["capture_kind"] for ref in result.result["artifact_refs"]] == ["normalized_capture"]
 
 
 @pytest.mark.parametrize(
@@ -1651,6 +1720,405 @@ def test_browser_worker_claims_the_controlled_handler_allowlist(monkeypatch) -> 
     worker_dispatch.execute_browser_once({})
 
     assert set(calls[0]["item_codes"]) == set(BROWSER_HANDLER_CODES)
+
+
+def test_browser_stall_target_resolution_validates_amazon_digest_and_accepts_other_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest_calls: list[str] = []
+
+    def resolve_digest(*, profile_ref: str) -> str:
+        digest_calls.append(profile_ref)
+        return RUNTIME_TARGET_DIGEST
+
+    monkeypatch.setenv("AMAZON_US_BROWSER_PROFILE_REF", "amazon-profile")
+    monkeypatch.setattr(
+        worker_dispatch,
+        "resolve_automation_browser_target_digest",
+        resolve_digest,
+    )
+    amazon_context = HandlerContext(
+        **{
+            **_context().to_dict(),
+            "resource_code": f"browser:amazon:{RUNTIME_TARGET_DIGEST}",
+        }
+    )
+    other_context = HandlerContext(
+        request_id="request-2",
+        job_id="execution-2",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"browser_profile_ref": "tiktok-profile"},
+    )
+
+    assert worker_dispatch._browser_health_target_request(amazon_context) == {
+        "profile_ref": "amazon-profile"
+    }
+    assert worker_dispatch._browser_health_target_request(other_context) == {
+        "profile_ref": "tiktok-profile"
+    }
+    assert digest_calls == ["amazon-profile"]
+
+
+def test_browser_stall_target_resolution_matches_tiktok_direct_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TIKTOK_BROWSER_PROFILE_REF", raising=False)
+    monkeypatch.delenv("BROWSER_PROFILE_REF", raising=False)
+    monkeypatch.delenv("DEFAULT_PROFILE_REF", raising=False)
+    monkeypatch.setenv("TIKTOK_BROWSER_PROVIDER_NAME", "chrome_cdp")
+    monkeypatch.setenv("TIKTOK_BROWSER_PROFILE_ID", "tiktok-direct")
+    monkeypatch.setenv("TIKTOK_BROWSER_WORKSPACE_ID", "17")
+    context = HandlerContext(
+        request_id="request-2",
+        job_id="execution-2",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+    )
+
+    assert worker_dispatch._browser_health_target_request(context) == {
+        "workspace_id": 17,
+        "profile_id": "tiktok-direct",
+        "provider_name": "chrome_cdp",
+    }
+
+
+@pytest.mark.parametrize(
+    ("probe_sequence", "expected_scope", "expected_code"),
+    [
+        (
+            (
+                {"healthy": True, "status": "healthy"},
+                {"healthy": True, "status": "healthy"},
+            ),
+            "page_or_site",
+            "current_page_or_site_stall",
+        ),
+        (
+            (
+                {"healthy": False, "status": "unhealthy"},
+                {"healthy": True, "status": "healthy"},
+            ),
+            "target_or_session",
+            "child_session_or_transient_cdp_contention",
+        ),
+        (
+            (
+                {"healthy": True, "status": "healthy"},
+                {"healthy": False, "status": "unhealthy"},
+            ),
+            "page_or_site",
+            "current_page_or_site_stall",
+        ),
+    ],
+)
+def test_browser_stall_probe_classifies_pre_or_post_kill_health_without_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    probe_sequence: tuple[dict[str, object], dict[str, object]],
+    expected_scope: str,
+    expected_code: str,
+) -> None:
+    progress_stages: list[str] = []
+    probe_calls: list[dict[str, object]] = []
+    probes = iter(probe_sequence)
+
+    class Store:
+        def load_task_execution(self, *, execution_id: str):
+            assert execution_id == "execution-1"
+            return SimpleNamespace(status="running", run_id="run-1")
+
+        def update_task_execution_progress(self, **kwargs):
+            progress_stages.append(str(kwargs["progress_stage"]))
+
+    context = HandlerContext(
+        request_id="request-1",
+        job_id="execution-1",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"browser_profile_ref": "tiktok-profile"},
+    )
+    monkeypatch.setattr(
+        worker_dispatch,
+        "probe_browser_health",
+        lambda **kwargs: probe_calls.append(dict(kwargs)) or next(probes),
+    )
+    monkeypatch.setattr(
+        worker_dispatch,
+        "ensure_browser_healthy",
+        lambda **_kwargs: pytest.fail("healthy post-kill probe must not restart browser"),
+    )
+    on_stall = worker_dispatch._build_browser_stall_probe(
+        store=Store(),
+        context=context,
+        execution_id="execution-1",
+        run_id="run-1",
+    )
+
+    before = on_stall(
+        "pre_kill",
+        {"last_progress_stage": "page_ready_wait", "last_progress_state": "started"},
+    )
+    after = on_stall(
+        "post_kill",
+        {
+            "last_progress_stage": "page_ready_wait",
+            "last_progress_state": "started",
+            "termination": {"confirmed_exited": True},
+        },
+    )
+
+    assert before["probe_before_kill"] == probe_sequence[0]
+    assert after["probe_after_kill"] == probe_sequence[1]
+    assert after["recovery"] == {}
+    assert after["browser_diagnosis"]["failure_scope"] == expected_scope
+    assert after["browser_diagnosis"]["diagnosis_code"] == expected_code
+    assert after["browser_diagnosis"]["final_error_code"] == "child_process_stalled"
+    assert probe_calls == [
+        {"profile_ref": "tiktok-profile"},
+        {"profile_ref": "tiktok-profile"},
+    ]
+    assert progress_stages == ["browser_probe_before_kill", "browser_probe_after_kill"]
+
+
+def test_browser_stall_probe_uses_one_authorized_recovery_when_both_probes_are_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_stages: list[str] = []
+    unhealthy_before = {"healthy": False, "status": "unhealthy", "phase": "evaluate"}
+    unhealthy_after = {"healthy": False, "status": "unhealthy", "phase": "connect"}
+    healthy_after_restart = {"healthy": True, "status": "healthy"}
+    probes = iter((unhealthy_before, unhealthy_after))
+    recovery_calls: list[dict[str, object]] = []
+
+    class Store:
+        def load_task_execution(self, *, execution_id: str):
+            assert execution_id == "execution-1"
+            return SimpleNamespace(status="running", run_id="run-1")
+
+        def update_task_execution_progress(self, **kwargs):
+            progress_stages.append(str(kwargs["progress_stage"]))
+
+    def recover(**kwargs):
+        before_restart = kwargs.pop("before_restart")
+        assert callable(before_restart)
+        assert before_restart() is True
+        recovery_calls.append(dict(kwargs))
+        return {
+            "status": "healthy",
+            "healthy": True,
+            "recovery_authorized": True,
+            "restart_count": 1,
+            "initial_probe": unhealthy_after,
+            "probe_after_restart": healthy_after_restart,
+        }
+
+    context = HandlerContext(
+        request_id="request-1",
+        job_id="execution-1",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"browser_profile_ref": "tiktok-profile"},
+    )
+    monkeypatch.setattr(worker_dispatch, "probe_browser_health", lambda **_kwargs: next(probes))
+    monkeypatch.setattr(worker_dispatch, "ensure_browser_healthy", recover)
+    on_stall = worker_dispatch._build_browser_stall_probe(
+        store=Store(),
+        context=context,
+        execution_id="execution-1",
+        run_id="run-1",
+    )
+
+    on_stall(
+        "pre_kill",
+        {"last_progress_stage": "page_ready_wait", "last_progress_state": "started"},
+    )
+    after = on_stall(
+        "post_kill",
+        {
+            "last_progress_stage": "page_ready_wait",
+            "last_progress_state": "started",
+            "termination": {"confirmed_exited": True},
+        },
+    )
+
+    assert recovery_calls == [
+        {
+            "profile_ref": "tiktok-profile",
+            "max_restarts": 1,
+            "initial_probe": unhealthy_after,
+        }
+    ]
+    assert after["recovery"]["recovery_authorized"] is True
+    assert after["browser_diagnosis"]["failure_scope"] == "browser_instance"
+    assert after["browser_diagnosis"]["diagnosis_code"] == (
+        "shared_chrome_cdp_recovered_after_restart"
+    )
+    assert after["browser_diagnosis"]["restart_count"] == 1
+    assert progress_stages == [
+        "browser_probe_before_kill",
+        "browser_probe_after_kill",
+        "browser_restart",
+        "browser_probe_after_restart",
+    ]
+
+
+def test_unconfirmed_pre_kill_probe_exit_skips_post_probe_and_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_stages: list[str] = []
+    probe_calls: list[dict[str, object]] = []
+    unconfirmed_probe = {
+        "healthy": False,
+        "status": "inconclusive",
+        "probe_exit_confirmed": False,
+        "probe_pid": 9876,
+    }
+
+    class Store:
+        def load_task_execution(self, *, execution_id: str):
+            assert execution_id == "execution-1"
+            return SimpleNamespace(status="running", run_id="run-1")
+
+        def update_task_execution_progress(self, **kwargs):
+            progress_stages.append(str(kwargs["progress_stage"]))
+
+    context = HandlerContext(
+        request_id="request-1",
+        job_id="execution-1",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"browser_profile_ref": "tiktok-profile"},
+    )
+    monkeypatch.setattr(
+        worker_dispatch,
+        "probe_browser_health",
+        lambda **kwargs: probe_calls.append(dict(kwargs)) or unconfirmed_probe,
+    )
+    monkeypatch.setattr(
+        worker_dispatch,
+        "ensure_browser_healthy",
+        lambda **kwargs: pytest.fail(f"unconfirmed probe must not recover: {kwargs}"),
+    )
+    on_stall = worker_dispatch._build_browser_stall_probe(
+        store=Store(),
+        context=context,
+        execution_id="execution-1",
+        run_id="run-1",
+    )
+
+    on_stall(
+        "pre_kill",
+        {"last_progress_stage": "page_ready_wait", "last_progress_state": "started"},
+    )
+    after = on_stall(
+        "post_kill",
+        {
+            "last_progress_stage": "page_ready_wait",
+            "last_progress_state": "started",
+            "termination": {"confirmed_exited": True},
+        },
+    )
+
+    assert len(probe_calls) == 1
+    assert progress_stages == ["browser_probe_before_kill"]
+    assert after["recovery"] == {}
+    assert after["browser_diagnosis"]["final_error_code"] == (
+        "browser_probe_termination_failed"
+    )
+
+
+def test_browser_stall_diagnosis_is_terminal_and_persisted_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnosis = {
+        "failure_scope": "host_runtime_suspected",
+        "diagnosis_code": "browser_and_local_host_runtime_unresolved",
+        "diagnosis_confidence": "low",
+        "root_cause_confirmed": False,
+        "external_host_evidence": "absent",
+        "final_error_code": "browser_recovery_failed",
+    }
+    context = HandlerContext(
+        request_id="request-1",
+        job_id="execution-1",
+        handler_code="tiktok_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+    )
+    original_error = HandlerError(
+        error_type="timeout",
+        error_code="child_process_stalled",
+        message="child stalled",
+        retryable=True,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=context,
+        worker_result=HandlerResult.failed(context, error=original_error),
+        supervisor_status="child_process_error",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        execution_mode="child_process",
+        error=ExecutionSupervisorError(
+            error_type=original_error.error_type,
+            error_code=original_error.error_code,
+            message=original_error.message,
+            retryable=True,
+            terminal=False,
+        ),
+        child_runner=ChildRunnerEnvelope(
+            status="stalled",
+            execution_mode="child_process",
+            timed_out=False,
+            started_at=1.0,
+            finished_at=2.0,
+            details={
+                "stall_hooks": {
+                    "post_kill": {"result": {"browser_diagnosis": diagnosis}}
+                }
+            },
+        ),
+    )
+    marked: list[dict[str, object]] = []
+
+    class Store:
+        def mark_browser_execution_failed(self, **kwargs):
+            marked.append(dict(kwargs))
+            return SimpleNamespace(result_status="failed")
+
+        def mark_browser_execution_retry_or_failed(self, **_kwargs):
+            pytest.fail("terminal stall diagnosis must not enter runtime retry")
+
+    monkeypatch.setattr(worker_dispatch, "get_runtime_result_projection", lambda _code: None)
+
+    attached = worker_dispatch._attach_browser_stall_diagnosis(outcome)
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=Store(),
+        execution_id="execution-1",
+        run_id="run-1",
+        outcome=attached,
+        retry_delay_seconds=5,
+    )
+
+    assert attached.error is not None
+    assert attached.error.error_code == "browser_recovery_failed"
+    assert attached.error.retryable is False
+    assert attached.error.terminal is True
+    assert attached.worker_result.error is not None
+    assert attached.worker_result.error.retryable is False
+    assert attached.worker_result.summary["browser_diagnosis"] == diagnosis
+    assert attached.worker_result.result["browser_diagnosis"] == diagnosis
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert len(marked) == 1
+    assert marked[0]["error_code"] == "browser_recovery_failed"
+    assert marked[0]["summary"]["browser_diagnosis"] == diagnosis
+    assert marked[0]["result"]["browser_diagnosis"] == diagnosis
 
 
 class ArtifactIndexStore:
@@ -2416,9 +2884,7 @@ def test_browser_projection_exception_is_safely_terminalized(
         worker_dispatch,
         "get_runtime_result_projection",
         lambda handler_code: (
-            ExplodingProjection()
-            if handler_code == "amazon_product_browser_fetch"
-            else None
+            ExplodingProjection() if handler_code == "amazon_product_browser_fetch" else None
         ),
     )
     store = ArtifactIndexStore()
@@ -2452,10 +2918,7 @@ def test_browser_storage_allows_pre_navigation_failure_without_evidence() -> Non
         worker_result=HandlerResult.failed(
             valid_outcome.context,
             error=error,
-            result={
-                "collection_status": "failed",
-                "browser_target_digest": RUNTIME_TARGET_DIGEST,
-            },
+            result={"collection_status": "failed"},
         ),
         supervisor_status="handler_failed",
         started_at=1.0,
@@ -2485,6 +2948,80 @@ def test_browser_storage_allows_pre_navigation_failure_without_evidence() -> Non
     assert store.marked is not None
     assert store.marked[0] == "failed"
     assert store.marked[1]["error_code"] == "transient_page_failure"
+    assert store.marked[1]["result"]["browser_target_digest"] == RUNTIME_TARGET_DIGEST
+
+
+def test_browser_storage_preserves_pre_page_stall_diagnosis_without_handler_digest() -> None:
+    valid_outcome = _artifact_outcome()
+    probe = {
+        "status": "unhealthy",
+        "healthy": False,
+        "failed_phase": "connect_cdp",
+        "cleanup_status": "not_started",
+        "error_class": "TimeoutError",
+        "timed_out": True,
+    }
+    diagnosis = {
+        "last_operation": "browser_session_open",
+        "last_operation_state": "started",
+        "probe_before_kill": probe,
+        "probe_after_kill": probe,
+        "probe_after_restart": probe,
+        "child_exit_confirmed": True,
+        "restart_count": 1,
+        "failure_scope": "host_runtime_suspected",
+        "diagnosis_code": "browser_and_local_host_runtime_unresolved",
+        "diagnosis_confidence": "low",
+        "root_cause_confirmed": False,
+        "external_host_evidence": "absent",
+        "final_error_code": "browser_recovery_failed",
+    }
+    error = HandlerError(
+        error_type="timeout",
+        error_code="browser_recovery_failed",
+        message="browser recovery failed",
+        retryable=False,
+    )
+    outcome = ExecutionSupervisorOutcome(
+        context=valid_outcome.context,
+        worker_result=HandlerResult.failed(
+            valid_outcome.context,
+            error=error,
+            result={
+                "collection_status": "failed",
+                "browser_diagnosis": diagnosis,
+            },
+        ),
+        supervisor_status="child_process_error",
+        started_at=1.0,
+        finished_at=2.0,
+        heartbeat_count=0,
+        execution_mode="child_process",
+        error=ExecutionSupervisorError(
+            error_type=error.error_type,
+            error_code=error.error_code,
+            message=error.message,
+            retryable=False,
+            terminal=True,
+        ),
+    )
+    store = ArtifactIndexStore()
+
+    execution, success_count, failed_count = worker_dispatch.persist_browser_execution_outcome(
+        store=store,
+        execution_id="execution-1",
+        run_id="claim-run-1",
+        outcome=outcome,
+        retry_delay_seconds=5,
+    )
+
+    assert execution.result_status == "failed"
+    assert (success_count, failed_count) == (0, 1)
+    assert store.marked is not None
+    assert store.marked[0] == "terminal"
+    assert store.marked[1]["error_code"] == "browser_recovery_failed"
+    assert store.marked[1]["result"]["browser_target_digest"] == RUNTIME_TARGET_DIGEST
+    assert store.marked[1]["result"]["browser_diagnosis"] == diagnosis
 
 
 @pytest.mark.parametrize("error_code", ["navigation_timeout", "rate_limited"])
@@ -2926,3 +3463,47 @@ def test_real_runtime_retryable_legacy_browser_failure_remains_pending(
     assert execution.result_status == ""
     assert execution.attempt_count == 1
     assert execution.error_code == "tiktok_browser_fetch_failed"
+
+
+def test_amazon_browser_operation_log_is_correlated_and_sanitized(capsys) -> None:
+    progress_events: list[tuple[str, dict[str, object]]] = []
+    context = HandlerContext(
+        request_id="request-observability",
+        job_id="execution-observability",
+        handler_code="amazon_product_browser_fetch",
+        worker_type="browser_worker",
+        runtime_table="task_execution",
+        payload={"run_id": "run-observability"},
+        attempt_count=3,
+        metadata={
+            "progress_callback": lambda stage, **kwargs: progress_events.append(
+                (stage, dict(kwargs.get("details") or {}))
+            )
+        },
+    )
+    reporter = handler_module._browser_progress_reporter(context)
+
+    reporter(
+        "page_navigation",
+        details={
+            "state": "failed",
+            "elapsed_ms": 12.5,
+            "error_class": "TimeoutError",
+            "operation_id": "operation-1",
+            "url": "https://example.test/private?token=secret",
+            "exception_message": "secret transport details",
+        },
+    )
+
+    event = json.loads(capsys.readouterr().out)
+    assert event["execution_id"] == "execution-observability"
+    assert event["job_id"] == "execution-observability"
+    assert event["run_id"] == "run-observability"
+    assert event["attempt_count"] == 3
+    assert event["operation_id"] == "operation-1"
+    assert event["state"] == "failed"
+    assert event["error_class"] == "TimeoutError"
+    assert "url" not in event
+    assert "exception_message" not in event
+    assert "secret" not in json.dumps(event)
+    assert progress_events[0][1]["operation_id"] == "operation-1"

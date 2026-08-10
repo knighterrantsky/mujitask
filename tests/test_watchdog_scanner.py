@@ -241,6 +241,31 @@ def test_watchdog_scan_counts_only_store_confirmed_applications() -> None:
     assert payload["outcomes"][0]["applied"] is False
 
 
+def test_watchdog_skips_every_rule_for_persisted_browser_quarantine_hold() -> None:
+    store = FakeWatchdogStore()
+    for index, helper_name in enumerate(store.rows_by_helper, start=1):
+        store.rows_by_helper[helper_name].append(
+            {
+                "target_table": "task_execution",
+                "execution_id": f"quarantined-execution-{index}",
+                "request_id": "request-1",
+                "status": "running",
+                "progress_stage": "browser_runloop_quarantine_write_failed",
+                "attempt_count": 1,
+                "max_attempts": 3,
+            }
+        )
+
+    payload = execute_watchdog_scan_once({"now": 100.0}, store=store)
+
+    assert payload["status"] == "idle"
+    assert payload["scanned_count"] == 0
+    assert payload["action_count"] == 0
+    assert payload["applied_count"] == 0
+    assert payload["outcomes"] == []
+    assert store.applied_actions == []
+
+
 def test_watchdog_collect_prefers_timeout_over_lease_for_same_target() -> None:
     store = FakeWatchdogStore()
     duplicated = {

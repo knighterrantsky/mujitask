@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-from typing import Any
+import time
+from dataclasses import replace
+from typing import Any, Mapping
 
 from automation_business_scaffold.control_plane.executor.looping import (
     build_child_runner_config,
@@ -17,18 +21,213 @@ from automation_business_scaffold.control_plane.runtime_config.settings import (
 )
 from automation_business_scaffold.control_plane.supervisor.execution_supervisor import (
     ExecutionSupervisorCallbacks,
+    ExecutionSupervisorError,
     ExecutionSupervisorOutcome,
     run_supervised_handler,
 )
 from automation_business_scaffold.contracts.handler.allowlist import BROWSER_HANDLER_CODES
-from automation_business_scaffold.contracts.handler.contract import HandlerContext
+from automation_business_scaffold.contracts.handler.contract import (
+    HandlerContext,
+    HandlerError,
+)
 from automation_business_scaffold.contracts.handler.domain_mapping import (
     RuntimeFailureProjection,
     RuntimeStorageProjection,
     get_runtime_result_projection,
 )
 from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+from automation_business_scaffold.infrastructure.browser.browser_bridge import (
+    classify_browser_stall,
+    ensure_browser_healthy,
+    probe_browser_health,
+    resolve_automation_browser_target_digest,
+)
 from automation_business_scaffold.models import ArtifactObjectRecord
+from automation_business_scaffold.project_env import PROJECT_ROOT
+
+
+_BROWSER_RUNLOOP_QUARANTINE_PATH = (
+    PROJECT_ROOT / "runtime" / "daemons" / "browser_runloop.quarantine.json"
+)
+
+
+def _browser_runloop_quarantine_payload() -> dict[str, Any] | None:
+    path = _BROWSER_RUNLOOP_QUARANTINE_PATH
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return {
+            "event": "quarantine_marker_unreadable",
+            "execution_id": "",
+            "child_pid": 0,
+            "child_pids": [],
+            "created_at": 0.0,
+            "error_class": type(exc).__name__,
+        }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raw = {}
+    raw_child_pids = raw.get("child_pids")
+    candidates = raw_child_pids if isinstance(raw_child_pids, list) else []
+    candidates = [*candidates, raw.get("child_pid")]
+    child_pids: list[int] = []
+    for candidate in candidates:
+        try:
+            child_pid = int(candidate or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if child_pid > 0 and child_pid not in child_pids:
+            child_pids.append(child_pid)
+    try:
+        created_at = float(raw.get("created_at") or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        created_at = 0.0
+    return {
+        "event": "child_exit_unconfirmed",
+        "execution_id": str(raw.get("execution_id") or ""),
+        "child_pid": child_pids[0] if child_pids else 0,
+        "child_pids": child_pids,
+        "created_at": created_at,
+    }
+
+
+def _write_browser_runloop_quarantine(
+    *,
+    execution_id: str,
+    run_id: str,
+    resource_code: str,
+    child_pid: int | None = None,
+    child_pids: tuple[int, ...] | list[int] | None = None,
+) -> None:
+    path = _BROWSER_RUNLOOP_QUARANTINE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_child_pids: list[int] = []
+    for candidate in [*(child_pids or ()), child_pid]:
+        try:
+            value = int(candidate or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if value > 0 and value not in normalized_child_pids:
+            normalized_child_pids.append(value)
+    payload = {
+        "schema_version": 1,
+        "event": "child_exit_unconfirmed",
+        "execution_id": str(execution_id or ""),
+        "run_id": str(run_id or ""),
+        "resource_digest": hashlib.sha256(str(resource_code or "").encode("utf-8")).hexdigest(),
+        "child_pid": normalized_child_pids[0] if normalized_child_pids else 0,
+        "child_pids": normalized_child_pids,
+        "created_at": time.time(),
+    }
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _hold_browser_runloop_fail_closed(
+    *,
+    store: RuntimeStore,
+    execution_id: str,
+    run_id: str,
+    resource_code: str,
+    child_pid: int | None = None,
+    child_pids: tuple[int, ...] | list[int] | None = None,
+    lease_seconds: float,
+    heartbeat_interval_seconds: float,
+    error_class: str,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "component": "browser_execution_recovery",
+                "event": "browser_runloop_quarantine_write_failed",
+                "execution_id": str(execution_id or ""),
+                "error_class": str(error_class or "RuntimeError"),
+                "reported_at": time.time(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+    while True:
+        try:
+            store.update_task_execution_progress(
+                execution_id=execution_id,
+                run_id=run_id,
+                progress_stage="browser_runloop_quarantine_write_failed",
+                message=(
+                    "Child exit is unconfirmed and the browser runloop is held fail-closed."
+                ),
+            )
+            store.heartbeat_browser_execution(
+                execution_id=execution_id,
+                run_id=run_id,
+                lease_seconds=lease_seconds,
+            )
+        except Exception:
+            pass
+        try:
+            _write_browser_runloop_quarantine(
+                execution_id=execution_id,
+                run_id=run_id,
+                resource_code=resource_code,
+                child_pid=child_pid,
+                child_pids=child_pids,
+            )
+        except Exception:
+            time.sleep(max(float(heartbeat_interval_seconds), 0.2))
+            continue
+        return
+
+
+def _quarantine_unconfirmed_browser_child(
+    *,
+    store: RuntimeStore,
+    execution_id: str,
+    run_id: str,
+    resource_code: str,
+    child_pid: int | None = None,
+    child_pids: tuple[int, ...] | list[int] | None = None,
+    lease_seconds: float,
+    heartbeat_interval_seconds: float,
+) -> None:
+    try:
+        _write_browser_runloop_quarantine(
+            execution_id=execution_id,
+            run_id=run_id,
+            resource_code=resource_code,
+            child_pid=child_pid,
+            child_pids=child_pids,
+        )
+    except Exception as exc:
+        _hold_browser_runloop_fail_closed(
+            store=store,
+            execution_id=execution_id,
+            run_id=run_id,
+            resource_code=resource_code,
+            child_pid=child_pid,
+            child_pids=child_pids,
+            lease_seconds=lease_seconds,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            error_class=type(exc).__name__,
+        )
 
 
 def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +344,28 @@ def execute_api_worker_once(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
+    quarantine = _browser_runloop_quarantine_payload()
+    if quarantine is not None:
+        payload = build_idle_payload(
+            control_action="browser_once",
+            actor="daemon",
+            message=(
+                "Browser runloop is quarantined because a prior child process exit could not "
+                "be confirmed."
+            ),
+        )
+        payload.update(
+            {
+                "daemon_status": "quarantined",
+                "error_type": "internal",
+                "error_code": "child_termination_failed",
+                "retryable": False,
+                "terminal_error": True,
+                "browser_runloop_quarantine": quarantine,
+            }
+        )
+        return payload
+
     settings = build_runtime_settings(params)
     store = create_runtime_store(settings)
     execution = store.claim_next_browser_execution(
@@ -191,6 +412,12 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
         progress_stage="handler_started",
         message=f"Starting browser handler {execution.item_code}.",
     )
+    stall_probe = _build_browser_stall_probe(
+        store=store,
+        context=context,
+        execution_id=execution.execution_id,
+        run_id=run_id,
+    )
 
     outcome = run_supervised_handler(
         context=context,
@@ -217,7 +444,33 @@ def execute_browser_once(params: dict[str, Any]) -> dict[str, Any]:
             handler_code=execution.item_code,
             runtime_timeout_seconds=execution.max_execution_seconds,
         ),
+        on_stall=stall_probe,
     )
+    outcome = _attach_browser_stall_diagnosis(outcome)
+    diagnosis = outcome.worker_result.result.get("browser_diagnosis")
+    diagnosis = diagnosis if isinstance(diagnosis, Mapping) else {}
+    unconfirmed_child_pids = list(_unconfirmed_probe_pids(diagnosis))
+    if (
+        outcome.child_runner is not None
+        and outcome.child_runner.status == "termination_failed"
+    ):
+        business_child_pid = int(outcome.child_runner.child_pid or 0)
+        if business_child_pid > 0 and business_child_pid not in unconfirmed_child_pids:
+            unconfirmed_child_pids.append(business_child_pid)
+    requires_quarantine = (
+        outcome.child_runner is not None
+        and outcome.child_runner.status == "termination_failed"
+    ) or str(getattr(outcome.error, "error_code", "")) == "browser_probe_termination_failed"
+    if requires_quarantine:
+        _quarantine_unconfirmed_browser_child(
+            store=store,
+            execution_id=execution.execution_id,
+            run_id=run_id,
+            resource_code=execution.resource_code,
+            child_pids=unconfirmed_child_pids,
+            lease_seconds=settings.lease_seconds,
+            heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
+        )
     stored_execution, success_count, failed_count = persist_browser_execution_outcome(
         store=store,
         execution_id=execution.execution_id,
@@ -509,6 +762,338 @@ def _update_browser_progress(
         progress_stage=safe_stage,
         message=safe_message,
     )
+
+
+def _build_browser_stall_probe(
+    *,
+    store: RuntimeStore,
+    context: HandlerContext,
+    execution_id: str,
+    run_id: str,
+) -> Any:
+    target_request = _browser_health_target_request(context)
+    evidence: dict[str, Any] = {}
+
+    def still_owned() -> bool:
+        try:
+            current = store.load_task_execution(execution_id=execution_id)
+        except Exception:
+            return False
+        return current.status == "running" and current.run_id == run_id
+
+    def report(stage: str) -> bool:
+        if not still_owned():
+            return False
+        _update_browser_progress(
+            store=store,
+            execution_id=execution_id,
+            run_id=run_id,
+            handler_code=context.handler_code,
+            progress_stage=stage,
+            message="Browser stall diagnosis updated.",
+        )
+        return still_owned()
+
+    def unavailable_probe(reason: str) -> dict[str, Any]:
+        return {
+            "healthy": False,
+            "status": "unavailable",
+            "phase": "target_resolution",
+            "error_class": reason,
+        }
+
+    def on_stall(stage: str, details: Mapping[str, Any]) -> Mapping[str, Any]:
+        last_operation = str(details.get("last_progress_stage") or "")
+        last_operation_state = str(details.get("last_progress_state") or "unknown")
+        if stage == "pre_kill":
+            if not report("browser_probe_before_kill"):
+                probe = unavailable_probe("execution_ownership_lost")
+            elif not target_request:
+                probe = unavailable_probe("browser_target_unavailable")
+            else:
+                probe = probe_browser_health(**target_request)
+            evidence["probe_before_kill"] = probe
+            return {"probe_before_kill": probe}
+
+        child_exit_confirmed = bool(
+            (details.get("termination") or {}).get("confirmed_exited")
+            if isinstance(details.get("termination"), Mapping)
+            else False
+        )
+        if not child_exit_confirmed:
+            return {
+                "browser_diagnosis": classify_browser_stall(
+                    last_operation=last_operation,
+                    last_operation_state=last_operation_state,
+                    probe_before_kill=evidence.get("probe_before_kill"),
+                    probe_after_kill=None,
+                    probe_after_restart=None,
+                    child_exit_confirmed=False,
+                    restart_count=0,
+                )
+            }
+
+        probe_before_kill = evidence.get("probe_before_kill")
+        if (
+            isinstance(probe_before_kill, Mapping)
+            and probe_before_kill.get("probe_exit_confirmed") is False
+        ):
+            diagnosis = classify_browser_stall(
+                last_operation=last_operation,
+                last_operation_state=last_operation_state,
+                probe_before_kill=probe_before_kill,
+                probe_after_kill=None,
+                probe_after_restart=None,
+                child_exit_confirmed=True,
+                restart_count=0,
+            )
+            return {
+                "recovery": {},
+                "browser_diagnosis": _apply_unconfirmed_probe_failure(diagnosis),
+            }
+
+        if not report("browser_probe_after_kill"):
+            probe_after_kill = unavailable_probe("execution_ownership_lost")
+        elif not target_request:
+            probe_after_kill = unavailable_probe("browser_target_unavailable")
+        else:
+            probe_after_kill = probe_browser_health(**target_request)
+        evidence["probe_after_kill"] = probe_after_kill
+
+        recovery: dict[str, Any] = {}
+        if (
+            target_request
+            and isinstance(probe_before_kill, Mapping)
+            and probe_before_kill.get("status") == "unhealthy"
+            and probe_after_kill.get("status") == "unhealthy"
+        ):
+            recovery = ensure_browser_healthy(
+                **target_request,
+                max_restarts=1,
+                initial_probe=probe_after_kill,
+                before_restart=lambda: report("browser_restart"),
+            )
+        probe_after_restart = recovery.get("probe_after_restart")
+        restart_count = int(recovery.get("restart_count") or 0)
+        if isinstance(probe_after_restart, Mapping):
+            report("browser_probe_after_restart")
+
+        diagnosis = classify_browser_stall(
+            last_operation=last_operation,
+            last_operation_state=last_operation_state,
+            probe_before_kill=evidence.get("probe_before_kill"),
+            probe_after_kill=probe_after_kill,
+            probe_after_restart=(
+                probe_after_restart if isinstance(probe_after_restart, Mapping) else None
+            ),
+            child_exit_confirmed=True,
+            restart_count=restart_count,
+            recovery_status=str(recovery.get("status") or "not_attempted"),
+        )
+        return {
+            "probe_after_kill": probe_after_kill,
+            "recovery": recovery,
+            "browser_diagnosis": diagnosis,
+        }
+
+    return on_stall
+
+
+def _browser_health_target_request(context: HandlerContext) -> dict[str, Any]:
+    payload = dict(context.payload)
+    if context.handler_code == "amazon_product_browser_fetch":
+        profile_ref = str(
+            os.environ.get("AMAZON_US_BROWSER_PROFILE_REF")
+            or os.environ.get("DEFAULT_PROFILE_REF")
+            or ""
+        ).strip()
+        if not profile_ref:
+            return {}
+        try:
+            expected_digest = str(context.resource_code or "").removeprefix("browser:amazon:")
+            if (
+                not expected_digest
+                or resolve_automation_browser_target_digest(profile_ref=profile_ref)
+                != expected_digest
+            ):
+                return {}
+        except Exception:
+            return {}
+        return {"profile_ref": profile_ref}
+
+    is_fastmoss = context.handler_code == "fastmoss_security_browser_resolve"
+    prefix = "fastmoss" if is_fastmoss else "tiktok"
+    env_prefix = "FASTMOSS" if is_fastmoss else "TIKTOK"
+    profile_ref = _first_browser_value(
+        payload,
+        (f"{prefix}_browser_profile_ref", "browser_profile_ref", "profile_ref"),
+    ) or str(
+        os.environ.get(f"{env_prefix}_BROWSER_PROFILE_REF")
+        or os.environ.get("BROWSER_PROFILE_REF")
+        or os.environ.get("DEFAULT_PROFILE_REF")
+        or ""
+    ).strip()
+    provider_name = _first_browser_value(
+        payload,
+        (f"{prefix}_browser_provider_name", "browser_provider_name"),
+    ) or str(
+        os.environ.get(f"{env_prefix}_BROWSER_PROVIDER_NAME")
+        or os.environ.get("BROWSER_PROVIDER_NAME")
+        or ""
+    ).strip()
+    profile_id = _first_browser_value(
+        payload,
+        (f"{prefix}_browser_profile_id", "browser_profile_id"),
+    ) or str(
+        os.environ.get(f"{env_prefix}_BROWSER_PROFILE_ID")
+        or os.environ.get("BROWSER_PROFILE_ID")
+        or ""
+    ).strip()
+    if provider_name and profile_id:
+        workspace_value = _first_browser_value(
+            payload,
+            (f"{prefix}_browser_workspace_id", "browser_workspace_id"),
+        ) or str(
+            os.environ.get(f"{env_prefix}_BROWSER_WORKSPACE_ID")
+            or os.environ.get("BROWSER_WORKSPACE_ID")
+            or ""
+        )
+        try:
+            workspace_id = int(workspace_value) if workspace_value else None
+        except (TypeError, ValueError):
+            workspace_id = None
+        return {
+            "workspace_id": workspace_id,
+            "profile_id": profile_id,
+            "provider_name": provider_name,
+        }
+    return {"profile_ref": profile_ref} if profile_ref else {}
+
+
+def _first_browser_value(payload: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _unconfirmed_probe_pids(diagnosis: Mapping[str, Any]) -> tuple[int, ...]:
+    probe_pids: list[int] = []
+    for key in ("probe_before_kill", "probe_after_kill", "probe_after_restart"):
+        probe = diagnosis.get(key)
+        if not isinstance(probe, Mapping) or probe.get("probe_exit_confirmed") is not False:
+            continue
+        try:
+            probe_pid = max(int(probe.get("probe_pid") or 0), 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if probe_pid > 0 and probe_pid not in probe_pids:
+            probe_pids.append(probe_pid)
+    return tuple(probe_pids)
+
+
+def _unconfirmed_probe_pid(diagnosis: Mapping[str, Any]) -> int:
+    probe_pids = _unconfirmed_probe_pids(diagnosis)
+    return probe_pids[0] if probe_pids else 0
+
+
+def _apply_unconfirmed_probe_failure(diagnosis: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(diagnosis)
+    has_unconfirmed_probe = any(
+        isinstance(result.get(key), Mapping)
+        and result[key].get("probe_exit_confirmed") is False
+        for key in ("probe_before_kill", "probe_after_kill", "probe_after_restart")
+    )
+    if has_unconfirmed_probe:
+        result.update(
+            {
+                "failure_scope": "unknown",
+                "diagnosis_code": "browser_probe_exit_unconfirmed",
+                "diagnosis_confidence": "low",
+                "root_cause_confirmed": False,
+                "final_error_code": "browser_probe_termination_failed",
+            }
+        )
+    return result
+
+
+def _attach_browser_stall_diagnosis(
+    outcome: ExecutionSupervisorOutcome,
+) -> ExecutionSupervisorOutcome:
+    child_runner = outcome.child_runner
+    if child_runner is None or child_runner.status not in {"stalled", "termination_failed"}:
+        return outcome
+
+    details = dict(child_runner.details)
+    hooks = details.get("stall_hooks") if isinstance(details.get("stall_hooks"), Mapping) else {}
+    post_hook = hooks.get("post_kill") if isinstance(hooks, Mapping) else {}
+    post_result = post_hook.get("result") if isinstance(post_hook, Mapping) else {}
+    diagnosis = (
+        dict(post_result.get("browser_diagnosis") or {})
+        if isinstance(post_result, Mapping)
+        else {}
+    )
+    if not diagnosis:
+        stall = details.get("stall") if isinstance(details.get("stall"), Mapping) else {}
+        pre_hook = hooks.get("pre_kill") if isinstance(hooks, Mapping) else {}
+        pre_result = pre_hook.get("result") if isinstance(pre_hook, Mapping) else {}
+        diagnosis = classify_browser_stall(
+            last_operation=str(stall.get("last_progress_stage") or ""),
+            last_operation_state=str(stall.get("last_progress_state") or "unknown"),
+            probe_before_kill=(
+                pre_result.get("probe_before_kill")
+                if isinstance(pre_result, Mapping)
+                else None
+            ),
+            probe_after_kill=None,
+            probe_after_restart=None,
+            child_exit_confirmed=False,
+            restart_count=0,
+        )
+
+    diagnosis = _apply_unconfirmed_probe_failure(diagnosis)
+
+    final_error_code = str(diagnosis.get("final_error_code") or "child_process_stalled")
+    if final_error_code == "browser_recovery_failed":
+        message = "Browser recovery failed after the child process stalled."
+    elif final_error_code in {
+        "browser_probe_termination_failed",
+        "child_termination_failed",
+    }:
+        message = (
+            "Browser process exit could not be confirmed; browser recovery was not "
+            "attempted."
+        )
+    else:
+        message = "Browser child process stalled and was terminated by the supervisor."
+    handler_error = HandlerError(
+        error_type=(
+            "internal"
+            if final_error_code
+            in {"browser_probe_termination_failed", "child_termination_failed"}
+            else "timeout"
+        ),
+        error_code=final_error_code,
+        message=message,
+        retryable=False,
+        details={"browser_diagnosis": diagnosis},
+    )
+    worker_result = replace(
+        outcome.worker_result,
+        summary={**dict(outcome.worker_result.summary), "browser_diagnosis": diagnosis},
+        result={**dict(outcome.worker_result.result), "browser_diagnosis": diagnosis},
+        error=handler_error,
+    )
+    supervisor_error = ExecutionSupervisorError(
+        error_type=handler_error.error_type,
+        error_code=handler_error.error_code,
+        message=handler_error.message,
+        retryable=False,
+        terminal=True,
+        details=dict(handler_error.details),
+    )
+    return replace(outcome, worker_result=worker_result, error=supervisor_error)
 
 
 def _replace_projected_artifacts(

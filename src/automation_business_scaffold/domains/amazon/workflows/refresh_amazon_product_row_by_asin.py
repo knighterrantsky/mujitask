@@ -186,8 +186,11 @@ def build_refresh_amazon_product_row_by_asin_definition() -> WorkflowDefinition:
             ),
             TimeoutRule(
                 target_code="amazon_product_browser_fetch",
-                timeout_seconds=300,
-                description="Amazon product page browser collection timeout.",
+                timeout_seconds=540,
+                description=(
+                    "Amazon browser execution total: 300 seconds for collection plus a "
+                    "240-second supervisor diagnosis and recovery reserve."
+                ),
             ),
             TimeoutRule(
                 target_code="feishu_table_write",

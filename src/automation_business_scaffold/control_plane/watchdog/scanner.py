@@ -48,6 +48,7 @@ _coerce_float = coerce_float
 _coerce_int = coerce_int
 _coerce_mapping = coerce_mapping
 _resolve_db_url = resolve_db_url
+_BROWSER_QUARANTINE_HOLD_PROGRESS_STAGE = "browser_runloop_quarantine_write_failed"
 
 
 def execute_watchdog_scan_once(
@@ -74,6 +75,14 @@ def execute_watchdog_scan_once(
         resolved_store,
         now=current_time,
         limit_per_rule=limit_per_rule,
+    )
+    candidates = tuple(
+        candidate
+        for candidate in candidates
+        if not (
+            candidate.target_table == "task_execution"
+            and candidate.progress_stage == _BROWSER_QUARANTINE_HOLD_PROGRESS_STAGE
+        )
     )
     outcomes: list[WatchdogActionOutcome] = []
     counts_by_rule: dict[str, int] = {}

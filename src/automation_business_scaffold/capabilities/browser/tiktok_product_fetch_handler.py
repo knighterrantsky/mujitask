@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping
 
 from automation_business_scaffold.capabilities.fact_sources.tiktok.product_normalization import (
     _build_tiktok_normalized_product_result,
@@ -25,10 +27,95 @@ from automation_business_scaffold.contracts.handler.shared import (
 
 HANDLER_CODE = "tiktok_product_browser_fetch"
 CONTRACT = BROWSER_HANDLER_CONTRACTS[HANDLER_CODE]
+_BROWSER_PROGRESS_DETAIL_KEYS = frozenset(
+    {
+        "capture_kind",
+        "elapsed_ms",
+        "error_class",
+        "operation_id",
+        "poll",
+        "state",
+        "visible_signal_count",
+    }
+)
+
+
+def _browser_progress_reporter(context: HandlerContext) -> Callable[..., None]:
+    callback = context.metadata.get("progress_callback")
+    event_seq = 0
+
+    def report(
+        operation: str,
+        *,
+        message: str = "",
+        percent: float | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        del message
+        nonlocal event_seq
+        event_seq += 1
+        safe_details = {
+            str(key): value
+            for key, value in dict(details or {}).items()
+            if key in _BROWSER_PROGRESS_DETAIL_KEYS
+            and isinstance(value, (str, int, float, bool))
+            and len(str(value)) <= 160
+        }
+        operation_id = str(safe_details.pop("operation_id", "") or event_seq)
+        reported_at = datetime.now(timezone.utc).isoformat()
+        run_id = first_non_empty(context.metadata.get("run_id"), context.payload.get("run_id"))
+        payload = {
+            "attempt_count": int(context.attempt_count),
+            "child_pid": os.getpid(),
+            "event": "browser_operation",
+            "event_seq": event_seq,
+            "execution_id": context.job_id,
+            "handler": HANDLER_CODE,
+            "job_id": context.job_id,
+            "operation": str(operation or "browser_operation"),
+            "operation_id": operation_id,
+            "reported_at": reported_at,
+            "run_id": run_id,
+            "trace_id": context.request_id,
+            **safe_details,
+        }
+        try:
+            print(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                flush=True,
+            )
+        except Exception:
+            pass
+        if callable(callback):
+            try:
+                callback_details = {
+                    key: payload[key]
+                    for key in (
+                        "attempt_count",
+                        "child_pid",
+                        "execution_id",
+                        "job_id",
+                        "operation_id",
+                        "reported_at",
+                        "run_id",
+                    )
+                }
+                callback_details.update(safe_details)
+                callback(
+                    payload["operation"],
+                    message="TikTok browser operation updated.",
+                    percent=percent,
+                    details=callback_details,
+                )
+            except Exception:
+                pass
+
+    return report
 
 
 def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
+    progress_callback = _browser_progress_reporter(context)
     identity = normalize_product_identity(payload)
     if coerce_bool(payload.get("force_failure")):
         error = build_error(
@@ -55,7 +142,11 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         browser_result = _resolve_inline_browser_payload(payload)
         if not browser_result:
             try:
-                browser_result = _fetch_browser_product_payload(payload, identity=identity)
+                browser_result = _fetch_browser_product_payload(
+                    payload,
+                    identity=identity,
+                    progress_callback=progress_callback,
+                )
             except TikTokProductUnavailableError as exc:
                 normalized = _unavailable_product_result(identity=identity, message=str(exc))
                 return success_result(
@@ -141,8 +232,12 @@ def tiktok_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
         "product_id": product_id,
         "artifact_count": len(artifact_refs),
         "media_asset_count": len(coerce_mapping_list(normalized.get("media_assets"))),
-        "slider_captcha_attempted": bool(coerce_mapping(normalized.get("slider_captcha_resolution")).get("attempted")),
-        "slider_captcha_resolved": bool(coerce_mapping(normalized.get("slider_captcha_resolution")).get("resolved")),
+        "slider_captcha_attempted": bool(
+            coerce_mapping(normalized.get("slider_captcha_resolution")).get("attempted")
+        ),
+        "slider_captcha_resolved": bool(
+            coerce_mapping(normalized.get("slider_captcha_resolution")).get("resolved")
+        ),
     }
     result = {
         "normalized_product_result": normalized,
@@ -168,7 +263,12 @@ def _resolve_inline_browser_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[str, Any]) -> dict[str, Any]:
+def _fetch_browser_product_payload(
+    payload: dict[str, Any],
+    *,
+    identity: dict[str, Any],
+    progress_callback: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
     product_url = first_non_empty(
         payload.get("product_url"),
         payload.get("source_url"),
@@ -180,7 +280,9 @@ def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[st
         raise ValueError("TikTok browser fallback requires product_url.")
 
     timeout_ms = _coerce_int(
-        first_non_empty(payload.get("browser_timeout_ms"), payload.get("tiktok_browser_timeout_ms")),
+        first_non_empty(
+            payload.get("browser_timeout_ms"), payload.get("tiktok_browser_timeout_ms")
+        ),
         default=30_000,
     )
     provider_name = first_non_empty(
@@ -236,6 +338,7 @@ def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[st
             or coerce_mapping(payload.get("slider_captcha_selectors"))
         ),
         trace_id=first_non_empty(payload.get("trace_id"), payload.get("request_id")),
+        progress_callback=progress_callback,
     )
     product_payload = product.to_dict()
     return {
@@ -246,14 +349,19 @@ def _fetch_browser_product_payload(payload: dict[str, Any], *, identity: dict[st
         "gallery_images": product_payload.get("gallery_images") or [],
         "sku_images": product_payload.get("sku_images") or [],
         "slider_captcha_resolution": product_payload.get("slider_captcha_resolution") or {},
-        "slider_captcha_audit_artifact_refs": product_payload.get("slider_captcha_audit_artifact_refs") or [],
+        "slider_captcha_audit_artifact_refs": product_payload.get(
+            "slider_captcha_audit_artifact_refs"
+        )
+        or [],
     }
 
 
 def _unavailable_product_result(*, identity: dict[str, Any], message: str) -> dict[str, Any]:
     raw_payload = {
         "product_id": first_non_empty(identity.get("product_id")),
-        "product_url": first_non_empty(identity.get("normalized_product_url"), identity.get("product_url")),
+        "product_url": first_non_empty(
+            identity.get("normalized_product_url"), identity.get("product_url")
+        ),
         "availability_status": "unavailable",
         "unavailable_message": message,
     }

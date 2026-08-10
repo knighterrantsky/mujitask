@@ -2274,3 +2274,130 @@ features:
       - Old payloads may contain remote_uri for compatibility, but persistence owners ignore and remove it.
       - No new storage or media helper module is introduced.
       - Do not claim complete until claim_done.py --run-gates returns no failed_checks.
+
+  - feature_code: browser_execution_health_recovery
+    status: complete
+    feature_type: architecture_implementation
+    feature_area: runtime_control_plane
+    requires_architecture_delta_gate: true
+    default_context:
+      - contracts/runtime/browser-execution-recovery.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - docs/arch/runtime-control-plane-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/looping.py
+      - src/automation_business_scaffold/control_plane/supervisor/child_runner.py
+      - src/automation_business_scaffold/control_plane/supervisor/execution_supervisor.py
+      - src/automation_business_scaffold/control_plane/watchdog/scanner.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok_product_fetch_handler.py
+      - src/automation_business_scaffold/capabilities/browser/tiktok/product_page.py
+      - src/automation_business_scaffold/capabilities/browser/amazon_product_fetch_handler.py
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_current_amazon_product_table.py
+      - tests/test_child_runner.py
+      - tests/test_execution_supervisor.py
+      - tests/test_execution_supervisor_runtime.py
+      - tests/test_tiktok_product_browser_fetch_handler.py
+      - tests/test_amazon_product_browser_fetch_handler.py
+      - tests/test_refresh_amazon_product_row_by_asin.py
+      - tests/test_refresh_current_amazon_product_table.py
+    source_contracts:
+      - contracts/runtime/browser-execution-recovery.yaml
+      - contracts/facts/product-fact-collection.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - docs/arch/runtime-control-plane-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+    allowed_paths:
+      - contracts/README.md
+      - contracts/runtime/browser-execution-recovery.yaml
+      - contracts/harness/architecture-ownership.yaml
+      - contracts/harness/code-roadmap.yaml
+      - docs/arch/runtime-control-plane-contract.md
+      - docs/arch/runtime-db-schema-design.md
+      - docs/arch/handler-contract-design.md
+      - docs/dev/project-configuration.md
+      - config/browser_profiles.example.json
+      - scripts/execution_control/executor.local.env.example
+      - scripts/execution_control/stop_chrome_gcp.sh
+      - src/automation_business_scaffold/config.py
+      - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
+      - src/automation_business_scaffold/control_plane/executor/worker_dispatch.py
+      - src/automation_business_scaffold/control_plane/executor/looping.py
+      - src/automation_business_scaffold/control_plane/executor/runner.py
+      - src/automation_business_scaffold/control_plane/runtime_config/settings.py
+      - src/automation_business_scaffold/control_plane/supervisor/child_runner.py
+      - src/automation_business_scaffold/control_plane/supervisor/execution_supervisor.py
+      - src/automation_business_scaffold/control_plane/watchdog/scanner.py
+      - src/automation_business_scaffold/capabilities/browser/**
+      - src/automation_business_scaffold/domains/amazon/projections/runtime_result_projection.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_amazon_product_row_by_asin.py
+      - src/automation_business_scaffold/domains/amazon/workflows/refresh_current_amazon_product_table.py
+      - tests/test_config.py
+      - tests/test_runtime_control_plane_contract.py
+      - tests/test_browser_health_recovery.py
+      - tests/test_child_runner.py
+      - tests/test_execution_supervisor.py
+      - tests/test_execution_supervisor_runtime.py
+      - tests/test_watchdog_scanner.py
+      - tests/test_browser_fallback_boundary.py
+      - tests/test_tiktok_product_browser_fetch_handler.py
+      - tests/test_amazon_product_browser_fetch_handler.py
+      - tests/test_refresh_amazon_product_row_by_asin.py
+      - tests/test_refresh_current_amazon_product_table.py
+      - tests/test_harness_code_roadmap.py
+      - tests/test_architecture_delta_gate.py
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - .venv/**
+      - automation_framework/**
+      - alembic/**
+      - alembic_fact/**
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+      - src/automation_business_scaffold/domains/**/flows/**
+      - src/automation_business_scaffold/infrastructure/runtime/schemas/**
+      - src/automation_business_scaffold/infrastructure/schemas/**
+    done_gate:
+      tests:
+        - tests/test_runtime_control_plane_contract.py
+        - tests/test_browser_health_recovery.py
+        - tests/test_child_runner.py
+        - tests/test_execution_supervisor.py
+        - tests/test_execution_supervisor_runtime.py
+        - tests/test_watchdog_scanner.py
+        - tests/test_browser_fallback_boundary.py
+        - tests/test_tiktok_product_browser_fetch_handler.py
+        - tests/test_amazon_product_browser_fetch_handler.py
+        - tests/test_refresh_amazon_product_row_by_asin.py
+        - tests/test_refresh_current_amazon_product_table.py
+        - tests/test_config.py
+        - tests/test_harness_code_roadmap.py
+        - tests/test_architecture_delta_gate.py
+      commands:
+        - uv run --extra dev pytest -q tests/test_runtime_control_plane_contract.py tests/test_browser_health_recovery.py tests/test_child_runner.py tests/test_execution_supervisor.py tests/test_execution_supervisor_runtime.py tests/test_watchdog_scanner.py
+        - uv run --extra dev pytest -q tests/test_browser_fallback_boundary.py tests/test_tiktok_product_browser_fetch_handler.py tests/test_amazon_product_browser_fetch_handler.py tests/test_refresh_amazon_product_row_by_asin.py tests/test_refresh_current_amazon_product_table.py
+        - env BUSINESS_EXECUTION_CONTROL_DB_HEALTH_MAX_IDLE_IN_TRANSACTION= uv run --extra dev pytest -q tests/test_config.py tests/test_harness_code_roadmap.py tests/test_architecture_delta_gate.py
+    completion_rules:
+      - The bounded functional probe uses connect, new page, about:blank, simple evaluate, probe-page close, and session detach/disconnect rather than /json/version alone; it never calls session.close on the shared CDP browser.
+      - Every allowlisted blocking operation in amazon_product_browser_fetch and tiktok_product_browser_fetch emits started before invocation and completed, failed, or suppressed_error afterward; wait-loop samples are throttled and no sensitive page or transport content is persisted.
+      - Stall diagnosis preserves probe-before-kill, confirmed child exit, probe-after-kill without restart, and probe-after-restart evidence in that order; restart requires both before/after probes to be unhealthy.
+      - The execution control path owns at most one exact-profile restart for one stall diagnosis; regular handlers never call profile stop/start, and a failed restart or post-restart probe produces browser_recovery_failed.
+      - Probe-process start time consumes the probe deadline, and a post-restart probe returned after the shared 120-second recovery deadline cannot report recovery success.
+      - Security Check, captcha, 403, 429, 503, unavailable products, parse, artifact, Fact DB, and Feishu failures never trigger a browser restart while the functional probe is healthy.
+      - Amazon pre-page failures preserve their governed browser error and claimed resource-lane identity instead of being overwritten by artifact_validation_failed.
+      - Diagnosis persists failure_scope, diagnosis_code, confidence, evidence, and root_cause_confirmed=false; browser_instance means shared Chrome/CDP, not GCP VM.
+      - Browser Runtime budgets reserve 240 seconds beyond the handler wall timeout; Amazon keeps a 300-second handler budget inside a 540-second total execution budget, and handler wall timeout enters the same probe chain.
+      - VM-local code never emits gcp_instance_unreachable without independent external heartbeat, GCP instance status, or instance-external network evidence; absent that evidence it stops at host_runtime_suspected.
+      - If any probe or business child exit cannot be confirmed, one local quarantine marker preserves every unconfirmed PID before terminal persistence; a transient marker-write failure persists browser_runloop_quarantine_write_failed, makes every Watchdog rule skip that execution, and retries the marker until it succeeds.
+      - If both the local marker and Runtime hold stage cannot be persisted, the current process keeps retrying but safety across a forced parent restart is outside the guaranteed fault boundary and must not be claimed.
+      - Post-claim preflight for every browser task, automatic fresh-page operation retry, browser-runloop cooldown, a profile state table, and a physical lane are outside this feature completion claim.
+      - FastMoss keeps generic child-stall and functional-probe evidence, but operation-level page-versus-session diagnosis for fastmoss_security_browser_resolve is outside this feature completion claim.
+      - No new helper, service, manager, coordinator, collector, orchestrator, browser daemon, Runtime table, or schema migration is introduced.
+      - Do not claim complete until claim_done.py browser_execution_health_recovery --run-gates returns no failed_checks.
