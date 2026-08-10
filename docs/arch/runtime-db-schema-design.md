@@ -643,6 +643,39 @@ Watchdog 每轮扫描:
 | 通用 job 表 | `error_type`, `error_code`, `error_path` |
 | `task_request` | `last_progress_at`, `progress_stage`, `cancel_requested_at` |
 
+### 9.1 Browser stall 诊断的 Runtime 持久化边界
+
+Browser operation 日志和健康恢复遵守
+[`contracts/runtime/browser-execution-recovery.yaml`](../../contracts/runtime/browser-execution-recovery.yaml)。
+本阶段不为 browser probe、restart 或 diagnosis 新增 Runtime 表、事件表或 schema migration。
+
+`task_execution.progress_stage/last_progress_at` 只承担两件事：向用户展示最新安全 operation，以及阻止 Watchdog 在 supervisor 正在诊断、kill 或 recovery 时误判无进度。Runtime DB 不保存每一条 browser operation 事件；有界的原始事件序列留在本地 stdout。worker 在终态写入已有 `summary_json/result_json` 时，必须保留紧凑的诊断 envelope：
+
+```text
+last_operation
+last_operation_state
+probe_before_kill
+probe_after_kill
+probe_after_restart
+child_exit_confirmed
+restart_count
+failure_scope
+diagnosis_code
+diagnosis_confidence
+root_cause_confirmed
+external_host_evidence
+```
+
+`last_operation` 取仍处于 active 状态的最外层阻塞操作，而不是简单取最后一条嵌套 progress；同一 `operation_id` 收到 `completed/failed/suppressed_error` 后必须从 active 集合移除。这样持续 response callback 不会把原页面 loading 误写成另一个 session 故障。
+
+这些字段只保存稳定枚举、boolean、次数和耗时，不保存 URL、HTML、DOM、cookie、header、原始异常正文或 traceback。domain Runtime result projection 可以进一步裁剪，但不能把 `browser_recovery_failed` 或完整诊断范围覆盖成 artifact validation 错误。
+
+浏览器在创建页面以前失败时，handler result 可以没有页面产生的 `browser_target_digest`；资源身份仍以被 claim 的 `resource_code` 为准。Amazon Runtime projection 必须从 claimed resource lane 校验或派生 digest，不能因为 pre-page failure 没有 artifact/digest 而把原始 browser transport failure 改写成 `artifact_validation_failed`。
+
+`failure_scope` 是证据域，不是最终根因。`browser_instance` 只表示共享 Chrome/CDP 实例在功能探针中不可用；重启后恢复也不能证明根因来自 Chrome、profile 或 GCP host。没有独立 VM heartbeat、GCP instance status API 或实例外网络探针时，本地 Runtime 最多写 `host_runtime_suspected`，禁止写 `gcp_instance_unreachable`。
+
+Browser execution 的 `max_execution_seconds` 继续使用现有字段，不做 schema migration，但新任务必须把 handler 和恢复预算分开计算。Amazon 新执行写入 540 秒总预算；新 worker 只给 handler 300 秒，并把后 240 秒留给 stall probe、一次恢复和终态持久化。旧的 300 秒在途 execution 不回写、不迁移，仍保留原 wall timeout，后半段才发生的 stall 只能 best effort 诊断。旧 worker 读取新 540 秒 execution 时会把它当作更长的单一 handler timeout；回滚后新任务恢复旧 timeout，已经入库的 timeout snapshot 不被追改。
+
 ## 10. 演进建议
 
 第一阶段:

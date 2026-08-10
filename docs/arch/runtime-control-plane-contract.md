@@ -102,6 +102,69 @@ Runtime 控制面只调度和收敛，不解释 TikTok、FastMoss、飞书字段
 - 对可恢复记录回到 `pending` 并设置 `available_at/next_retry_at`；对不可恢复记录写入 `status=finished,result_status=failed` 或 `status=cancelled`。
 - 不做正常 workflow 推进，不生成业务 summary，不补写 TikTok / FastMoss / Feishu 字段。
 
+### 3.2 Browser execution 健康、stall 与诊断契约
+
+Browser execution 的机器事实来源是
+[`contracts/runtime/browser-execution-recovery.yaml`](../../contracts/runtime/browser-execution-recovery.yaml)。
+当前生产约束是同一部署只运行一个 browser runloop，不并发手工执行 `browser_once`；在这个前提下，
+本阶段不新增物理 lane、profile 状态表或独立 browser recovery daemon。
+
+浏览器错误只是诊断触发器，不能直接作为 browser 是否健康的判据。共享 browser profile 的健康结论必须来自有硬超时的功能探针，顺序固定为：
+
+```text
+connect CDP
+  -> create a new page
+  -> navigate about:blank
+  -> evaluate document.readyState
+  -> close the probe page
+  -> detach/disconnect the probe session
+```
+
+共享 CDP 探针禁止调用 `session.close()`，因为该动作可能关闭共享 browser instance。探针必须只关闭自己创建的 page，再使用 provider/session 的 `detach` 或 `disconnect` 语义结束 Playwright 连接；如果当前 provider 没有安全 detach 能力，本次探针记为 `inconclusive/cleanup_failure`，不能通过关闭共享 browser 来制造“清理成功”，也不能仅凭 cleanup failure 触发 restart。
+
+`/json/version` 只说明 HTTP 端点有响应，不属于完整健康判定。Security Check、captcha、`403`、`429`、`503`、商品不存在、selector/parse 失败、artifact/Fact DB/飞书失败也不属于 browser 健康异常；页面仍可执行 DOM、截图或简单 JS 时，不得因此重启 Chrome。
+
+判定前探针必须覆盖 profile 的 `auto_start=false` 与 `session_recovery.enabled=false`，否则探针可能先自行拉起或重启 Chrome，再把被污染的现场误报为 healthy。只有 exact-profile stop 已获 execution supervisor 授权后，restart 后探针才允许使用该 profile 的 `auto_start` 启动新实例；普通 handler session 同样关闭 provider 内建 restart，避免两层 restart budget 相乘。
+
+本阶段覆盖的 `amazon_product_browser_fetch` 和 `tiktok_product_browser_fetch` 中，每个纳入 allowlist 的阻塞 browser operation 必须在调用前先发出 `started`，返回后发出 `completed`，异常时发出 `failed`；在同一 operation 边界明确吞掉异常时发出 `suppressed_error`。日志和 Runtime progress 不得包含 URL、HTML、DOM snapshot、cookie、header、原始异常正文或 traceback。普通 progress 只保存最新安全阶段，完整而有界的 operation 事件留在本地 stdout；终态 `summary_json/result_json` 保存紧凑诊断证据，不新增 Runtime 表或字段。`fastmoss_security_browser_resolve` 仍可得到通用 child stall 和功能探针证据，但本阶段不承诺其 operation 级 page/session 细分，不能把 active operation 缺失误报为确定的单页结论。
+
+ChildRunner 使用 monotonic clock 判断 inactivity，并跟踪尚未收到同一 `operation_id` 终态事件的外层 active operation；短暂的嵌套 response callback 完成后不能覆盖仍卡住的 `page_ready_wait`，也不能用被动 `network_response_capture` 事件持续刷新外层操作的 inactivity deadline。检测到 stall 后必须先刷新 Runtime progress，并严格按下面顺序处理：
+
+```text
+probe_before_kill
+  -> terminate/kill child
+  -> confirm child exit
+  -> probe_after_kill without browser restart
+  -> restart the exact profile only when both before/after probes are unhealthy
+  -> probe_after_restart
+  -> persist diagnosis
+```
+
+`probe_before_kill` 不能挪到 child 退出后，因为退出 child 本身可能释放 session 或 CDP contention，从而污染故障现场。probe 的总预算从调用入口开始计时，OS process start 的耗时也会消耗该预算；process start 本身不可被本进程硬中断，因此 start 失败或返回时预算已经耗尽只能记为 `inconclusive`，不得归因 Chrome 或触发重启。process 成功启动后只能使用剩余预算，并运行在可硬终止的 deadline 内。deadline 先用 SIGTERM 让 probe 执行 page close/session detach 的 `finally`；connect 阶段还没有 probe-owned page/session 时，成功退出记为 `cleanup_status=not_required`。只有清理完成或确实无须清理时才可保留 `unhealthy` 判定，必须 SIGKILL 时记为 `inconclusive`。任一 probe process 或业务 child 未确认退出时，必须停止后续 probe/restart 链；browser restart 只有在 kill 前和 kill 后两个探针都明确为 `unhealthy` 时才允许执行。诊断、kill 和 recovery 每个转换都要更新 progress，使 supervisor 的 stall 处理早于 300 秒无进度 Watchdog。默认 inactivity 上限是 150 秒。Runtime 总预算必须由 handler wall-clock budget 加 240 秒诊断恢复保留组成；Amazon 因此使用 300 秒 handler budget 和 540 秒 execution 总预算。即使 handler 持续上报 progress 直到 300 秒 wall timeout，也会进入同一 stall probe 链，仍保留完整恢复窗口，而不是直接退化成无诊断的通用 child timeout。
+
+如果 TERM/KILL 后仍无法确认业务 child 或功能探针 child 退出，父进程必须先以 exclusive create、0600 权限写入并 fsync `runtime/daemons/browser_runloop.quarantine.json`，再持久化 `child_termination_failed` 或 `browser_probe_termination_failed`。marker 的 `child_pids` 保存本次所有未确认退出的 probe/business PID，`child_pid` 仅作为首个 PID 的兼容别名。常驻 runloop 和手工 `browser_once` 的 claim 边界都必须在 marker 存在时停止 claim；空文件、损坏 JSON 或无法读取的 marker 也必须 fail closed。因此 launchd `KeepAlive` 重启父进程也不会与可能存活的孤儿 child 并发操作共享 Chrome。
+
+若 marker 首次写入失败，当前 runloop 必须先把 `progress_stage=browser_runloop_quarantine_write_failed` 持久化到该 `task_execution`，再按 heartbeat 周期持续重试同一个 marker。Watchdog 对带有该 progress stage 的 execution 必须跳过全部规则，不能 automatic terminal，也不能 TERM/KILL 当前 worker；marker 重试成功后才允许继续终态持久化。这个闭环依赖“本地 marker”或“Runtime hold stage”至少一个能够持久化：如果两者同时持续失败，当前进程仍会保持重试，但在父进程被外部强制终止并由 launchd 重启后无法保证继续隔离，契约不得把这一双重持久化失败描述为绝对安全。marker 不自动清除；只有操作人确认 child 已退出，或确认 host 已重启后，才可删除。
+
+Stall diagnosis 的 recovery budget 只有一个 owner：browser execution control path。一次 stall 最多执行一次 exact-profile restart，探针最多出现在 kill 前、kill 后和 restart 后三个时间点；普通 handler 不拥有 stop/restart 权限。获得恢复授权后，ownership check、stop command 与 post-restart probe 共享同一个 120 秒 monotonic deadline，stop 阶段不能再给后续探针发放完整的新预算；post-restart probe 即使返回健康，只要返回时已经越过该 deadline，也必须记为 `browser_recovery_failed`。probe process 的 OS `start` 不可被本进程硬中断，但其耗时从总预算中扣除；start 失败或超时返回只能得到 `inconclusive`，这一本地进程创建边界不被伪称为可硬终止。restart 或 post-restart probe 失败时，`browser_recovery_failed` 是当前诊断的 terminal failure。
+
+本阶段完成门禁只覆盖“原子 operation 证据 + stall 检测 + 三时点探针 + 最多一次 restart + 紧凑诊断”。所有 browser task 的 post-claim preflight、功能探针健康后的自动新 page 重试，以及 browser-runloop cooldown 仍是后续独立能力，不能由本阶段 completion claim 暗示已经实现。
+
+诊断结论描述的是证据支持的 failure scope，不等于厂商级最终根因：
+
+| 证据 | 允许的 failure scope | 不允许的结论 |
+| --- | --- | --- |
+| 原操作卡住，kill 前新页功能探针健康 | `page_or_site` 或 `target_or_session` | Chrome/GCP 故障 |
+| artifact upload/verify 或纯解析卡住，kill 前功能探针健康 | `non_browser_handler` | page、Chrome 或 GCP 故障 |
+| kill 前探针失败，child 退出后探针恢复 | `target_or_session` | 已证明 Chrome 进程或 VM 故障 |
+| kill 前后均失败，重启 exact profile 后恢复 | `browser_instance` | 已证明 Chrome bug、profile 损坏或 GCP VM 根因 |
+| 重启后仍失败，缺少实例外证据 | `host_runtime_suspected` | `gcp_instance_unreachable` |
+| 独立主机 heartbeat、GCP instance status API 或实例外网络探针确认不可达 | `gcp_instance_unreachable` | 仅凭 VM 内本地日志得出该结论 |
+
+这里的 `browser_instance` 指同一个 `profile_ref` 背后的共享 Chrome/CDP 实例，不等于 GCP VM。运行在 VM 内的 worker 无法在 VM 停止或完全不可达时写出最终日志；因此本地实现只能落到 `host_runtime_suspected`。`gcp_instance_unreachable` 必须携带实例外证据，本次轻量实现不新增该外部监控组件，也不得伪造该结论。
+
+Browser bridge 只负责 profile-scoped probe 和 exact-profile lifecycle transport，不能决定 Runtime retry、business status 或 GCP VM 归因。Execution Supervisor/worker 负责 stall、证据时序和单次 restart budget。TikTok/Amazon handler 只报告原子 operation，不得分别调用 stop 脚本。
+
 ## 4. 配置契约
 
 Project Configuration 的优先级为:

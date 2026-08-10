@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import time
+import multiprocessing
 import sys
+import time
+from typing import Any, Mapping
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -165,6 +167,13 @@ def _child_hanging_dispatch(context: HandlerContext) -> HandlerResult:
     return HandlerResult.success(context, summary={"transport": "request"})
 
 
+def _portable_child_start_method() -> str:
+    methods = multiprocessing.get_all_start_methods()
+    if sys.platform != "darwin" and "fork" in methods:
+        return "fork"
+    return "spawn"
+
+
 def test_execution_supervisor_can_run_handler_in_child_process() -> None:
     if sys.platform == "darwin":
         pytest.skip("macOS forbids fork child runner.")
@@ -214,3 +223,41 @@ def test_execution_supervisor_returns_timeout_outcome_from_child_runner() -> Non
     assert outcome.error.error_type == "timeout"
     assert outcome.error.error_code == "child_process_timeout"
     assert outcome.failure_disposition == "retryable"
+
+
+def test_execution_supervisor_passes_stall_hook_and_keeps_heartbeat_running() -> None:
+    stall_stages: list[str] = []
+    heartbeats: list[float] = []
+
+    def on_stall(stage: str, details: Mapping[str, Any]) -> Mapping[str, Any]:
+        stall_stages.append(stage)
+        assert details["child_pid"]
+        time.sleep(0.015)
+        return {"probe_status": "healthy", "stage": stage}
+
+    outcome = run_supervised_handler(
+        context=_build_context(),
+        dispatch=_child_hanging_dispatch,
+        heartbeat_interval_seconds=0.005,
+        callbacks=ExecutionSupervisorCallbacks(
+            heartbeat=lambda: heartbeats.append(time.time()),
+        ),
+        child_runner_config=ChildRunnerConfig(
+            mode="child_process",
+            timeout_seconds=2.0,
+            idle_timeout_seconds=0.05,
+            start_method=_portable_child_start_method(),
+            poll_interval_seconds=0.005,
+            terminate_grace_seconds=0.2,
+        ),
+        on_stall=on_stall,
+    )
+
+    assert outcome.worker_result.status == "failed"
+    assert outcome.supervisor_status == "child_process_error"
+    assert outcome.child_runner is not None
+    assert outcome.child_runner.status == "stalled"
+    assert outcome.error is not None
+    assert outcome.error.error_code == "child_process_stalled"
+    assert stall_stages == ["pre_kill", "post_kill"]
+    assert len(heartbeats) >= 2

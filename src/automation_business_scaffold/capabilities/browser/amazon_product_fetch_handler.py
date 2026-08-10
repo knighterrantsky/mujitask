@@ -41,7 +41,11 @@ from automation_business_scaffold.infrastructure.artifacts.artifact_store import
     join_object_key,
     normalize_artifact_store_provider,
 )
-from automation_business_scaffold.infrastructure.browser.browser_bridge import open_automation_page
+from automation_business_scaffold.infrastructure.browser.browser_bridge import (
+    BrowserOperationHandle,
+    browser_operation as _browser_operation,
+    open_automation_page,
+)
 
 
 HANDLER_CODE = "amazon_product_browser_fetch"
@@ -147,6 +151,9 @@ _RAW_CAPTURE_SIZE_LIMITS = {
 }
 _BROWSER_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _BROWSER_STAGE_NAMES = ("navigation", "parse", "artifact")
+_BROWSER_PROGRESS_DETAIL_KEYS = frozenset(
+    {"capture_kind", "elapsed_ms", "error_class", "operation_id", "state"}
+)
 
 
 class _ArtifactSizeLimitError(ValueError):
@@ -159,8 +166,85 @@ class _ArtifactWriteError(RuntimeError):
         self.artifact_refs = list(artifact_refs)
 
 
+BrowserProgressCallback = Callable[..., Any]
+
+
+def _browser_progress_reporter(context: HandlerContext) -> BrowserProgressCallback:
+    callback = context.metadata.get("progress_callback")
+    event_seq = 0
+
+    def report(
+        operation: str,
+        *,
+        message: str = "",
+        percent: float | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        del message
+        nonlocal event_seq
+        event_seq += 1
+        safe_details = {
+            str(key): value
+            for key, value in dict(details or {}).items()
+            if key in _BROWSER_PROGRESS_DETAIL_KEYS
+            and isinstance(value, (str, int, float, bool))
+            and len(str(value)) <= 160
+        }
+        operation_id = str(safe_details.pop("operation_id", "") or event_seq)
+        reported_at = datetime.now(timezone.utc).isoformat()
+        run_id = _clean_text(context.metadata.get("run_id") or context.payload.get("run_id"))
+        payload = {
+            "attempt_count": int(context.attempt_count),
+            "child_pid": os.getpid(),
+            "event": "browser_operation",
+            "event_seq": event_seq,
+            "execution_id": context.job_id,
+            "handler": HANDLER_CODE,
+            "job_id": context.job_id,
+            "operation": str(operation or "browser_operation"),
+            "operation_id": operation_id,
+            "reported_at": reported_at,
+            "run_id": run_id,
+            "trace_id": context.request_id,
+            **safe_details,
+        }
+        try:
+            print(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                flush=True,
+            )
+        except Exception:
+            pass
+        if callable(callback):
+            try:
+                callback_details = {
+                    key: payload[key]
+                    for key in (
+                        "attempt_count",
+                        "child_pid",
+                        "execution_id",
+                        "job_id",
+                        "operation_id",
+                        "reported_at",
+                        "run_id",
+                    )
+                }
+                callback_details.update(safe_details)
+                callback(
+                    payload["operation"],
+                    message="Amazon browser operation updated.",
+                    percent=percent,
+                    details=callback_details,
+                )
+            except Exception:
+                pass
+
+    return report
+
+
 def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResult:
     payload = dict(context.payload)
+    progress_callback = _browser_progress_reporter(context)
     try:
         requested_asin = normalize_asin(payload.get("requested_asin"))
     except InvalidASINError as exc:
@@ -216,6 +300,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             profile_ref=profile_ref,
             observed_at=observed_at,
             timeout_ms=_browser_timeout_ms(),
+            progress_callback=progress_callback,
         )
     except Exception as exc:  # pragma: no cover - provider boundary
         return _failure(
@@ -257,6 +342,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
                     run_id=run_id,
                     observed_at=observed_at,
                     screenshot_bytes=screenshot_bytes,
+                    progress_callback=progress_callback,
                 )
             except _ArtifactSizeLimitError as exc:
                 stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
@@ -342,6 +428,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             run_id=run_id,
             observed_at=observed_at,
             capture_bytes=capture_bytes,
+            progress_callback=progress_callback,
         )
     except _ArtifactSizeLimitError as exc:
         stage_durations_ms["artifact"] = _elapsed_ms(artifact_started_at)
@@ -364,9 +451,7 @@ def amazon_product_browser_fetch_handler(context: HandlerContext) -> HandlerResu
             retryable=True,
             collection_status="failed",
             browser_target_digest=browser_target_digest,
-            artifact_refs=(
-                exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []
-            ),
+            artifact_refs=(exc.artifact_refs if isinstance(exc, _ArtifactWriteError) else []),
             browser_provider_name=browser_provider_name,
             stage_durations_ms=stage_durations_ms,
         )
@@ -501,8 +586,12 @@ def _collect_browser_page(
     profile_ref: str,
     observed_at: datetime,
     timeout_ms: int,
+    progress_callback: BrowserProgressCallback | None = None,
 ) -> dict[str, Any]:
-    with open_automation_page(profile_ref=profile_ref) as browser_session:
+    page_options: dict[str, Any] = {"profile_ref": profile_ref}
+    if callable(progress_callback):
+        page_options["progress_callback"] = progress_callback
+    with open_automation_page(**page_options) as browser_session:
         automation_page = browser_session.page
         page = getattr(browser_session, "raw_page", None) or automation_page
         network_observations: list[dict[str, Any]] = []
@@ -510,6 +599,7 @@ def _collect_browser_page(
             page,
             canonical_url=canonical_url,
             observations=network_observations,
+            progress_callback=progress_callback,
         )
         target_digest = hashlib.sha256(browser_session.target_key.encode("utf-8")).hexdigest()
         browser_provider_name = _browser_provider_name(
@@ -520,63 +610,100 @@ def _collect_browser_page(
             try:
                 navigation_started_at = perf_counter()
                 try:
-                    navigation_response = _navigate(
-                        automation_page,
-                        canonical_url,
-                        timeout_ms=timeout_ms,
-                    )
+                    with _browser_operation(progress_callback, "page_navigation"):
+                        navigation_response = _navigate(
+                            automation_page,
+                            canonical_url,
+                            timeout_ms=timeout_ms,
+                            progress_callback=progress_callback,
+                        )
                     navigation_error = _navigation_response_error(navigation_response)
                     if navigation_error:
+                        with _browser_operation(
+                            progress_callback,
+                            "failure_evidence_capture",
+                        ) as operation_handle:
+                            failure_html = _page_content(
+                                page,
+                                progress_callback=progress_callback,
+                                operation="failure_evidence_capture",
+                                operation_handle=operation_handle,
+                            )
+                            failure_resolved_url = (
+                                _clean_text(getattr(page, "url", "")) or canonical_url
+                            )
+                            failure_screenshot = _page_screenshot(
+                                page,
+                                progress_callback=progress_callback,
+                                operation_handle=operation_handle,
+                            )
                         return {
                             "capture": None,
-                            "html": _page_content(page),
-                            "resolved_url": (
-                                _clean_text(getattr(page, "url", "")) or canonical_url
-                            ),
+                            "html": failure_html,
+                            "resolved_url": failure_resolved_url,
                             "browser_target_digest": target_digest,
                             "browser_provider_name": browser_provider_name,
                             "stage_durations_ms": stage_durations_ms,
-                            "screenshot_bytes": _page_screenshot(page),
+                            "screenshot_bytes": failure_screenshot,
                             "error": navigation_error,
                         }
-                    _wait_for_amazon_page(
-                        page,
-                        timeout_ms=timeout_ms,
-                        automation_page=automation_page,
-                    )
-                    _settle_network_responses(page)
+                    with _browser_operation(
+                        progress_callback, "page_ready_wait"
+                    ) as operation_handle:
+                        _wait_for_amazon_page(
+                            page,
+                            timeout_ms=timeout_ms,
+                            automation_page=automation_page,
+                            progress_callback=progress_callback,
+                            operation_handle=operation_handle,
+                        )
+                        _settle_network_responses(
+                            page,
+                            progress_callback=progress_callback,
+                            operation_handle=operation_handle,
+                        )
                 finally:
                     stage_durations_ms["navigation"] = _elapsed_ms(navigation_started_at)
                 parse_started_at = perf_counter()
                 try:
-                    html = _page_content(page)
-                    if not html.strip():
-                        raise RuntimeError("Amazon browser page content is empty or unreadable.")
-                    resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
-                    try:
-                        resolved_asin = extract_asin_from_url(resolved_url)
-                    except AmazonProductExtractionError:
-                        network_data = {}
-                    else:
-                        try:
-                            network_data = extract_amazon_network_product_data(
-                                network_observations,
-                                expected_asin=resolved_asin,
+                    with _browser_operation(
+                        progress_callback, "page_content_read"
+                    ) as operation_handle:
+                        html = _page_content(
+                            page,
+                            progress_callback=progress_callback,
+                            operation_handle=operation_handle,
+                        )
+                        if not html.strip():
+                            raise RuntimeError(
+                                "Amazon browser page content is empty or unreadable."
                             )
-                        except (
-                            AmazonProductExtractionError,
-                            TypeError,
-                            ValueError,
-                            OverflowError,
-                        ):
+                    with _browser_operation(progress_callback, "product_parse"):
+                        resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
+                        try:
+                            resolved_asin = extract_asin_from_url(resolved_url)
+                        except AmazonProductExtractionError:
                             network_data = {}
-                    capture = extract_amazon_product_capture(
-                        html,
-                        requested_asin=requested_asin,
-                        resolved_url=resolved_url,
-                        observed_at=observed_at,
-                        network_product_data=network_data,
-                    )
+                        else:
+                            try:
+                                network_data = extract_amazon_network_product_data(
+                                    network_observations,
+                                    expected_asin=resolved_asin,
+                                )
+                            except (
+                                AmazonProductExtractionError,
+                                TypeError,
+                                ValueError,
+                                OverflowError,
+                            ):
+                                network_data = {}
+                        capture = extract_amazon_product_capture(
+                            html,
+                            requested_asin=requested_asin,
+                            resolved_url=resolved_url,
+                            observed_at=observed_at,
+                            network_product_data=network_data,
+                        )
                 finally:
                     stage_durations_ms["parse"] = _elapsed_ms(parse_started_at)
                 return {
@@ -590,14 +717,30 @@ def _collect_browser_page(
                     "screenshot_bytes": b"",
                 }
             except AmazonProductExtractionError as exc:
+                with _browser_operation(
+                    progress_callback,
+                    "failure_evidence_capture",
+                ) as operation_handle:
+                    failure_html = _page_content(
+                        page,
+                        progress_callback=progress_callback,
+                        operation="failure_evidence_capture",
+                        operation_handle=operation_handle,
+                    )
+                    failure_resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
+                    failure_screenshot = _page_screenshot(
+                        page,
+                        progress_callback=progress_callback,
+                        operation_handle=operation_handle,
+                    )
                 return {
                     "capture": None,
-                    "html": _page_content(page),
-                    "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
+                    "html": failure_html,
+                    "resolved_url": failure_resolved_url,
                     "browser_target_digest": target_digest,
                     "browser_provider_name": browser_provider_name,
                     "stage_durations_ms": stage_durations_ms,
-                    "screenshot_bytes": _page_screenshot(page),
+                    "screenshot_bytes": failure_screenshot,
                     "error": exc,
                 }
             except Exception as exc:  # browser/provider error boundary
@@ -606,14 +749,30 @@ def _collect_browser_page(
                     if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower()
                     else "transient_page_failure"
                 )
+                with _browser_operation(
+                    progress_callback,
+                    "failure_evidence_capture",
+                ) as operation_handle:
+                    failure_html = _page_content(
+                        page,
+                        progress_callback=progress_callback,
+                        operation="failure_evidence_capture",
+                        operation_handle=operation_handle,
+                    )
+                    failure_resolved_url = _clean_text(getattr(page, "url", "")) or canonical_url
+                    failure_screenshot = _page_screenshot(
+                        page,
+                        progress_callback=progress_callback,
+                        operation_handle=operation_handle,
+                    )
                 return {
                     "capture": None,
-                    "html": _page_content(page),
-                    "resolved_url": _clean_text(getattr(page, "url", "")) or canonical_url,
+                    "html": failure_html,
+                    "resolved_url": failure_resolved_url,
                     "browser_target_digest": target_digest,
                     "browser_provider_name": browser_provider_name,
                     "stage_durations_ms": stage_durations_ms,
-                    "screenshot_bytes": _page_screenshot(page),
+                    "screenshot_bytes": failure_screenshot,
                     "error": {
                         "error_code": error_code,
                         "message": str(exc),
@@ -630,6 +789,7 @@ def _observe_same_origin_product_responses(
     *,
     canonical_url: str,
     observations: list[dict[str, Any]],
+    progress_callback: BrowserProgressCallback | None = None,
 ) -> Callable[[], None]:
     on = getattr(page, "on", None)
     if not callable(on):
@@ -767,7 +927,13 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Non-finite JSON number is not allowed: {value}")
 
 
-def _navigate(page: Any, url: str, *, timeout_ms: int) -> Any:
+def _navigate(
+    page: Any,
+    url: str,
+    *,
+    timeout_ms: int,
+    progress_callback: BrowserProgressCallback | None = None,
+) -> Any:
     navigate = getattr(page, "navigate", None)
     if callable(navigate):
         try:
@@ -814,14 +980,20 @@ def _navigation_response_error(response: Any) -> dict[str, Any]:
     return {}
 
 
-def _settle_network_responses(page: Any) -> None:
+def _settle_network_responses(
+    page: Any,
+    *,
+    progress_callback: BrowserProgressCallback | None = None,
+    operation_handle: BrowserOperationHandle | None = None,
+) -> None:
     wait_for_timeout = getattr(page, "wait_for_timeout", None)
     if not callable(wait_for_timeout):
         return
     try:
         wait_for_timeout(_NETWORK_SETTLE_MS)
-    except Exception:
-        pass
+    except Exception as exc:
+        if operation_handle is not None:
+            operation_handle.suppress(exc)
 
 
 def _wait_for_amazon_page(
@@ -829,6 +1001,8 @@ def _wait_for_amazon_page(
     *,
     timeout_ms: int,
     automation_page: Any | None = None,
+    progress_callback: BrowserProgressCallback | None = None,
+    operation_handle: BrowserOperationHandle | None = None,
 ) -> None:
     wait_for_load_state = getattr(page, "wait_for_load_state", None)
     if callable(wait_for_load_state):
@@ -843,8 +1017,9 @@ def _wait_for_amazon_page(
                 _AMAZON_READY_SELECTOR,
                 timeout=min(timeout_ms, 10_000),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            if operation_handle is not None:
+                operation_handle.suppress(exc)
     humanized_scroll_by = getattr(automation_page, "scroll_by", None)
     if callable(humanized_scroll_by):
         previous_checkpoint = 0
@@ -852,7 +1027,9 @@ def _wait_for_amazon_page(
             try:
                 humanized_scroll_by(checkpoint - previous_checkpoint)
                 previous_checkpoint = checkpoint
-            except Exception:
+            except Exception as exc:
+                if operation_handle is not None:
+                    operation_handle.suppress(exc)
                 continue
     else:
         evaluate = getattr(page, "evaluate", None)
@@ -864,13 +1041,16 @@ def _wait_for_amazon_page(
                         "window.scrollTo(0, Math.min(document.documentElement.scrollHeight, "
                         f"{checkpoint}))"
                     )
-                except Exception:
+                except Exception as exc:
+                    if operation_handle is not None:
+                        operation_handle.suppress(exc)
                     continue
                 if callable(wait_for_timeout):
                     try:
                         wait_for_timeout(_SCROLL_SETTLE_MS)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        if operation_handle is not None:
+                            operation_handle.suppress(exc)
     locator = getattr(page, "locator", None)
     if callable(locator):
         try:
@@ -879,21 +1059,35 @@ def _wait_for_amazon_page(
             click = getattr(toggle, "click", None)
             if callable(is_visible) and callable(click) and is_visible():
                 click(timeout=min(timeout_ms, 2_000))
-        except Exception:
-            pass
+        except Exception as exc:
+            if operation_handle is not None:
+                operation_handle.suppress(exc)
 
 
-def _page_content(page: Any) -> str:
+def _page_content(
+    page: Any,
+    *,
+    progress_callback: BrowserProgressCallback | None = None,
+    operation: str = "page_content_read",
+    operation_handle: BrowserOperationHandle | None = None,
+) -> str:
     content = getattr(page, "content", None)
     if not callable(content):
         return ""
     try:
         return str(content())
-    except Exception:
+    except Exception as exc:
+        if operation_handle is not None:
+            operation_handle.suppress(exc)
         return ""
 
 
-def _page_screenshot(page: Any) -> bytes:
+def _page_screenshot(
+    page: Any,
+    *,
+    progress_callback: BrowserProgressCallback | None = None,
+    operation_handle: BrowserOperationHandle | None = None,
+) -> bytes:
     screenshot = getattr(page, "screenshot", None)
     if not callable(screenshot):
         return b""
@@ -913,7 +1107,9 @@ def _page_screenshot(page: Any) -> bytes:
             """
         )
         return _bytes_value(screenshot(full_page=True))
-    except Exception:
+    except Exception as exc:
+        if operation_handle is not None:
+            operation_handle.suppress(exc)
         return b""
 
 
@@ -925,6 +1121,7 @@ def _write_success_artifacts(
     run_id: str,
     observed_at: datetime,
     capture_bytes: bytes,
+    progress_callback: BrowserProgressCallback | None = None,
 ) -> dict[str, Any]:
     base_key = _raw_capture_base_key(
         artifact_policy,
@@ -945,6 +1142,7 @@ def _write_success_artifacts(
             sanitization_status="normalized",
             run_id=run_id,
             observed_at=observed_at,
+            progress_callback=progress_callback,
         )
         refs.append(normalized_ref)
     except _ArtifactSizeLimitError:
@@ -962,6 +1160,7 @@ def _write_failure_artifacts(
     run_id: str,
     observed_at: datetime,
     screenshot_bytes: bytes,
+    progress_callback: BrowserProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     base_key = _raw_capture_base_key(
         artifact_policy,
@@ -983,6 +1182,7 @@ def _write_failure_artifacts(
                 sanitization_status="not_applicable",
                 run_id=run_id,
                 observed_at=observed_at,
+                progress_callback=progress_callback,
             )
         )
     except _ArtifactSizeLimitError:
@@ -1015,6 +1215,7 @@ def _upload_bytes(
     run_id: str,
     observed_at: datetime,
     content_encoding: str = "",
+    progress_callback: BrowserProgressCallback | None = None,
 ) -> dict[str, Any]:
     _require_raw_capture_size(capture_kind=capture_kind, payload=payload)
     store = artifact_policy["store"]
@@ -1027,27 +1228,37 @@ def _upload_bytes(
     with tempfile.TemporaryDirectory(prefix="mujitask-amazon-") as temp_dir:
         local_path = Path(temp_dir) / file_name
         local_path.write_bytes(payload)
-        stored = store.upload_file(
-            bucket=bucket,
-            object_key=object_key,
-            local_path=local_path,
-            content_type=content_type,
-            metadata={
-                "request_id": context.request_id,
-                "execution_id": context.job_id,
-                "capture_kind": capture_kind,
-                "source_platform": "amazon",
-                "marketplace_code": "US",
-                "run_id": run_id,
-            },
-        )
+        with _browser_operation(
+            progress_callback,
+            "artifact_upload",
+            capture_kind=capture_kind,
+        ):
+            stored = store.upload_file(
+                bucket=bucket,
+                object_key=object_key,
+                local_path=local_path,
+                content_type=content_type,
+                metadata={
+                    "request_id": context.request_id,
+                    "execution_id": context.job_id,
+                    "capture_kind": capture_kind,
+                    "source_platform": "amazon",
+                    "marketplace_code": "US",
+                    "run_id": run_id,
+                },
+            )
     if stored.bucket != bucket or stored.object_key != object_key:
         raise ValueError("Artifact store returned coordinates outside the requested Amazon key.")
-    stored_bytes = store.read_bytes(
-        bucket=stored.bucket,
-        object_key=stored.object_key,
-        max_bytes=len(payload) + 1,
-    )
+    with _browser_operation(
+        progress_callback,
+        "artifact_verify",
+        capture_kind=capture_kind,
+    ):
+        stored_bytes = store.read_bytes(
+            bucket=stored.bucket,
+            object_key=stored.object_key,
+            max_bytes=len(payload) + 1,
+        )
     if stored_bytes != payload:
         raise ValueError("Amazon business object failed remote byte verification.")
     ref = {
@@ -1177,11 +1388,7 @@ def _has_sensitive_html_identity(attrs: list[tuple[str, str | None]]) -> bool:
 def _safe_html_attributes(
     attrs: list[tuple[str, str | None]],
 ) -> list[tuple[str, str | None]]:
-    return [
-        (name.lower(), value)
-        for name, value in attrs
-        if name.lower() in _SAFE_HTML_ATTRIBUTES
-    ]
+    return [(name.lower(), value) for name, value in attrs if name.lower() in _SAFE_HTML_ATTRIBUTES]
 
 
 def _sanitize_html_structure(html: str) -> str:

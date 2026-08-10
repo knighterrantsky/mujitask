@@ -3,7 +3,14 @@
     "provider": "chrome_cdp",
     "profile_id": "local-chrome",
     "metadata": {
-      "debug_http": "http://127.0.0.1:9222"
+      "debug_http": "http://127.0.0.1:9222",
+      "session_recovery": {
+        "enabled": false,
+        "stop_command": [
+          "/absolute/path/to/scripts/execution_control/stop_chrome_gcp.sh"
+        ],
+        "stop_timeout_seconds": 15
+      }
     }
   }
 }

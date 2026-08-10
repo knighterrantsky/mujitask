@@ -88,6 +88,10 @@ def test_amazon_batch_task_and_workflow_contract_are_registered() -> None:
     assert definition.stages[1].execution_mode == "executor_action"
     assert definition.stages[2].job_bindings[0].job_code == ROW_JOB_CODE
     assert definition.stages[3].job_bindings[0].job_code == "amazon_product_browser_fetch"
+    timeout_by_target = {
+        rule.target_code: rule.timeout_seconds for rule in definition.timeout_policy
+    }
+    assert timeout_by_target["amazon_product_browser_fetch"] == 540
     assert AMAZON_PRODUCT_BATCH_TASK_CODE == TASK_CODE
     assert TASK_CODE in FORMAL_TASK_CODES
     assert get_workflow_definition(TASK_CODE) is definition

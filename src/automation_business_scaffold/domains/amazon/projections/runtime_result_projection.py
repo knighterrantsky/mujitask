@@ -51,20 +51,47 @@ _AMAZON_SUPERVISOR_STATUSES = frozenset(
         "handler_completed",
         "handler_failed",
         "exception",
+        "stalled",
+        "termination_failed",
     }
 )
 _AMAZON_EXECUTION_MODES = frozenset({"inline", "child_process"})
 _AMAZON_FAILURE_DISPOSITIONS = frozenset({"none", "retryable", "terminal"})
 _AMAZON_PROGRESS_STAGES = {
-    "amazon_product_browser_fetch": frozenset({"navigation", "parse", "artifact"}),
+    "amazon_product_browser_fetch": frozenset(
+        {
+            "artifact",
+            "artifact_upload",
+            "artifact_verify",
+            "browser_page_create",
+            "browser_provider_build",
+            "browser_session_close",
+            "browser_session_open",
+            "browser_target_resolve",
+            "browser_probe_after_kill",
+            "browser_probe_after_restart",
+            "browser_probe_before_kill",
+            "browser_restart",
+            "child_stall_detected",
+            "failure_evidence_capture",
+            "navigation",
+            "page_content_read",
+            "page_navigation",
+            "page_ready_wait",
+            "parse",
+            "product_parse",
+        }
+    ),
     "amazon_product_row_persist": frozenset({"media", "fact", "projection", "feishu"}),
 }
 _AMAZON_BROWSER_ERROR_TYPES = frozenset(
     {
         "amazon_browser_failure",
         "browser_failure",
+        "internal",
         "runtime_artifact_validation_failure",
         "runtime_artifact_index_failure",
+        "timeout",
     }
 )
 _AMAZON_BROWSER_ERROR_CODES = frozenset(
@@ -77,7 +104,11 @@ _AMAZON_BROWSER_ERROR_CODES = frozenset(
         "artifact_validation_failed",
         "artifact_write_failed",
         "browser_profile_unavailable",
+        "browser_probe_termination_failed",
+        "browser_recovery_failed",
         "captcha_required",
+        "child_process_stalled",
+        "child_termination_failed",
         "identity_mismatch",
         "invalid_amazon_capture",
         "invalid_asin",
@@ -724,11 +755,7 @@ def _validate_amazon_browser_success_result(
         valid_status = collection_status in {"success", "unavailable"}
     if not valid_status:
         raise ValueError("Amazon handler and collection statuses do not converge.")
-    if (
-        not normalized_ref
-        or raw_refs != [normalized_ref]
-        or artifact_refs != raw_refs
-    ):
+    if not normalized_ref or raw_refs != [normalized_ref] or artifact_refs != raw_refs:
         raise ValueError("Amazon browser success result lacks governed capture evidence.")
 
 
@@ -783,6 +810,7 @@ def _browser_storage_summary(
         "collection_status",
         "browser_target_digest",
         "browser_provider_name",
+        "browser_diagnosis",
         "field_coverage",
         "stage_durations_ms",
     ):
@@ -874,6 +902,18 @@ def _project_amazon_browser_result(
     safe: dict[str, Any] = {}
     expected_asin = _amazon_asin(outcome.context.payload.get("requested_asin"))
     if not expected_asin:
+        handler_error = outcome.worker_result.error
+        expected_target_digest = _amazon_browser_target_digest(outcome.context.resource_code)
+        if (
+            outcome.worker_result.status == "failed"
+            and handler_error is not None
+            and handler_error.error_code == "invalid_asin"
+            and expected_target_digest
+        ):
+            return {
+                "collection_status": "failed",
+                "browser_target_digest": expected_target_digest,
+            }
         raise ValueError("Amazon browser request identity is invalid.")
     requested_asin = _amazon_asin(raw_result.get("requested_asin"))
     resolved_asin = _amazon_asin(raw_result.get("resolved_asin"))
@@ -885,10 +925,7 @@ def _project_amazon_browser_result(
         not resolved_asin
         or (
             resolved_asin != expected_asin
-            and not (
-                parent_asin == expected_asin
-                and collection_status == "partial_success"
-            )
+            and not (parent_asin == expected_asin and collection_status == "partial_success")
         )
     ):
         raise ValueError("Amazon browser resolved ASIN is unrelated to the request.")
@@ -923,9 +960,21 @@ def _project_amazon_browser_result(
         safe["collection_status"] = "partial_success"
     target_digest = raw_result.get("browser_target_digest")
     expected_target_digest = _amazon_browser_target_digest(outcome.context.resource_code)
-    if not expected_target_digest or target_digest != expected_target_digest:
+    if not expected_target_digest:
         raise ValueError("Amazon browser target digest does not match its resource lane.")
+    if target_digest not in (None, "") and target_digest != expected_target_digest:
+        raise ValueError("Amazon browser target digest does not match its resource lane.")
+    if target_digest in (None, "") and (
+        outcome.worker_result.status != "failed"
+        or collection_status == "blocked"
+        or raw_result.get("raw_capture_refs")
+        or raw_result.get("artifact_refs")
+    ):
+        raise ValueError("Amazon browser target digest is missing from a page result.")
     safe["browser_target_digest"] = expected_target_digest
+    browser_diagnosis = _amazon_browser_diagnosis(raw_result.get("browser_diagnosis"))
+    if browser_diagnosis:
+        safe["browser_diagnosis"] = browser_diagnosis
     provider_name = _amazon_provider_code(raw_result.get("browser_provider_name"))
     if provider_name:
         safe["browser_provider_name"] = provider_name
@@ -1082,6 +1131,128 @@ def _amazon_browser_target_digest(resource_code: Any) -> str:
         return ""
     digest = resource_code.removeprefix("browser:amazon:")
     return digest if _AMAZON_DIGEST.fullmatch(digest) else ""
+
+
+def _amazon_browser_diagnosis(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, Mapping) else {}
+    scopes = {
+        "page_or_site",
+        "target_or_session",
+        "browser_instance",
+        "non_browser_handler",
+        "host_runtime_suspected",
+        "gcp_instance_unreachable",
+        "unknown",
+    }
+    codes = {
+        "browser_and_local_host_runtime_unresolved",
+        "browser_probe_inconclusive",
+        "browser_probe_exit_unconfirmed",
+        "browser_probe_unavailable",
+        "child_exit_unconfirmed",
+        "child_session_or_transient_cdp_contention",
+        "current_page_or_site_stall",
+        "current_target_or_collection_operation_stall",
+        "gcp_vm_unreachable",
+        "no_active_operation_at_stall",
+        "non_browser_operation_stall",
+        "shared_chrome_cdp_recovered_after_restart",
+        "shared_chrome_cdp_unhealthy_recovery_unavailable",
+    }
+    failure_scope = raw.get("failure_scope")
+    diagnosis_code = raw.get("diagnosis_code")
+    confidence = raw.get("diagnosis_confidence")
+    if (
+        failure_scope not in scopes
+        or diagnosis_code not in codes
+        or confidence not in {"high", "medium", "low"}
+        or raw.get("root_cause_confirmed") is not False
+    ):
+        return {}
+
+    external = raw.get("external_host_evidence")
+    safe_external: dict[str, str] | str = "absent"
+    if isinstance(external, Mapping):
+        source = external.get("source")
+        status = external.get("status")
+        if source in {
+            "gcp_instance_status_api",
+            "independent_host_heartbeat",
+            "independent_network_probe",
+        } and status in {
+            "gcp_instance_stopped",
+            "gcp_instance_terminated",
+            "vm_unreachable_from_independent_observer",
+        }:
+            safe_external = {"source": source, "status": status}
+    if failure_scope == "gcp_instance_unreachable" and safe_external == "absent":
+        return {}
+
+    last_operation = raw.get("last_operation")
+    last_operation_state = raw.get("last_operation_state")
+    if not isinstance(last_operation, str) or not re.fullmatch(r"[a-z0-9_]{0,80}", last_operation):
+        last_operation = ""
+    if last_operation_state not in {
+        "started",
+        "completed",
+        "failed",
+        "sample",
+        "suppressed_error",
+        "unknown",
+    }:
+        last_operation_state = "unknown"
+    result: dict[str, Any] = {
+        "last_operation": last_operation,
+        "last_operation_state": last_operation_state,
+        "probe_before_kill": _amazon_browser_probe(raw.get("probe_before_kill")),
+        "probe_after_kill": _amazon_browser_probe(raw.get("probe_after_kill")),
+        "probe_after_restart": _amazon_browser_probe(raw.get("probe_after_restart")),
+        "child_exit_confirmed": raw.get("child_exit_confirmed") is True,
+        "restart_count": 1 if raw.get("restart_count") == 1 else 0,
+        "failure_scope": failure_scope,
+        "diagnosis_code": diagnosis_code,
+        "diagnosis_confidence": confidence,
+        "root_cause_confirmed": False,
+        "external_host_evidence": safe_external,
+    }
+    if raw.get("final_error_code") in {
+        "browser_recovery_failed",
+        "browser_probe_termination_failed",
+        "child_process_stalled",
+        "child_termination_failed",
+    }:
+        result["final_error_code"] = raw["final_error_code"]
+    return result
+
+
+def _amazon_browser_probe(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, Mapping) else {}
+    status = raw.get("status")
+    if status not in {"healthy", "unhealthy", "inconclusive", "unavailable"}:
+        return {}
+    result: dict[str, Any] = {
+        "status": status,
+        "healthy": raw.get("healthy") is True,
+        "timed_out": raw.get("timed_out") is True,
+    }
+    for key in ("failed_phase", "cleanup_status", "error_class", "failure_reason"):
+        item = raw.get(key)
+        if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_]{0,80}", item):
+            result[key] = item
+    duration = raw.get("duration_ms")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+        normalized = float(duration)
+        if math.isfinite(normalized) and normalized >= 0:
+            result["duration_ms"] = round(normalized, 3)
+    target_digest = raw.get("target_digest")
+    if isinstance(target_digest, str) and _AMAZON_DIGEST.fullmatch(target_digest):
+        result["target_digest"] = target_digest
+    if "probe_exit_confirmed" in raw:
+        result["probe_exit_confirmed"] = raw.get("probe_exit_confirmed") is True
+    probe_pid = raw.get("probe_pid")
+    if type(probe_pid) is int and probe_pid > 0:
+        result["probe_pid"] = probe_pid
+    return result
 
 
 def _amazon_contract_revision(value: Any) -> str:
@@ -1533,13 +1704,9 @@ class AmazonRuntimeResultProjection:
         projected = self.project_storage(outcome)
         if outcome.context.handler_code == "amazon_product_row_persist":
             error_type, error_code = _api_runtime_error_codes(outcome)
-            supervisor_terminal = bool(
-                outcome.error is not None and outcome.error.terminal
-            )
+            supervisor_terminal = bool(outcome.error is not None and outcome.error.terminal)
             handler_error = outcome.worker_result.error
-            handler_terminal = bool(
-                handler_error is not None and not handler_error.retryable
-            )
+            handler_terminal = bool(handler_error is not None and not handler_error.retryable)
             terminal = supervisor_terminal or handler_terminal
             return RuntimeFailureProjection(
                 summary=projected.summary,
@@ -1550,7 +1717,9 @@ class AmazonRuntimeResultProjection:
                 dead_letter_reason=(
                     "supervisor_failed"
                     if supervisor_terminal
-                    else "terminal_handler_failure" if handler_terminal else ""
+                    else "terminal_handler_failure"
+                    if handler_terminal
+                    else ""
                 ),
                 force_terminal=terminal,
                 terminal=terminal,

@@ -139,6 +139,10 @@ def test_amazon_single_product_workflow_has_exact_four_stage_contract() -> None:
     assert definition.require_job("feishu_table_write").runtime_table == "api_worker_job"
     assert definition.require_job("amazon_product_browser_fetch").runtime_table == "task_execution"
     assert definition.require_job("amazon_product_browser_fetch").worker_type == "browser_worker"
+    timeout_by_target = {
+        rule.target_code: rule.timeout_seconds for rule in definition.timeout_policy
+    }
+    assert timeout_by_target["amazon_product_browser_fetch"] == 540
     assert definition.require_job("amazon_product_row_persist").runtime_table == "api_worker_job"
     assert definition.require_job("task_completed_notification").runtime_table == (
         "notification_outbox"
