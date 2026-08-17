@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Validate generated skill files
-        run: uv run --extra dev python tools/render_skill.py --check
+        run: uv run --no-project --with PyYAML python tools/render_skill.py --check
 
       - name: Validate skill contract
-        run: uv run --extra dev python tools/validate_skill.py
+        run: uv run --no-project --with PyYAML python tools/validate_skill.py
