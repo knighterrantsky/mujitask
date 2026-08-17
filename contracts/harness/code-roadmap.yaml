@@ -138,8 +138,8 @@ features:
         - tests/test_amazon_openclaw_skill.py
         - tests/test_project_structure_contract.py
       commands:
-        - uv run --extra dev python tools/render_skill.py --check
-        - uv run --extra dev python tools/validate_skill.py
+        - uv run --no-project --with PyYAML python tools/render_skill.py --check
+        - uv run --no-project --with PyYAML python tools/validate_skill.py
         - uv run --extra dev pytest tests/test_skill_contract.py tests/test_business_agent_isolation_contract.py tests/test_amazon_openclaw_skill.py tests/test_project_structure_contract.py
     completion_rules:
       - Every SKILL.md under skills/ must have a sibling skill.spec.yaml.

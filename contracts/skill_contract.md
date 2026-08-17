@@ -109,8 +109,8 @@ refresh_current_amazon_product_table
 本地和 CI 使用同一组命令：
 
 ```bash
-uv run --extra dev python tools/render_skill.py --check
-uv run --extra dev python tools/validate_skill.py
+uv run --no-project --with PyYAML python tools/render_skill.py --check
+uv run --no-project --with PyYAML python tools/validate_skill.py
 uv run --extra dev pytest tests/test_skill_contract.py
 uv run --extra dev pytest tests/test_business_agent_isolation_contract.py
 ```
