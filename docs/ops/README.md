@@ -1,6 +1,6 @@
 # Ops 文档索引
 
-更新时间: 2026-04-24
+更新时间: 2026-08-17
 
 本目录用于承载部署、运维、验收、回退和 runbook 文档。它不承载客户需求，也不承载系统架构设计。
 
@@ -22,6 +22,7 @@
 | [deployment.md](./deployment.md) | 当前部署说明 |
 | [runtime-db-connection-stability.md](./runtime-db-connection-stability.md) | 用户电脑长期运行时的 Postgres 连接稳定性 runbook |
 | [release-flow.md](./release-flow.md) | 提交代码并发布的 MR / PR、tag 和 release 执行规则 |
+| [tk-influencer-outreach-contract-cutover.md](./tk-influencer-outreach-contract-cutover.md) | 达人建联 `2026-08-17` 契约 hard-cut、drain 与回退 runbook |
 | [runtime-acceptance-and-rollback.md](./runtime-acceptance-and-rollback.md) | 早期受控执行验收与回退 |
 | [archive/runtime-controlled-execution-pilot.md](./archive/runtime-controlled-execution-pilot.md) | 早期受控执行 Pilot/runbook |
 

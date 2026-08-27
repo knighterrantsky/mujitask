@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
         raise TypeError(f"Lightweight submitter for {args.task_name} must return a dict payload.")
     result_file.parent.mkdir(parents=True, exist_ok=True)
     result_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    status = str(payload.get("status") or "").strip().lower()
+    request_status = str(payload.get("request_status") or "").strip().lower()
+    request_id = str(payload.get("request_id") or "").strip()
+    if status in {"failed", "error"} or request_status == "rejected" or not request_id:
+        return 1
     return 0
 
 

@@ -306,6 +306,14 @@ bash scripts/deploy/macos/preflight.sh
 bash scripts/deploy/macos/deploy.sh
 ```
 
+如果私有 framework 下载临时不可用，但当前 `.venv` 已安装依赖，可在确认本次不需要更新 framework 后使用一次性复用模式：
+
+```bash
+MUJITASK_REUSE_INSTALLED_FRAMEWORK=1 bash scripts/deploy/macos/deploy.sh
+```
+
+该模式不会只比较版本号；部署脚本必须同时确认已安装包的仓库 URL、requested revision 与 `uv.lock` 锁定 commit 一致，否则拒绝部署。
+
 关键文件：
 
 - `scripts/deploy/macos/preflight.sh`：检查 macOS、Homebrew、launchd、端口、Node.js/npm、必填配置、Chrome 提示。

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+import yaml
 
 from automation_business_scaffold.contracts.handler.api import BOUND_API_HANDLERS
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.contracts.handler.shared import success_result
-from automation_business_scaffold.control_plane.executor.runner import _sanitize_task_payload
+from automation_business_scaffold.control_plane.executor.runner import (
+    _sanitize_task_payload,
+    submit_task_request,
+)
 from automation_business_scaffold.control_plane.executor.workflow_registry import (
     load_workflow_runtime,
 )
@@ -83,19 +90,28 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
             {
                 "record_id": "rec1",
                 "fields": {
+                    "采集标签": "T",
                     "SKUID": " 123 ",
                     "达人ID": " creator ",
                     "检查时间": "2026/05/20",
                     "播放量(W)": 0.1234,
                     "视频数量": 2,
                     "更新时间": "2026-05-21T09:00:00",
+                    "不应透传": "ignored",
                 },
             },
-            {"record_id": "rec2", "fields": {"SKUID": "", "达人ID": "creator2"}},
-            {"record_id": "rec3", "fields": {"SKUID": "123", "达人ID": ""}},
+            {
+                "record_id": "rec2",
+                "fields": {"采集标签": "T", "SKUID": "", "达人ID": "creator2"},
+            },
+            {
+                "record_id": "rec3",
+                "fields": {"采集标签": "T", "SKUID": "123", "达人ID": ""},
+            },
             {
                 "record_id": "rec4",
                 "fields": {
+                    "采集标签": "T",
                     "SKUID": "123",
                     "达人ID": "creator4",
                     "视频链接": {"link": "https://example.test/v"},
@@ -123,6 +139,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
             "last_checked_at": "2026-05-20",
             "last_updated_at": "2026-05-21",
             "source_fields": {
+                "采集标签": "T",
                 "SKUID": " 123 ",
                 "达人ID": " creator ",
                 "检查时间": "2026/05/20",
@@ -139,6 +156,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                 "source_record_id": "rec1",
                 "source_table_ref": "tbl",
                 "source_fields": {
+                    "采集标签": "T",
                     "SKUID": " 123 ",
                     "达人ID": " creator ",
                     "检查时间": "2026/05/20",
@@ -160,6 +178,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
             "last_checked_at": "2026-05-19",
             "last_updated_at": "2026-05-22",
             "source_fields": {
+                "采集标签": "T",
                 "SKUID": "123",
                 "达人ID": "creator4",
                 "视频链接": {"link": "https://example.test/v"},
@@ -178,6 +197,7 @@ def test_outreach_source_adapter_reads_existing_fields_and_skip_summary() -> Non
                 "source_record_id": "rec4",
                 "source_table_ref": "tbl",
                 "source_fields": {
+                    "采集标签": "T",
                     "SKUID": "123",
                     "达人ID": "creator4",
                     "视频链接": {"link": "https://example.test/v"},
@@ -202,6 +222,7 @@ def test_outreach_source_adapter_reads_feishu_date_timestamps() -> None:
             {
                 "record_id": "rec-date",
                 "fields": {
+                    "采集标签": "T",
                     "SKUID": "1732266893752242590",
                     "达人ID": "creator",
                     "检查时间": 1780070400000,
@@ -233,6 +254,7 @@ def test_outreach_source_adapter_preserves_missing_play_count_as_empty() -> None
             {
                 "record_id": "rec-empty-play",
                 "fields": {
+                    "采集标签": "T",
                     "SKUID": "1732266893752242590",
                     "达人ID": "shaycroft",
                     "视频链接": {
@@ -255,19 +277,30 @@ def test_outreach_source_adapter_preserves_missing_play_count_as_empty() -> None
     assert groups[0]["rows"][0]["existing_play_count"] is None
 
 
-def test_outreach_query_window_honors_request_payload_priority() -> None:
+def test_outreach_source_adapter_rejects_rows_outside_fixed_t_filter() -> None:
+    with pytest.raises(ValueError, match="outreach_filter_contract_violation"):
+        outreach_source_adapter(
+            [
+                {
+                    "record_id": "rec-filter-leak",
+                    "fields": {
+                        "采集标签": "F",
+                        "SKUID": "123",
+                        "达人ID": "creator",
+                    },
+                }
+            ],
+            {"source_table_ref": "feishu://mujitask/tk_influencer_outreach"},
+        )
+
+
+def test_outreach_query_window_ignores_legacy_request_payload_overrides() -> None:
     rows = [{"existing_video_url": "", "last_checked_at": "2026-05-19"}]
 
     assert build_outreach_query_window(
         rows,
         trigger_date="2026-05-22",
-        request_payload={"force_full": True, "start_date": "2026-05-01", "end_date": "2026-05-22"},
-    ) == {"mode": "d_type", "d_type": 0}
-    assert build_outreach_query_window(
-        rows,
-        trigger_date="2026-05-22",
-        request_payload={"start_date": "2026/05/10", "end_date": "2026/05/22"},
-    ) == {"mode": "date_range", "start_date": "2026-05-10", "end_date": "2026-05-22"}
+    ) == {"mode": "date_range", "start_date": "2026-05-18", "end_date": "2026-05-22"}
 
 
 def test_outreach_query_window_uses_checked_dates_for_rows_without_video() -> None:
@@ -343,7 +376,7 @@ def test_group_outreach_rows_by_product_preserves_window_context() -> None:
             "trigger_date": "2026-05-28",
             "query_window": {
                 "mode": "date_range",
-                "start_date": "2026-05-01",
+                "start_date": "2026-05-19",
                 "end_date": "2026-05-28",
             },
             "rows": [
@@ -368,6 +401,252 @@ def test_group_outreach_rows_by_product_preserves_window_context() -> None:
             ],
         }
     ]
+
+
+class _OutreachStageStore:
+    def __init__(self, jobs: list[dict[str, object]] | None = None) -> None:
+        self.jobs = list(jobs or [])
+        self.enqueued_jobs: list[dict[str, object]] = []
+
+    def list_api_worker_jobs_for_request(self, request_id, job_code=None):  # noqa: ANN001
+        del request_id
+        return [
+            job
+            for job in self.jobs
+            if job_code is None or job.get("job_code") == job_code
+        ]
+
+    def enqueue_api_worker_jobs(self, *, request_id, task_code, job_code, jobs):  # noqa: ANN001
+        del request_id, task_code
+        for job in jobs:
+            self.enqueued_jobs.append({"job_code": job_code, **dict(job)})
+        return {
+            "created_count": len(jobs),
+            "updated_count": 0,
+            "skipped_count": 0,
+        }
+
+
+def test_outreach_read_stage_uses_fixed_route_filter_and_schema_validation() -> None:
+    store = _OutreachStageStore()
+    result = advance_stage(
+        store=store,
+        request=SimpleNamespace(
+            request_id="req-fixed-read",
+            payload={
+                "fastmoss_phone_env": "FASTMOSS_PHONE",
+                "writeback_enabled": True,
+            },
+            created_at=datetime(2026, 8, 16, 16, 30, tzinfo=timezone.utc).timestamp(),
+        ),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="read_outreach_rows",
+    )
+
+    assert result["action"] == "waiting"
+    payload = store.enqueued_jobs[0]["payload"]
+    assert payload["source_table_ref"] == "feishu://mujitask/tk_influencer_outreach"
+    assert payload["target_table_ref"] == "feishu://mujitask/tk_influencer_outreach"
+    assert payload["filter_spec"] == {
+        "filter_expr": 'CurrentValue.[采集标签] = "T"'
+    }
+    assert payload["validate_schema"] is True
+    assert payload["field_names"] == [
+        "采集标签",
+        "SKUID",
+        "达人ID",
+        "视频链接",
+        "视频发布时间",
+        "检查时间",
+        "播放量(W)",
+        "视频数量",
+        "更新时间",
+    ]
+    assert "request_payload" not in payload
+    assert "source_record_ids" not in payload
+    assert "table_refs" not in payload
+    assert "feishu_table" not in payload
+
+
+def test_outreach_preflight_rejects_removed_task_inputs_even_when_empty() -> None:
+    store = _OutreachStageStore()
+    result = advance_stage(
+        store=store,
+        request=SimpleNamespace(
+            request_id="req-legacy-inputs",
+            payload={
+                "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+                "source_record_ids": [],
+                "force_full": False,
+                "start_date": "",
+                "end_date": None,
+                "trigger_date": "",
+            },
+        ),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="read_outreach_rows",
+    )
+
+    assert result == {
+        "action": "finalize",
+        "final_status": "failed",
+        "title": "达人建联输入契约错误",
+        "failed_stage": "read_outreach_rows",
+        "error_type": "contract",
+        "error_code": "unsupported_outreach_task_inputs",
+        "retryable": False,
+        "error": "Outreach task payload contains removed inputs.",
+        "details": {
+            "unsupported_fields": [
+                "end_date",
+                "force_full",
+                "source_record_ids",
+                "start_date",
+                "trigger_date",
+            ]
+        },
+    }
+    assert store.enqueued_jobs == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"source_table_ref": "https://example.feishu.cn/base/app?table=tbl"},
+        {"source_table_ref": "feishu://mujitask/tk_competitor"},
+        {
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            "table_refs": {
+                "feishu://mujitask/tk_influencer_outreach": "https://evil.test/base"
+            },
+        },
+        {
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            "feishu_table": {"table_id": "tblOther", "view_id": "vewOther"},
+        },
+        {
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            "filter_spec": {"filter_expr": 'CurrentValue.[采集标签] = "F"'},
+        },
+        {
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            "validate_schema": False,
+        },
+        {
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            "request_payload": {
+                "source_table_ref": "feishu://mujitask/tk_influencer_outreach"
+            },
+        },
+    ],
+)
+def test_outreach_preflight_rejects_noncanonical_route_or_policy_overrides(
+    payload: dict[str, object],
+) -> None:
+    store = _OutreachStageStore()
+    result = advance_stage(
+        store=store,
+        request=SimpleNamespace(request_id="req-invalid-route", payload=payload),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="read_outreach_rows",
+    )
+
+    assert result["action"] == "finalize"
+    assert result["final_status"] == "failed"
+    assert result["error_type"] == "contract"
+    assert result["error_code"] == "invalid_outreach_source_table_ref"
+    assert result["retryable"] is False
+    assert store.enqueued_jobs == []
+
+
+def test_outreach_stage_jobs_share_task_creation_date_in_shanghai() -> None:
+    created_at = datetime(2026, 8, 16, 16, 30, tzinfo=timezone.utc).timestamp()
+    store = _OutreachStageStore(
+        [
+            {
+                "job_code": "feishu_table_read",
+                "status": "success",
+                "payload": {"stage_code": "read_outreach_rows"},
+                "result": {
+                    "source_rows": [
+                        {
+                            "source_record_id": "rec-t",
+                            "product_id": "sku-1",
+                            "creator_unique_id": "creator-1",
+                            "existing_video_url": "",
+                            "last_checked_at": "2026-08-15",
+                            "last_updated_at": "",
+                            "source_fields": {
+                                "采集标签": "T",
+                                "SKUID": "sku-1",
+                                "达人ID": "creator-1",
+                            },
+                            "source_context": {
+                                "source_table_ref": "feishu://mujitask/tk_influencer_outreach"
+                            },
+                            "writeback_context": {
+                                "target_table_ref": "feishu://mujitask/tk_influencer_outreach",
+                                "record_id": "rec-t",
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+    result = advance_stage(
+        store=store,
+        request=SimpleNamespace(
+            request_id="req-shanghai-date",
+            payload={
+                "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+                "fastmoss_phone_env": "FASTMOSS_PHONE",
+            },
+            created_at=created_at,
+        ),
+        workflow=get_workflow_definition("tiktok_influencer_outreach_sync"),
+        stage_code="index_product_videos",
+    )
+
+    assert result["action"] == "waiting"
+    payload = store.enqueued_jobs[0]["payload"]
+    assert payload["trigger_date"] == "2026-08-17"
+    assert payload["query_window"] == {
+        "mode": "date_range",
+        "start_date": "2026-08-14",
+        "end_date": "2026-08-17",
+    }
+
+
+def test_outreach_empty_t_row_snapshot_finishes_with_zero_candidate_summary() -> None:
+    store = _OutreachStageStore(
+        [
+            {
+                "job_code": "feishu_table_read",
+                "status": "success",
+                "payload": {"stage_code": "read_outreach_rows"},
+                "result": {
+                    "source_rows": [],
+                    "adapter_summary": {
+                        "input_row_count": 0,
+                        "source_row_count": 0,
+                        "skipped_count": 0,
+                        "skip_reasons": {},
+                    },
+                },
+            }
+        ]
+    )
+
+    summary = _build_summary(
+        store=store,
+        request=SimpleNamespace(request_id="req-empty-t-rows"),
+    )
+
+    assert summary["final_status"] == "success"
+    assert summary["total_rows_read"] == 0
+    assert summary["candidate_row_count"] == 0
+    assert summary["product_count"] == 0
 
 
 def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypatch) -> None:
@@ -544,12 +823,21 @@ def test_fastmoss_video_overview_data_http_request_matches_roxy_browser_headers(
     assert captured["timeout"] == 30.0
 
 
-def test_outreach_submit_payload_injects_default_fastmoss_env_refs() -> None:
+def test_outreach_submit_payload_defaults_only_the_logical_table_route(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MUJITASK_FEISHU_BASE_URL", "https://example.feishu.cn/base/app")
+    monkeypatch.setenv("MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_TABLE_ID", "tblOutreach")
+    monkeypatch.setenv("MUJITASK_FEISHU_TK_INFLUENCER_OUTREACH_VIEW_ID", "vewOutreach")
     payload = _sanitize_task_payload(
-        {"control_action": "submit", "trigger_date": "2026-05-22"},
+        {"control_action": "submit"},
         task_code="tiktok_influencer_outreach_sync",
     )
 
+    assert payload["source_table_ref"] == "feishu://mujitask/tk_influencer_outreach"
+    assert "target_table_ref" not in payload
+    assert "table_refs" not in payload
+    assert "table_url" not in payload
     assert payload["fastmoss_live_fetch"] is True
     assert payload["fastmoss_phone_env"] == "FASTMOSS_PHONE"
     assert payload["fastmoss_password_env"] == "FASTMOSS_PASSWORD"
@@ -1812,6 +2100,12 @@ def test_outreach_projection_writes_only_check_time_when_no_aggregate_video_url(
 
 def test_outreach_workflow_and_handler_are_registered() -> None:
     workflow = get_workflow_definition("tiktok_influencer_outreach_sync")
+    assert workflow.contract_revision == "2026-08-17"
+    assert workflow.payload_contract.field_names() == (
+        "source_table_ref",
+        "reply_target",
+        "writeback_enabled",
+    )
     assert workflow.entry_stage_code == "read_outreach_rows"
     assert [stage.stage_code for stage in workflow.stages] == [
         "read_outreach_rows",
@@ -1828,6 +2122,79 @@ def test_outreach_workflow_and_handler_are_registered() -> None:
     assert "product_video_outreach_check" in BOUND_API_HANDLERS
     assert "outreach_creator_video_metric_refresh" in BOUND_API_HANDLERS
     assert load_workflow_runtime("tiktok_influencer_outreach_sync") is not None
+
+
+def test_outreach_workflow_contracts_pin_fixed_candidate_policy() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    contract = yaml.safe_load(
+        (repo_root / "contracts/workflow/tiktok_influencer_outreach_sync.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    implementation_manifest = yaml.safe_load(
+        (
+            repo_root
+            / "src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert implementation_manifest == contract
+    assert contract["contract_revision"] == "2026-08-17"
+    assert contract["task_payload_contract"] == {
+        "required_fields": ["source_table_ref"],
+        "optional_fields": ["reply_target", "writeback_enabled"],
+        "fixed_source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+        "default_missing_source_table_ref": True,
+        "removed_fields": [
+            "source_record_ids",
+            "force_full",
+            "start_date",
+            "end_date",
+            "trigger_date",
+        ],
+        "preflight_errors": {
+            "removed_field": "unsupported_outreach_task_inputs",
+            "invalid_route_or_policy_override": "invalid_outreach_source_table_ref",
+            "unexpected_submit_field": "invalid_outreach_task_payload",
+        },
+        "allowed_submit_fields": ["source_table_ref", "reply_target", "writeback_enabled"],
+    }
+    assert contract["source_read_contract"] == {
+        "filter_expr": 'CurrentValue.[采集标签] = "T"',
+        "validate_schema": True,
+        "reject_non_t_adapter_rows": True,
+        "adapter_error_code": "feishu_source_adapter_failed",
+        "empty_result_status": "success",
+    }
+    assert contract["feishu_field_contract"]["read_fields"][0] == "采集标签"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "mock_fastmoss_product_videos",
+        "mock_fastmoss_video_overviews",
+        "fastmoss_video_max_pages",
+        "access_token_env",
+        "fastmoss_phone_env",
+        "fastmoss_password_env",
+    ],
+)
+def test_outreach_formal_submit_rejects_non_contract_fields(field: str) -> None:
+    payload = submit_task_request(
+        "tiktok_influencer_outreach_sync",
+        {
+            "control_action": "submit",
+            "source_table_ref": "feishu://mujitask/tk_influencer_outreach",
+            field: {} if field.startswith("mock_") else "caller-override",
+        },
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["request_status"] == "rejected"
+    assert payload["error_type"] == "contract"
+    assert payload["error_code"] == "invalid_outreach_task_payload"
+    assert payload["unexpected_fields"] == [field]
 
 
 def test_outreach_finalize_persists_request_and_outbox() -> None:

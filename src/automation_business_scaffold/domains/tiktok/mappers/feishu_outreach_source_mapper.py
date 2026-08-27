@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 OUTREACH_READ_FIELD_NAMES = (
+    "采集标签",
     "SKUID",
     "达人ID",
     "视频链接",
@@ -27,16 +28,21 @@ def outreach_source_adapter(
         "missing_product_id": 0,
         "missing_creator_unique_id": 0,
     }
-    source_record_ids = set(_list_text(payload.get("source_record_ids")))
-
     for row in raw_rows:
         record_id = _text(row.get("record_id") or row.get("id"))
-        if source_record_ids and record_id not in source_record_ids:
-            continue
-        fields = _mapping(row.get("fields"))
-        product_id = _field_text(fields, "SKUID", "sku_id", "product_id")
-        creator_unique_id = _field_text(fields, "达人ID", "creator_unique_id", "unique_id")
-        existing_video_url = _field_text(fields, "视频链接", "video_url")
+        raw_fields = _mapping(row.get("fields"))
+        fields = {
+            field_name: raw_fields[field_name]
+            for field_name in OUTREACH_READ_FIELD_NAMES
+            if field_name in raw_fields
+        }
+        if _field_text(fields, "采集标签") != "T":
+            raise ValueError(
+                "outreach_filter_contract_violation: expected 采集标签=T for every returned row."
+            )
+        product_id = _field_text(fields, "SKUID")
+        creator_unique_id = _field_text(fields, "达人ID")
+        existing_video_url = _field_text(fields, "视频链接")
         if not product_id:
             skip_reasons["missing_product_id"] += 1
             continue
@@ -44,18 +50,12 @@ def outreach_source_adapter(
             skip_reasons["missing_creator_unique_id"] += 1
             continue
         existing_video_published_date = _normalize_date(
-            _field_text(
-                fields, "视频发布时间", "existing_video_published_date", "video_published_date"
-            )
+            _field_text(fields, "视频发布时间")
         )
-        existing_play_count = _field_optional_number(
-            fields, "播放量(W)", "existing_play_count", "play_count"
-        )
-        existing_video_count = _field_int(fields, "视频数量", "existing_video_count", "video_count")
-        last_checked_at = _normalize_date(_field_text(fields, "检查时间", "last_checked_at"))
-        last_updated_at = _normalize_date(
-            _field_text(fields, "更新时间", "last_updated_at", "updated_at")
-        )
+        existing_play_count = _field_optional_number(fields, "播放量(W)")
+        existing_video_count = _field_int(fields, "视频数量")
+        last_checked_at = _normalize_date(_field_text(fields, "检查时间"))
+        last_updated_at = _normalize_date(_field_text(fields, "更新时间"))
         source_context = {
             "source_record_id": record_id,
             "source_table_ref": _text(payload.get("source_table_ref")),
@@ -103,10 +103,8 @@ def group_outreach_rows_by_product(
     rows: list[Mapping[str, Any]],
     *,
     trigger_date: str,
-    request_payload: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
-    resolved_request_payload = _request_payload_from_rows(rows, request_payload)
     for row in rows:
         product_id = _text(row.get("product_id"))
         if not product_id:
@@ -116,9 +114,7 @@ def group_outreach_rows_by_product(
         {
             "product_id": product_id,
             "trigger_date": trigger_date,
-            "query_window": build_outreach_query_window(
-                product_rows, trigger_date=trigger_date, request_payload=resolved_request_payload
-            ),
+            "query_window": build_outreach_query_window(product_rows, trigger_date=trigger_date),
             "rows": [
                 {
                     "source_record_id": _text(row.get("source_record_id")),
@@ -146,13 +142,7 @@ def build_outreach_query_window(
     rows: list[Mapping[str, Any]],
     *,
     trigger_date: str,
-    request_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    resolved_request_payload = _request_payload_from_rows(rows, request_payload)
-    request_window = _request_query_window(resolved_request_payload)
-    if request_window:
-        return request_window
-
     rows_for_window = [row for row in rows if not _text_value(row.get("existing_video_url"))]
     if rows_for_window:
         dates = [_parse_date(row.get("last_checked_at")) for row in rows_for_window]
@@ -198,42 +188,6 @@ def _optional_number(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return _number(value)
-
-
-def _request_query_window(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if _coerce_bool(payload.get("force_full")):
-        return {"mode": "d_type", "d_type": 0}
-    start_date = _normalize_date(payload.get("start_date"))
-    end_date = _normalize_date(payload.get("end_date"))
-    if start_date and end_date:
-        return {"mode": "date_range", "start_date": start_date, "end_date": end_date}
-    return {}
-
-
-def _request_payload_from_rows(
-    rows: list[Mapping[str, Any]], request_payload: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    normalized = _normalize_request_payload(request_payload)
-    if normalized:
-        return normalized
-    for row in rows:
-        normalized = _normalize_request_payload(row.get("request_payload"))
-        if normalized:
-            return normalized
-        normalized = _normalize_request_payload(
-            _mapping(row.get("source_context")).get("request_payload")
-        )
-        if normalized:
-            return normalized
-    return {}
-
-
-def _normalize_request_payload(value: Any) -> dict[str, Any]:
-    payload = _mapping(value)
-    nested = _mapping(payload.get("request_payload"))
-    merged = {**nested, **payload}
-    merged.pop("request_payload", None)
-    return merged
 
 
 def _date_range_window(start_date: date, trigger_date: str) -> dict[str, Any]:
@@ -309,23 +263,6 @@ def _mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return {str(key): item for key, item in value.items()}
     return {}
-
-
-def _list_text(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [_text(item) for item in value if _text(item)]
-    if isinstance(value, tuple):
-        return [_text(item) for item in value if _text(item)]
-    text = _text(value)
-    return [text] if text else []
-
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return _text(value).lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _int(value: Any) -> int:

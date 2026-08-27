@@ -104,6 +104,11 @@ AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK = {
 AMAZON_TASK_CODES = set(AMAZON_FORMAL_BUSINESS_FIELDS_BY_TASK)
 AMAZON_FORMAL_CONFIGURATION_FIELDS = {"table_refs"}
 AMAZON_TABLE_REF = "AMAZON_PRODUCTS"
+INFLUENCER_OUTREACH_FORMAL_BUSINESS_FIELDS = {
+    "source_table_ref",
+    "reply_target",
+    "writeback_enabled",
+}
 AMAZON_FORBIDDEN_BROWSER_INPUT_FIELDS = {
     "BROWSER_PROFILE_ID",
     "BROWSER_PROFILE_REF",
@@ -142,6 +147,19 @@ FORMAL_SUBMIT_CONTROL_FIELDS = {
 
 def submit_task_request(task_code: str, params: dict[str, Any]) -> dict[str, Any]:
     normalized_task_code = ensure_formal_task_code(task_code)
+    outreach_preflight = _influencer_outreach_submit_preflight(
+        task_code=normalized_task_code,
+        params=params,
+    )
+    if outreach_preflight:
+        return _rejected_submit_payload(
+            task_code=normalized_task_code,
+            error_type=str(outreach_preflight["error_type"]),
+            error_code=str(outreach_preflight["error_code"]),
+            message=str(outreach_preflight["message"]),
+            retryable=False,
+            result=outreach_preflight,
+        )
     settings = build_runtime_settings(params)
     amazon_preflight = _amazon_product_submit_preflight(
         task_code=normalized_task_code,
@@ -464,15 +482,42 @@ def _sanitize_task_payload(
         if table_refs:
             sanitized["table_refs"] = table_refs
         return sanitized
+    if task_code == INFLUENCER_OUTREACH_TASK_CODE:
+        sanitized = {
+            field: params[field]
+            for field in sorted(INFLUENCER_OUTREACH_FORMAL_BUSINESS_FIELDS)
+            if field in params
+        }
+        _enrich_influencer_outreach_payload(sanitized)
+        if settings is not None:
+            _enrich_strict_persistence_payload(sanitized, params=params, settings=settings)
+        return sanitized
     sanitized = dict(params)
     sanitized.pop("control_action", None)
     for key in FORMAL_PAYLOAD_RUNTIME_CONFIG_FIELDS:
         sanitized.pop(key, None)
-    if task_code == INFLUENCER_OUTREACH_TASK_CODE:
-        _enrich_influencer_outreach_payload(sanitized)
     if task_code in STRICT_PERSISTENCE_TASK_CODES and settings is not None:
         _enrich_strict_persistence_payload(sanitized, params=params, settings=settings)
     return sanitized
+
+
+def _influencer_outreach_submit_preflight(
+    *,
+    task_code: str,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    if task_code != INFLUENCER_OUTREACH_TASK_CODE:
+        return {}
+    allowed_fields = INFLUENCER_OUTREACH_FORMAL_BUSINESS_FIELDS | FORMAL_SUBMIT_CONTROL_FIELDS
+    unexpected_fields = sorted(str(key) for key in params if key not in allowed_fields)
+    if not unexpected_fields:
+        return {}
+    return {
+        "error_type": "contract",
+        "error_code": "invalid_outreach_task_payload",
+        "message": "Outreach submit payload contains unsupported fields.",
+        "unexpected_fields": unexpected_fields,
+    }
 
 
 def _normalize_amazon_table_refs(value: Any) -> dict[str, str]:
@@ -627,13 +672,6 @@ def _enrich_influencer_outreach_table_payload(payload: dict[str, Any]) -> None:
     alias = "tk_influencer_outreach"
     table_ref = f"feishu://mujitask/{alias}"
     payload.setdefault("source_table_ref", table_ref)
-    table_url = _configured_feishu_table_url("TK_INFLUENCER_OUTREACH")
-    if not table_url:
-        return
-    table_refs = _mapping_param(payload.get("table_refs"))
-    table_refs.setdefault(alias, table_url)
-    table_refs.setdefault(table_ref, table_url)
-    payload["table_refs"] = table_refs
 
 
 def _enrich_influencer_outreach_fastmoss_payload(payload: dict[str, Any]) -> None:

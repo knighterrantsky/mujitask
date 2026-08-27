@@ -313,6 +313,31 @@ def test_smoke_check_requires_current_public_tasks() -> None:
     assert '"fastmoss_keyword_candidate_discovery"' not in text
 
 
+def test_smoke_check_requires_current_tiktok_skill_dispatch_bundle() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    for file_name in (
+        "skill.spec.yaml",
+        "examples.eval.yaml",
+        "run_task.sh",
+        "run_skill_step.py",
+        "lightweight_submit.py",
+    ):
+        assert f'"{file_name}"' in text
+    assert 'contract_revision != "2026-08-17"' in text
+
+
+def test_framework_reuse_requires_explicit_flag_and_locked_commit_match() -> None:
+    common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
+    text = common_script.read_text(encoding="utf-8")
+
+    assert "MUJITASK_REUSE_INSTALLED_FRAMEWORK" in text
+    assert 'vcs_info.get("requested_revision")' in text
+    assert 'vcs_info.get("commit_id")' in text
+    assert "locked_commit" in text
+
+
 def test_smoke_check_uses_launchctl_print_for_daemon_labels() -> None:
     common_script = ROOT / "examples" / "openclaw" / "openclaw_deploy_common.sh"
     text = common_script.read_text(encoding="utf-8")

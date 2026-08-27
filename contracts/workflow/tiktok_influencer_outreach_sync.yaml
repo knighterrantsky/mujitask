@@ -1,4 +1,5 @@
 schema_version: 1
+contract_revision: "2026-08-17"
 workflow_origin: new_workflow
 workflow_code: tiktok_influencer_outreach_sync
 domain: tiktok
@@ -17,6 +18,41 @@ workflow:
   runtime_export: build_tiktok_influencer_outreach_sync_workflow
   exports:
     - TIKTOK_INFLUENCER_OUTREACH_SYNC_DEFINITION
+task_payload_contract:
+  required_fields:
+    - source_table_ref
+  optional_fields:
+    - reply_target
+    - writeback_enabled
+  allowed_submit_fields:
+    - source_table_ref
+    - reply_target
+    - writeback_enabled
+  fixed_source_table_ref: feishu://mujitask/tk_influencer_outreach
+  default_missing_source_table_ref: true
+  removed_fields:
+    - source_record_ids
+    - force_full
+    - start_date
+    - end_date
+    - trigger_date
+  preflight_errors:
+    removed_field: unsupported_outreach_task_inputs
+    invalid_route_or_policy_override: invalid_outreach_source_table_ref
+    unexpected_submit_field: invalid_outreach_task_payload
+source_read_contract:
+  filter_expr: 'CurrentValue.[采集标签] = "T"'
+  validate_schema: true
+  reject_non_t_adapter_rows: true
+  adapter_error_code: feishu_source_adapter_failed
+  empty_result_status: success
+task_date_contract:
+  source: task_request.created_at
+  timezone: Asia/Shanghai
+  child_payload_field: trigger_date
+compatibility:
+  strategy: hard_cut
+  active_old_revision_work_must_be_drained: true
 custom_logic:
   mappers:
     - code: outreach_source_adapter
@@ -28,6 +64,7 @@ custom_logic:
       export: outreach_result_projection_mapper
 feishu_field_contract:
   read_fields:
+    - 采集标签
     - SKUID
     - 达人ID
     - 视频链接
@@ -47,7 +84,9 @@ feishu_field_contract:
     粉丝数(W):
       workflow_write_policy: unchanged_not_maintained_by_this_workflow
   protected_invariants:
-    - The workflow behavior and FastMoss API set remain unchanged; only the maintained playback field name and numeric write format change.
+    - Only rows returned by the configured view with 采集标签 exactly T may enter grouping, window calculation, refresh, or writeback.
+    - Caller payload cannot override the table, view, filter, schema validation, candidate rows, query window, or task date.
+    - The FastMoss API set and the maintained playback field numeric write format remain unchanged.
 outbox:
   job_code: task_completed_notification
   handler_code: outbox_dispatch

@@ -24,7 +24,6 @@ from automation_business_scaffold.domains.tiktok.jobs import (
     TASK_COMPLETED_NOTIFICATION_JOB,
 )
 from automation_business_scaffold.domains.tiktok.policies import (
-    DEFAULT_CONTRACT_REVISION,
     STANDARD_ERROR_CONTRACT,
     STANDARD_SUMMARY_CONTRACT,
     influencer_idempotency_rules,
@@ -41,7 +40,7 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
     return WorkflowDefinition(
         task_code=INFLUENCER_OUTREACH_TASK_CODE,
         workflow_code=WORKFLOW_CODE,
-        contract_revision=DEFAULT_CONTRACT_REVISION,
+        contract_revision="2026-08-17",
         trigger_modes=("manual", "schedule", "cli"),
         entry_stage_code="read_outreach_rows",
         payload_contract=contract(
@@ -49,12 +48,6 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
             required_field(
                 "source_table_ref", "TK influencer outreach table reference.", type_hint="str"
             ),
-            optional_field(
-                "source_record_ids",
-                "Optional subset of outreach rows to process.",
-                type_hint="list[str]",
-            ),
-            optional_field("trigger_date", "Task trigger date used as 检查时间.", type_hint="str"),
             optional_field(
                 "reply_target", "Reply target used by the final outbox.", type_hint="str"
             ),
@@ -67,7 +60,7 @@ def build_tiktok_influencer_outreach_sync_definition() -> WorkflowDefinition:
         stages=(
             StageDefinition(
                 stage_code="read_outreach_rows",
-                description="Read TK outreach rows and normalize candidates grouped by SKUID.",
+                description="Read 采集标签=T rows from the fixed TK outreach view and normalize candidates grouped by SKUID.",
                 execution_mode="worker_jobs",
                 enter_condition="task_request has outreach source table context",
                 exit_condition="candidate outreach rows are available or all rows were skipped",

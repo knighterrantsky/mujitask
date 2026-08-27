@@ -15,6 +15,7 @@ min_video_sales_28d=""
 related_product_sales_reset_days=""
 target_intent=""
 items_json=""
+writeback_enabled="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       items_json="${2:-}"
       shift 2
       ;;
+    --writeback-enabled)
+      writeback_enabled="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -100,7 +105,8 @@ case "$intent" in
       --related-product-sales-reset-days "${related_product_sales_reset_days:-28}"
     ;;
   influencer_outreach_sync)
-    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-outreach-sync-submit
+    exec python3 -u "$SCRIPT_DIR/run_skill_step.py" influencer-outreach-sync-submit \
+      --writeback-enabled "$writeback_enabled"
     ;;
   selection_table_ingest)
     exec python3 -u "$SCRIPT_DIR/run_skill_step.py" selection-table-complete-submit
