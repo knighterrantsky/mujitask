@@ -536,44 +536,17 @@ def _influencer_monitoring_submit_params(
 def _influencer_outreach_sync_submit_params(
     *,
     skill_env: dict[str, str],
+    writeback_enabled: bool = True,
     include_submit_control_action: bool = True,
 ) -> tuple[list[str], dict[str, str]]:
-    table_refs = _load_feishu_table_refs(skill_env)
-    outreach_table_url = _resolve_table_url(skill_env, table_refs, TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
     outreach_table_ref = _feishu_table_ref(TK_INFLUENCER_OUTREACH_TABLE_ALIAS)
-    feishu_access_token_env = (
-        _optional_env_value(skill_env, "INFLUENCER_POOL_FEISHU_ACCESS_TOKEN_ENV")
-        or FEISHU_ACCESS_TOKEN_ENV
-    )
-    fastmoss_phone_env = (
-        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PHONE_ENV")
-        or "FASTMOSS_PHONE"
-    )
-    fastmoss_password_env = (
-        _optional_env_value(skill_env, "INFLUENCER_POOL_FASTMOSS_PASSWORD_ENV")
-        or "FASTMOSS_PASSWORD"
-    )
-    params = _append_feishu_table_refs(
-        [
-            f"source_table_ref={outreach_table_ref}",
-            f"target_table_ref={outreach_table_ref}",
-            f"table_url={outreach_table_url}",
-            f"target_table_url={outreach_table_url}",
-            f"access_token_env={feishu_access_token_env}",
-            f"fastmoss_phone_env={fastmoss_phone_env}",
-            f"fastmoss_password_env={fastmoss_password_env}",
-            "writeback_enabled=true",
-        ],
-        table_refs,
-    )
+    params = [
+        f"source_table_ref={outreach_table_ref}",
+        f"writeback_enabled={'true' if writeback_enabled else 'false'}",
+    ]
     if include_submit_control_action:
         params.append("control_action=submit")
-    extra_env = {
-        feishu_access_token_env: _require_env_value(skill_env, FEISHU_ACCESS_TOKEN_ENV),
-        fastmoss_phone_env: _optional_env_value(skill_env, "FASTMOSS_PHONE"),
-        fastmoss_password_env: _optional_env_value(skill_env, "FASTMOSS_PASSWORD"),
-    }
-    return _append_runtime_params(params, skill_env), extra_env
+    return _append_runtime_params(params, skill_env), {}
 
 
 def _append_influencer_pool_browser_params(
@@ -933,10 +906,17 @@ def _normalize_lightweight_submit_payload(
     accepted_message: str,
 ) -> dict[str, Any]:
     normalized = dict(payload)
-    normalized["status"] = "success"
+    status = str(normalized.get("status") or "").strip().lower()
+    request_status = str(normalized.get("request_status") or "").strip().lower()
+    request_id = str(normalized.get("request_id") or "").strip()
+    accepted = status not in {"failed", "error"} and request_status != "rejected" and bool(request_id)
+    normalized["status"] = "success" if accepted else "failed"
     normalized["task_name"] = task_name
     normalized["control_action"] = str(normalized.get("control_action", "") or "submit")
-    normalized["message"] = str(normalized.get("message", "") or accepted_message)
+    normalized["message"] = str(
+        normalized.get("message", "")
+        or (accepted_message if accepted else f"{task_name} submit failed.")
+    )
     summary = normalized.get("summary")
     if not isinstance(summary, dict) or not summary:
         summary = {"total": 1, "counts": {"queued": 1}}
@@ -947,7 +927,8 @@ def _normalize_lightweight_submit_payload(
     normalized.setdefault("failed_item_count", 0)
     normalized.setdefault("error", "")
     normalized.setdefault("artifacts", [])
-    _augment_message_with_request_id(normalized)
+    if accepted:
+        _augment_message_with_request_id(normalized)
     return normalized
 
 
@@ -999,6 +980,12 @@ def _run_lightweight_submit_capture_payload(
         )
         payload = _read_json_file(result_file)
         if result.returncode != 0:
+            if isinstance(payload, dict) and payload:
+                return result.returncode, _normalize_lightweight_submit_payload(
+                    task_name=task_name,
+                    payload=payload,
+                    accepted_message=accepted_message,
+                )
             error_message = str(result.stderr or result.stdout or "").strip()
             return result.returncode, {
                 "status": "failed",
@@ -1051,6 +1038,15 @@ def _positive_int_arg(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
     return parsed
+
+
+def _boolean_arg(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("value must be true or false")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1125,7 +1121,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=28,
     )
 
-    subparsers.add_parser("influencer-outreach-sync-submit")
+    outreach_parser = subparsers.add_parser("influencer-outreach-sync-submit")
+    outreach_parser.add_argument("--writeback-enabled", type=_boolean_arg, default=True)
 
     return parser
 
@@ -1454,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "influencer-outreach-sync-submit":
         params, outreach_env = _influencer_outreach_sync_submit_params(
             skill_env=skill_env,
+            writeback_enabled=args.writeback_enabled,
             include_submit_control_action=True,
         )
         return _submit(

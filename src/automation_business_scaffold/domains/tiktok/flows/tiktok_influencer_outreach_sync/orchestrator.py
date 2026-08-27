@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import datetime
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from automation_business_scaffold.contracts.handler.shared import (
     coerce_mapping,
@@ -34,6 +35,32 @@ SUMMARY_STAGE_CODE = "ready_for_summary"
 ACTIVE_STATUSES = {"pending", "running", "waiting"}
 TERMINAL_STATUSES = {"success", "skipped", "partial_success", "failed"}
 MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS = 3
+OUTREACH_TABLE_REF = "feishu://mujitask/tk_influencer_outreach"
+OUTREACH_FILTER_EXPR = 'CurrentValue.[采集标签] = "T"'
+REMOVED_TASK_INPUTS = frozenset(
+    {"source_record_ids", "force_full", "start_date", "end_date", "trigger_date"}
+)
+ROUTE_POLICY_OVERRIDES = frozenset(
+    {
+        "target_table_ref",
+        "table_url",
+        "source_table_url",
+        "target_table_url",
+        "table_refs",
+        "feishu_table",
+        "filter_spec",
+        "validate_schema",
+        "table_id",
+        "view_id",
+        "view_ref",
+        "source_table_id",
+        "source_view_id",
+        "source_view_ref",
+        "feishu_base_id",
+        "feishu_table_id",
+        "feishu_view_id",
+    }
+)
 
 
 def advance_stage(*, store: Any, request: Any, workflow: Any, stage_code: str) -> dict[str, Any]:
@@ -108,6 +135,10 @@ def finalize_request(
 
 
 def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
+    request_payload = dict(request.payload or {})
+    preflight_result = _preflight_request_payload(request_payload)
+    if preflight_result:
+        return preflight_result
     read_jobs = _stage_jobs(
         store=store,
         request_id=request.request_id,
@@ -115,11 +146,11 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
         job_code="feishu_table_read",
     )
     if not read_jobs:
-        request_payload = dict(request.payload or {})
         resolved_job = WORKFLOW.resolve_stage_jobs(READ_STAGE_CODE)[0]
+        normalized_payload = {**request_payload, "source_table_ref": OUTREACH_TABLE_REF}
         keys = render_job_keys(
             resolved_job,
-            request_payload,
+            normalized_payload,
             request_id=request.request_id,
             task_code=TASK_CODE,
             workflow_code=WORKFLOW_CODE,
@@ -138,14 +169,12 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
                         "task_code": TASK_CODE,
                         "workflow_code": WORKFLOW_CODE,
                         "stage_code": READ_STAGE_CODE,
-                        "request_payload": request_payload,
-                        "source_table_ref": request_payload.get("source_table_ref"),
-                        "target_table_ref": request_payload.get("target_table_ref")
-                        or request_payload.get("source_table_ref"),
+                        "source_table_ref": OUTREACH_TABLE_REF,
+                        "target_table_ref": OUTREACH_TABLE_REF,
                         "field_names": list(OUTREACH_READ_FIELD_NAMES),
+                        "filter_spec": {"filter_expr": OUTREACH_FILTER_EXPR},
+                        "validate_schema": True,
                         "adapter_code": "outreach_source_adapter",
-                        "source_record_ids": list(request_payload.get("source_record_ids") or []),
-                        **_feishu_common_payload(request_payload),
                     },
                 }
             ],
@@ -182,11 +211,9 @@ def _advance_check(*, store: Any, request: Any) -> dict[str, Any]:
     )
     if not existing:
         request_payload = dict(request.payload or {})
-        trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
+        trigger_date = _task_trigger_date(request)
         source_rows = _read_source_rows(store=store, request_id=request.request_id)
-        product_groups = group_outreach_rows_by_product(
-            source_rows, trigger_date=trigger_date, request_payload=request_payload
-        )
+        product_groups = group_outreach_rows_by_product(source_rows, trigger_date=trigger_date)
         resolved_job = WORKFLOW.resolve_stage_jobs(CHECK_STAGE_CODE)[0]
         jobs = []
         for group in product_groups:
@@ -322,16 +349,13 @@ def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
     )
     if not existing:
         request_payload = dict(request.payload or {})
-        trigger_date = str(request_payload.get("trigger_date") or date.today().isoformat())
+        trigger_date = _task_trigger_date(request)
         source_rows = _read_source_rows(store=store, request_id=request.request_id)
         successful_products = _successful_index_product_ids(
             store=store, request_id=request.request_id
         )
         resolved_job = WORKFLOW.resolve_stage_jobs(REFRESH_STAGE_CODE)[0]
         jobs = []
-        target_table_ref = request_payload.get("target_table_ref") or request_payload.get(
-            "source_table_ref"
-        )
         for row in source_rows:
             product_id = str(row.get("product_id") or "").strip()
             creator_unique_id = str(row.get("creator_unique_id") or "").strip()
@@ -346,11 +370,10 @@ def _advance_refresh(*, store: Any, request: Any) -> dict[str, Any]:
                 "workflow_code": WORKFLOW_CODE,
                 "stage_code": REFRESH_STAGE_CODE,
                 "request_payload": request_payload,
-                "target_table_ref": target_table_ref,
+                "target_table_ref": OUTREACH_TABLE_REF,
                 "trigger_date": trigger_date,
                 **row,
                 **_fastmoss_common_payload(request_payload),
-                **_feishu_common_payload(request_payload),
             }
             keys = render_job_keys(
                 resolved_job,
@@ -755,18 +778,61 @@ def _current_stage(request: Any) -> str:
     )
 
 
-def _feishu_common_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "feishu_app_id",
-        "feishu_app_secret",
-        "feishu_base_id",
-        "feishu_table_id",
-        "feishu_view_id",
-        "feishu_user_access_token",
-        "validate_schema",
-        "snapshot_policy",
+def _preflight_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    nested_payload = coerce_mapping(payload.get("request_payload"))
+    unsupported_fields = sorted(
+        {
+            key
+            for source in (payload, nested_payload)
+            for key in REMOVED_TASK_INPUTS
+            if key in source
+        }
     )
-    return {key: request_payload[key] for key in keys if key in request_payload}
+    if unsupported_fields:
+        return {
+            "action": "finalize",
+            "final_status": "failed",
+            "title": "达人建联输入契约错误",
+            "failed_stage": READ_STAGE_CODE,
+            "error_type": "contract",
+            "error_code": "unsupported_outreach_task_inputs",
+            "retryable": False,
+            "error": "Outreach task payload contains removed inputs.",
+            "details": {"unsupported_fields": unsupported_fields},
+        }
+
+    source_table_ref = str(payload.get("source_table_ref") or "").strip()
+    invalid_fields = {
+        key for key in ROUTE_POLICY_OVERRIDES if key in payload or key in nested_payload
+    }
+    if "source_table_ref" in nested_payload:
+        invalid_fields.add("request_payload.source_table_ref")
+    if source_table_ref and source_table_ref != OUTREACH_TABLE_REF:
+        invalid_fields.add("source_table_ref")
+    if invalid_fields:
+        return {
+            "action": "finalize",
+            "final_status": "failed",
+            "title": "达人建联输入契约错误",
+            "failed_stage": READ_STAGE_CODE,
+            "error_type": "contract",
+            "error_code": "invalid_outreach_source_table_ref",
+            "retryable": False,
+            "error": "Outreach task payload must use the fixed logical table route and policy.",
+            "details": {"invalid_fields": sorted(invalid_fields)},
+        }
+    return {}
+
+
+def _task_trigger_date(request: Any) -> str:
+    timezone = ZoneInfo("Asia/Shanghai")
+    try:
+        created_at = float(getattr(request, "created_at", 0) or 0)
+        if created_at > 0:
+            return datetime.fromtimestamp(created_at, tz=timezone).date().isoformat()
+    except (OSError, OverflowError, TypeError, ValueError):
+        pass
+    return datetime.now(tz=timezone).date().isoformat()
 
 
 def _fastmoss_common_payload(request_payload: dict[str, Any]) -> dict[str, Any]:

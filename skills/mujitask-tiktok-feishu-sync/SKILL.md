@@ -111,6 +111,20 @@ Rules:
 - Do not treat casual acknowledgement such as `好`, `可以`, or unrelated follow-up text as confirmation unless it clearly refers to submitting the previewed task.
 - If the user changes any input after preview, regenerate the preview and require confirmation again.
 
+### `outreach_writeback_enabled`
+
+Whether the confirmed influencer-outreach run may write maintained fields back to `TK达人建联表`.
+
+Defaults:
+
+- `influencer_outreach_sync`: `True`
+
+Rules:
+
+- Use `false` only when the user explicitly asks for a dry run, test run, validation run, or says not to write back to Feishu.
+- Otherwise use the default `true`.
+- The preview must clearly show `执行模式：试运行（不写回飞书）` when false, or `执行模式：正式执行（写回飞书）` when true.
+
 ### `product_url`
 
 TikTok product URL.
@@ -329,7 +343,12 @@ Use when the user explicitly asks to run, sync, update, or check `TK达人建联
 Business behavior summary:
 
 - This workflow reads outreach rows, checks FastMoss product videos by `SKUID` and `达人ID`, and writes matched video fields or check time.
-- Existing `视频链接` rows are skipped by the Runtime workflow and are not overwritten.
+- Existing `视频链接` rows still refresh video count and playback metrics; the highest-play video URL may replace the existing link.
+- A user-requested dry run executes the real read, FastMoss, Runtime, and fact-persistence path with Feishu writeback disabled.
+
+Default inputs:
+
+- `outreach_writeback_enabled`: `True`
 
 ### `selection_table_ingest`
 
@@ -435,9 +454,10 @@ Use only when the user explicitly mentions competitor row, competitor URL, or `�
 9. If the user asks to sync influencer-pool data or expand influencers from competitor products, choose `influencer_pool_sync`.
 10. If the user asks to run, sync, update, or refresh `TK达人监控表` or `达人监控表`, choose `influencer_monitoring`.
 11. If the user asks to run, sync, update, or check `TK达人建联表` or `达人建联表`, choose `influencer_outreach_sync`.
-12. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
-13. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
-14. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
+12. If the user explicitly asks to test or dry-run the influencer outreach workflow without Feishu writeback, choose `influencer_outreach_sync` with `outreach_writeback_enabled=false`.
+13. If the message contains a TikTok product URL and explicitly mentions competitor row or competitor URL, choose `competitor_row_by_url`.
+14. If the message contains a TikTok product URL and asks to complete a single product without competitor-table semantics, choose `product_url_complete`.
+15. If the user asks for FastMoss keyword search or product collection but does not specify competitor table or selection table, ask which target table to write to. Do not submit a task.
 
 ## Commands
 
@@ -470,7 +490,7 @@ bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_monitor
 ### `influencer_outreach_sync`
 
 ```bash
-bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_outreach_sync"
+bash skills/mujitask-tiktok-feishu-sync/run_task.sh --intent "influencer_outreach_sync" --writeback-enabled "<outreach_writeback_enabled>"
 ```
 
 ### `selection_table_ingest`
@@ -546,6 +566,7 @@ Examples:
 - Do not expose cookies, tokens, env vars, stack traces, table IDs, or browser profile paths.
 - Do not run legacy leaf steps or troubleshooting wrappers.
 - Do not poll Runtime jobs after task submission.
+- {'Do not describe a dry run as side-effect free': 'it still reads Feishu, calls FastMoss, and may persist Runtime and Fact DB data; only Feishu writeback is disabled.'}
 - Do not promise to report final results in this chat.
 - Do not include internal step counts, candidates, browser details, or worker details in the first reply.
 
@@ -561,6 +582,7 @@ Examples:
 - Single-URL workflow with multiple URLs: ask for one URL.
 - TikTok URL without table semantics: use `product_url_complete` only if the user asks to complete a product; otherwise ask for the intended workflow.
 - Influencer request without an exact target table: ask whether the user means `TK达人池`, `TK达人监控表`, or `TK达人建联表`.
+- Influencer outreach dry run: preview `执行模式：试运行（不写回飞书）`, pass `outreach_writeback_enabled=false`, and still require explicit confirmation.
 - Wrapper exits without `request_id`: treat as failed submission.
 - Wrapper returns failed/error: return only the safe failure summary.
 - Runtime / Feishu / FastMoss / browser unavailable: do not switch to another workflow.
@@ -682,6 +704,18 @@ Reply:
 
 ```text
 先展示确认预览；用户确认后回复 `request_id: <request_id>`.
+```
+
+User: 试运行一次达人建联表检查，不要写回飞书
+Intent: `influencer_outreach_sync`
+Inputs:
+
+- `outreach_writeback_enabled`: `False`
+
+Reply:
+
+```text
+先展示包含 `执行模式：试运行（不写回飞书）` 的确认预览；用户确认后回复 `request_id: <request_id>`.
 ```
 
 User: 补全这个商品 https://www.tiktok.com/shop/pdp/123

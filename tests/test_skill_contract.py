@@ -73,6 +73,23 @@ def test_side_effect_skill_examples_cover_all_submit_intents() -> None:
     assert any(case["expected_intent"] == "ask_target_table" for case in examples["cases"])
 
 
+def test_outreach_skill_describes_current_refresh_and_dry_run_semantics() -> None:
+    spec = yaml.safe_load((SKILL_DIR / "skill.spec.yaml").read_text(encoding="utf-8"))
+    outreach = next(intent for intent in spec["intents"] if intent["id"] == "influencer_outreach_sync")
+
+    behavior = "\n".join(outreach["behavior_summary"])
+    assert "Existing `视频链接` rows are skipped" not in behavior
+    assert "existing `视频链接`" in behavior.lower()
+    assert outreach["optional_inputs"] == ["outreach_writeback_enabled"]
+    assert outreach["default_values"] == {"outreach_writeback_enabled": True}
+    assert "--writeback-enabled" in outreach["command"]
+
+    dry_run_case = next(case for case in yaml.safe_load(
+        (SKILL_DIR / "examples.eval.yaml").read_text(encoding="utf-8")
+    )["cases"] if case["id"] == "influencer-outreach-sync-dry-run")
+    assert dry_run_case["expected_inputs"] == {"outreach_writeback_enabled": False}
+
+
 def test_amazon_skill_contains_only_amazon_task_intents() -> None:
     spec = yaml.safe_load((AMAZON_SKILL_DIR / "skill.spec.yaml").read_text(encoding="utf-8"))
     examples = yaml.safe_load((AMAZON_SKILL_DIR / "examples.eval.yaml").read_text(encoding="utf-8"))

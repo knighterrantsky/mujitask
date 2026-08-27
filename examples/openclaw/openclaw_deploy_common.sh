@@ -440,6 +440,50 @@ install_framework_from_pyproject() {
   framework_dependency="$(python_json_get "dependency" "$framework_json" | tr -d '\r')"
   [[ -n "$framework_source" ]] || fail "automation-framework dependency source is missing in $pyproject_path."
 
+  if [[ "${MUJITASK_REUSE_INSTALLED_FRAMEWORK:-0}" == "1" ]]; then
+    if ! "$venv_python" - "$pyproject_path" "$framework_json" <<'PY'
+import importlib.metadata
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+pyproject_path = Path(sys.argv[1])
+framework = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+lock_path = pyproject_path.with_name("uv.lock")
+if not lock_path.exists():
+    raise SystemExit("uv.lock is required to verify the installed framework commit")
+lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+locked = next(
+    (item for item in lock.get("package", []) if item.get("name") == "automation-framework"),
+    None,
+)
+if not isinstance(locked, dict):
+    raise SystemExit("automation-framework is missing from uv.lock")
+locked_git = str((locked.get("source") or {}).get("git") or "")
+locked_commit = locked_git.rpartition("#")[2]
+if not locked_commit:
+    raise SystemExit("automation-framework uv.lock source has no commit")
+
+distribution = importlib.metadata.distribution("automation-framework")
+direct_url = json.loads(distribution.read_text("direct_url.json") or "{}")
+vcs_info = direct_url.get("vcs_info") or {}
+installed_url = str(direct_url.get("url") or "").removesuffix(".git")
+expected_url = str(framework.get("repo_url") or "").removesuffix(".git")
+if installed_url != expected_url:
+    raise SystemExit("installed automation-framework repository does not match pyproject.toml")
+if str(vcs_info.get("requested_revision") or "") != str(framework.get("ref") or ""):
+    raise SystemExit("installed automation-framework revision does not match pyproject.toml")
+if str(vcs_info.get("commit_id") or "") != locked_commit:
+    raise SystemExit("installed automation-framework commit does not match uv.lock")
+PY
+    then
+      fail "MUJITASK_REUSE_INSTALLED_FRAMEWORK=1 was requested, but the installed framework did not match pyproject.toml and uv.lock."
+    fi
+    log "Reusing installed automation-framework after repository, revision, and lock commit verification"
+    return 0
+  fi
+
   if [[ "$framework_kind" == "git" ]]; then
     local framework_repo_url framework_ref framework_slug framework_archive framework_root framework_install_requirement
     framework_repo_url="$(python_json_get "repo_url" "$framework_json" | tr -d '\r')"
@@ -823,10 +867,28 @@ if missing:
     raise SystemExit(f"Missing tasks: {', '.join(missing)}")
 PY
 
+  "$python_bin" - "$install_dir/contracts/workflow/tiktok_influencer_outreach_sync.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+contract = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+contract_revision = str(contract.get("contract_revision") or "")
+if contract_revision != "2026-08-17":
+    raise SystemExit(
+        "Unexpected tiktok_influencer_outreach_sync contract revision: "
+        f"{contract_revision or '<missing>'}"
+    )
+PY
+
   local required_files=(
     "SKILL.md"
+    "skill.spec.yaml"
+    "examples.eval.yaml"
     "skill.local.env"
     "skill.local.env.example"
+    "run_task.sh"
     "run_refresh_current_competitor_table_step.sh"
     "run_competitor_row_by_url_step.sh"
     "run_product_url_complete_step.sh"

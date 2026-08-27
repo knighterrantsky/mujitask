@@ -188,6 +188,61 @@ def test_lightweight_submit_rejects_worker_control_actions(tmp_path, monkeypatch
     assert not result_file.exists()
 
 
+def test_lightweight_submit_returns_nonzero_for_runtime_rejection(tmp_path, monkeypatch):
+    module = _load_lightweight_submit_module()
+    result_file = tmp_path / "result.json"
+    rejected = {
+        "status": "failed",
+        "control_action": "submit",
+        "request_id": "",
+        "request_status": "rejected",
+        "message": "Runtime DB health preflight rejected the request.",
+        "error_code": "runtime_db_connection_unhealthy",
+        "retryable": True,
+    }
+
+    monkeypatch.setattr(module, "_load_submitter", lambda *_args: lambda _params: rejected)
+
+    exit_code = module.main(
+        [
+            "--install-dir",
+            str(tmp_path),
+            "--task-name",
+            "tiktok_influencer_outreach_sync",
+            "--params-json",
+            json.dumps({"control_action": "submit"}),
+            "--result-file",
+            str(result_file),
+        ]
+    )
+
+    assert exit_code == 1
+    assert json.loads(result_file.read_text(encoding="utf-8")) == rejected
+
+
+def test_lightweight_submit_normalizer_preserves_runtime_rejection():
+    module = _load_run_skill_step_module()
+
+    normalized = module._normalize_lightweight_submit_payload(
+        task_name="tiktok_influencer_outreach_sync",
+        payload={
+            "status": "failed",
+            "request_status": "rejected",
+            "request_id": "",
+            "message": "Runtime DB health preflight rejected the request.",
+            "error_code": "runtime_db_connection_unhealthy",
+            "summary": {"total": 0, "counts": {"rejected": 1}},
+        },
+        accepted_message="accepted",
+    )
+
+    assert normalized["status"] == "failed"
+    assert normalized["request_status"] == "rejected"
+    assert normalized["request_id"] == ""
+    assert normalized["message"] == "Runtime DB health preflight rejected the request."
+    assert normalized["summary"] == {"total": 0, "counts": {"rejected": 1}}
+
+
 def test_resolve_browser_target_ignores_skill_local_browser_defaults(tmp_path, monkeypatch):
     module = _load_resolve_browser_target_module()
     skill_env = tmp_path / "skills" / "mujitask-tiktok-feishu-sync" / "skill.local.env"
@@ -1515,7 +1570,16 @@ def test_influencer_monitoring_parser_rejects_invalid_thresholds(flag, value, me
     assert message in capsys.readouterr().err
 
 
-def test_main_influencer_outreach_sync_returns_after_submit(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("argv", "expected_writeback"),
+    [
+        (["influencer-outreach-sync-submit"], "true"),
+        (["influencer-outreach-sync-submit", "--writeback-enabled", "false"], "false"),
+    ],
+)
+def test_main_influencer_outreach_sync_returns_after_submit(
+    tmp_path, monkeypatch, argv, expected_writeback
+):
     module = _load_run_skill_step_module()
     install_dir = tmp_path / "install"
     cli_bin = install_dir / ".venv" / "bin" / "automation-business-scaffold-run"
@@ -1561,21 +1625,24 @@ def test_main_influencer_outreach_sync_returns_after_submit(tmp_path, monkeypatc
     monkeypatch.setattr(module, "_run_lightweight_submit_capture_payload", fake_run_lightweight_submit_capture_payload)
     monkeypatch.setattr(module, "_emit_final_result", fake_emit_final_result)
 
-    exit_code = module.main(["influencer-outreach-sync-submit"])
+    exit_code = module.main(argv)
 
     assert exit_code == 0
     assert len(captured_calls) == 1
     assert captured_calls[0]["task_name"] == "tiktok_influencer_outreach_sync"
     params = list(captured_calls[0]["params"])
     assert "control_action=submit" in params
-    assert f"table_url={FEISHU_TABLE_URLS['tk_influencer_outreach']}" in params
-    assert f"target_table_url={FEISHU_TABLE_URLS['tk_influencer_outreach']}" in params
     assert "source_table_ref=feishu://mujitask/tk_influencer_outreach" in params
-    assert "target_table_ref=feishu://mujitask/tk_influencer_outreach" in params
-    assert "access_token_env=MUJITASK_FEISHU_ACCESS_TOKEN" in params
-    assert "fastmoss_phone_env=FASTMOSS_PHONE" in params
-    assert "fastmoss_password_env=FASTMOSS_PASSWORD" in params
-    assert "writeback_enabled=true" in params
+    assert not any(
+        param.startswith(
+            ("table_url=", "target_table_url=", "target_table_ref=", "table_refs=")
+        )
+        for param in params
+    )
+    assert not any(param.startswith("access_token_env=") for param in params)
+    assert not any(param.startswith("fastmoss_phone_env=") for param in params)
+    assert not any(param.startswith("fastmoss_password_env=") for param in params)
+    assert f"writeback_enabled={expected_writeback}" in params
     assert emitted["request_id"] == "req-outreach-123"
     assert emitted["request_status"] == "pending"
 

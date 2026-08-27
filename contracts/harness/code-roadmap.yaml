@@ -1272,6 +1272,7 @@ features:
       - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
+      - docs/ops/tk-influencer-outreach-contract-cutover.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - contracts/facts/product-fact-collection.yaml
@@ -1281,13 +1282,25 @@ features:
       - src/automation_business_scaffold/domains/tiktok/flows/outreach_product_videos.py
       - src/automation_business_scaffold/domains/tiktok/flows/outreach_creator_video_metrics.py
       - src/automation_business_scaffold/domains/tiktok/mappers/feishu_outreach_source_mapper.py
+      - src/automation_business_scaffold/control_plane/executor/runner.py
+      - skills/mujitask-tiktok-feishu-sync/skill.spec.yaml
+      - skills/mujitask-tiktok-feishu-sync/examples.eval.yaml
+      - skills/mujitask-tiktok-feishu-sync/SKILL.md
+      - skills/mujitask-tiktok-feishu-sync/run_task.sh
+      - skills/mujitask-tiktok-feishu-sync/run_skill_step.py
+      - skills/mujitask-tiktok-feishu-sync/lightweight_submit.py
+      - examples/openclaw/openclaw_deploy_common.sh
       - src/automation_business_scaffold/infrastructure/facts/fact_queries.py
       - tests/test_tiktok_influencer_outreach_sync.py
       - tests/test_tk_fact_store.py
+      - tests/test_run_skill_step.py
+      - tests/test_skill_contract.py
+      - tests/test_openclaw_deploy_utils.py
     source_contracts:
       - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
+      - docs/ops/tk-influencer-outreach-contract-cutover.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - contracts/facts/product-fact-collection.yaml
@@ -1295,6 +1308,8 @@ features:
       - docs/business/business-requirements.md
       - docs/business/requirements/tk-influencer-outreach.md
       - docs/arch/workflow-influencer-outreach-design.md
+      - docs/ops/README.md
+      - docs/ops/tk-influencer-outreach-contract-cutover.md
       - contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - src/automation_business_scaffold/contracts/workflow/tiktok_influencer_outreach_sync.yaml
       - contracts/harness/code-roadmap.yaml
@@ -1305,8 +1320,19 @@ features:
       - src/automation_business_scaffold/domains/tiktok/mappers/**
       - src/automation_business_scaffold/domains/tiktok/projections/**
       - src/automation_business_scaffold/infrastructure/facts/**
+      - src/automation_business_scaffold/control_plane/executor/runner.py
+      - skills/mujitask-tiktok-feishu-sync/skill.spec.yaml
+      - skills/mujitask-tiktok-feishu-sync/examples.eval.yaml
+      - skills/mujitask-tiktok-feishu-sync/SKILL.md
+      - skills/mujitask-tiktok-feishu-sync/run_task.sh
+      - skills/mujitask-tiktok-feishu-sync/run_skill_step.py
+      - skills/mujitask-tiktok-feishu-sync/lightweight_submit.py
+      - examples/openclaw/openclaw_deploy_common.sh
       - tests/test_tiktok_influencer_outreach_sync.py
       - tests/test_tk_fact_store.py
+      - tests/test_run_skill_step.py
+      - tests/test_skill_contract.py
+      - tests/test_openclaw_deploy_utils.py
     forbidden_paths:
       - .platform/**
       - AGENTS.md
@@ -1320,12 +1346,20 @@ features:
         - tests/test_workflow_architecture_manifests.py
         - tests/test_harness_code_roadmap.py
         - tests/test_completion_claim_gate.py
+        - tests/test_run_skill_step.py
+        - tests/test_skill_contract.py
+        - tests/test_openclaw_deploy_utils.py
       commands:
-        - uv run --extra dev pytest tests/test_tiktok_influencer_outreach_sync.py tests/test_tk_fact_store.py::test_tk_fact_store_records_video_creator_identity_and_metric_snapshots tests/test_tk_fact_store.py::test_tk_fact_store_lists_videos_by_product_and_creator
+        - uv run --extra dev pytest tests/test_tiktok_influencer_outreach_sync.py tests/test_tk_fact_store.py::test_tk_fact_store_records_video_creator_identity_and_metric_snapshots tests/test_tk_fact_store.py::test_tk_fact_store_lists_videos_by_product_and_creator tests/test_run_skill_step.py::test_main_influencer_outreach_sync_returns_after_submit tests/test_run_skill_step.py::test_lightweight_submit_returns_nonzero_for_runtime_rejection tests/test_run_skill_step.py::test_lightweight_submit_normalizer_preserves_runtime_rejection
         - uv run --extra dev pytest tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py
-        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py
+        - uv run --extra dev pytest tests/test_harness_code_roadmap.py tests/test_completion_claim_gate.py tests/test_skill_contract.py tests/test_openclaw_deploy_utils.py
     completion_rules:
-      - Source adapter reads SKUID, 达人ID, 视频链接, 视频发布时间, 检查时间, 播放量(W), 视频数量, and 更新时间 without skipping existing video-link rows.
+      - Source read uses only feishu://mujitask/tk_influencer_outreach, validates all nine required fields, applies the exact server filter 采集标签=T, and rejects any non-T adapter leakage.
+      - source_record_ids, force_full, top-level start_date/end_date, and caller trigger_date fail preflight even when empty; task date comes from task_request.created_at in Asia/Shanghai.
+      - Only the filtered T-row read snapshot can drive grouping, automatic windows, creator refresh jobs, writeback, and summary row counts.
+      - CLI and runner may default the canonical logical route but cannot pass physical table, view, filter, or schema policy overrides.
+      - Formal submit rejects non-contract fields, including mock FastMoss payloads, caller pagination caps, and credential-variable overrides.
+      - OpenClaw preserves Runtime rejected/failed submit status and supports explicit writeback-disabled acceptance runs without changing the default production writeback mode.
       - Product video jobs index tk_videos and tk_video_product_relations; list play_count is not used as final playback.
       - Creator metric refresh jobs query all known SKU + creator videos, require all overview calls to succeed, append video metric snapshots, aggregate metrics, and write the Feishu row.
       - Workflow has no standalone writeback_outreach_rows stage; row writeback is inside outreach_creator_video_metric_refresh.
