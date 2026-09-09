@@ -94,7 +94,11 @@ _AMAZON_IMAGE_TRANSFORM_SEGMENT = re.compile(
     re.IGNORECASE,
 )
 _IMAGE_BLOCK_COLOR_IMAGES = re.compile(r"[\"']colorImages[\"']\s*:")
-_IMAGE_BLOCK_INITIAL = re.compile(r"[\"']initial[\"']\s*:\s*\[")
+_IMAGE_BLOCK_INITIAL = re.compile(r"[\"']initial[\"']\s*:\s*")
+_IMAGE_BLOCK_PARSE_JSON = re.compile(
+    r"A\.\$\.parseJSON\(\s*(?P<string>'(?:[^'\\\r\n]|\\[^\r\n])*'"
+    r'|"(?:[^"\\\r\n]|\\[^\r\n])*")\s*\)'
+)
 _MAX_IMAGE_BLOCK_ARRAY_CHARS = 1024 * 1024
 _MAX_GALLERY_IMAGES = 100
 _VIDEO_MEDIA_MARKERS = ("video", "play-button", "spin", "360")
@@ -1570,10 +1574,29 @@ def _extract_image_block_media(document: _DocumentParser) -> dict[str, Any]:
             initial_match = _IMAGE_BLOCK_INITIAL.search(initial_window)
             if initial_match is None:
                 continue
-            array_start = (
-                color_match.end() + initial_match.start() + initial_match.group(0).rfind("[")
-            )
-            raw_array = _balanced_json_array(script, array_start)
+            value_start = color_match.end() + initial_match.end()
+            raw_array = _balanced_json_array(script, value_start)
+            if not raw_array:
+                wrapped = _IMAGE_BLOCK_PARSE_JSON.match(
+                    script, value_start, value_start + _MAX_IMAGE_BLOCK_ARRAY_CHARS
+                )
+                if wrapped is not None:
+                    # Decode the JS string first, then its JSON array; never execute page code.
+                    string_body = wrapped.group("string")[1:-1]
+                    json_body = re.sub(
+                        r'\\(?:x[0-9a-fA-F]{2}|[^\r\n])|"',
+                        lambda match: (
+                            "'"
+                            if match[0] == r"\'"
+                            else r"\""
+                            if match[0] == '"'
+                            else r"\u00" + match[0][2:]
+                            if match[0].startswith(r"\x")
+                            else match[0]
+                        ),
+                        string_body,
+                    )
+                    raw_array = _load_json('"' + json_body + '"')
             value = _load_json(raw_array)
             if not isinstance(value, list):
                 continue
