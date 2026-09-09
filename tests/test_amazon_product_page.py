@@ -327,7 +327,10 @@ def test_dom_gallery_does_not_infer_hires_asset_from_thumbnail_asset_id() -> Non
     }
 
 
-def test_image_block_gallery_binds_thumbnail_order_to_different_hires_asset_ids() -> None:
+@pytest.mark.parametrize("encoding", ["array", "single_quoted", "double_quoted", "js_escapes"])
+def test_image_block_gallery_binds_thumbnail_order_to_different_hires_asset_ids(
+    encoding: str,
+) -> None:
     html = """
     <html><body>
       <script>
@@ -351,6 +354,21 @@ def test_image_block_gallery_binds_thumbnail_order_to_different_hires_asset_ids(
       </div>
     </body></html>
     """
+    if encoding != "array":
+        start = html.index("[", html.index("'initial':"))
+        items, length = json.JSONDecoder().raw_decode(html[start:])
+        end = start + length
+        # Exercise both the JavaScript string layer and the nested JSON layer.
+        items[0]["caption"] = 'Owner\'s [gallery] "高清" \\ detail'
+        raw_array = json.dumps(items, ensure_ascii=False)
+        if encoding == "double_quoted":
+            argument = json.dumps(raw_array, ensure_ascii=False)
+        else:
+            argument = "'" + raw_array.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            if encoding == "js_escapes":
+                argument = argument.replace('"', r"\x22").replace("/", r"\/")
+                argument = argument.replace("高清", r"\u9ad8\u6e05")
+        html = html[:start] + "A.$.parseJSON( " + argument + " )" + html[end:]
 
     capture = extract_amazon_product_capture(
         html,
@@ -370,6 +388,43 @@ def test_image_block_gallery_binds_thumbnail_order_to_different_hires_asset_ids(
     assert capture["field_evidence"]["media.gallery_images"]["source_locator"] == (
         "ImageBlockATF.colorImages.initial"
     )
+    assert capture["field_evidence"]["media.gallery_images"]["status"] == "observed"
+
+
+@pytest.mark.parametrize(
+    "initial",
+    [
+        "A.$.parseJSON('[{bad json}]')",
+        "A.$.parseJSON('[]')",
+        "A.$.parseJSON('{}')",
+        'A.$.parseJSON(\'[{"hiRes":"https://m.media-amazon.com/images/I/a.jpg"}]\'',
+        'A.$.parseJSON(\'[{"hiRes":"https://m.media-amazon.com/images/I/a.jpg"}]\' + extra)',
+        'A.$.parseJSON(\'[{"thumb":"https://m.media-amazon.com/images/I/thumb._AC_US40_.jpg"}]\')',
+        'A.$.parseJSON(\'[{"isVideo":true,"hiRes":"https://m.media-amazon.com/images/I/a.jpg"}]\')',
+    ],
+)
+def test_invalid_or_non_image_parsejson_gallery_keeps_missing_evidence(initial: str) -> None:
+    html = """
+    <html><body>
+      <script>var ImageBlockATF = {'colorImages': {'initial': INITIAL}};</script>
+      <span id="productTitle">Gallery product</span>
+      <img id="landingImage" data-old-hires="https://m.media-amazon.com/images/I/main.jpg" />
+      <div id="altImages">
+        <img src="https://m.media-amazon.com/images/I/thumb._AC_US40_.jpg" />
+      </div>
+    </body></html>
+    """.replace("INITIAL", initial)
+
+    capture = extract_amazon_product_capture(
+        html,
+        requested_asin="B0CHILD001",
+        resolved_url="https://www.amazon.com/dp/B0CHILD001",
+        observed_at=OBSERVED_AT,
+    )
+
+    assert capture["media"]["main_image"] == {"url": "https://m.media-amazon.com/images/I/main.jpg"}
+    assert capture["media"]["gallery_images"] == []
+    assert capture["field_evidence"]["media.gallery_images"]["status"] == "missing"
 
 
 def test_media_mapping_prefers_hires_over_thumbnail_candidate() -> None:
