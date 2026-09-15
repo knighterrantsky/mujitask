@@ -101,6 +101,8 @@ owners:
 
   browser_operation_observability:
     paths:
+      - src/automation_business_scaffold/capabilities/browser/fastmoss_security_resolve_handler.py
+      - src/automation_business_scaffold/capabilities/browser/fastmoss_security/slider_challenge.py
       - src/automation_business_scaffold/infrastructure/browser/browser_bridge.py
       - src/automation_business_scaffold/capabilities/browser/tiktok_product_fetch_handler.py
       - src/automation_business_scaffold/capabilities/browser/tiktok/product_page.py
@@ -122,6 +124,7 @@ owners:
     paths:
       - src/automation_business_scaffold/capabilities/browser/**
     responsibilities:
+      - request_verification.py observes same-page captcha and business responses, issues one same-origin original GET when the page has not loaded it, and distinguishes missing browser evidence from HTTP replay failure under contracts/runtime/fastmoss-verification-chain.yaml
       - own browser_worker handlers that resolve provider security checks requiring a real browser
       - implement FastMoss security browser resolve behavior such as replaying the original failed FastMoss API request, solving the slider, and verifying MSG_SAFE_0001 is gone
       - return only redacted browser fallback evidence and cookie cache metadata
@@ -135,6 +138,7 @@ owners:
       - src/automation_business_scaffold/infrastructure/fastmoss/**
       - src/automation_business_scaffold/infrastructure/runtime/**
     responsibilities:
+      - http_session.py owns both per-request FastMoss signatures; generating fm-sig must not require a browser or a separate signing service
       - own FastMoss cookie cache context, load/save semantics, and redacted cache status
       - own FastMoss platform session/cookie recovery, login refresh persistence, and external-login conflict classification
       - persist browser-exported FastMoss cookies into fastmoss_session_cookie_cache

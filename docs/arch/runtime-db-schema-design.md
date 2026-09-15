@@ -6,6 +6,13 @@
 
 Runtime DB 是系统的执行控制面，负责保存任务、队列、worker claim、lease、heartbeat、retry、outbox、artifact 索引等运行状态。
 
+`monitor_tk_influencers` 的 FastMoss 恢复顺序由其 workflow contract 定义：
+API Job 领取时，即使父 stage 尚未切换，也检查同一请求的 fallback waiting Job；
+恢复后原 Job 的 pending/running（含延迟重试）也阻止后续相关 Job 被领取。
+原 Job 的恢复重试允许通过该等待检查，但仍遵守父请求状态、stage 和 available_at。
+此检查同时用于候选选择和领取更新。恢复额度以已有 `task_execution.payload.source_job_ids`
+为持久化事实，不新增 schema、DDL 或生产数据库权限。
+
 它不保存最终业务事实，不承担 TikTok / FastMoss / 飞书主体数据的主档职责。事实沉淀应进入 Fact DB；只有机器契约显式允许的长期业务对象进入 MinIO，其余运行文件只留在本地短期 artifact 目录。
 
 核心判断:

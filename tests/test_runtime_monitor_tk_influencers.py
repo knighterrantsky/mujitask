@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers import orchestrator
+from automation_business_scaffold.infrastructure.runtime.runtime_records import RuntimeTaskExecutionRecord
+
 from automation_business_scaffold.control_plane.executor.workflow_registry import (
     WORKFLOW_RUNTIME_MODULES,
     get_workflow_definition,
@@ -19,6 +28,188 @@ from automation_business_scaffold.domains.tiktok.flows.monitor_tk_influencers.or
     release_request_after_child_completion,
 )
 from automation_business_scaffold.domains.tiktok.tasks import monitor_tk_influencers as task_module
+
+
+class RecoveryStore:
+    def __init__(self):
+        self.jobs = [self.job("A")]
+        self.executions = []
+        self.request = SimpleNamespace(
+            request_id="req-recovery", payload={}, task_code=TASK_CODE,
+            status="waiting", current_stage=DISCOVERY_STAGE_CODE,
+        )
+
+    @staticmethod
+    def job(job_id, status="waiting"):
+        return {
+            "job_id": job_id, "job_code": "product_video_creator_discovery",
+            "status": status, "payload": {"stage_code": DISCOVERY_STAGE_CODE},
+            "result": {"fallback_required": True},
+        }
+
+    def list_api_worker_jobs_for_request(self, *, request_id, job_code=None):
+        return [job for job in self.jobs if not job_code or job["job_code"] == job_code]
+
+    def list_task_executions(self, **kwargs):
+        return self.executions
+
+    def load_task_request(self, **kwargs):
+        return self.request
+
+    def update_task_request(self, **kwargs):
+        self.request.__dict__.update(kwargs)
+
+    def enqueue_task_executions(self, *, items, request_id, item_code, workflow_code):
+        for item in items:
+            self.executions.append(RuntimeTaskExecutionRecord(
+                **deepcopy(item), execution_id=str(len(self.executions) + 1),
+                request_id=request_id, item_code=item_code, workflow_code=workflow_code,
+                status="pending", queue_seq=len(self.executions),
+            ))
+        return {"created_count": len(items)}
+
+    def requeue_waiting_api_worker_job(self, *, job_id, payload, **kwargs):
+        next(job for job in self.jobs if job["job_id"] == job_id).update(
+            status="pending", payload=payload, result={},
+        )
+
+    def mark_waiting_api_worker_job_failed(self, *, job_id, **kwargs):
+        next(job for job in self.jobs if job["job_id"] == job_id).update(
+            status="failed", result=kwargs["result"],
+        )
+
+    def advance(self):
+        return advance_stage(
+            store=self, request=self.request, workflow=orchestrator.WORKFLOW,
+            stage_code=orchestrator.FALLBACK_STAGE_CODE,
+        )
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed"])
+def test_recovery_consumes_original_sources_when_waiting_set_grows(outcome):
+    store = RecoveryStore()
+    store.advance()
+    store.executions[0] = replace(store.executions[0], status="finished", result_status=outcome)
+    store.jobs.append(store.job("B"))
+    store.advance()
+    assert len(store.executions) == 1
+    assert store.jobs[0]["status"] == ("pending" if outcome == "success" else "failed")
+    assert store.jobs[1]["status"] == "waiting"
+
+
+def test_recovery_waits_for_active_execution_and_retries_source_before_new_recovery():
+    store = RecoveryStore()
+    store.advance()
+    store.jobs.append(store.job("B"))
+    store.advance()
+    assert len(store.executions) == 1
+    store.executions[0] = replace(store.executions[0], status="finished", result_status="success")
+    store.advance()
+    store.advance()
+    assert len(store.executions) == 1
+    assert store.jobs[0]["payload"]["fastmoss_security_browser_fallback_attempt"] == 1
+    assert release_request_after_child_completion(store, request_id=store.request.request_id) == []
+    store.request.current_stage = orchestrator.FALLBACK_STAGE_CODE
+    assert release_request_after_child_completion(store, request_id=store.request.request_id)
+    assert store.request.current_stage == DISCOVERY_STAGE_CODE
+    store.jobs[0]["status"] = "finished"
+    store.advance()
+    assert len(store.executions) == 2
+    assert store.executions[1].payload["source_job_ids"] == ["B"]
+
+
+def test_recovery_dispatches_one_source_and_does_not_repeat_after_replayed_fallback():
+    store = RecoveryStore()
+    store.jobs.append(store.job("B"))
+    store.advance()
+    assert store.executions[0].payload["source_job_ids"] == ["A"]
+    store.executions[0] = replace(store.executions[0], status="finished", result_status="success")
+    store.advance()
+    store.jobs[0].update(status="waiting", result={"fallback_required": True})
+    store.advance()
+    assert store.jobs[0]["status"] == "failed"
+    assert len(store.executions) == 1
+
+
+def test_legacy_batch_result_is_consumed_serially_after_partial_requeue():
+    store = RecoveryStore()
+    store.advance()
+    payload = {**store.executions[0].payload, "source_job_ids": ["A", "B"]}
+    store.executions[0] = replace(store.executions[0], payload=payload, status="finished", result_status="success")
+    store.jobs.append(store.job("B"))
+    store.advance()
+    assert [job["status"] for job in store.jobs] == ["pending", "waiting"]
+    store.advance()
+    assert store.jobs[1]["status"] == "waiting"
+    store.jobs[0]["status"] = "finished"
+    store.advance()
+    assert store.jobs[1]["status"] == "pending"
+    assert len(store.executions) == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed"])
+def test_monitor_claim_blocks_following_jobs_until_recovery_source_terminal(runtime_db_url, outcome):
+    from automation_business_scaffold.infrastructure.runtime.runtime_store import RuntimeStore
+
+    store = RuntimeStore(db_url=runtime_db_url)
+    request = store.submit_task_request(
+        project_code="automation-business-scaffold", task_code=TASK_CODE, payload={},
+        requested_by="pytest",
+    )
+    store.update_task_request(
+        request_id=request.request_id, status="waiting", current_stage=DISCOVERY_STAGE_CODE,
+    )
+    store.enqueue_api_worker_jobs(
+        request_id=request.request_id, task_code=TASK_CODE,
+        job_code="product_video_creator_discovery",
+        jobs=[{
+            "business_key": key, "dedupe_key": key,
+            "payload": {"stage_code": DISCOVERY_STAGE_CODE},
+        } for key in ("A", "B")],
+    )
+    claim_args = dict(worker_id="test-worker", lease_seconds=30, request_id=request.request_id)
+    source = store.claim_next_api_worker_job(**claim_args)
+    assert source["business_key"] == "A"
+    store.mark_api_worker_job_waiting(
+        job_id=source["job_id"], run_id=source["run_id"], summary={},
+        result={"handler_result": {"status": "fallback_required", "result": {}}},
+        stage="browser_fallback_required",
+    )
+    # The parent has NOT changed stage yet; the next serial worker iteration must stop.
+    assert store.claim_next_api_worker_job(**claim_args) is None
+    advance_stage(store=store, request=request, workflow=orchestrator.WORKFLOW,
+                  stage_code=orchestrator.FALLBACK_STAGE_CODE)
+    executions = store.list_task_executions(request_id=request.request_id)
+    assert len(executions) == 1
+    assert executions[0].payload["source_job_ids"] == [source["job_id"]]
+    assert store.claim_next_api_worker_job(**claim_args) is None
+    with store._engine.begin() as connection:
+        connection.execute(store._text(
+            "UPDATE task_execution SET status='finished', result_status=:outcome "
+            "WHERE execution_id=:execution_id"
+        ), {"outcome": outcome, "execution_id": executions[0].execution_id})
+    advance_stage(store=store, request=request, workflow=orchestrator.WORKFLOW,
+                  stage_code=orchestrator.FALLBACK_STAGE_CODE)
+    if outcome == "success":
+        # Even an ordinary delayed retry of A must block B.
+        with store._engine.begin() as connection:
+            connection.execute(store._text(
+                "UPDATE api_worker_job SET available_at=:available_at WHERE job_id=:job_id"
+            ), {"available_at": 9999999999, "job_id": source["job_id"]})
+        assert store.claim_next_api_worker_job(**claim_args) is None
+        with store._engine.begin() as connection:
+            connection.execute(store._text(
+                "UPDATE api_worker_job SET available_at=0 WHERE job_id=:job_id"
+            ), {"job_id": source["job_id"]})
+        retry = store.claim_next_api_worker_job(**claim_args)
+        assert retry["job_id"] == source["job_id"]
+        assert store.claim_next_api_worker_job(**claim_args) is None
+        store.mark_api_worker_job_success(
+            job_id=retry["job_id"], run_id=retry["run_id"], summary={},
+            result={"status": "success"}, stage="completed",
+        )
+    following = store.claim_next_api_worker_job(**claim_args)
+    assert following["business_key"] == "B"
 
 
 def test_monitor_workflow_is_a_registered_independent_formal_task() -> None:

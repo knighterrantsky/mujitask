@@ -126,6 +126,62 @@ def _default_nonce_factory() -> str:
     return "".join(secrets.choice(string.digits) for _ in range(8))
 
 
+def build_fm_sig(path: str, params: Mapping[str, Any], *, source: str = "pc") -> str:
+    """Match frontend __SIG__.gen; see fastmoss-known-interfaces.md section 9.13."""
+    query = urlencode(sorted((key, _coerce_str(value)) for key, value in params.items() if value is not None))
+    text = f"{path}?{query.replace('~', '%7E')}" if query else path
+    metadata = f"source={source}"
+    mask = 0xFFFFFFFF
+    seed = 0
+    for char in "asjdajgo3it4398t98a":
+        seed = (31 * seed + ord(char)) & mask
+    if seed >= 0x80000000:
+        seed -= 0x100000000
+    entropy, sequence = 12648430, 1
+    mixed = []
+    for index in range(max(len(text), len(metadata))):
+        value = (31 * ord(text[index % len(text)]) ^ 17 * ord(metadata[index % len(metadata)])
+                 ^ ((seed >> (index % 5 + 1)) & 255)) & 255
+        value = ((value << 3) | (value >> 5)) ^ ((7 * index) & 255)
+        noise = (73 * index ^ (index << 1) ^ (index >> 3) ^ 90) & 255
+        state = (seed + index) & mask
+        for _ in range(3):
+            # The frontend uses Number multiplication, then signed 32-bit coercion.
+            state = (int(float(state) * 1664525 + 1013904223) & mask) ^ ((state & mask) >> 7)
+            if state >= 0x80000000:
+                state -= 0x100000000
+        sequence ^= state & 255
+        value = (value + ((noise ^ state) & 255)) & 255
+        if index % 6 == 0:
+            sequence += index or 1
+            if sequence & 7 == 3:
+                entropy = ((entropy << 1) ^ 4660) & mask
+        mixed.append(value)
+    even, odd = 0, 0
+    for index in range(0, len(mixed), 2):
+        even = ((even << 5) ^ mixed[index]) & mask
+        odd = ((odd << 3) ^ (mixed[index + 1] if index + 1 < len(mixed) else 0)) & mask
+    folded = even
+    for index in range(3):
+        folded = (((folded << 5) | (folded >> 3)) ^ (97 * index)) & mask
+    folded ^= even ^ odd
+    result = []
+    for index in range(64):
+        offset = (index + seed) & 255
+        noise = (73 * offset ^ (offset << 1) ^ (offset >> 3) ^ 90) & 255
+        value = ((folded >> (index % 32)) & 255) ^ mixed[index % len(mixed)] ^ noise
+        rotation = index % 5 + 1
+        value = ((value << rotation) | (value >> (8 - rotation))) & 255
+        checksum = 0
+        for position, byte in enumerate((value, index, seed & 255)):
+            checksum = ((checksum ^ byte) + 7 * position) & 255
+        value = (value + checksum) & 255
+        value ^= (entropy >> (index % 8)) & 255
+        value = (value + ((131 * index) & 255)) & 255
+        result.append((string.digits + string.ascii_lowercase)[value % 36])
+    return "".join(result)
+
+
 def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
 
@@ -537,6 +593,9 @@ class FastMossHTTPSession:
             )
             if fm_sign:
                 request_headers["fm-sign"] = fm_sign
+                request_headers["fm-sig"] = build_fm_sig(
+                    path, signed_params_with_nonce, source=request_headers["source"],
+                )
             url = self._build_url(path)
 
             try:
@@ -885,7 +944,6 @@ class FastMossHTTPSession:
             referer=self._build_goods_detail_referer(normalized_product_id),
             region=self.default_region,
             stage="product_videos.list",
-            sign_request=False,
         )
         return payload
 

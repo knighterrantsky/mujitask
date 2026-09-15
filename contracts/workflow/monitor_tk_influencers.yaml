@@ -62,6 +62,21 @@ stages:
     job_codes:
       - fastmoss_security_browser_resolve
     maximum_attempts_per_waiting_job: 1
+    recovery_order:
+      scope: same_request_fastmoss_jobs
+      pause_on: source_job_waiting_for_fallback
+      dispatch: one_source_job_immediately_without_waiting_for_batch
+      resume: original_job_terminal_after_recovery
+      final_recovery_failure: fail_source_job_then_continue_until_three_consecutive_source_recovery_failures
+      verification_chain: contracts/runtime/fastmoss-verification-chain.yaml
+      attempt_reservation: durable_task_execution_source_job_ids_at_dispatch
+      result_matching: persisted_source_job_ids_not_current_waiting_set_digest
+      active_execution_policy: wait_without_dispatching_another_recovery
+      compatibility:
+        legacy_batched_executions: consume_each_source_result_serially
+        legacy_attempt_counter: still_blocks_additional_recovery
+        schema_migration: none
+        old_workers: stop_before_upgrade_or_rollback_to_avoid_old_claim_semantics
   - code: sync_monitored_influencers
     mode: worker_jobs
     job_codes:

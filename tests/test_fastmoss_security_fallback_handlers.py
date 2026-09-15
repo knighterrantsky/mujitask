@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +12,77 @@ from automation_business_scaffold.capabilities.fact_sources.fastmoss import shop
 from automation_business_scaffold.capabilities.fact_sources.fastmoss import video_fetch_handler as video_module
 from automation_business_scaffold.contracts.handler.contract import HandlerContext
 from automation_business_scaffold.infrastructure.fastmoss.http_session import FastMossHTTPError, FastMossSessionConflictError
+
+
+@pytest.mark.parametrize("failure", ["", "navigation", "callback"])
+def test_browser_recovery_reports_real_operations_across_rounds(monkeypatch, failure):
+    from automation_business_scaffold.capabilities.browser import fastmoss_security_resolve_handler as module
+
+    events = []
+    opened = []
+    verified = []
+
+    def progress(operation, **kwargs):
+        if failure == "callback":
+            raise RuntimeError("observer unavailable")
+        events.append((operation, kwargs["details"]))
+
+    @contextmanager
+    def open_page(**kwargs):
+        assert kwargs["progress_callback"] is progress
+        opened.append(True)
+        yield SimpleNamespace(page=object(), raw_page=object())
+
+    def goto(*args, **kwargs):
+        if failure != "callback":
+            assert events[-1][0] == "fastmoss_page_goto"
+            assert events[-1][1]["state"] == "started"
+        if failure == "navigation":
+            raise RuntimeError("secret-page-url")
+
+    def verify(*args, **kwargs):
+        verified.append(True)
+        return {"verified": len(verified) > 1, "response_code": "200" if len(verified) > 1 else "MSG_SAFE_0001"}
+
+    def slider(*args, **kwargs):
+        assert kwargs["progress_callback"] is progress
+        return {"attempted": False, "resolved": True}
+
+    cookies = [{"name": "fd_tk", "value": "secret-cookie", "domain": ".fastmoss.com"}]
+    monkeypatch.setattr(module, "open_automation_page", open_page)
+    monkeypatch.setattr(module, "_page_goto", goto)
+    monkeypatch.setattr(module, "_safe_wait_for_timeout", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_read_fastmoss_slider_state", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_capture_fastmoss_browser_diagnostic_artifacts", lambda *a, **k: [])
+    monkeypatch.setattr(module, "_export_fastmoss_browser_cookies", lambda *a, **k: cookies)
+    monkeypatch.setattr(module, "_reset_fastmoss_browser_session", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_bootstrap_fastmoss_login_cookies", lambda *a, **k: {"cookies": cookies})
+    monkeypatch.setattr(module, "_import_fastmoss_browser_cookies", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_try_resolve_fastmoss_slider_security_check", slider)
+    monkeypatch.setattr(module, "_verify_original_request_with_cookies_result", verify)
+    monkeypatch.setattr(module, "_save_browser_cookies_to_cache", lambda **k: {})
+    context = HandlerContext(
+        request_id="req-progress", job_id="job-progress", handler_code=module.HANDLER_CODE,
+        worker_type="browser_worker", runtime_table="task_execution",
+        payload={"search_request": {"keyword": "test"}, "fastmoss_browser_max_attempts": 2},
+        metadata={"progress_callback": progress},
+    )
+    result = module.fastmoss_security_browser_resolve_handler(context)
+    assert result.status == ("failed" if failure == "navigation" else "success")
+    assert len(opened) == (1 if failure == "navigation" else 2)
+    if failure == "callback":
+        return
+    starts = {details["operation_id"] for _, details in events if details["state"] == "started"}
+    terminals = {details["operation_id"] for _, details in events if details["state"] in {"completed", "failed"}}
+    assert starts == terminals
+    assert "secret-cookie" not in str(events)
+    assert "secret-page-url" not in str(events)
+    if failure == "navigation":
+        assert events[-1][0] == "fastmoss_page_goto"
+        assert events[-1][1]["state"] == "failed"
+    else:
+        assert sum(op == "fastmoss_page_goto" and d["state"] == "completed" for op, d in events) == 2
+        assert {op for op, _ in events} >= {"fastmoss_session_reset", "fastmoss_request_verification", "fastmoss_slider_resolution"}
 
 
 def _context(handler_code: str, payload: dict[str, Any]) -> HandlerContext:
