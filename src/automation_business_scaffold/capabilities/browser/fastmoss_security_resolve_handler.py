@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import nullcontext
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
@@ -34,6 +35,9 @@ from automation_business_scaffold.capabilities.browser.fastmoss_security.slider_
     _try_resolve_fastmoss_slider_security_check,
 )
 from automation_business_scaffold.capabilities.browser.fastmoss_security.request_verification import (
+    observe_browser_verification,
+    request_original_api_in_browser,
+    browser_verification_failure_stage,
     FASTMOSS_AUTH_VERIFICATION_CODES,
     FASTMOSS_PRODUCT_SEARCH_ENDPOINT,
     FASTMOSS_SECURITY_VERIFICATION_CODES,
@@ -57,7 +61,7 @@ from automation_business_scaffold.contracts.handler.shared import (
     first_non_empty,
     success_result,
 )
-from automation_business_scaffold.infrastructure.browser.browser_bridge import open_automation_page
+from automation_business_scaffold.infrastructure.browser.browser_bridge import browser_operation, open_automation_page
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
 )
@@ -87,6 +91,7 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
                 search_request=search_request,
                 verification_request=verification_request,
                 fastmoss_settings=fastmoss_settings,
+                progress_callback=context.metadata.get("progress_callback"),
             )
 
         cookies = coerce_mapping_list(browser_result.get("cookies"))
@@ -97,6 +102,18 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
                 payload,
                 browser_result,
                 verified_path=verified_path,
+            )
+        chain = coerce_mapping(browser_result.get("verification_chain"))
+        if chain.get("failure_stage"):
+            error = build_error(
+                error_type="security_verification", error_code="fastmoss_security_verification_required",
+                message="FastMoss verification chain did not confirm business access.",
+                retryable=False, details={"verification_failure_stage": chain["failure_stage"]},
+            )
+            return failed_result(
+                context, error=error,
+                summary=_browser_resolve_failure_summary(browser_result, error_code=error.error_code),
+                result=_browser_resolve_result_payload(payload, browser_result, resolved=False, error_details=error.details),
             )
         if not cookies:
             raise ValueError("FastMoss browser security resolve did not export cookies.")
@@ -209,6 +226,7 @@ def fastmoss_security_browser_resolve_handler(context: HandlerContext) -> Handle
         "browser_diagnostic_artifact_refs": coerce_mapping_list(browser_result.get("browser_diagnostic_artifact_refs")),
         "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
         "browser_attempts": coerce_mapping_list(browser_result.get("browser_attempts")),
+        "verification_chain": coerce_mapping(browser_result.get("verification_chain")),
     }
     return success_result(context, summary=summary, result=result)
 
@@ -258,6 +276,7 @@ def _browser_resolve_failure_summary(browser_result: Mapping[str, Any], *, error
             "data_id": first_non_empty(verification.get("data_id")),
             "ext_is_login": first_non_empty(verification.get("ext_is_login")),
             "error_code": error_code,
+            "verification_failure_stage": coerce_mapping(browser_result.get("verification_chain")).get("failure_stage"),
             "slider_attempted": bool(slider_resolution.get("attempted")),
             "slider_resolved": bool(slider_resolution.get("resolved")),
             "slider_reason": first_non_empty(slider_resolution.get("reason")),
@@ -321,6 +340,7 @@ def _browser_resolve_result_payload(
             ),
             "login_cookie_bootstrap": coerce_mapping(browser_result.get("login_cookie_bootstrap")),
             "browser_attempts": coerce_mapping_list(browser_result.get("browser_attempts")),
+            "verification_chain": coerce_mapping(browser_result.get("verification_chain")),
         }
     )
 
@@ -331,6 +351,7 @@ def _resolve_fastmoss_security_with_browser(
     search_request: Mapping[str, Any],
     verification_request: Mapping[str, Any],
     fastmoss_settings: Mapping[str, Any],
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     timeout_ms = _positive_int(
         first_non_empty(payload.get("browser_timeout_ms"), payload.get("fastmoss_browser_timeout_ms")),
@@ -415,6 +436,9 @@ def _resolve_fastmoss_security_with_browser(
         payload.get("slider_captcha_audit_dir"),
         DEFAULT_FASTMOSS_SLIDER_AUDIT_DIR,
     )
+    chain_mode = payload.get("verification_chain_revision") == 1
+    if chain_mode:
+        max_browser_attempts = 1
     browser_attempts: list[dict[str, Any]] = []
     last_result: dict[str, Any] = {}
     for browser_attempt_index in range(1, max_browser_attempts + 1):
@@ -440,17 +464,24 @@ def _resolve_fastmoss_security_with_browser(
             provider_name=provider_name,
             headless=coerce_bool(payload.get("browser_headless"), default=False),
             force_open=coerce_bool(payload.get("browser_force_open"), default=False),
-        ) as browser_session:
+            progress_callback=progress_callback,
+        ) as browser_session, (
+            observe_browser_verification(
+                browser_session.raw_page, verification_request, base_url=str(fastmoss_settings["base_url"])
+            ) if chain_mode else nullcontext({})
+        ) as chain_evidence:
             if attempt_clear_browser_session:
-                browser_session_reset = _reset_fastmoss_browser_session(
-                    browser_session.raw_page,
-                    base_url=str(fastmoss_settings["base_url"]),
-                )
+                with browser_operation(progress_callback, "fastmoss_session_reset"):
+                    browser_session_reset = _reset_fastmoss_browser_session(
+                        browser_session.raw_page,
+                        base_url=str(fastmoss_settings["base_url"]),
+                    )
             else:
-                existing_browser_cookies = _export_fastmoss_browser_cookies(
-                    browser_session.raw_page,
-                    base_url=str(fastmoss_settings["base_url"]),
-                )
+                with browser_operation(progress_callback, "fastmoss_cookie_export"):
+                    existing_browser_cookies = _export_fastmoss_browser_cookies(
+                        browser_session.raw_page,
+                        base_url=str(fastmoss_settings["base_url"]),
+                    )
                 existing_browser_cookie_snapshot = _cookie_snapshot_from_browser_cookies(existing_browser_cookies)
             if not use_profile_only and _should_import_fastmoss_login_cookies(
                 payload,
@@ -458,18 +489,20 @@ def _resolve_fastmoss_security_with_browser(
                 require_config_login=attempt_require_config_login,
                 clear_browser_session=attempt_clear_browser_session,
             ):
-                login_cookie_bootstrap = _bootstrap_fastmoss_login_cookies(
-                    db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
-                    fastmoss_settings=fastmoss_settings,
-                )
+                with browser_operation(progress_callback, "fastmoss_login_bootstrap"):
+                    login_cookie_bootstrap = _bootstrap_fastmoss_login_cookies(
+                        db_url=_runtime_db_url(payload, fastmoss_settings=fastmoss_settings),
+                        fastmoss_settings=fastmoss_settings,
+                    )
                 login_cookies = coerce_mapping_list(login_cookie_bootstrap.get("cookies"))
                 if attempt_require_config_login and not login_cookies:
                     raise ValueError("FastMoss browser fallback requires configured FastMoss login cookies.")
-                imported_cookie_status = _import_fastmoss_browser_cookies(
-                    browser_session.raw_page,
-                    cookies=login_cookies,
-                    base_url=str(fastmoss_settings["base_url"]),
-                )
+                with browser_operation(progress_callback, "fastmoss_cookie_import"):
+                    imported_cookie_status = _import_fastmoss_browser_cookies(
+                        browser_session.raw_page,
+                        cookies=login_cookies,
+                        base_url=str(fastmoss_settings["base_url"]),
+                    )
             else:
                 login_cookie_bootstrap = {
                     "status": {
@@ -483,23 +516,27 @@ def _resolve_fastmoss_security_with_browser(
                     "reason": "browser_profile_cookie_reused",
                     "imported_count": 0,
                 }
-            _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
-            _safe_wait_for_timeout(browser_session.page, 1_000)
-            initial_slider_state = _read_fastmoss_slider_state(browser_session.page)
-            diagnostic_artifact_refs.extend(
-                _capture_fastmoss_browser_diagnostic_artifacts(
-                    browser_session.page,
-                    raw_page=browser_session.raw_page,
-                    audit_dir=audit_dir,
-                    search_url=security_page_url,
-                    label="after_security_page_goto",
-                    state={
-                        "browser_attempt_index": browser_attempt_index,
-                        "slider_state": initial_slider_state,
-                        "security_page_url": security_page_url,
-                    },
+            with browser_operation(progress_callback, "fastmoss_page_goto"):
+                _page_goto(browser_session.page, security_page_url, timeout_ms=timeout_ms)
+            with browser_operation(progress_callback, "fastmoss_page_wait"):
+                _safe_wait_for_timeout(browser_session.page, 1_000)
+            with browser_operation(progress_callback, "fastmoss_slider_state"):
+                initial_slider_state = _read_fastmoss_slider_state(browser_session.page)
+            with browser_operation(progress_callback, "fastmoss_browser_diagnostics"):
+                diagnostic_artifact_refs.extend(
+                    _capture_fastmoss_browser_diagnostic_artifacts(
+                        browser_session.page,
+                        raw_page=browser_session.raw_page,
+                        audit_dir=audit_dir,
+                        search_url=security_page_url,
+                        label="after_security_page_goto",
+                        state={
+                            "browser_attempt_index": browser_attempt_index,
+                            "slider_state": initial_slider_state,
+                            "security_page_url": security_page_url,
+                        },
+                    )
                 )
-            )
             slider_resolver_config = (
                 coerce_mapping(payload.get("fastmoss_slider_captcha_resolver_config"))
                 or coerce_mapping(payload.get("slider_captcha_resolver_config"))
@@ -513,60 +550,112 @@ def _resolve_fastmoss_security_with_browser(
                     **slider_resolver_config,
                     "piece_image_source": slider_piece_image_source,
                 }
-            slider_resolution = _try_resolve_fastmoss_slider_security_check(
-                browser_session.page,
-                automation_page=browser_session,
-                raw_page=browser_session.raw_page,
-                search_url=security_page_url,
-                max_attempts=_positive_int(
-                    payload.get("fastmoss_slider_max_attempts"),
-                    DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
-                ),
-                appear_timeout_ms=slider_appear_timeout_ms,
-                settle_ms=_positive_int(payload.get("fastmoss_slider_settle_ms"), DEFAULT_FASTMOSS_SLIDER_SETTLE_MS),
-                confirm_ms=_positive_int(
-                    payload.get("fastmoss_slider_confirm_ms"),
-                    DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS,
-                ),
-                audit_dir=audit_dir,
-                provider_config=(
-                    coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
-                    or coerce_mapping(payload.get("slider_captcha_provider_config"))
-                ),
-                resolver_config=slider_resolver_config,
-                selectors=(
-                    coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
-                    or coerce_mapping(payload.get("slider_captcha_selectors"))
-                ),
-            )
-            diagnostic_artifact_refs.extend(
-                _capture_fastmoss_browser_diagnostic_artifacts(
+            with browser_operation(progress_callback, "fastmoss_slider_resolution"):
+                slider_resolution = _try_resolve_fastmoss_slider_security_check(
                     browser_session.page,
+                    automation_page=browser_session,
+                    progress_callback=progress_callback,
                     raw_page=browser_session.raw_page,
-                    audit_dir=audit_dir,
                     search_url=security_page_url,
-                    label="after_slider_resolution",
-                    state={
-                        "browser_attempt_index": browser_attempt_index,
-                        "slider_resolution": slider_resolution,
-                        "security_page_url": security_page_url,
-                    },
+                    max_attempts=min(_positive_int(
+                        payload.get("fastmoss_slider_max_attempts"),
+                        DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
+                    ), 3) if chain_mode else _positive_int(
+                        payload.get("fastmoss_slider_max_attempts"), DEFAULT_FASTMOSS_SLIDER_ATTEMPTS,
+                    ),
+                    appear_timeout_ms=slider_appear_timeout_ms,
+                    settle_ms=_positive_int(payload.get("fastmoss_slider_settle_ms"), DEFAULT_FASTMOSS_SLIDER_SETTLE_MS),
+                    confirm_ms=_positive_int(
+                        payload.get("fastmoss_slider_confirm_ms"),
+                        DEFAULT_FASTMOSS_SLIDER_CONFIRM_MS,
+                    ),
+                    audit_dir=audit_dir,
+                    provider_config=(
+                        coerce_mapping(payload.get("fastmoss_slider_captcha_provider_config"))
+                        or coerce_mapping(payload.get("slider_captcha_provider_config"))
+                    ),
+                    resolver_config=slider_resolver_config,
+                    selectors=(
+                        coerce_mapping(payload.get("fastmoss_slider_captcha_selectors"))
+                        or coerce_mapping(payload.get("slider_captcha_selectors"))
+                    ),
+                    **({"business_verified": lambda: not browser_verification_failure_stage(chain_evidence)} if chain_mode else {}),
                 )
-            )
+            with browser_operation(progress_callback, "fastmoss_browser_diagnostics"):
+                diagnostic_artifact_refs.extend(
+                    _capture_fastmoss_browser_diagnostic_artifacts(
+                        browser_session.page,
+                        raw_page=browser_session.raw_page,
+                        audit_dir=audit_dir,
+                        search_url=security_page_url,
+                        label="after_slider_resolution",
+                        state={
+                            "browser_attempt_index": browser_attempt_index,
+                            "slider_resolution": slider_resolution,
+                            "security_page_url": security_page_url,
+                        },
+                    )
+                )
             cookies: list[dict[str, Any]] = []
             verification: dict[str, Any] = {}
+            if chain_mode:
+                confirmation_deadline = time.monotonic() + 5.0
+                if browser_verification_failure_stage(chain_evidence) == "browser_business":
+                    chain_evidence["browser_probe_attempted"] = True
+                    with browser_operation(progress_callback, "fastmoss_browser_business_probe") as operation:
+                        try:
+                            request_original_api_in_browser(
+                                browser_session.raw_page, verification_request,
+                                base_url=str(fastmoss_settings["base_url"]), timeout_ms=5000,
+                            )
+                        except Exception as exc:
+                            operation.suppress(exc)
+                            chain_evidence["browser_probe_error_class"] = type(exc).__name__
+                while browser_verification_failure_stage(chain_evidence) and time.monotonic() < confirmation_deadline:
+                    with browser_operation(progress_callback, "fastmoss_confirmation_wait"):
+                        _safe_wait_for_timeout(browser_session.page, 250)
+                chain_evidence["failure_stage"] = browser_verification_failure_stage(chain_evidence)
+                with browser_operation(progress_callback, "fastmoss_cookie_export"):
+                    cookies = _export_fastmoss_browser_cookies(
+                        browser_session.raw_page, base_url=str(fastmoss_settings["base_url"]),
+                    )
+                verification = {
+                    "verified": False, "verified_path": verification_request["path"],
+                    "response_code": chain_evidence["browser_response_code"],
+                    "error_code": "fastmoss_security_verification_required",
+                }
+                if not chain_evidence["failure_stage"]:
+                    chain_evidence["http_replayed"] = True
+                    with browser_operation(progress_callback, "fastmoss_request_verification") as operation:
+                        try:
+                            verification = _verify_original_request_with_cookies_result(
+                                verification_request, fastmoss_settings=fastmoss_settings,
+                                cookies=cookies, default_referer=security_page_url,
+                            )
+                        except FastMossHTTPError as exc:
+                            operation.suppress(exc)
+                            chain_evidence["http_status_code"] = exc.status_code
+                            verification = {
+                                "verified": False, "verified_path": verification_request["path"],
+                                "error_code": "fastmoss_security_browser_resolve_http_failed",
+                            }
+                    chain_evidence["http_verified"] = verification.get("verified") is True
+                    if not chain_evidence["http_verified"]:
+                        chain_evidence["failure_stage"] = "http_replay"
             verify_started_at = time.monotonic()
-            while True:
-                cookies = _export_fastmoss_browser_cookies(
-                    browser_session.raw_page,
-                    base_url=str(fastmoss_settings["base_url"]),
-                )
-                verification = _verify_original_request_with_cookies_result(
-                    verification_request,
-                    fastmoss_settings=fastmoss_settings,
-                    cookies=cookies,
-                    default_referer=security_page_url,
-                )
+            while not chain_mode:
+                with browser_operation(progress_callback, "fastmoss_cookie_export"):
+                    cookies = _export_fastmoss_browser_cookies(
+                        browser_session.raw_page,
+                        base_url=str(fastmoss_settings["base_url"]),
+                    )
+                with browser_operation(progress_callback, "fastmoss_request_verification"):
+                    verification = _verify_original_request_with_cookies_result(
+                        verification_request,
+                        fastmoss_settings=fastmoss_settings,
+                        cookies=cookies,
+                        default_referer=security_page_url,
+                    )
                 response_code = first_non_empty(verification.get("response_code"))
                 if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_verification_failure(verification):
                     break
@@ -575,7 +664,8 @@ def _resolve_fastmoss_security_with_browser(
                 elapsed_ms = int((time.monotonic() - verify_started_at) * 1000)
                 if elapsed_ms >= verify_timeout_ms:
                     break
-                _safe_wait_for_timeout(browser_session.page, min(verify_poll_ms, verify_timeout_ms - elapsed_ms))
+                with browser_operation(progress_callback, "fastmoss_page_wait"):
+                    _safe_wait_for_timeout(browser_session.page, min(verify_poll_ms, verify_timeout_ms - elapsed_ms))
 
         response_code = first_non_empty(verification.get("response_code"))
         if response_code in FASTMOSS_SECURITY_VERIFICATION_CODES and first_non_empty(
@@ -622,6 +712,7 @@ def _resolve_fastmoss_security_with_browser(
             "browser_diagnostic_artifact_refs": diagnostic_artifact_refs,
             "login_cookie_bootstrap": login_cookie_bootstrap_result,
             "browser_attempts": list(browser_attempts),
+            "verification_chain": dict(chain_evidence),
         }
         if response_code not in FASTMOSS_SECURITY_VERIFICATION_CODES and not _is_fastmoss_auth_verification_failure(verification):
             return last_result

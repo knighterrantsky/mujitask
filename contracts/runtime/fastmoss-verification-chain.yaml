@@ -1,0 +1,63 @@
+schema_version: 1
+contract_revision: 1
+status: complete
+scope: monitor_tk_influencers_browser_recovery
+owners:
+  request_signing: src/automation_business_scaffold/infrastructure/fastmoss/http_session.py
+  observation: src/automation_business_scaffold/capabilities/browser/fastmoss_security/request_verification.py
+  execution: src/automation_business_scaffold/capabilities/browser/fastmoss_security_resolve_handler.py
+  batch_stop: src/automation_business_scaffold/domains/tiktok/flows/monitor_tk_influencers/orchestrator.py
+activation:
+  payload_field: verification_chain_revision
+  value: 1
+  new_monitor_recoveries: required
+  missing_legacy_field: existing_recovery_behavior
+request_signing:
+  source: docs/reference/fastmoss-known-interfaces.md
+  required_headers: [fm-sign, fm-sig]
+  regenerate_on_every_attempt: true
+  product_video_discovery: list_product_videos_must_use_both_signatures_no_legacy_unsigned_override
+  fm_sig_input: request_path_and_sorted_form_encoded_query_including_time_and_cnonce_plus_source
+  implementation: existing_pure_HTTP_client_no_browser_or_new_signing_service
+  unsigned_request: omit_both_generated_signatures
+  privacy: do_not_persist_signature_values_or_verification_tickets
+  compatibility: additive_HTTP_header_no_payload_or_database_change
+  rollback: pause_monitor_and_restore_previous_client_with_original_risk_failure
+evidence:
+  slider_cleared: UI_observation_only_not_server_confirmation
+  captcha_confirmed: same_page_FastMoss_captcha_verify_code_200_and_data_is_ok_true
+  browser_verified: same_page_same_origin_same_object_business_API_success_response
+  browser_business_probe: when_the_page_does_not_load_the_original_GET_API_issue_it_once_in_that_page_after_captcha_confirmation_if_challenged
+  http_verified: original_HTTP_request_success_with_exported_cookies
+  order: [captcha_confirmation_if_challenged, browser_business_response, http_replay]
+  missing_response: unconfirmed_never_success
+  privacy: only_allowlisted_status_codes_error_class_names_booleans_and_counts_no_headers_cookies_tickets_or_response_bodies
+limits:
+  browser_rounds: 1
+  slider_attempts_per_round: 3
+  browser_confirmation_wait_seconds: 5
+  browser_business_probes: 1
+  browser_business_probe_timeout_seconds: 5
+  http_replays: 1
+  handler_wall_seconds: 180
+  runtime_seconds_including_diagnosis_reserve: 420
+  consecutive_failed_source_recoveries: 3
+batch_stop:
+  count_source_terminal_results_not_browser_attempts: true
+  successful_source_resets_streak: true
+  persisted_terminal_results_survive_restart: true
+  action: existing_request_cancellation_and_child_drain
+  reason: fastmoss_recovery_exhausted
+  lifecycle: cancelling_then_cancelled
+  finished_results_preserved: true
+compatibility:
+  schema_migration: none
+  result_shell: unchanged_additive_verification_chain_evidence
+  existing_error_code: fastmoss_security_verification_required
+  detailed_failure_stage: additive_verification_chain_failure_stage
+  deployment: stop_old_workers_before_new_monitor_submission
+  rollback: pause_schedule_cancel_new_monitor_requests_then_restore_previous_workers
+live_acceptance:
+  report: docs/ops/fastmoss-verification-chain-acceptance.md
+  requires_real_business_API_success_and_HTTP_success: true
+  failed_diagnostic_keeps_schedule_paused: true

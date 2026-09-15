@@ -277,6 +277,25 @@ class ApiWorkerJobRepository:
                           AND job.status = 'pending'
                           AND job.available_at <= :available_at
                           AND (
+                              request.task_code <> 'monitor_tk_influencers'
+                              OR job.job_code NOT IN ('product_video_creator_discovery', 'influencer_monitor_sync')
+                              OR job.payload_json::jsonb ->> 'browser_fallback_resolved' = 'true'
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM api_worker_job recovery
+                                  WHERE recovery.request_id = request.request_id
+                                    AND recovery.job_code IN ('product_video_creator_discovery', 'influencer_monitor_sync')
+                                    AND (
+                                        (recovery.status = 'waiting' AND (
+                                            recovery.stage = 'browser_fallback_required'
+                                            OR recovery.result_json::jsonb ->> 'fallback_required' = 'true'
+                                            OR recovery.result_json::jsonb #>> '{handler_result,status}' = 'fallback_required'
+                                        ))
+                                        OR (recovery.status IN ('pending', 'running')
+                                            AND recovery.payload_json::jsonb ->> 'browser_fallback_resolved' = 'true')
+                                    )
+                              )
+                          )
+                          AND (
                               COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
                               OR COALESCE(NULLIF(job.payload_json::jsonb ->> 'stage_code', ''), '') = ''
                               OR job.payload_json::jsonb ->> 'stage_code' = request.current_stage
@@ -360,6 +379,25 @@ class ApiWorkerJobRepository:
                           FROM task_request request
                           WHERE request.request_id = api_worker_job.request_id
                             AND request.status = 'waiting'
+                            AND (
+                                request.task_code <> 'monitor_tk_influencers'
+                                OR api_worker_job.job_code NOT IN ('product_video_creator_discovery', 'influencer_monitor_sync')
+                                OR api_worker_job.payload_json::jsonb ->> 'browser_fallback_resolved' = 'true'
+                                OR NOT EXISTS (
+                                    SELECT 1 FROM api_worker_job recovery
+                                    WHERE recovery.request_id = request.request_id
+                                      AND recovery.job_code IN ('product_video_creator_discovery', 'influencer_monitor_sync')
+                                      AND (
+                                          (recovery.status = 'waiting' AND (
+                                              recovery.stage = 'browser_fallback_required'
+                                              OR recovery.result_json::jsonb ->> 'fallback_required' = 'true'
+                                              OR recovery.result_json::jsonb #>> '{handler_result,status}' = 'fallback_required'
+                                          ))
+                                          OR (recovery.status IN ('pending', 'running')
+                                              AND recovery.payload_json::jsonb ->> 'browser_fallback_resolved' = 'true')
+                                      )
+                                )
+                            )
                             AND (
                                 COALESCE(NULLIF(request.current_stage, ''), '') <> 'fastmoss_security_browser_fallback'
                                 OR COALESCE(NULLIF(api_worker_job.payload_json::jsonb ->> 'stage_code', ''), '') = ''

@@ -8,6 +8,8 @@ import time
 from typing import Any, Mapping
 from urllib.parse import urljoin
 
+from automation_business_scaffold.infrastructure.browser.browser_bridge import browser_operation
+
 from PIL import Image
 import requests
 
@@ -75,10 +77,13 @@ def _try_resolve_fastmoss_slider_security_check(
     provider_config: Mapping[str, Any] | None = None,
     resolver_config: Mapping[str, Any] | None = None,
     selectors: Mapping[str, str] | None = None,
+    progress_callback: Any = None,
+    business_verified: Any = None,
 ) -> dict[str, Any]:
     if max_attempts <= 0:
         return {"attempted": False, "resolved": False, "reason": "disabled", "attempts": []}
-    state = _wait_for_fastmoss_slider_state(page, timeout_ms=appear_timeout_ms)
+    with browser_operation(progress_callback, "fastmoss_slider_wait"):
+        state = _wait_for_fastmoss_slider_state(page, timeout_ms=appear_timeout_ms)
     if not state.get("visible"):
         return {
             "attempted": False,
@@ -87,18 +92,19 @@ def _try_resolve_fastmoss_slider_security_check(
             "appear_timeout_ms": max(appear_timeout_ms, 0),
             "attempts": [],
         }
-    (
-        background_locator,
-        background_selector,
-        target_locator,
-        target_selector,
-        handle_locator,
-        handle_selector,
-    ) = _wait_for_fastmoss_slider_elements(
-        page,
-        timeout_ms=max(DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS, appear_timeout_ms),
-        selector_overrides=selectors,
-    )
+    with browser_operation(progress_callback, "fastmoss_slider_elements"):
+        (
+            background_locator,
+            background_selector,
+            target_locator,
+            target_selector,
+            handle_locator,
+            handle_selector,
+        ) = _wait_for_fastmoss_slider_elements(
+            page,
+            timeout_ms=max(DEFAULT_FASTMOSS_SLIDER_IMAGE_TIMEOUT_MS, appear_timeout_ms),
+            selector_overrides=selectors,
+        )
     if not (background_locator and target_locator and handle_locator):
         return {
             "attempted": True,
@@ -126,6 +132,8 @@ def _try_resolve_fastmoss_slider_security_check(
             automation_page or raw_page or page,
             page=page,
             initial_state=state,
+            progress_callback=progress_callback,
+            **({"business_verified": business_verified} if business_verified is not None else {}),
             search_url=search_url,
             max_attempts=max_attempts,
             settle_ms=settle_ms,
@@ -158,6 +166,8 @@ def _resolve_fastmoss_slider_with_framework_captcha(
     provider_config: Mapping[str, Any] | None,
     resolver_config: Mapping[str, Any] | None,
     selectors: Mapping[str, str] | None,
+    progress_callback: Any = None,
+    business_verified: Any = None,
 ) -> dict[str, Any]:
     del automation_page
     selector_payload = _resolve_fastmoss_slider_selector_payload(
@@ -212,13 +222,17 @@ def _resolve_fastmoss_slider_with_framework_captcha(
     resolved = False
     confirmation_wait_ms = max(int(confirm_ms), 1)
     for attempt_index in range(1, max(int(max_attempts), 1) + 1):
+        if callable(business_verified) and business_verified():
+            resolved, reason = True, "browser_business_verified"
+            break
         pre_retry_state: dict[str, Any] = {}
         if attempt_index > 1:
-            pre_retry_state = _wait_for_fastmoss_slider_loading_cleared(
-                page,
-                selectors=selector_payload,
-                timeout_ms=image_timeout_ms,
-            )
+            with browser_operation(progress_callback, "fastmoss_slider_loading"):
+                pre_retry_state = _wait_for_fastmoss_slider_loading_cleared(
+                    page,
+                    selectors=selector_payload,
+                    timeout_ms=image_timeout_ms,
+                )
             if pre_retry_state.get("loading_visible"):
                 attempts.append(
                     {
@@ -232,13 +246,14 @@ def _resolve_fastmoss_slider_with_framework_captcha(
             _click_first_visible_locator(page, _selector_candidates(str(selector_payload.get("refresh") or ""), FASTMOSS_SLIDER_REFRESH_SELECTORS))
             if refresh_wait_ms:
                 _safe_wait_for_timeout(page, refresh_wait_ms)
-        current_audit = _resolve_one_fastmoss_mixed_slider_attempt(
-            page,
-            provider=provider,
-            selectors=selector_payload,
-            config=config_payload,
-            attempt_index=attempt_index,
-        )
+        with browser_operation(progress_callback, "fastmoss_slider_attempt"):
+            current_audit = _resolve_one_fastmoss_mixed_slider_attempt(
+                page,
+                provider=provider,
+                selectors=selector_payload,
+                config=config_payload,
+                attempt_index=attempt_index,
+            )
         artifact_refs.extend(
             _persist_fastmoss_slider_artifacts_payload(
                 current_audit,
@@ -263,6 +278,11 @@ def _resolve_fastmoss_slider_with_framework_captcha(
         if pre_retry_state:
             record["pre_retry_state"] = pre_retry_state
         state = _wait_for_fastmoss_slider_post_drag_state(page, timeout_ms=post_drag_poll_ms)
+        if callable(business_verified) and business_verified():
+            record["reason"] = "browser_business_verified"
+            attempts.append(record)
+            resolved, reason = True, "browser_business_verified"
+            break
         record["post_drag_verify_wait_ms"] = post_drag_poll_ms
         record["post_drag_wait_elapsed_ms"] = state.get("wait_elapsed_ms")
         record["popup_still_visible"] = bool(state.get("visible"))

@@ -47,6 +47,25 @@ def advance_stage(
     stage_code: str,
 ) -> dict[str, Any]:
     del workflow
+    terminal_sources = sorted(
+        (job for job in store.list_api_worker_jobs_for_request(request_id=request.request_id)
+         if job.get("job_code") in {"product_video_creator_discovery", "influencer_monitor_sync"}
+         and job.get("status") in {"finished", "failed", "success"}),
+        key=lambda job: (float(job.get("finished_at") or 0), str(job.get("job_id") or "")),
+        reverse=True,
+    )
+    consecutive_failures = 0
+    for job in terminal_sources:
+        if job.get("error_code") != "fastmoss_security_browser_fallback_failed":
+            break
+        consecutive_failures += 1
+    if consecutive_failures >= 3:
+        return {
+            "action": "finalize", "final_status": "failed",
+            "error_code": "fastmoss_recovery_exhausted",
+            "consecutive_recovery_failures": consecutive_failures,
+            "title": "TK达人监控因连续安全验证失败停止",
+        }
     if stage_code == READ_STAGE_CODE:
         return _advance_read(store=store, request=request)
     if stage_code == DISCOVERY_STAGE_CODE:
@@ -83,6 +102,17 @@ def release_request_after_child_completion(
     stage_code = _current_stage(request)
     if stage_code == SUMMARY_STAGE_CODE:
         return []
+    retry_job = _active_recovery_job(store=store, request_id=request_id)
+    if retry_job:
+        retry_stage = str(retry_job["payload"]["stage_code"])
+        if stage_code == retry_stage:
+            return []
+        # Resume a requeued source if the executor exited before moving the parent.
+        store.update_task_request(
+            request_id=request_id, status="pending", current_stage=retry_stage,
+            progress_stage=retry_stage, worker_id="", lease_until=0.0, heartbeat_at=0.0,
+        )
+        return [{"request_id": request_id, "stage_code": retry_stage, "released": True}]
     if stage_code in {DISCOVERY_STAGE_CODE, SYNC_STAGE_CODE}:
         if _fallback_candidates(
             store=store,
@@ -206,6 +236,8 @@ def _advance_read(*, store: Any, request: Any) -> dict[str, Any]:
 
 
 def _advance_discovery(*, store: Any, request: Any) -> dict[str, Any]:
+    if _active_recovery_job(store=store, request_id=request.request_id):
+        return _waiting(DISCOVERY_STAGE_CODE, "Waiting for the recovered source job.")
     jobs = _stage_jobs(
         store=store,
         request_id=request.request_id,
@@ -293,6 +325,8 @@ def _advance_discovery(*, store: Any, request: Any) -> dict[str, Any]:
 
 
 def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
+    if _active_recovery_job(store=store, request_id=request.request_id):
+        return _waiting(SYNC_STAGE_CODE, "Waiting for the recovered source job.")
     jobs = _stage_jobs(
         store=store,
         request_id=request.request_id,
@@ -387,71 +421,72 @@ def _advance_sync(*, store: Any, request: Any) -> dict[str, Any]:
 
 
 def _advance_fallback(*, store: Any, request: Any) -> dict[str, Any]:
+    retry_job = _active_recovery_job(store=store, request_id=request.request_id)
+    if retry_job:
+        return _waiting(
+            str(retry_job["payload"]["stage_code"]),
+            "Waiting for the recovered source job.",
+        )
     candidates = _fallback_candidates(store=store, request_id=request.request_id)
     executions = browser_executions_for_stage(
         store,
         request_id=request.request_id,
         stage_code=FALLBACK_STAGE_CODE,
     )
+    if any_browser_executions_active(executions):
+        return _waiting(FALLBACK_STAGE_CODE, "FastMoss browser recovery is running.")
     if not candidates:
-        if any_browser_executions_active(executions):
-            return _waiting(FALLBACK_STAGE_CODE, "FastMoss browser recovery is running.")
         return _advance(_stage_after_fallback(store=store, request_id=request.request_id))
-    digest = _fallback_digest(candidates)
-    relevant = [
-        execution
-        for execution in executions
-        if _execution_payload(execution).get("fallback_digest") == digest
-    ]
-    if not relevant:
+    # The persisted source association reserves the recovery attempt at dispatch.
+    # Consume existing results before considering new waiting jobs, even after restart.
+    execution = None
+    candidate = candidates[0]
+    for previous in executions:
+        source_ids = _execution_payload(previous).get("source_job_ids") or []
+        source = next((job for job in candidates if job["job_id"] in source_ids), None)
+        if source is not None:
+            execution, candidate = previous, source
+            break
+    attempt = int(coerce_mapping(candidate.get("payload")).get(
+        "fastmoss_security_browser_fallback_attempt"
+    ) or 0)
+    if execution is None and attempt < MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS:
         dispatch = _dispatch_fallback(
             store=store,
             request=request,
-            candidates=candidates,
-            fallback_digest=digest,
+            candidates=[candidate],
+            fallback_digest=_fallback_digest([candidate]),
         )
         return _waiting(
             FALLBACK_STAGE_CODE,
             "Dispatched FastMoss browser recovery.",
             {"dispatch_payload": dispatch},
         )
-    if any_browser_executions_active(relevant):
-        return _waiting(FALLBACK_STAGE_CODE, "FastMoss browser recovery is running.")
-    execution = relevant[-1]
-    source_stage = _stage_after_fallback(store=store, request_id=request.request_id)
-    if extract_handler_result_status(execution) in {"success", "partial_success"}:
-        for candidate in candidates:
-            candidate_stage = str(
-                coerce_mapping(candidate.get("payload")).get("stage_code")
-                or source_stage
-            )
-            store.requeue_waiting_api_worker_job(
-                job_id=str(candidate.get("job_id") or ""),
-                payload=_after_browser_payload(
-                    candidate=candidate,
-                    execution=execution,
-                ),
-                stage=candidate_stage,
-            )
-        return _waiting(source_stage, "Requeued FastMoss jobs after browser recovery.")
-    for candidate in candidates:
-        store.mark_waiting_api_worker_job_failed(
+    source_stage = str(coerce_mapping(candidate.get("payload")).get("stage_code"))
+    if (
+        attempt < MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS
+        and extract_handler_result_status(execution) in {"success", "partial_success"}
+    ):
+        store.requeue_waiting_api_worker_job(
             job_id=str(candidate.get("job_id") or ""),
-            summary={
-                "handler_status": "failed",
-                "fallback_source_status": "failed",
-            },
-            result={
-                "status": "failed",
-                "fallback_required": False,
-                "browser_fallback_resolved": False,
-            },
-            error_text="FastMoss auth/security browser recovery failed.",
-            error_type="browser_failure",
-            error_code="fastmoss_security_browser_fallback_failed",
-            dead_letter_reason="browser_fallback_failed",
+            payload=_after_browser_payload(candidate=candidate, execution=execution),
+            stage=source_stage,
         )
-    return _advance(source_stage, {"failed_waiting_job_count": len(candidates)})
+        return _waiting(source_stage, "Requeued FastMoss job after browser recovery.")
+    store.mark_waiting_api_worker_job_failed(
+        job_id=str(candidate.get("job_id") or ""),
+        summary={"handler_status": "failed", "fallback_source_status": "failed"},
+        result={
+            "status": "failed",
+            "fallback_required": False,
+            "browser_fallback_resolved": False,
+        },
+        error_text="FastMoss auth/security browser recovery failed.",
+        error_type="browser_failure",
+        error_code="fastmoss_security_browser_fallback_failed",
+        dead_letter_reason="browser_fallback_failed",
+    )
+    return _advance(source_stage, {"failed_waiting_job_count": 1})
 
 
 def _fallback_candidates(
@@ -473,17 +508,21 @@ def _fallback_candidates(
             stage_code=stage_code,
             job_code=job_code,
         ):
-            payload = coerce_mapping(job.get("payload"))
             if str(job.get("status") or "") != "waiting":
-                continue
-            if (
-                int(payload.get("fastmoss_security_browser_fallback_attempt") or 0)
-                >= MAX_FASTMOSS_BROWSER_FALLBACK_ATTEMPTS
-            ):
                 continue
             if is_fallback_required(job):
                 result.append(job)
     return result
+
+
+def _active_recovery_job(*, store: Any, request_id: str) -> dict[str, Any]:
+    for stage_code in (DISCOVERY_STAGE_CODE, SYNC_STAGE_CODE):
+        for job in _stage_jobs(store=store, request_id=request_id, stage_code=stage_code):
+            if str(job.get("status") or "") in {"pending", "running"} and coerce_mapping(
+                job.get("payload")
+            ).get("browser_fallback_resolved"):
+                return job
+    return {}
 
 
 def _dispatch_fallback(
@@ -502,6 +541,7 @@ def _dispatch_fallback(
     )
     payload = {
         **_fastmoss_common_payload(dict(request.payload or {})),
+        "verification_chain_revision": 1,
         "stage_code": FALLBACK_STAGE_CODE,
         "fallback_digest": fallback_digest,
         "source_stage_code": source_stage,
@@ -543,6 +583,7 @@ def _dispatch_fallback(
                     stage_scope=FALLBACK_STAGE_CODE,
                 ),
                 "resource_code": "fastmoss:browser",
+                "max_execution_seconds": 420.0,
                 "payload": payload,
             }
         ],

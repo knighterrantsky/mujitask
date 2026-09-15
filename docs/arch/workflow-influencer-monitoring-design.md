@@ -155,6 +155,35 @@ ready_for_summary
 
 `fastmoss_security_browser_fallback` 是可插入的等待/恢复 stage。恢复结束后返回触发它的原 stage，不作为业务成功终态。
 
+同一请求内，商品发现或达人同步 Job 一旦进入 fallback waiting，API worker
+就停止领取后续相关 Job，不依赖父请求稍后切换 stage。executor 发现等待项后立即
+派发单个来源 Job 的恢复，不等待整批结束；恢复成功后只放行原 Job 的重试，直到
+它进入终态才继续后续 Job（普通重试的退避期间也保持暂停）。恢复最终失败或原 Job
+再次要求恢复时，将该 Job 终态失败；连续三个来源 Job 恢复失败后，通过现有取消流程
+停止整批，保留已经完成的结果。失败序列以持久化来源 Job 终态为准，成功来源打断序列。
+
+新派发的监控恢复使用 `verification_chain_revision=1`，遵守
+[`fastmoss-verification-chain.yaml`](../../contracts/runtime/fastmoss-verification-chain.yaml)：
+弹层消失仅表示 UI 状态；必须分别确认 FastMoss `/api/captcha/verify`（本页触发挑战时）、
+同一浏览器页面内同对象业务接口、导出 Cookie 后的原 HTTP 请求。未观测到响应不算成功。
+每个恢复最多一轮、三个滑块尝试，确认等待最多 5 秒，HTTP 只复验一次；不因为 HTTP
+复验失败而再次清理浏览器会话。Runtime 预算 420 秒，含 handler 180 秒和既有诊断预留
+240 秒。仅持久化允许的响应码、布尔值和计数，不保存验证码 ticket、Cookie 或完整响应。
+缺少 revision 的已入队恢复保持旧行为，升级前停止旧监控请求和 worker；回滚前同样
+暂停调度并取消新监控请求。实际浏览器和 HTTP 链路验收失败时，调度必须继续暂停。
+
+恢复额度在 `task_execution` 入队时由持久化的 `source_job_ids` 占用，执行记录是
+额度事实来源；原 Job 的 `fastmoss_security_browser_fallback_attempt` 保留为重试
+payload 的兼容标记，不再单独决定是否允许派发。按执行记录的来源 Job 对账，不按
+当前等待集合 digest 匹配；存在活动恢复时不新建恢复。旧批次执行逐个恢复其来源
+Job，已成功重新入队的 Job 不重复消费结果。进程在派发后或部分结果处理后退出，
+重启通过同一执行记录继续，不重新消耗恢复额度。
+
+此修复不新增 schema 字段或改变 handler 外壳；旧 payload 缺少恢复标记时仍按
+执行记录的来源关联处理。升级及回滚前需停止旧 worker，避免混用旧领取语义。
+FastMoss browser handler 通过现有 progress callback 上报真实浏览器操作的开始、
+结束和失败；不使用定时空心跳掩盖阻塞，也不增加原有停滞阈值。
+
 ## 5. Stage 设计
 
 | Stage code | 进入条件 | 动作 | 派生 Job | 退出条件 | 失败策略 |

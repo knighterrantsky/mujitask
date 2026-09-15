@@ -15,6 +15,53 @@ canonical_runtime_owners:
 legacy_reference_only: []
 
 features:
+  - feature_code: fastmoss_verification_chain
+    status: complete
+    feature_type: business_feature
+    requires_architecture_delta_gate: true
+    default_context:
+      - contracts/runtime/fastmoss-verification-chain.yaml
+      - contracts/workflow/monitor_tk_influencers.yaml
+      - docs/arch/workflow-influencer-monitoring-design.md
+      - src/automation_business_scaffold/capabilities/browser/fastmoss_security/request_verification.py
+      - tests/test_fastmoss_verification_chain.py
+    source_contracts:
+      - contracts/runtime/fastmoss-verification-chain.yaml
+      - contracts/workflow/monitor_tk_influencers.yaml
+    allowed_paths:
+      - contracts/**
+      - docs/reference/fastmoss-known-interfaces.md
+      - src/automation_business_scaffold/infrastructure/fastmoss/http_session.py
+      - docs/arch/workflow-influencer-monitoring-design.md
+      - docs/ops/**
+      - src/automation_business_scaffold/capabilities/browser/**
+      - src/automation_business_scaffold/domains/tiktok/flows/monitor_tk_influencers/**
+      - tests/**
+    forbidden_paths:
+      - .platform/**
+      - AGENTS.md
+      - src/automation_business_scaffold/agent.py
+      - src/automation_business_scaffold/registry.py
+    done_gate:
+      tests:
+        - tests/test_fastmoss_request_signing.py
+        - tests/test_fastmoss_verification_chain.py
+        - tests/test_fastmoss_security_fallback_handlers.py
+        - tests/test_runtime_monitor_tk_influencers.py
+        - tests/test_runtime_search_keyword_competitor_products.py
+      commands:
+        - uv run --extra dev pytest -q --tb=line tests/test_fastmoss_request_signing.py tests/test_fastmoss_product_search_handler.py tests/test_tiktok_influencer_outreach_sync.py tests/test_monitor_tk_influencers.py
+        - uv run --extra dev pytest -q --tb=line tests/test_fastmoss_verification_chain.py tests/test_fastmoss_security_fallback_handlers.py tests/test_runtime_monitor_tk_influencers.py tests/test_runtime_search_keyword_competitor_products.py
+        - uv run --extra dev pytest -q --tb=line tests/test_harness_code_roadmap.py tests/test_architecture_delta_gate.py tests/test_workflow_architecture_manifests.py
+    completion_rules:
+      - Generate fm-sign and fm-sig from each attempt's actual parameters in the existing pure HTTP client; verify against current frontend vectors and real requests.
+      - Observe same-page FastMoss captcha confirmation, matching business API response, and original HTTP replay independently; missing evidence never means success.
+      - New monitor recoveries have one browser round, at most three slider attempts, one HTTP replay, and a 180-second handler budget inside a 420-second Runtime budget.
+      - Three consecutive persisted source recovery failures cancel and drain the batch without retrying pending jobs; successful sources reset the count.
+      - Preserve legacy payload compatibility and never persist full response bodies, headers, cookies, or captcha tickets in chain evidence.
+      - Static gates cannot substitute for real browser-business and HTTP success; keep the schedule paused until live acceptance passes.
+      - Do not claim complete until claim_done.py --run-gates passes and live acceptance is documented.
+
   - feature_code: harness_completion_claim_gate
     status: complete
     default_context:
@@ -616,6 +663,7 @@ features:
       - src/automation_business_scaffold/control_plane/**
       - src/automation_business_scaffold/contracts/**
       - src/automation_business_scaffold/domains/tiktok/**
+      - src/automation_business_scaffold/infrastructure/runtime/repositories/api_worker_job_repo.py
       - src/automation_business_scaffold/infrastructure/facts/**
       - scripts/deploy/macos/**
       - examples/openclaw/openclaw_deploy_common.sh
@@ -633,6 +681,8 @@ features:
       tests:
         - tests/test_monitor_tk_influencers.py
         - tests/test_runtime_monitor_tk_influencers.py
+        - tests/test_fastmoss_security_fallback_handlers.py
+        - tests/test_runtime_store.py
         - tests/test_handler_registry_contract.py
         - tests/test_workflow_architecture_manifests.py
         - tests/test_runtime_workflow_registry.py
@@ -640,12 +690,16 @@ features:
         - tests/test_feishu_common_handlers.py
         - tests/test_run_skill_step.py
       commands:
+        - uv run --extra dev pytest -q tests/test_fastmoss_security_fallback_handlers.py tests/test_runtime_store.py
         - uv run --extra dev pytest -q tests/test_monitor_tk_influencers.py tests/test_runtime_monitor_tk_influencers.py
         - uv run --extra dev pytest -q tests/test_handler_registry_contract.py tests/test_workflow_architecture_manifests.py tests/test_runtime_workflow_registry.py
         - uv run --extra dev pytest -q tests/test_fact_bundle_upsert_handler.py tests/test_feishu_common_handlers.py
         - uv run --extra dev pytest -q tests/test_run_skill_step.py
         - bash -n scripts/deploy/macos/preflight.sh scripts/deploy/macos/deploy.sh
     completion_rules:
+      - FastMoss waiting jobs block subsequent claims before the parent stage changes; only the recovered source can retry until terminal.
+      - Persisted recovery source_job_ids reserve each source attempt at dispatch; changed waiting sets and restarts never redispatch the same source.
+      - Browser recovery reports real operations through the existing progress callback without passive heartbeat masking.
       - The task and workflow are independent and must not import another influencer workflow, job, projection, mapper, or field contract.
       - Every parseable source SKU is eligible regardless of influencer-search or product status; delisted and region-unavailable acceptance uses contract fixtures without external probing.
       - Product videos use all publish dates, sold_count window 28, strict configurable threshold, per-product creator max, and cross-product creator max.

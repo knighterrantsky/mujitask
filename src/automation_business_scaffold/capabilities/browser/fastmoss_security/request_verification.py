@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import secrets
+import time
 from typing import Any, Mapping
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from automation_business_scaffold.contracts.handler.shared import (
     coerce_bool,
@@ -12,12 +16,114 @@ from automation_business_scaffold.contracts.handler.shared import (
 from automation_business_scaffold.infrastructure.fastmoss.http_session import (
     FastMossHTTPError,
     FastMossHTTPSession,
+    build_fm_sign,
 )
 from automation_business_scaffold.infrastructure.rate_limit import resolve_api_request_delay_range
 
 FASTMOSS_PRODUCT_SEARCH_ENDPOINT = "/api/goods/V2/search"
 FASTMOSS_SECURITY_VERIFICATION_CODES = {"MSG_SAFE_0001"}
 FASTMOSS_AUTH_VERIFICATION_CODES = {"MAG_AUTH_3001", "MAG_AUTH_3002", "MAG_AUTH_3017", "MSG_30001"}
+
+
+@contextmanager
+def observe_browser_verification(page: Any, verification_request: Mapping[str, Any], *, base_url: str):
+    """Observe server confirmation on this page without persisting response bodies."""
+    evidence = {
+        "captcha_required": False, "captcha_confirmed": False,
+        "browser_verified": False, "http_verified": False, "http_replayed": False,
+        "captcha_response_code": "", "browser_response_code": "", "observation_errors": 0,
+    }
+    origin = urlsplit(base_url)
+    identity = {
+        key: str(value) for key, value in coerce_mapping(verification_request.get("params")).items()
+        if key in {"uid", "author_uid", "unique_id", "product_id", "goods_id", "seller_id", "shop_id", "video_id", "id"}
+    }
+
+    def completed(request):
+        url = urlsplit(request.url)
+        if (url.scheme, url.netloc) != (origin.scheme, origin.netloc):
+            return
+        is_captcha = url.path in {"/api/captcha/config", "/api/captcha/verify"} and request.method == "POST"
+        is_business = (
+            url.path == verification_request.get("path")
+            and request.method == verification_request.get("method", "GET").upper()
+            and all(parse_qs(url.query).get(key) == [value] for key, value in identity.items())
+        )
+        if not (is_captcha or is_business):
+            return
+        try:
+            response = request.response()
+            body = coerce_mapping(response.json())
+            code = str(body.get("code", ""))
+            # Do not persist arbitrary server messages, tokens, headers, or IDs.
+            if len(code) > 64 or not code.replace("_", "").isalnum():
+                code = "unknown"
+            success = 200 <= response.status < 300 and code == "200"
+            success = success and coerce_mapping(body.get("ext")).get("is_login") not in (0, "0", False)
+            if is_captcha:
+                evidence["captcha_required"] = True
+                evidence["browser_verified"] = False
+                accepted = coerce_mapping(body.get("data")).get("is_ok") in (True, 1, "1")
+                evidence["captcha_confirmed"] = success and accepted if url.path == "/api/captcha/verify" else False
+                evidence["captcha_response_code"] = code if url.path == "/api/captcha/verify" else ""
+            else:
+                evidence["browser_response_code"] = code
+                evidence["browser_verified"] = success
+                if code in FASTMOSS_SECURITY_VERIFICATION_CODES:
+                    evidence["captcha_required"] = True
+        except Exception:
+            evidence["observation_errors"] += 1
+
+    supported = callable(getattr(page, "on", None)) and callable(getattr(page, "remove_listener", None))
+    if supported:
+        page.on("requestfinished", completed)
+    try:
+        yield evidence
+    finally:
+        if supported:
+            page.remove_listener("requestfinished", completed)
+
+
+def browser_verification_failure_stage(evidence: Mapping[str, Any]) -> str:
+    if evidence.get("captcha_required") and not evidence.get("captcha_confirmed"):
+        return "captcha_confirmation"
+    if not evidence.get("browser_verified"):
+        return "browser_business"
+    return ""
+
+
+def request_original_api_in_browser(
+    page: Any, verification_request: Mapping[str, Any], *, base_url: str, timeout_ms: int,
+) -> None:
+    """Load an original read API that the detail page does not request itself."""
+    url = urljoin(base_url.rstrip("/") + "/", str(verification_request.get("path", "")))
+    origin, target = urlsplit(base_url), urlsplit(url)
+    if (
+        verification_request.get("method", "GET").upper() != "GET"
+        or (origin.scheme, origin.netloc) != (target.scheme, target.netloc)
+        or not target.path.startswith("/api/")
+    ):
+        raise ValueError("Browser verification probe requires a same-origin GET API.")
+    params = {key: value for key, value in coerce_mapping(verification_request.get("params")).items()
+              if value is not None and value != ""}
+    params.update(_time=int(time.time()), cnonce=str(10000000 + secrets.randbelow(90000000)))
+    query = urlencode(sorted(params.items())).replace("~", "%7E")
+    signed_path = target.path + "?" + query
+    page.evaluate("""async ({url, path, headers, timeout_ms}) => {
+        headers["fm-sig"] = globalThis.__SIG__.gen(path, {source: "pc"});
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout_ms);
+        try {
+            const response = await fetch(url, {method: "GET", headers, credentials: "include",
+                cache: "no-store", signal: controller.signal});
+            await response.arrayBuffer();
+        } finally { clearTimeout(timer); }
+    }""", {
+        "url": f"{origin.scheme}://{origin.netloc}{signed_path}", "path": signed_path,
+        "timeout_ms": timeout_ms,
+        "headers": {"source": "pc", "region": str(verification_request.get("region") or "US"),
+                    "lang": "ZH_CN", "fm-sign": build_fm_sign(params)},
+    })
 
 
 def verify_original_request_with_cookies(
@@ -49,6 +155,7 @@ def verify_original_request_with_cookies(
             region=region,
             stage=first_non_empty(verification_request.get("stage"), "browser_security.verify_original_request"),
             check_auth=False,
+            retries=1,
         )
     data = coerce_mapping(raw.get("data"))
     ext = coerce_mapping(raw.get("ext"))

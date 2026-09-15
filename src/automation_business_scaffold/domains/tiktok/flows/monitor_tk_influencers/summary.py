@@ -27,6 +27,21 @@ def finalize_request(
     force_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del workflow
+    if force_result and force_result.get("error_code") == "fastmoss_recovery_exhausted":
+        store.update_task_request(
+            request_id=request.request_id, summary=force_result,
+            error_code="fastmoss_recovery_exhausted", error_type="security_verification",
+            error_text="Stopped after three consecutive FastMoss source recovery failures.",
+        )
+        outcome = store.cancel_task_request(request_id=request.request_id)
+        stopped = outcome["request"]
+        return {
+            "action": "finalized", "request_id": request.request_id,
+            "request_status": stopped.status, "status": stopped.status,
+            "result_status": stopped.result_status, "current_stage": stopped.current_stage,
+            "summary": stopped.summary, "task_request": stopped.to_dict(),
+            "cancel": {"running_child_count": int(outcome.get("running_count", 0))},
+        }
     summary = force_result or _build_summary(store=store, request=request)
     final_status = str(summary.get("final_status") or "success")
     finished_at = time.time()

@@ -694,7 +694,8 @@ def test_fastmoss_product_video_http_request_matches_browser_pagination(monkeypa
         "cnonce": "54361571",
     }
     assert "fm-sign" not in captured["params"]
-    assert "fm-sign" not in captured["headers"]
+    assert captured["headers"]["fm-sign"]
+    assert captured["headers"]["fm-sig"]
     assert captured["headers"]["sec-ch-ua"] == (
         '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"'
     )

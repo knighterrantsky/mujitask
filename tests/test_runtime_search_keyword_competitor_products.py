@@ -1119,6 +1119,8 @@ def test_fastmoss_security_browser_resolve_reuses_profile_login_cookie_before_ht
     def fail_http_login(**_kwargs: object) -> dict[str, object]:
         raise AssertionError("profile login cookie should be reused before HTTP login bootstrap")
 
+    monkeypatch.delenv("FASTMOSS_BROWSER_PROFILE_REF", raising=False)
+    monkeypatch.delenv("BROWSER_PROFILE_REF", raising=False)
     monkeypatch.setenv("DEFAULT_PROFILE_REF", "roxy-tiktok")
     monkeypatch.setattr(fastmoss_security_handler, "_bootstrap_fastmoss_login_cookies", fail_http_login)
     monkeypatch.setattr(fastmoss_security_handler, "open_automation_page", fake_open_page)
@@ -1181,6 +1183,7 @@ def test_fastmoss_security_browser_resolve_reuses_profile_login_cookie_before_ht
             "provider_name": "",
             "headless": False,
             "force_open": False,
+            "progress_callback": None,
         },
     )
     assert "add_cookies" not in names
@@ -1715,6 +1718,7 @@ def test_fastmoss_slider_waits_for_visual_elements_before_framework_resolver(mon
         provider_config,
         resolver_config,
         selectors,
+        progress_callback=None,
     ):
         del page, search_url, max_attempts, settle_ms, confirm_ms, audit_dir, provider_config, resolver_config, selectors
         assert initial_state["background_selector"] == ".ready-bg"
