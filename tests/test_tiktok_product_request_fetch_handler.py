@@ -263,6 +263,49 @@ def test_tiktok_product_request_fetch_missing_router_data_requests_browser_fallb
     assert result.result["request_attempt"]["fallback_signal"] is True
 
 
+def test_missing_price_requests_browser_fallback_without_marking_unavailable(monkeypatch):
+    def fake_fetch(*args, **kwargs):
+        raise TikTokProductExtractionError("failed to extract TikTok product price from page data")
+
+    monkeypatch.setattr(handler_module, "fetch_tiktok_product_record", fake_fetch)
+    result = handler_module.tiktok_product_request_fetch_handler(_context({
+        "product_url": "https://www.tiktok.com/shop/pdp/1732477929095205152",
+    }))
+    assert result.status == "fallback_required"
+    assert result.result["fallback_reason"] == "request_signal_missing_product_price"
+    assert result.result["request_attempt"]["attempted"] is True
+    assert result.result["request_attempt"]["fallback_signal"] is True
+
+
+@pytest.mark.parametrize("page_url", [
+    "https://www.tiktok.com/shop/pdp/1729624726886453323",
+    "https://shop.tiktok.com/us/pdp/inflatable-turkey/1729624726886453323",
+])
+@pytest.mark.parametrize("summary", [
+    "Welcome! Ready for some savings? Log in for exclusive discounts. Create account",
+    "欢迎惠顾！准备好享受优惠了吗？ 登录即可查看你的专属折扣。 登录 创建账号",
+])
+def test_login_promo_is_dismissed_on_redirected_product_pages(monkeypatch, page_url, summary):
+    dismissed = []
+    monkeypatch.setattr(product_page, "_dismiss_tiktok_login_promo", lambda page: dismissed.append(page) or True)
+    monkeypatch.setattr(product_page, "_tiktok_product_content_is_visible", lambda page: True)
+    page = object()
+    resolution = product_page._handle_tiktok_blocked_context(
+        SimpleNamespace(raw_page=page),
+        SimpleNamespace(page_url=page_url, blocker_type="dom_modal", summary=summary, dom_summary={}),
+    )
+    assert dismissed == [page]
+    assert resolution.action == "force_continue"
+
+
+def test_login_gate_without_promo_is_not_dismissed():
+    event = SimpleNamespace(
+        page_url="https://shop.tiktok.com/us/pdp/item/123", blocker_type="dom_modal",
+        summary="Log in to continue", dom_summary={},
+    )
+    assert product_page._is_tiktok_login_promo_blocker(event) is False
+
+
 def test_tiktok_product_request_fetch_unusual_activity_requests_browser_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -814,8 +857,14 @@ def test_tiktok_framework_slider_download_failure_uses_default_five_attempts(
     assert result["audit"]["attempts"][0]["error_code"] == "background_download_failed"
 
 
+@pytest.mark.parametrize("page_url", [
+    "https://www.tiktok.com/shop/pdp/1730964478199763166",
+    "https://www.tiktok.com/view/product/1730964478199763166",
+    "https://shop.tiktok.com/us/pdp/item/1730964478199763166",
+])
 def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(
     monkeypatch: pytest.MonkeyPatch,
+    page_url: str,
 ) -> None:
     captured: dict[str, str] = {}
 
@@ -829,7 +878,7 @@ def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(
     resolution = product_page._handle_tiktok_blocked_context(
         SimpleNamespace(raw_page=object()),
         SimpleNamespace(
-            page_url="https://www.tiktok.com/shop/pdp/1730964478199763166",
+            page_url=page_url,
             blocker_type="security_challenge",
             summary="slide to verify",
             dom_summary={},
@@ -837,4 +886,4 @@ def test_tiktok_blocked_handler_tries_slider_for_product_security_challenge(
     )
 
     assert resolution.action == "handled_recheck"
-    assert captured["product_url"] == "https://www.tiktok.com/shop/pdp/1730964478199763166"
+    assert captured["product_url"] == page_url

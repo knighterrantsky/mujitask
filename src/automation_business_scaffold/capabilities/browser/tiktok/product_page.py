@@ -136,6 +136,9 @@ TIKTOK_LOGIN_PROMO_KEYWORDS = (
     "exclusive discounts",
     "create account",
     "coupon center",
+    "欢迎惠顾",
+    "专属折扣",
+    "创建账号",
 )
 TIKTOK_EARLY_LOGIN_PROMO_MARKERS = (
     "tiktok shop",
@@ -639,10 +642,31 @@ def extract_tiktok_product_from_html(
     component_data = _find_product_component_data(router_data)
 
     product_info = _as_dict(component_data.get("product_info"))
+    unavailable_text = str(_as_dict(product_info.get("unavailable_info")).get("text") or "").strip()
+    if unavailable_text.lower() == "this item has been removed":
+        raise TikTokProductUnavailableError(f"TikTok product unavailable: {unavailable_text}")
     product_model = _as_dict(product_info.get("product_model"))
     promotion_model = _as_dict(product_info.get("promotion_model"))
     seller_model = _as_dict(product_info.get("seller_model"))
     shop_info = _as_dict(component_data.get("shop_info"))
+    if not product_model and product_info.get("product_id"):
+        # Current TikTok Shop pages expose product fields directly in product_info.
+        product_model = {**product_info, "name": product_info.get("title", "")}
+        seller = _as_dict(product_info.get("seller"))
+        seller_model = {"shop_name": seller.get("name", "")}
+        price = _as_dict(product_info.get("price"))
+        promotion_model = {"promotion_product_price": {"min_price": {
+            "sale_price_decimal": price.get("min_sku_price", ""),
+            "currency_name": price.get("currency", ""),
+            "currency_symbol": price.get("currency_symbol", ""),
+        }}}
+        product_model["sku_property_image_map"] = {
+            f"{group['prop_name']}:{value['prop_value']}": value["image"]
+            for group in product_info.get("sale_props") or []
+            if isinstance(group, dict) and group.get("prop_name")
+            for value in group.get("sale_prop_values") or []
+            if isinstance(value, dict) and value.get("prop_value") and value.get("image")
+        }
 
     product_id = str(product_model.get("product_id", "")).strip()
     title = str(product_model.get("name", "")).strip()
@@ -1625,7 +1649,14 @@ def _handle_tiktok_blocked_context(
 
 def _is_tiktok_slider_security_blocker(event: BlockedContext) -> bool:
     page_url = str(getattr(event, "page_url", "") or "").lower()
-    if "tiktok.com/shop/" not in page_url:
+    parsed_url = urlparse(page_url)
+    is_product_page = (
+        parsed_url.hostname in {"www.tiktok.com", "tiktok.com"}
+        and parsed_url.path.startswith(("/shop/", "/view/product/"))
+    ) or (
+        parsed_url.hostname == "shop.tiktok.com" and re.match(r"^/[a-z]{2}/pdp/", parsed_url.path)
+    )
+    if not is_product_page:
         return False
 
     blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
@@ -2655,7 +2686,13 @@ def _drag_tiktok_slider_handle(
 def _is_tiktok_login_promo_blocker(event: BlockedContext) -> bool:
     page_url = str(getattr(event, "page_url", "") or "").lower()
     blocker_type = str(getattr(event, "blocker_type", "") or "").strip().lower()
-    if "tiktok.com/shop/pdp/" not in page_url or blocker_type not in {
+    parsed_url = urlparse(page_url)
+    is_product_page = (
+        parsed_url.hostname in {"www.tiktok.com", "tiktok.com"} and parsed_url.path.startswith("/shop/pdp/")
+    ) or (
+        parsed_url.hostname == "shop.tiktok.com" and re.match(r"^/[a-z]{2}/pdp/", parsed_url.path)
+    )
+    if not is_product_page or blocker_type not in {
         "guide_overlay",
         "dom_modal",
         "unknown",
@@ -2705,7 +2742,7 @@ def _collect_tiktok_blocked_text_candidates(event: BlockedContext) -> tuple[str,
 
 
 def _contains_login_prompt(text: str) -> bool:
-    return any(token in text for token in ("log in", "login", "sign in", "signin"))
+    return any(token in text for token in ("log in", "login", "sign in", "signin", "登录"))
 
 
 def _dismiss_tiktok_login_promo(page: Any) -> bool:
@@ -2768,9 +2805,7 @@ def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
         payload = page.evaluate(
             """(args) => {
                 const selectors = args.selectors || [];
-                const keywords = (args.keywords || [])
-                  .map((value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase())
-                  .filter(Boolean);
+                const keywordGroups = args.keywordGroups || [];
 
                 const normalizeText = (value) => String(value || "")
                   .replace(/\\s+/g, " ")
@@ -2791,7 +2826,7 @@ def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
                     if (!isVisible(element)) continue;
                     const text = normalizeText(element.innerText || element.textContent || "");
                     const loweredText = text.toLowerCase();
-                    if (!keywords.every((keyword) => loweredText.includes(keyword))) continue;
+                    if (!keywordGroups.some((group) => group.every((keyword) => loweredText.includes(keyword)))) continue;
                     return {
                       visible: true,
                       text,
@@ -2813,7 +2848,7 @@ def _read_tiktok_login_promo_state(page: Any) -> dict[str, Any]:
                     "dialog",
                     "[class*='popover']",
                 ],
-                "keywords": ["log in", "create account"],
+                "keywordGroups": [["log in", "create account"], ["登录", "创建账号"]],
             },
         )
     except Exception as exc:
@@ -3620,6 +3655,12 @@ def _sku_from_row(row: dict[str, Any], *, product_id: str) -> dict[str, Any]:
         ("stock_count", "stock_count"),
     ):
         value = row.get(source_key)
+        if source_key == "price" and isinstance(value, dict):
+            amount = _text_value(value.get("sale_price_decimal") or value.get("sale_price_format"))
+            if amount:
+                result.setdefault("price_amount", amount)
+                result.setdefault("price_text", f"{_text_value(value.get('currency_symbol'))}{amount}")
+            continue
         if value not in (None, "") and target_key not in result:
             result[target_key] = value
     return result
@@ -3882,6 +3923,7 @@ def _pick_url_from_media(media: Any) -> str:
 
 def _extract_product_review_metrics(*payloads: Any) -> tuple[float, int, int]:
     rating_value = _first_metric_value(
+        _path_value(payloads, "product_info", "review", "product_rating"),
         _path_value(payloads, "product_info", "review_model", "product_overall_score"),
         _path_value(payloads, "product_info", "review_model", "overall_score"),
         _path_value(payloads, "product_info", "review_model", "rating_score"),
@@ -3907,6 +3949,7 @@ def _extract_product_review_metrics(*payloads: Any) -> tuple[float, int, int]:
         ),
     )
     review_count_value = _first_metric_value(
+        _path_value(payloads, "product_info", "review", "review_count"),
         _path_value(payloads, "product_info", "review_model", "product_review_count"),
         _path_value(payloads, "product_info", "review_model", "review_count"),
         _path_value(payloads, "review_info", "review_ratings", "review_count"),

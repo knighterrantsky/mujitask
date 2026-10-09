@@ -330,6 +330,8 @@ def _fallback_reason_from_message(message: str) -> str:
         return "request_signal_product_unavailable"
     if "failed to locate script tag" in normalized and "__modern_router_data__" in normalized:
         return "request_signal_missing_router_data"
+    if normalized == "failed to extract tiktok product price from page data":
+        return "request_signal_missing_product_price"
     return ""
 
 
